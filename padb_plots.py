@@ -2178,6 +2178,423 @@ def _build_stat_summary_html(
 
 
 # ---------------------------------------------------------------------------
+# de_summary — Environmental (Type=60) delta plot
+# ---------------------------------------------------------------------------
+
+_ENV_SUMMARY_JS = r"""
+function isLogX(){return document.getElementById('env_log_x_chk').checked;}
+function getSelectedConds(){
+  return ENV_DATA.filter(function(cd){
+    return COND_DIMS.every(function(dim){
+      var chks=Array.from(document.querySelectorAll('.'+dim.col_id+':checked')).map(function(c){return c.value;});
+      if(!chks.length) return true;
+      var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+      var m=cd.condition.match(new RegExp(safe+':?\\s*(\\S+)'));
+      return !m||chks.indexOf(m[1])>=0;
+    });
+  });
+}
+function getFreqRange(){
+  var lo=parseFloat(document.getElementById('env_freq_lo').value);
+  var hi=parseFloat(document.getElementById('env_freq_hi').value);
+  return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};
+}
+function hexAlpha(hex,a){
+  var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return 'rgba('+r+','+g+','+b+','+a+')';
+}
+function buildTraces(selConds){
+  var traces=[];
+  var fr=getFreqRange();
+  selConds.forEach(function(cd,i){
+    var color=PALETTE[i%PALETTE.length];
+    var idxs=[];
+    cd.freqs.forEach(function(f,j){
+      if(f>=fr.lo&&f<=fr.hi&&cd.ude[j]!==null&&cd.lde[j]!==null) idxs.push(j);
+    });
+    if(!idxs.length) return;
+    var freqs=idxs.map(function(j){return cd.freqs[j];});
+    var ude=idxs.map(function(j){return cd.ude[j];});
+    var neg_lde=idxs.map(function(j){return -cd.lde[j];});
+    var ttu=idxs.map(function(j){return cd.ttu[j];});
+    var ttl=idxs.map(function(j){return cd.ttl[j];});
+    var hov=idxs.map(function(j,k){
+      var f=cd.freqs[j];
+      var lines=[cd.condition,'Freq: '+f.toFixed(3)+' MHz'];
+      if(cd.ude[j]!==null) lines.push('UDE: +'+cd.ude[j].toFixed(4));
+      if(cd.lde[j]!==null) lines.push('LDE: −'+cd.lde[j].toFixed(4));
+      if(cd.mean_env[j]!==null) lines.push('Mean(ΔEnv): '+cd.mean_env[j].toFixed(4));
+      if(cd.min_env[j]!==null&&cd.max_env[j]!==null)
+        lines.push('ObsΔ: ['+cd.min_env[j].toFixed(4)+', '+cd.max_env[j].toFixed(4)+']');
+      if(cd.ttu[j]!==null&&cd.ttl[j]!==null)
+        lines.push('TTL: ['+cd.ttl[j].toFixed(4)+', '+cd.ttu[j].toFixed(4)+']');
+      return lines.join('<br>');
+    });
+    /* UDE upper — fill reference, hover suppressed */
+    traces.push({type:'scatter',x:freqs,y:ude,mode:'lines',
+      line:{color:color,width:1.5},
+      name:cd.condition+' UDE',legendgroup:cd.condition,showlegend:false,
+      hoverinfo:'skip'});
+    /* -LDE lower + fill to create env contribution band */
+    traces.push({type:'scatter',x:freqs,y:neg_lde,mode:'lines',
+      fill:'tonexty',fillcolor:hexAlpha(color,0.18),
+      line:{color:color,width:1.5},
+      name:cd.condition,legendgroup:cd.condition,showlegend:true,
+      text:hov,hovertemplate:'%{text}<extra></extra>'});
+    /* TTL dashed lines */
+    if(ttu.some(function(v){return v!==null;})){
+      traces.push({type:'scatter',x:freqs,y:ttu,mode:'lines',
+        line:{color:color,dash:'dot',width:1},
+        name:cd.condition+' TTL↑',legendgroup:cd.condition,showlegend:false,
+        hoverinfo:'skip'});
+    }
+    if(ttl.some(function(v){return v!==null;})){
+      traces.push({type:'scatter',x:freqs,y:ttl,mode:'lines',
+        line:{color:color,dash:'dot',width:1},
+        name:cd.condition+' TTL↓',legendgroup:cd.condition,showlegend:false,
+        hoverinfo:'skip'});
+    }
+  });
+  /* Spec lines — use first condition with valid values */
+  var spec_lo=null,spec_hi=null;
+  ENV_DATA.forEach(function(cd){
+    if(spec_lo===null&&cd.spec_lo!==null) spec_lo=cd.spec_lo;
+    if(spec_hi===null&&cd.spec_hi!==null) spec_hi=cd.spec_hi;
+  });
+  var xAll=selConds.reduce(function(a,cd){return a.concat(cd.freqs);},
+    []).filter(function(v){return v!==null;});
+  if(!xAll.length) xAll=[ENV_FREQ_MIN,ENV_FREQ_MAX];
+  var xMin=Math.min.apply(null,xAll),xMax=Math.max.apply(null,xAll);
+  if(spec_lo!==null) traces.push({type:'scatter',x:[xMin,xMax],y:[spec_lo,spec_lo],mode:'lines',
+    line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
+    hovertemplate:'Spec Lo: '+spec_lo.toFixed(4)+'<extra></extra>'});
+  if(spec_hi!==null) traces.push({type:'scatter',x:[xMin,xMax],y:[spec_hi,spec_hi],mode:'lines',
+    line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
+    hovertemplate:'Spec Hi: '+spec_hi.toFixed(4)+'<extra></extra>'});
+  return traces;
+}
+function buildLayout(){
+  return {
+    title:{text:ENV_TITLE,x:0.5,font:{size:15}},
+    template:'plotly_white',
+    xaxis:{title:'Frequency (MHz)',type:isLogX()?'log':'linear'},
+    yaxis:{title:ENV_Y_LABEL,range:ENV_Y_LIM},
+    height:480,
+    legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
+    margin:{l:60,r:30,t:55,b:60},
+    shapes:[{type:'line',x0:0,x1:1,xref:'paper',y0:0,y1:0,
+      line:{color:'#bbb',width:1,dash:'dot'}}]
+  };
+}
+function togglePanel(col){var el=document.getElementById('panel_'+col);if(el) el.classList.toggle('open');}
+function toggleAll(col){
+  var allEl=document.getElementById('all_'+col);
+  document.querySelectorAll('.'+col).forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  updateBadge(col);update();
+}
+function chkChanged(col){updateBadge(col);update();}
+function updateBadge(col){
+  var all=document.querySelectorAll('.'+col);
+  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var allEl=document.getElementById('all_'+col);
+  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
+  var b=document.getElementById('badge_'+col);
+  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
+}
+function syncFreq(){
+  var lo=parseFloat(document.getElementById('env_freq_lo').value);
+  var hi=parseFloat(document.getElementById('env_freq_hi').value);
+  var lv=document.getElementById('env_freq_lo_val');
+  var hv=document.getElementById('env_freq_hi_val');
+  if(lv) lv.textContent=lo.toFixed(2);
+  if(hv) hv.textContent=hi.toFixed(2);
+  update();
+}
+function saveCSV(){
+  var selConds=getSelectedConds();
+  var fr=getFreqRange();
+  var hdrs=['Condition','Freq_MHz','UDE','LDE','Min_Env','Max_Env','Mean_Env','TTL_up','TTL_lo','Spec_lo','Spec_hi'];
+  var rows=[hdrs.join(',')];
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  selConds.forEach(function(cd){
+    cd.freqs.forEach(function(f,j){
+      if(f<fr.lo||f>fr.hi) return;
+      rows.push([esc(cd.condition),f,
+        cd.ude[j],cd.lde[j],cd.min_env[j],cd.max_env[j],cd.mean_env[j],
+        cd.ttu[j],cd.ttl[j],cd.spec_lo,cd.spec_hi
+      ].map(esc).join(','));
+    });
+  });
+  var blob=new Blob([rows.join('\n')],{type:'text/csv'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=ENV_TITLE.replace(/[^a-z0-9_\-]/gi,'_')+'.csv';
+  a.click();
+}
+function update(){
+  Plotly.react('plot',buildTraces(getSelectedConds()),buildLayout());
+}
+Plotly.newPlot('plot',buildTraces(getSelectedConds()),buildLayout(),{responsive:true,scrollZoom:true});
+"""
+
+
+def _load_env_csv(csv_path: Path) -> pd.DataFrame:
+    """Load a PADB Environmental (Type=60) summary CSV into a DataFrame."""
+    df = pd.read_csv(csv_path)
+    df.columns = [c.strip() for c in df.columns]
+    _INT_MAX = 2_000_000_000
+    num_cols = [
+        "X value", "Min (Env.)", "Max (Env.)", "mean (Env.)", "variation",
+        "UDE", "LDE", "Meas. Unc.", "Min (Std.)", "Max (Std.)",
+        "Upper TTL (est)", "Lower TTL (est)", "Std. Deviation", "mean (Sum.)",
+        "UDE (Max)", "LDE (Max)", "Lower Limit", "Upper Limit",
+    ]
+    for col in num_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    for col in ("UDE", "LDE", "UDE (Max)", "LDE (Max)"):
+        if col in df.columns:
+            df.loc[df[col].abs() > _INT_MAX, col] = np.nan
+    return df
+
+
+def _aggregate_env_data(df: pd.DataFrame) -> list:
+    """Convert environmental CSV rows into per-condition frequency series for JS."""
+    results: list = []
+    for group, gdf in df.groupby("Group", sort=False):
+        gdf = gdf.sort_values("X value").reset_index(drop=True)
+
+        def _col(col: str) -> list:
+            if col not in gdf.columns:
+                return [None] * len(gdf)
+            return [None if (v is None or (isinstance(v, float) and np.isnan(v)))
+                    else round(float(v), 6) for v in gdf[col]]
+
+        def _first(col: str):
+            if col not in gdf.columns:
+                return None
+            v = gdf[col].dropna()
+            return round(float(v.iloc[0]), 6) if len(v) else None
+
+        results.append({
+            "condition": str(group),
+            "freqs":    [round(float(v), 6) for v in gdf["X value"]],
+            "ude":      _col("UDE"),
+            "lde":      _col("LDE"),
+            "min_env":  _col("Min (Env.)"),
+            "max_env":  _col("Max (Env.)"),
+            "mean_env": _col("mean (Env.)"),
+            "min_std":  _col("Min (Std.)"),
+            "max_std":  _col("Max (Std.)"),
+            "ttu":      _col("Upper TTL (est)"),
+            "ttl":      _col("Lower TTL (est)"),
+            "spec_lo":  _first("Lower Limit"),
+            "spec_hi":  _first("Upper Limit"),
+            "ude_max":  _first("UDE (Max)"),
+            "lde_max":  _first("LDE (Max)"),
+            "units":    str(gdf["Units"].iloc[0]) if "Units" in gdf.columns and len(gdf) else "",
+        })
+    return results
+
+
+def _build_env_summary_html(
+    env_data: list,
+    cond_dims: list,
+    title: str,
+    y_label: str,
+    y_lim,
+    log_x: bool,
+    freq_min: float,
+    freq_max: float,
+    palette: list,
+) -> str:
+    css = (
+        "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
+        ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".ctrl-bar label{white-space:nowrap;}"
+        ".ctrl-bar input[type=range]{vertical-align:middle;width:90px;}"
+        ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
+        ".filter-wrap{position:relative;display:inline-block;}"
+        ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
+        "cursor:pointer;background:#fff;white-space:nowrap;}"
+        ".filter-btn:hover{background:#e8e8e8;}"
+        ".filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
+        "background:#fff;border:1px solid #ccc;border-radius:4px;"
+        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:140px;max-height:280px;"
+        "overflow-y:auto;padding:6px 8px;}"
+        ".filter-panel.open{display:block;}"
+        ".fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px;}"
+        ".fall{padding-bottom:2px;}"
+        ".fdiv{margin:4px 0;border:none;border-top:1px solid #eee;}"
+        ".badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;"
+        "padding:1px 6px;margin-right:2px;display:none;}"
+        ".badge.active{display:inline;}"
+        ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
+        "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;}"
+        ".csv-btn:hover{background:#cce4ff;}"
+        ".footnote{font-size:11px;color:#888;padding:2px 14px;}"
+    )
+
+    # Condition filter panels
+    panels: list[str] = []
+    for dim in cond_dims:
+        col_id = dim["col_id"]
+        items = "".join(
+            f'<label class="fitem"><input type="checkbox" class="{col_id}"'
+            f' value="{v}" checked onchange="chkChanged(\'{col_id}\')">&nbsp;{v}</label>'
+            for v in dim["vals"]
+        )
+        panels.append(
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'{col_id}\')">'
+            f'<span id="badge_{col_id}" class="badge"></span>{dim["label"]}&thinsp;&#9662;</button>'
+            f'<div class="filter-panel" id="panel_{col_id}">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_{col_id}"'
+            f' checked onchange="toggleAll(\'{col_id}\')"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{items}</div></div>'
+        )
+    panels_html = "\n  ".join(panels)
+
+    freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
+    sep = '<div class="sep"></div>'
+    freq_lo_html = (
+        f'<label>Freq&nbsp;min:<input type="range" id="env_freq_lo"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<span id="env_freq_lo_val">{freq_min:.2f}</span>&nbsp;MHz</label>'
+    )
+    freq_hi_html = (
+        f'<label>Freq&nbsp;max:<input type="range" id="env_freq_hi"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<span id="env_freq_hi_val">{freq_max:.2f}</span>&nbsp;MHz</label>'
+    )
+    log_x_html = (
+        f'<label><input type="checkbox" id="env_log_x_chk"'
+        + (' checked' if log_x else '')
+        + ' onchange="update()"> Log&nbsp;X</label>'
+    )
+
+    ctrl_bar = (
+        '<div class="ctrl-bar">\n'
+        + (f'  {panels_html}\n  {sep}\n' if panels_html else '')
+        + f'  {freq_lo_html}\n'
+        + f'  {freq_hi_html}\n'
+        + f'  {sep}\n'
+        + f'  {log_x_html}\n'
+        + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        + '</div>\n'
+    )
+
+    # UDE_max footnote
+    ude_max_vals = [(cd["condition"], cd["ude_max"]) for cd in env_data if cd["ude_max"] is not None]
+    if ude_max_vals:
+        worst = max(ude_max_vals, key=lambda x: x[1])
+        footnote = (
+            f'<div class="footnote">Shaded band: environmental contribution [&minus;LDE, +UDE]'
+            f' &nbsp;|&nbsp; Dotted lines: estimated TTL'
+            f' &nbsp;|&nbsp; Peak UDE: {worst[1]:.4f} ({worst[0]})</div>\n'
+        )
+    else:
+        footnote = (
+            '<div class="footnote">Shaded band: environmental contribution'
+            ' [&minus;LDE, +UDE] &nbsp;|&nbsp; Dotted lines: estimated TTL</div>\n'
+        )
+
+    constants = "\n".join([
+        f"var ENV_DATA={json.dumps(env_data)};",
+        f"var ENV_TITLE={json.dumps(title)};",
+        f"var ENV_Y_LABEL={json.dumps(y_label)};",
+        f"var ENV_Y_LIM={json.dumps(y_lim)};",
+        f"var ENV_FREQ_MIN={freq_min!r};",
+        f"var ENV_FREQ_MAX={freq_max!r};",
+        f"var COND_DIMS={json.dumps(cond_dims)};",
+        f"var PALETTE={json.dumps(palette)};",
+    ])
+
+    return (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        f'<meta charset="utf-8"><title>{title}</title>\n'
+        f"<style>{css}</style>\n"
+        f"<script>{_get_plotlyjs()}</script>\n"
+        "</head>\n<body>\n"
+        + ctrl_bar + footnote
+        + '<div id="plot"></div>\n'
+        + f"<script>\n{constants}\n{_ENV_SUMMARY_JS}</script>\n"
+        "</body>\n</html>"
+    )
+
+
+def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
+    """
+    Interactive environmental delta plot from a PADB Type=60 CSV.
+
+    Shows the UDE/LDE environmental contribution band per frequency per condition,
+    with optional TTL lines and spec limits. Supports group filtering, freq range
+    sliders, log X, and CSV export.
+    """
+    df = _load_env_csv(csv_path)
+    env_data = _aggregate_env_data(df)
+    title = cfg.get("title", output_html.stem)
+    y_label = cfg.get("y_label", "Delta (dB)")
+    y_lim = cfg.get("y_lim")
+
+    all_freqs = [f for cd in env_data for f in cd["freqs"] if f is not None]
+    freq_min = float(min(all_freqs)) if all_freqs else 0.0
+    freq_max = float(max(all_freqs)) if all_freqs else 1.0
+
+    log_x_cfg = cfg.get("log_x")
+    log_x = bool(log_x_cfg) if log_x_cfg is not None else (freq_min > 0 and freq_max / freq_min >= 100)
+
+    # Build COND_DIMS — same serial-excluding logic as other plots
+    unique_groups = df["Group"].dropna().unique()
+    group_kv = {g: _parse_group_kv(g) for g in unique_groups}
+    all_keys = {k for kv in group_kv.values() for k in kv}
+    _serial_val = re.compile(r"^[A-Z]{2,3}\d{5,}$")
+    _serial_kws = ("serial", "unit id", "dut id", "s/n")
+    cond_keys: list = []
+    for key in sorted(all_keys):
+        if any(kw in key.lower() for kw in _serial_kws):
+            continue
+        vals = {kv.get(key, "") for kv in group_kv.values() if key in kv}
+        if vals and sum(_serial_val.match(v) is not None for v in vals) / len(vals) > 0.5:
+            continue
+        if 1 < len(vals) <= 20:
+            cond_keys.append(key)
+
+    def _sort_numeric(vals):
+        try:
+            return sorted(vals, key=float)
+        except (ValueError, TypeError):
+            return sorted(vals)
+
+    dim_vals: dict = {}
+    for g in unique_groups:
+        kv = group_kv.get(g, {})
+        for k in cond_keys:
+            if k in kv:
+                dim_vals.setdefault(k, set()).add(kv[k])
+
+    cond_dims = [
+        {"col": key, "col_id": re.sub(r"\W+", "_", key), "label": key, "vals": _sort_numeric(v)}
+        for key, v in sorted(dim_vals.items()) if len(v) > 1
+    ]
+
+    palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+    ]
+
+    html = _build_env_summary_html(
+        env_data, cond_dims, title, y_label, y_lim, log_x, freq_min, freq_max, palette,
+    )
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html, encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
 # Public functions
 # ---------------------------------------------------------------------------
 
