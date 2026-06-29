@@ -2331,8 +2331,47 @@ function saveCSV(){
   a.download=ENV_TITLE.replace(/[^a-z0-9_\-]/gi,'_')+'.csv';
   a.click();
 }
+function toggleEnvStatPanel(){
+  var el=document.getElementById('env_stat_panel');
+  el.classList.toggle('open');
+  if(el.classList.contains('open')) updateEnvStatsTable(getSelectedConds());
+}
+function fmt(v,d){return v===null||v===undefined?'—':v.toFixed(d!==undefined?d:4);}
+function updateEnvStatsTable(selConds){
+  var fr=getFreqRange();
+  var el=document.getElementById('env_stat_panel');
+  if(!el||!el.classList.contains('open')) return;
+  var hdrs=['Condition','Freq (MHz)','UDE','LDE','Min(Env.)','Max(Env.)','Mean(Env.)',
+            'TTL↑','TTL↓','Spec Lo','Spec Hi'];
+  var hrow='<tr>'+hdrs.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
+  var rows=[];
+  selConds.forEach(function(cd){
+    cd.freqs.forEach(function(f,j){
+      if(f<fr.lo||f>fr.hi) return;
+      var ttu=cd.ttu[j],ttl=cd.ttl[j];
+      var sh=cd.spec_hi,sl=cd.spec_lo;
+      var fail=(sh!==null&&ttu!==null&&ttu>sh)||(sl!==null&&ttl!==null&&ttl<sl);
+      var cls=fail?'ttl-fail':'';
+      rows.push('<tr class="'+cls+'">'
+        +'<td class="lbl">'+cd.condition+'</td>'
+        +'<td>'+f.toFixed(3)+'</td>'
+        +'<td>'+fmt(cd.ude[j])+'</td>'
+        +'<td>'+fmt(cd.lde[j])+'</td>'
+        +'<td>'+fmt(cd.min_env[j])+'</td>'
+        +'<td>'+fmt(cd.max_env[j])+'</td>'
+        +'<td>'+fmt(cd.mean_env[j])+'</td>'
+        +'<td>'+fmt(ttu)+'</td>'
+        +'<td>'+fmt(ttl)+'</td>'
+        +'<td>'+fmt(sl)+'</td>'
+        +'<td>'+fmt(sh)+'</td>'
+        +'</tr>');
+    });
+  });
+  el.innerHTML='<table class="env-tbl"><thead>'+hrow+'</thead><tbody>'+rows.join('')+'</tbody></table>';
+}
 function update(){
   Plotly.react('plot',buildTraces(getSelectedConds()),buildLayout());
+  updateEnvStatsTable(getSelectedConds());
 }
 Plotly.newPlot('plot',buildTraces(getSelectedConds()),buildLayout(),{responsive:true,scrollZoom:true});
 """
@@ -2434,6 +2473,19 @@ def _build_env_summary_html(
         "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;}"
         ".csv-btn:hover{background:#cce4ff;}"
         ".footnote{font-size:11px;color:#888;padding:2px 14px;}"
+        ".stat-btn{font-size:13px;padding:3px 12px;border:1px solid #666;border-radius:3px;"
+        "cursor:pointer;background:#f5f5f5;}"
+        ".stat-btn:hover{background:#e0e0e0;}"
+        "#env_stat_panel{display:none;margin-top:6px;overflow-x:auto;padding:0 4px;}"
+        "#env_stat_panel.open{display:block;}"
+        ".env-tbl{border-collapse:collapse;font-size:12px;width:100%;}"
+        ".env-tbl th{background:#e8ecf0;text-align:center;padding:4px 8px;"
+        "border:1px solid #ccc;white-space:nowrap;}"
+        ".env-tbl td{padding:3px 8px;border:1px solid #e0e0e0;text-align:right;white-space:nowrap;}"
+        ".env-tbl td.lbl{text-align:left;font-weight:bold;max-width:280px;"
+        "overflow:hidden;text-overflow:ellipsis;}"
+        ".env-tbl tr:nth-child(even) td{background:#f7f9fc;}"
+        ".env-tbl tr.ttl-fail td{background:#ffd0d0 !important;}"
     )
 
     # Condition filter panels
@@ -2484,6 +2536,7 @@ def _build_env_summary_html(
         + f'  {sep}\n'
         + f'  {log_x_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        + f'  <button class="stat-btn" onclick="toggleEnvStatPanel()">&#9776;&nbsp;Statistics</button>\n'
         + '</div>\n'
     )
 
@@ -2521,6 +2574,7 @@ def _build_env_summary_html(
         "</head>\n<body>\n"
         + ctrl_bar + footnote
         + '<div id="plot"></div>\n'
+        + '<div id="env_stat_panel"></div>\n'
         + f"<script>\n{constants}\n{_ENV_SUMMARY_JS}</script>\n"
         "</body>\n</html>"
     )
