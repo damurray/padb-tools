@@ -2502,6 +2502,10 @@ def _build_env_summary_html(
     freq_min: float,
     freq_max: float,
     palette: list,
+    p_std=None,
+    p_env=None,
+    c_std=None,
+    c_env=None,
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -2544,6 +2548,8 @@ def _build_env_summary_html(
         ".env-tbl tr:nth-child(even) td{background:#f7f9fc;}"
         ".env-tbl tr.ttl-fail td{background:#ffd0d0 !important;}"
         ".env-yin{width:68px;font-size:12px;padding:1px 3px;}"
+        ".pc-lbl{font-size:11px;color:#555;white-space:nowrap;}"
+        ".pc-lbl b{color:#333;}"
     )
 
     # Condition filter panels
@@ -2604,6 +2610,21 @@ def _build_env_summary_html(
         '</span>'
         '</span>'
     )
+    pc_parts = []
+    if p_std is not None or c_std is not None:
+        std_str = "/".join(filter(None, [
+            f"P{int(p_std)}" if p_std is not None else None,
+            f"C{int(c_std)}" if c_std is not None else None,
+        ]))
+        pc_parts.append(f'<span class="pc-lbl">Std:&nbsp;<b>{std_str}</b></span>')
+    if p_env is not None or c_env is not None:
+        env_str = "/".join(filter(None, [
+            f"P{int(p_env)}" if p_env is not None else None,
+            f"C{int(c_env)}" if c_env is not None else None,
+        ]))
+        pc_parts.append(f'<span class="pc-lbl">Env:&nbsp;<b>{env_str}</b></span>')
+    pc_html = ("  " + "&nbsp;&nbsp;".join(pc_parts) + "\n") if pc_parts else ""
+
     ctrl_bar = (
         '<div class="ctrl-bar">\n'
         + (f'  {panels_html}\n  {sep}\n' if panels_html else '')
@@ -2615,6 +2636,7 @@ def _build_env_summary_html(
         + f'  {data_filter_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + f'  <button class="stat-btn" id="env_stat_btn" onclick="toggleEnvStatPanel()">&#9658;&nbsp;Statistics</button>\n'
+        + (f'  {sep}\n{pc_html}' if pc_html else '')
         + '</div>\n'
     )
 
@@ -2720,8 +2742,18 @@ def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
     ]
 
+    def _first_int(col):
+        if col not in df.columns:
+            return None
+        v = pd.to_numeric(df[col], errors="coerce").dropna()
+        return int(round(v.iloc[0])) if len(v) else None
+
     html = _build_env_summary_html(
         env_data, cond_dims, title, y_label, y_lim, log_x, freq_min, freq_max, palette,
+        p_std=_first_int("Proportion (Std.)"),
+        p_env=_first_int("Proportion (Env.)"),
+        c_std=_first_int("Confidence (Std.)"),
+        c_env=_first_int("Confidence (Env.)"),
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
