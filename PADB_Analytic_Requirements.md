@@ -264,11 +264,12 @@ With fewer DUTs (e.g., n=6–15 in early production), P90/C90 is the maximum sup
 
 ## 6. Future Plot Types (Not Yet Implemented)
 
-### Parallel scatter overlay for `stat_boxplot`
+### Parallel scatter overlay for `stat_boxplot` — ✅ Implemented
 
-The box plot's source CSV is pre-aggregated to quartile statistics by PADB (Type=90 SummaryPlot or derived from Type=80). To overlay individual measurement points on the box plot — accessing the original datum per DUT per frequency — a second Type=80 Scatter analytic would need to be configured alongside the box plot's source analytic, sharing the same frequency grid. The scatter analytic's CSV would be loaded in parallel and used to draw individual measurement points on each box.
+Individual DUT measurement points are overlaid on the box-and-whisker traces using the **"Show points"** checkbox in the filter bar. No second CSV is required — per-DUT values (`vals_detail: [{s, v}]`) are already embedded in `BOX_DATA` at HTML generation time.
 
-This would require:
-- A Type=80 Scatter analytic with the same measurement, frequency grid, and Group string as the box plot source
-- A new `scatter_overlay` key in the secondary_plot config pointing to the scatter CSV
-- Client-side rendering of scatter points alongside the existing Plotly box traces
+The scatter overlay:
+- Respects the serial filter and Y-range filter (same `vals_detail` array is used for both filtered and unfiltered paths)
+- Uses filled circle markers (size 5, opacity 0.55) in the same colour as the box trace
+- Outlier markers remain `circle-open` (larger, size 7) for visual distinction
+- Hovering over a scatter point shows the serial number and value

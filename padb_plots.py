@@ -2970,6 +2970,7 @@ function getYFilter(){
   return {mode:mode,ylo:isNaN(ylo)?-Infinity:ylo,yhi:isNaN(yhi)?Infinity:yhi};
 }
 function isBoxNpTI(){var c=document.getElementById('box_np_ti_chk');return c?c.checked:false;}
+function isShowPoints(){var c=document.getElementById('box_show_pts_chk');return c?c.checked:false;}
 /* ---- serial filter ---- */
 function getAllBoxSerials(){return Array.from(document.querySelectorAll('.box_ser_chk')).map(function(c){return c.value;});}
 function getSelectedBoxSerials(){return Array.from(document.querySelectorAll('.box_ser_chk:checked')).map(function(c){return c.value;});}
@@ -3033,7 +3034,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         var outDet=detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;});
         fs.push({freq:f.freq,freq_label:f.freq_label,
           n:s.n,mean:s.mean,q1:s.q1,q2:s.q2,q3:s.q3,lo_w:s.lo_w,hi_w:s.hi_w,
-          outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;})});
+          outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:detail});
       });
     } else {
       fs=cd.freq_stats.slice();
@@ -3060,6 +3061,22 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
       hovertemplate:'<b>'+name+'</b><br>Freq: %{x}<br>Q1: %{q1:.4f}<br>Median: %{median:.4f}<br>'+
         'Q3: %{q3:.4f}<br>Whiskers: [%{lowerfence:.4f}, %{upperfence:.4f}]<extra></extra>',
     });
+    if(isShowPoints()){
+      var pxP=[],pyP=[],ptP=[];
+      fs.forEach(function(f){
+        var vd=f.vals_detail||[];
+        vd.forEach(function(d){
+          pxP.push(f.freq_label);pyP.push(d.v);
+          ptP.push((d.s&&d.s!=='unknown'?d.s+': ':'')+d.v.toFixed(4));
+        });
+      });
+      if(pxP.length){
+        traces.push({type:'scatter',x:pxP,y:pyP,mode:'markers',
+          marker:{size:5,color:color,opacity:0.55},
+          name:name+' pts',showlegend:false,text:ptP,
+          hovertemplate:'%{text}<extra></extra>'});
+      }
+    }
     var oxArr=[],oyArr=[],oText=[];
     fs.forEach(function(f){
       var det=f.outlier_detail||[];
@@ -3392,6 +3409,9 @@ def _build_box_interactive_html(
         '<input type="checkbox" id="box_np_ti_chk"'
         ' onchange="updateStatsTable(getSelectedConds(),getYFilter())">'
         '&nbsp;Non-parametric&nbsp;TI</label>\n'
+        '  <label title="Overlay individual DUT measurement points on each box">'
+        '<input type="checkbox" id="box_show_pts_chk" onchange="update()">'
+        '&nbsp;Show&nbsp;points</label>\n'
         '  <button class="csv-btn" onclick="saveBoxCSV()">&#8595;&nbsp;CSV</button>\n'
         '</div>\n'
     )

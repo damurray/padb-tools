@@ -263,6 +263,6 @@ Follow the established pattern:
 
 ### Future work identified
 
-- **Parallel scatter overlay on stat_boxplot:** Load a second Type=80 Scatter CSV alongside the box plot to overlay individual DUT measurement points on the boxes (accessing the original datum). Needs a `scatter_overlay` key in job.json config.
+- **Parallel scatter overlay on stat_boxplot:** ✅ Implemented. `vals_detail: [{s, v}]` is embedded in `BOX_DATA` for every freq_stat entry (no second CSV needed). "Show points" checkbox in the filter bar overlays per-DUT scatter points (size 5, opacity 0.55) on the boxes. Respects serial and Y-range filters via the `vals_detail` field on `fs` entries. Outlier traces still use `circle-open` markers; scatter points use filled circles for visual distinction.
 - **Remove dead `de_summary` at ~line 825** — the old static version is superseded by the interactive one at ~line 2594.
 - **`closein_job.json`** has not been run yet.
