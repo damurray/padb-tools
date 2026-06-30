@@ -2333,41 +2333,53 @@ function saveCSV(){
 }
 function toggleEnvStatPanel(){
   var el=document.getElementById('env_stat_panel');
-  el.classList.toggle('open');
-  if(el.classList.contains('open')) updateEnvStatsTable(getSelectedConds());
+  var btn=document.getElementById('env_stat_btn');
+  if(!el||!btn) return;
+  if(el.style.display==='none'||el.style.display===''){
+    el.style.display='block';
+    btn.textContent='▼ Statistics';
+    updateEnvStatsTable(getSelectedConds());
+  } else {
+    el.style.display='none';
+    btn.textContent='▶ Statistics';
+  }
 }
 function fmt(v,d){return v===null||v===undefined?'—':v.toFixed(d!==undefined?d:4);}
 function updateEnvStatsTable(selConds){
-  var fr=getFreqRange();
   var el=document.getElementById('env_stat_panel');
-  if(!el||!el.classList.contains('open')) return;
-  var hdrs=['Condition','Freq (MHz)','UDE','LDE','Min(Env.)','Max(Env.)','Mean(Env.)',
-            'TTL↑','TTL↓','Spec Lo','Spec Hi'];
-  var hrow='<tr>'+hdrs.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
-  var rows=[];
-  selConds.forEach(function(cd){
-    cd.freqs.forEach(function(f,j){
-      if(f<fr.lo||f>fr.hi) return;
-      var ttu=cd.ttu[j],ttl=cd.ttl[j];
-      var sh=cd.spec_hi,sl=cd.spec_lo;
-      var fail=(sh!==null&&ttu!==null&&ttu>sh)||(sl!==null&&ttl!==null&&ttl<sl);
-      var cls=fail?'ttl-fail':'';
-      rows.push('<tr class="'+cls+'">'
-        +'<td class="lbl">'+cd.condition+'</td>'
-        +'<td>'+f.toFixed(3)+'</td>'
-        +'<td>'+fmt(cd.ude[j])+'</td>'
-        +'<td>'+fmt(cd.lde[j])+'</td>'
-        +'<td>'+fmt(cd.min_env[j])+'</td>'
-        +'<td>'+fmt(cd.max_env[j])+'</td>'
-        +'<td>'+fmt(cd.mean_env[j])+'</td>'
-        +'<td>'+fmt(ttu)+'</td>'
-        +'<td>'+fmt(ttl)+'</td>'
-        +'<td>'+fmt(sl)+'</td>'
-        +'<td>'+fmt(sh)+'</td>'
-        +'</tr>');
+  if(!el||el.style.display==='none') return;
+  try{
+    var fr=getFreqRange();
+    var hdrs=['Condition','Freq (MHz)','UDE','LDE','Min(Env.)','Max(Env.)','Mean(Env.)',
+              'TTL↑','TTL↓','Spec Lo','Spec Hi'];
+    var hrow='<tr>'+hdrs.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
+    var rows=[];
+    selConds.forEach(function(cd){
+      cd.freqs.forEach(function(f,j){
+        if(f<fr.lo||f>fr.hi) return;
+        var ttu=cd.ttu[j],ttl=cd.ttl[j];
+        var sh=cd.spec_hi,sl=cd.spec_lo;
+        var fail=(sh!==null&&ttu!==null&&ttu>sh)||(sl!==null&&ttl!==null&&ttl<sl);
+        var cls=fail?'ttl-fail':'';
+        rows.push('<tr class="'+cls+'">'
+          +'<td class="lbl">'+cd.condition+'</td>'
+          +'<td>'+f.toFixed(3)+'</td>'
+          +'<td>'+fmt(cd.ude[j])+'</td>'
+          +'<td>'+fmt(cd.lde[j])+'</td>'
+          +'<td>'+fmt(cd.min_env[j])+'</td>'
+          +'<td>'+fmt(cd.max_env[j])+'</td>'
+          +'<td>'+fmt(cd.mean_env[j])+'</td>'
+          +'<td>'+fmt(ttu)+'</td>'
+          +'<td>'+fmt(ttl)+'</td>'
+          +'<td>'+fmt(sl)+'</td>'
+          +'<td>'+fmt(sh)+'</td>'
+          +'</tr>');
+      });
     });
-  });
-  el.innerHTML='<table class="env-tbl"><thead>'+hrow+'</thead><tbody>'+rows.join('')+'</tbody></table>';
+    el.innerHTML='<table class="env-tbl"><thead>'+hrow+'</thead><tbody>'+rows.join('')+'</tbody></table>';
+  }catch(e){
+    el.innerHTML='<div style="color:red;padding:8px">Error building table: '+e.message+'</div>';
+  }
 }
 function update(){
   Plotly.react('plot',buildTraces(getSelectedConds()),buildLayout());
@@ -2476,11 +2488,10 @@ def _build_env_summary_html(
         ".stat-btn{font-size:13px;padding:3px 12px;border:1px solid #666;border-radius:3px;"
         "cursor:pointer;background:#f5f5f5;}"
         ".stat-btn:hover{background:#e0e0e0;}"
-        "#env_stat_panel{display:none;margin-top:6px;overflow-x:auto;padding:0 4px;}"
-        "#env_stat_panel.open{display:block;}"
+        "#env_stat_panel{margin-top:6px;overflow:auto;max-height:400px;padding:0 4px;}"
         ".env-tbl{border-collapse:collapse;font-size:12px;width:100%;}"
         ".env-tbl th{background:#e8ecf0;text-align:center;padding:4px 8px;"
-        "border:1px solid #ccc;white-space:nowrap;}"
+        "border:1px solid #ccc;white-space:nowrap;position:sticky;top:0;z-index:1;}"
         ".env-tbl td{padding:3px 8px;border:1px solid #e0e0e0;text-align:right;white-space:nowrap;}"
         ".env-tbl td.lbl{text-align:left;font-weight:bold;max-width:280px;"
         "overflow:hidden;text-overflow:ellipsis;}"
@@ -2536,7 +2547,7 @@ def _build_env_summary_html(
         + f'  {sep}\n'
         + f'  {log_x_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
-        + f'  <button class="stat-btn" onclick="toggleEnvStatPanel()">&#9776;&nbsp;Statistics</button>\n'
+        + f'  <button class="stat-btn" id="env_stat_btn" onclick="toggleEnvStatPanel()">&#9658;&nbsp;Statistics</button>\n'
         + '</div>\n'
     )
 
@@ -2574,7 +2585,7 @@ def _build_env_summary_html(
         "</head>\n<body>\n"
         + ctrl_bar + footnote
         + '<div id="plot"></div>\n'
-        + '<div id="env_stat_panel"></div>\n'
+        + '<div id="env_stat_panel" style="display:none"></div>\n'
         + f"<script>\n{constants}\n{_ENV_SUMMARY_JS}</script>\n"
         "</body>\n</html>"
     )
