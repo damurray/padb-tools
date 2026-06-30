@@ -2312,15 +2312,22 @@ function buildLayout(){
       line:{color:'#bbb',width:1,dash:'dot'}}]
   };
 }
+function closeAllFilterPanels(){
+  document.querySelectorAll('.filter-panel').forEach(function(p){p.style.display='none';});
+  var bd=document.getElementById('filter-backdrop');
+  if(bd) bd.style.display='none';
+}
 function togglePanel(col){
   var el=document.getElementById('panel_'+col);
   if(!el) return;
-  el.style.display=el.style.display==='block'?'none':'block';
+  var open=el.style.display==='block';
+  closeAllFilterPanels();
+  if(!open){
+    el.style.display='block';
+    var bd=document.getElementById('filter-backdrop');
+    if(bd) bd.style.display='block';
+  }
 }
-document.addEventListener('click',function(e){
-  if(!e.target.closest('.filter-wrap'))
-    document.querySelectorAll('.filter-panel').forEach(function(p){p.style.display='none';});
-});
 function toggleAll(col){
   var allEl=document.getElementById('all_'+col);
   document.querySelectorAll('.'+col).forEach(function(c){c.checked=allEl?allEl.checked:true;});
@@ -2374,6 +2381,7 @@ function toggleEnvStatPanel(){
     el.style.display='block';
     btn.textContent='▼ Statistics';
     updateEnvStatsTable(getSelectedConds());
+    el.scrollIntoView({behavior:'smooth',block:'nearest'});
   } else {
     el.style.display='none';
     btn.textContent='▶ Statistics';
@@ -2509,9 +2517,9 @@ def _build_env_summary_html(
         ".filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
         "background:#fff;border:1px solid #ccc;border-radius:4px;"
         "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:140px;max-height:280px;"
-        "overflow-y:auto;padding:6px 8px;pointer-events:none;}"
+        "overflow-y:auto;padding:6px 8px;}"
         ".filter-panel.open{display:block;}"
-        ".filter-panel *{pointer-events:auto;}"
+        "#filter-backdrop{position:fixed;inset:0;z-index:150;display:none;}"
         ".fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px;}"
         ".fall{padding-bottom:2px;}"
         ".fdiv{margin:4px 0;border:none;border-top:1px solid #eee;}"
@@ -2642,6 +2650,7 @@ def _build_env_summary_html(
         f"<style>{css}</style>\n"
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
+        '<div id="filter-backdrop" onclick="closeAllFilterPanels()"></div>\n'
         + ctrl_bar + footnote
         + '<div id="plot"></div>\n'
         + '<div id="env_stat_panel" style="display:none"></div>\n'
