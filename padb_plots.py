@@ -2069,7 +2069,7 @@ def _build_stat_summary_html(
     )
 
     stat_bar = (
-        '<div class="stat-bar">\n'
+        '<div class="stat-bar" onclick="event.stopPropagation()">\n'
         f'  <b style="margin-right:4px">P:</b>'
         f'<input type="range" id="stat_P" min="0.80" max="0.999" value="{default_P:.3f}" step="0.005"'
         f' oninput="document.getElementById(\'lbl_P\').textContent=parseFloat(this.value).toFixed(3);update()">'
@@ -2119,7 +2119,7 @@ def _build_stat_summary_html(
                 f' onchange="update()">&nbsp;{t}</label>\n'
             )
         env_bar = (
-            '<div class="env-bar">\n'
+            '<div class="env-bar" onclick="event.stopPropagation()">\n'
             '  <b>&#916;Env&nbsp;steps:</b>\n'
             '  ' + env_items +
             '  <small style="color:#666">(uncheck to exclude a temp step from DEnv; override with &#916;Env inputs above)</small>\n'
@@ -2129,7 +2129,7 @@ def _build_stat_summary_html(
         env_bar = ""
 
     filter_bar = (
-        '<div class="flt-bar">\n'
+        '<div class="flt-bar" onclick="event.stopPropagation()">\n'
         '  <b>Data&nbsp;filter:</b>\n'
         '  <label><input type="radio" name="data_flt" value="all" checked'
         ' onchange="toggleRangeInputs();update()"> All&nbsp;data</label>\n'
@@ -2199,6 +2199,34 @@ function getFreqRange(){
   var hi=parseFloat(document.getElementById('env_freq_hi').value);
   return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};
 }
+function getEnvDataFilter(){
+  var r=document.querySelector('input[name="env_dfilt"]:checked');
+  var mode=r?r.value:'all';
+  var yLo=parseFloat(document.getElementById('env_y_lo').value);
+  var yHi=parseFloat(document.getElementById('env_y_hi').value);
+  return {mode:mode,yLo:isNaN(yLo)?-Infinity:yLo,yHi:isNaN(yHi)?Infinity:yHi};
+}
+function toggleEnvYRange(){
+  var r=document.querySelector('input[name="env_dfilt"]:checked');
+  var yr=document.getElementById('env_y_range_inputs');
+  if(yr) yr.style.display=(r&&r.value==='yrange')?'inline-flex':'none';
+  update();
+}
+function getFilteredIdxs(cd,fr,flt){
+  var idxs=[];
+  cd.freqs.forEach(function(f,j){
+    if(f<fr.lo||f>fr.hi||cd.ude[j]===null||cd.lde[j]===null) return;
+    if(flt.mode==='passing'){
+      var ok=(cd.spec_hi===null||cd.ttu[j]===null||cd.ttu[j]<=cd.spec_hi)&&
+             (cd.spec_lo===null||cd.ttl[j]===null||cd.ttl[j]>=cd.spec_lo);
+      if(!ok) return;
+    } else if(flt.mode==='yrange'){
+      if(cd.ude[j]>flt.yHi||-cd.lde[j]<flt.yLo) return;
+    }
+    idxs.push(j);
+  });
+  return idxs;
+}
 function hexAlpha(hex,a){
   var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return 'rgba('+r+','+g+','+b+','+a+')';
@@ -2206,12 +2234,10 @@ function hexAlpha(hex,a){
 function buildTraces(selConds){
   var traces=[];
   var fr=getFreqRange();
+  var flt=getEnvDataFilter();
   selConds.forEach(function(cd,i){
     var color=PALETTE[i%PALETTE.length];
-    var idxs=[];
-    cd.freqs.forEach(function(f,j){
-      if(f>=fr.lo&&f<=fr.hi&&cd.ude[j]!==null&&cd.lde[j]!==null) idxs.push(j);
-    });
+    var idxs=getFilteredIdxs(cd,fr,flt);
     if(!idxs.length) return;
     var freqs=idxs.map(function(j){return cd.freqs[j];});
     var ude=idxs.map(function(j){return cd.ude[j];});
@@ -2316,9 +2342,10 @@ function saveCSV(){
   var hdrs=['Condition','Freq_MHz','UDE','LDE','Min_Env','Max_Env','Mean_Env','TTL_up','TTL_lo','Spec_lo','Spec_hi'];
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var flt=getEnvDataFilter();
   selConds.forEach(function(cd){
-    cd.freqs.forEach(function(f,j){
-      if(f<fr.lo||f>fr.hi) return;
+    getFilteredIdxs(cd,fr,flt).forEach(function(j){
+      var f=cd.freqs[j];
       rows.push([esc(cd.condition),f,
         cd.ude[j],cd.lde[j],cd.min_env[j],cd.max_env[j],cd.mean_env[j],
         cd.ttu[j],cd.ttl[j],cd.spec_lo,cd.spec_hi
@@ -2354,9 +2381,10 @@ function updateEnvStatsTable(selConds){
               'TTL↑','TTL↓','Spec Lo','Spec Hi'];
     var hrow='<tr>'+hdrs.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
     var rows=[];
+    var flt=getEnvDataFilter();
     selConds.forEach(function(cd){
-      cd.freqs.forEach(function(f,j){
-        if(f<fr.lo||f>fr.hi) return;
+      getFilteredIdxs(cd,fr,flt).forEach(function(j){
+        var f=cd.freqs[j];
         var ttu=cd.ttu[j],ttl=cd.ttl[j];
         var sh=cd.spec_hi,sl=cd.spec_lo;
         var fail=(sh!==null&&ttu!==null&&ttu>sh)||(sl!==null&&ttl!==null&&ttl<sl);
@@ -2497,6 +2525,7 @@ def _build_env_summary_html(
         "overflow:hidden;text-overflow:ellipsis;}"
         ".env-tbl tr:nth-child(even) td{background:#f7f9fc;}"
         ".env-tbl tr.ttl-fail td{background:#ffd0d0 !important;}"
+        ".env-yin{width:68px;font-size:12px;padding:1px 3px;}"
     )
 
     # Condition filter panels
@@ -2539,6 +2568,22 @@ def _build_env_summary_html(
         + ' onchange="update()"> Log&nbsp;X</label>'
     )
 
+    data_filter_html = (
+        '<label><input type="radio" name="env_dfilt" value="all" checked'
+        ' onchange="toggleEnvYRange()">&nbsp;All&nbsp;data</label>'
+        '&nbsp;'
+        '<label><input type="radio" name="env_dfilt" value="passing"'
+        ' onchange="toggleEnvYRange()">&nbsp;Passing&nbsp;only</label>'
+        '&nbsp;'
+        '<label><input type="radio" name="env_dfilt" value="yrange"'
+        ' onchange="toggleEnvYRange()">&nbsp;Y&nbsp;range</label>'
+        '<span id="env_y_range_inputs" style="display:none;gap:4px;align-items:center">'
+        '&nbsp;<label>lo:<input type="number" id="env_y_lo" class="env-yin"'
+        ' oninput="update()"></label>'
+        '&nbsp;<label>hi:<input type="number" id="env_y_hi" class="env-yin"'
+        ' oninput="update()"></label>'
+        '</span>'
+    )
     ctrl_bar = (
         '<div class="ctrl-bar">\n'
         + (f'  {panels_html}\n  {sep}\n' if panels_html else '')
@@ -2546,6 +2591,8 @@ def _build_env_summary_html(
         + f'  {freq_hi_html}\n'
         + f'  {sep}\n'
         + f'  {log_x_html}\n'
+        + f'  {sep}\n'
+        + f'  {data_filter_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + f'  <button class="stat-btn" id="env_stat_btn" onclick="toggleEnvStatPanel()">&#9658;&nbsp;Statistics</button>\n'
         + '</div>\n'
