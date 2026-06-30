@@ -2519,11 +2519,12 @@ def _build_env_summary_html(
         "padding:1px 6px;margin-right:2px;display:none;}"
         ".badge.active{display:inline;}"
         ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
-        "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;}"
+        "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;"
+        "position:relative;z-index:201;}"
         ".csv-btn:hover{background:#cce4ff;}"
         ".footnote{font-size:11px;color:#888;padding:2px 14px;}"
         ".stat-btn{font-size:13px;padding:3px 12px;border:1px solid #666;border-radius:3px;"
-        "cursor:pointer;background:#f5f5f5;}"
+        "cursor:pointer;background:#f5f5f5;position:relative;z-index:201;}"
         ".stat-btn:hover{background:#e0e0e0;}"
         "#env_stat_panel{margin-top:6px;overflow:auto;max-height:400px;padding:0 4px;}"
         ".env-tbl{border-collapse:collapse;font-size:12px;width:100%;}"
@@ -2578,6 +2579,7 @@ def _build_env_summary_html(
     )
 
     data_filter_html = (
+        '<span style="position:relative;z-index:201;">'
         '<label><input type="radio" name="env_dfilt" value="all" checked'
         ' onchange="toggleEnvYRange()">&nbsp;All&nbsp;data</label>'
         '&nbsp;'
@@ -2591,6 +2593,7 @@ def _build_env_summary_html(
         ' oninput="update()"></label>'
         '&nbsp;<label>hi:<input type="number" id="env_y_hi" class="env-yin"'
         ' oninput="update()"></label>'
+        '</span>'
         '</span>'
     )
     ctrl_bar = (
