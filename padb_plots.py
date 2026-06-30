@@ -3119,14 +3119,18 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
     var fs;
+    var passActive=yFlt&&yFlt.mode==='passing';
     var yActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
-    if(serActive||yActive){
+    if(serActive||yActive||passActive){
       var rlo=yActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
       var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
       fs=[];
       cd.freq_stats.forEach(function(f){
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
-          .filter(function(d){return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi;});
+          .filter(function(d){
+            return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
+              &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
+          });
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
         var s=computeBoxStats(fv);
@@ -3222,19 +3226,24 @@ function updateStatsTable(selConds,yFlt,selBoxSers){
   var showNp=isBoxNpTI();
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
+  var passActive=yFlt&&yFlt.mode==='passing';
   var yFltActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
   var rows=[];
-  if(serActive||yFltActive){
+  if(serActive||yFltActive||passActive){
     var rlo=yFltActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var fltLabel=(serActive&&yFltActive)?'Serial+Y-filtered':
                  serActive?'Serial-filtered':
+                 passActive?'Passing only':
                  'Y-filtered ['+rlo.toFixed(3)+','+rhi.toFixed(3)+']';
     BOX_DATA.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
       (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(f){
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
-          .filter(function(d){return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi;});
+          .filter(function(d){
+            return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
+              &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
+          });
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
         var s=computeBoxStats(fv);
@@ -3493,6 +3502,8 @@ def _build_box_interactive_html(
         '  <b>Data&nbsp;filter:</b>\n'
         '  <label><input type="radio" name="box_flt" value="all" checked'
         ' onchange="toggleRangeInputs();update()">&nbsp;All&nbsp;data</label>\n'
+        '  <label><input type="radio" name="box_flt" value="passing"'
+        ' onchange="toggleRangeInputs();update()">&nbsp;Passing&nbsp;only</label>\n'
         '  <label><input type="radio" name="box_flt" value="range"'
         ' onchange="toggleRangeInputs();update()">&nbsp;Y&nbsp;range</label>\n'
         '  <span id="box_flt_range_inputs" style="display:none;align-items:center;gap:4px">\n'
