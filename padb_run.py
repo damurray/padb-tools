@@ -142,14 +142,32 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict) -> None:
 # PADB execution
 # ---------------------------------------------------------------------------
 
-def _collect_padb_outputs(cfg: dict, run_start: float, results_padb: Path) -> None:
+def _analytic_stems(analytics: list[dict]) -> set[str]:
     """
-    Copy files written to padb_output_dir after run_start into results_padb.
+    Build the set of filename stems PADB will write for these analytics.
+    PADB replaces spaces with underscores; hyphens are kept (with underscore
+    fallback).  Both OutputFile and AnalyticName are included because PADB
+    may use either as the base for its output filenames.
+    """
+    stems: set[str] = set()
+    for a in analytics:
+        for val in (a.get("output_file") or "", a.get("name") or ""):
+            if not val:
+                continue
+            primary = val.replace(" ", "_")
+            stems.add(primary)
+            stems.add(primary.replace("-", "_"))
+    return stems
 
-    PADB-R writes CSV/PDF/PNG to its globally configured output directory
-    (typically R-Plots) regardless of the -dir switch. After the run we
-    pick up any file modified after run_start and archive it alongside the
-    other run artifacts.
+
+def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) -> None:
+    """
+    Copy files written to padb_output_dir into results_padb, selecting only
+    files whose stem matches a known analytic OutputFile or AnalyticName.
+
+    This replaces the previous timestamp-based sweep so that parallel PADB
+    jobs writing to the same R-Plots directory do not cross-contaminate each
+    other's results.
     """
     output_dir_raw = cfg.get("padb_output_dir", "")
     if not output_dir_raw:
@@ -159,30 +177,32 @@ def _collect_padb_outputs(cfg: dict, run_start: float, results_padb: Path) -> No
         print(f"  WARNING: padb_output_dir not found: {output_dir}")
         return
 
+    known_stems = _analytic_stems(analytics)
+    if not known_stems:
+        print(f"  WARNING: no analytic stems found — skipping R-Plots collection")
+        return
+
     results_padb.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for f in output_dir.iterdir():
         if not f.is_file():
             continue
-        try:
-            mtime = f.stat().st_mtime
-        except OSError:
-            continue
-        if mtime < run_start - 2:   # 2-second grace for clock skew
-            continue
-        dest = results_padb / f.name
-        shutil.copy2(str(f), str(dest))
-        copied.append(f.name)
+        stem = f.stem  # e.g. "EP6_Closed_Loop_Phase_Noise_EFC_1"
+        if any(stem == s or stem.startswith(s + "_") for s in known_stems):
+            dest = results_padb / f.name
+            shutil.copy2(str(f), str(dest))
+            copied.append(f.name)
 
     if copied:
         print(f"  Collected {len(copied)} file(s) from {output_dir.name}/")
         for name in sorted(copied):
             print(f"    {name}")
     else:
-        print(f"  No new files in {output_dir.name}/ since run start — check PADB log")
+        print(f"  No matching files in {output_dir.name}/ — check PADB log")
 
 
 def run_padb(cfg: dict, run_pod: Path, results_padb: Path,
+             analytics: list[dict] | None = None,
              dry_run: bool = False) -> tuple[int, str, str]:
     """Build and execute PADB-R.exe. Returns (returncode, stdout, stderr)."""
     batch = PADBBatch(exe_path=cfg["padb_exe"])
@@ -239,7 +259,7 @@ def run_padb(cfg: dict, run_pod: Path, results_padb: Path,
 
     # Collect PADB outputs from the actual write location.
     # PADB-R writes to its configured R-Plots directory, not to -dir.
-    _collect_padb_outputs(cfg, run_start, results_padb)
+    _collect_padb_outputs(cfg, analytics or [], results_padb)
 
     return cp.returncode, cp.stdout or "", cp.stderr or ""
 
@@ -626,7 +646,7 @@ def main() -> None:
     # Run PADB
     if not args.plots_only:
         print("Running PADB:")
-        rc, _, _ = run_padb(cfg, run_pod, results_padb, dry_run=args.dry_run)
+        rc, _, _ = run_padb(cfg, run_pod, results_padb, analytics=analytics, dry_run=args.dry_run)
         if rc not in (0, -1) and not args.dry_run:
             print(f"\nWARNING: PADB-R.exe returned code {rc}. See run.log.")
         print()
