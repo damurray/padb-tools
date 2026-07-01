@@ -10,6 +10,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import re
 import shutil
@@ -23,6 +24,26 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "PADBPython"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from padb_batch import PADBBatch
+
+
+# ---------------------------------------------------------------------------
+# Stdout tee — writes to both console and a log file simultaneously
+# ---------------------------------------------------------------------------
+
+class _Tee(io.TextIOBase):
+    """Wraps two text streams and writes to both."""
+    def __init__(self, primary: io.TextIOBase, secondary: io.TextIOBase) -> None:
+        self._primary = primary
+        self._secondary = secondary
+
+    def write(self, s: str) -> int:
+        self._primary.write(s)
+        self._secondary.write(s)
+        return len(s)
+
+    def flush(self) -> None:
+        self._primary.flush()
+        self._secondary.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -626,6 +647,13 @@ def main() -> None:
     results_padb.mkdir(parents=True, exist_ok=True)
     plots_dir.mkdir(parents=True, exist_ok=True)
 
+    # Tee stdout to a timestamped log file so scheduled/unattended runs are captured.
+    log_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file_path = results_dir / f"padb_run_{log_ts}.log"
+    _log_fh = open(log_file_path, "w", encoding="utf-8", buffering=1)
+    _orig_stdout = sys.stdout
+    sys.stdout = _Tee(_orig_stdout, _log_fh)  # type: ignore[assignment]
+
     print(f"Description : {cfg.get('description', '')}")
     print(f"POD         : {pod_path}")
     print(f"Results     : {results_dir}\n")
@@ -674,6 +702,10 @@ def main() -> None:
         publish_results(cfg, results_dir)
 
     print("\nDone.\n")
+
+    sys.stdout = _orig_stdout
+    _log_fh.close()
+    print(f"Log: {log_file_path}")
 
 
 if __name__ == "__main__":
