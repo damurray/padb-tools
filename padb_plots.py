@@ -1168,6 +1168,14 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         df["_serial_id"] = "unknown"
         df["_cond"]      = "All"
 
+    # When serial is not embedded in the Group string (e.g. phase noise where Serial Number
+    # is a separate TData column), the fallback serial_id is the whole group string — every
+    # DUT in a group gets the same id, collapsing n to 1.  Override with the Serial column.
+    if not serial_keys and "Serial" in df.columns:
+        valid = df["Serial"].str.strip().str.match(r'^[A-Z]{2,3}\d{5,}$')
+        if valid.any():
+            df["_serial_id"] = df["Serial"].str.strip().where(valid, df["_serial_id"])
+
     results = []
 
     for cond, cdf in df.groupby("_cond", sort=True):
@@ -1389,7 +1397,8 @@ function getActiveConditions(){
   return STAT_DATA.filter(function(cd){
     return COND_DIMS.every(function(dim){
       var allowed=getSelected('cond_'+dim.col_id);
-      var m=cd.condition.match(new RegExp(dim.col+':?\\s*(\\S+)'));
+      var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+      var m=cd.condition.match(new RegExp(safe+':?\\s*(\\S+)'));
       return m&&allowed.indexOf(m[1])>=0;
     });
   });
@@ -2165,11 +2174,11 @@ def _build_stat_summary_html(
         + stat_bar
         + env_bar
         + filter_bar
-        + '<div id="plot"></div>\n'
         + '<div style="padding:4px 8px 2px">'
         + '<button class="toggle-btn" id="stat_toggle_btn" onclick="toggleStatPanel()">'
         + '&#9658; Statistics Table</button></div>\n'
         + '<div id="stat_panel" style="display:none;padding:0 4px 16px"></div>\n'
+        + '<div id="plot"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"
