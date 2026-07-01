@@ -1,6 +1,6 @@
 # PADB Modern Analysis Tools — User Guide
 
-**Tools:** `padb_run.py`, `padb_plots.py`, `padb_stats.py`  
+**Tools:** `padb_run.py`, `padb_plots.py`, `padb_stats.py`, `padb_scheduler.py`  
 **Location:** `C:\apps\padb\tools\`  
 **Purpose:** Automate PADB extraction from a `.pod` file, generate interactive self-contained HTML plots, and publish results to a shared drive.
 
@@ -60,6 +60,7 @@ MyAnalysis\
     _run.pod                 ← pod submitted to PADB (auditable)
     padb_switches.txt        ← PADB-R switch file
     run.log                  ← PADB-R stdout/stderr
+    padb_run_YYYYMMDD_HHMMSS.log ← full stdout log (auto-generated each run)
     padb\
       Scatter_CSV_name.csv   ← PADB CSV outputs
       Environmental_*.csv
@@ -120,7 +121,7 @@ Key fields:
 |---|---|---|
 | **80** Scatter | One row per measurement (per DUT per frequency) | `accuracy_vs_freq`, `distribution`, `population_envelope`, `empirical_cdf`, `spec_derivation`, `stat_summary`, `stat_boxplot` |
 | **60** Environmental | Pre-aggregated: one row per condition × frequency | `de_summary` |
-| **90** SummaryPlot | Summary stats per frequency (if CSV written) | `accuracy_vs_freq` |
+| **90** SummaryPlot | Summary stats per frequency (if CSV written) | `accuracy_vs_freq` only — SummaryPlot CSVs are pre-aggregated and cannot be used with `stat_summary` (which needs raw per-DUT rows). Use the corresponding Scatter analytic's CSV for `stat_summary`. |
 | **20** BoxPlot | No CSV output | *(none — use scatter analytic instead)* |
 
 ---
@@ -419,9 +420,30 @@ Add `"TestRun_RunStatus": "{All}"` to `subex`. The PADB default filters to passi
 ### CSV not found after a PADB run
 
 1. Check `results\padb\` — is the file there with a slightly different name?
-2. Check `run.log` for PADB errors.
-3. Open the pod and confirm `OutputConfig_OutputCSV=True` for that analytic.
-4. If found but name doesn't match `csv` substring, switch to `csv_file` with the exact filename.
+2. Check `padb_run_*.log` in the results directory for the full run output and any errors.
+3. Check `run.log` for PADB-R.exe return code.
+4. Open the pod and confirm `OutputConfig_OutputCSV=True` for that analytic.
+5. If found but name doesn't match `csv` substring, switch to `csv_file` with the exact filename.
+
+---
+
+## Scheduling Overnight Runs
+
+Use `padb_scheduler.py` to manage Windows Task Scheduler entries for job files.
+
+```
+py "C:\apps\padb\tools\padb_scheduler.py"
+```
+
+The tool scans a directory for `*_job.json` files and shows a table with scheduled/unscheduled status. Double-click a row (or click **Add / Edit Schedule**) to configure a Weekly or Daily schedule with day-of-week selection and a 24-hour start time.
+
+Tasks run as the **current Windows user** so they can reach the NAS publish destination (`\\srsnas01...`).
+
+Each task is named `PADB_{job_stem}` in Task Scheduler (e.g. `PADB_amplitude_job`).
+
+**Run log files** — every run writes a timestamped `padb_run_YYYYMMDD_HHMMSS.log` to the results directory. This is the primary diagnostic for overnight failures. Check it first if a run produces unexpected output or fails silently.
+
+**Test Run Now** — the schedule dialog includes a button to launch the job immediately in a new console window without creating a Task Scheduler entry.
 
 ---
 

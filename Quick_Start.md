@@ -137,6 +137,20 @@ results\index.html
 
 Gallery page with embedded interactive plots, PDF links, CSV downloads, run log. Works directly from a network share — no server required.
 
+Each run also writes a `padb_run_YYYYMMDD_HHMMSS.log` to the results folder — the full console output. Check this first if something looks wrong.
+
+---
+
+## 6  Schedule overnight runs
+
+```
+py "C:\apps\padb\tools\padb_scheduler.py"
+```
+
+Opens a GUI that reads `*_job.json` files from a directory and manages Windows Task Scheduler entries for each. Select a job and click **Add / Edit Schedule** to configure days and time. Tasks run as the current Windows user and can reach the NAS publish path.
+
+Each scheduled run produces a `padb_run_YYYYMMDD_HHMMSS.log` in the results directory for post-run diagnostics.
+
 ---
 
 ## Available plot types

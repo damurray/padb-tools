@@ -35,7 +35,10 @@ This file is read automatically by Claude Code at session start. It captures the
 job.json → padb_run.py → PADB-R.exe → results/padb/*.csv
                        → padb_plots.py → results/plots/*.html
                        → index.html (gallery)
+                       → padb_run_YYYYMMDD_HHMMSS.log (tee of all stdout)
                        → publish to \\srsnas01...
+
+padb_scheduler.py → Windows Task Scheduler → padb_run.py (overnight)
 ```
 
 **Dispatch:** `padb_run.py` calls plot functions by name via `getattr(padb_plots, plot_type)`. Adding a new plot type to `padb_plots.py` as a public function automatically makes it available in job.json — no changes to `padb_run.py` needed.
@@ -47,10 +50,10 @@ def my_plot_type(csv_path: Path, cfg: dict, output_html: Path) -> None:
 
 **CLI:**
 ```
-python padb_run.py job.json                 # full run
-python padb_run.py job.json --plots-only    # redo HTML only (fast iteration)
-python padb_run.py job.json --no-publish
-python padb_run.py job.json --dry-run
+py padb_run.py job.json                 # full run
+py padb_run.py job.json --plots-only    # redo HTML only (fast iteration)
+py padb_run.py job.json --no-publish
+py padb_run.py job.json --dry-run
 ```
 
 ---
@@ -63,9 +66,25 @@ python padb_run.py job.json --dry-run
 | `clockspurs_job.json` | Non-Harmonic_Clock_spurs_all_Spec_DUTS_June10.pod | ✓ Published | `...\ClockSpurs` |
 | `harmonics_job.json` | Harmonics_Latest_all_Spec_DUTS_June10.pod | ✓ Published | `...\Harmonics` |
 | `linespurs_job.json` | Line_Related_Spurs_all_Spec_DUTS_June10.pod | ✓ Published | `...\LineSpurs` |
-| `closein_job.json` | Non-Harmonics_Close-In_all_Spec_DUTS_June10.pod | ❌ Not yet run | `...\CloseIn` |
+| `closein_job.json` | Non-Harmonics_Close-In_all_Spec_DUTS_June10.pod | ❓ Status unknown | `...\CloseIn` |
+| `absphase_noise_job.json` | Absolute Phase Noise EP6 Spec Setting.pod | ✓ Published | `...\AbsPhaseNoise` |
 
 All publish destinations are under `\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\`.
+
+---
+
+## Scheduler (padb_scheduler.py)
+
+`py C:\apps\padb\tools\padb_scheduler.py`
+
+tkinter GUI that manages Windows Task Scheduler entries for every `*_job.json` found in a directory. Scans `C:\Users\damurray\OneDrive - Keysight Technologies\Documents\Padb\Data\` by default (directory is user-selectable).
+
+- **Treeview table:** Job File / Scheduled? / Schedule columns. Scheduled rows shown in green; orphan tasks (task exists but job file deleted) shown in grey.
+- **Add/Edit Schedule:** opens `ScheduleDialog` — Weekly (with day checkboxes) or Daily, hour/minute spinboxes, "Test Run Now" button (launches job immediately in a new console).
+- **Remove Schedule:** deletes the Task Scheduler entry; prompts for confirmation.
+- **Task naming:** `PADB_{job_stem}` (e.g. `PADB_amplitude_job`).
+- **Backend:** `schtasks` CLI. Runs tasks as the **current user** (not SYSTEM) so network publish paths remain accessible.
+- **Orphan detection:** tasks present in Task Scheduler with no matching `.json` file are shown greyed out (can only be removed, not edited).
 
 ---
 
@@ -216,11 +235,14 @@ Check if the file is in `results/padb/` with a slightly different name than expe
 **Clock spurs Environmental CSV:**
 The clock spurs SummaryPlot doesn't write a CSV (only PNGs/PDF). The `Env_Clock_spurs_All_Spec_Duts.csv` was copied manually from R-Plots to `clockspurs_results/padb/` and referenced via `csv_file`. This is expected — it's a pod configuration limitation.
 
-**Amplitude CSVs predate the run:**
-If a previous partial run left CSVs in `results/padb/`, `_collect_padb_outputs()` may miss them (it only picks up files newer than run start). Copy from R-Plots manually and use `--plots-only`.
+**R-Plots collection uses stem-matching (not timestamps):**
+`_collect_padb_outputs()` matches files in `padb_output_dir` (R-Plots) by stem against known analytic names. Parallel jobs with different stems do not contaminate each other. Old files from a previous run of the same job (same stems) will be re-collected — this is expected. If R-Plots is stale or missing, copy CSVs to `results/padb/` manually and use `--plots-only`.
 
 **stat_summary Spec↓ is a magnitude:**
 The lower spec field in stat_summary is entered as a positive magnitude (e.g., `0.15` for a ±0.15 dB spec). It is internally negated. The field label is `|Spec↓|` with `min=0`.
+
+**Phase noise serial collapse in stat_summary (n=1):**
+When the Group string does not embed the serial number (e.g. phase noise pods where `Serial Number` is a separate TData column, not part of Group), the serial fallback uses the entire Group string — every DUT in a group gets the same serial ID, collapsing n to 1. Fixed: `_aggregate_stat_data()` now overrides `_serial_id` from `df["Serial"]` when `serial_keys` is empty and the column contains valid serial patterns. No action needed in job.json; it is automatic.
 
 **de_summary serial filter:**
 Not possible. The Environmental CSV (Type=60) is pre-aggregated across all DUTs by PADB — there are no per-DUT rows. Serial filtering would require re-computing environmental deltas from a raw Scatter CSV.
@@ -261,8 +283,17 @@ Follow the established pattern:
 - All controls call `update()` which calls `Plotly.react()`
 - Embed JS as a module-level raw string (`r"""..."""`); inject Python data as `var X=...;` constants before the raw string block
 
+## Run log files
+
+Every `padb_run.py` run writes a timestamped `padb_run_YYYYMMDD_HHMMSS.log` to `results_dir/`. Output is teed to both the console (when interactive) and the log file simultaneously, line-buffered. This means:
+- Partial output is preserved even if the process crashes.
+- Task Scheduler overnight runs (no console) still produce a log.
+- Multiple runs accumulate separate log files — they do not overwrite each other.
+
+---
+
 ### Future work identified
 
 - **Parallel scatter overlay on stat_boxplot:** ✅ Implemented. `vals_detail: [{s, v}]` is embedded in `BOX_DATA` for every freq_stat entry (no second CSV needed). "Show points" checkbox in the filter bar overlays per-DUT scatter points (size 5, opacity 0.55) on the boxes. Respects serial and Y-range filters via the `vals_detail` field on `fs` entries. Outlier traces still use `circle-open` markers; scatter points use filled circles for visual distinction.
 - **Remove dead `de_summary` at ~line 825** — the old static version is superseded by the interactive one at ~line 2594.
-- **`closein_job.json`** has not been run yet.
+- **`closein_job.json`** — status unknown.

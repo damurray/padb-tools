@@ -13,7 +13,7 @@ This document describes exactly which PADB analytics must be configured, what CS
 | `population_envelope` | 80 Scatter | Yes | — | Frequency, Value |
 | `empirical_cdf` | 80 Scatter | Yes | Serial | Frequency, Value, Serial |
 | `spec_derivation` | 80 Scatter | Yes | — | Frequency, Value |
-| `stat_summary` | 80 Scatter | Yes | **Serial + conditions** | Frequency, Value, Group, Serial |
+| `stat_summary` | 80 Scatter | Yes | **Serial + conditions** | Frequency, Value, Group, Serial (or Serial col) |
 | `stat_boxplot` | 80 Scatter | Yes | **Serial + conditions + Temp** | Frequency, Value, Group, Serial |
 | `de_summary` | **60 Environmental** | Yes | Condition dimensions | X value, Group, UDE, LDE, TTL cols |
 
@@ -185,7 +185,7 @@ Requires `"freq_bands"` in job.json. Spec limits from `Lower Limit` / `Upper Lim
 
 **Full capability requires:**
 1. Frequency column + Value column
-2. **Group string with a serial key** — without this there is one "unknown" DUT and no serial filter
+2. **Serial identification** — either a serial key in the Group string (e.g. `"Serial Number: US65080401"`) **or** a dedicated `Serial` column in the CSV (as produced by some phase noise analytics). When the Group string has no serial key, the tool automatically falls back to the CSV `Serial` column if it contains valid serial patterns (`^[A-Z]{2,3}\d{5,}$`). Without any serial source, all DUTs collapse to n=1.
 3. **Group string with condition keys** — without these all measurements are treated as one condition with no filter dropdowns
 4. Sufficient n per condition × frequency (n ≥ 29 for P90/C90 TI; tool warns when below minimum)
 5. `Lower Limit` / `Upper Limit` columns for spec lines and pass/fail markers
