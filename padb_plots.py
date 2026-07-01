@@ -339,7 +339,9 @@ def _load_env_csv(csv_path: Path) -> pd.DataFrame:
 def _get_spec(df: pd.DataFrame, cfg: dict) -> tuple[float, float]:
     sl = cfg.get("spec_limits")
     if sl and len(sl) == 2:
-        return float(sl[0]), float(sl[1])
+        lo = float(sl[0]) if sl[0] is not None else np.nan
+        hi = float(sl[1]) if sl[1] is not None else np.nan
+        return lo, hi
     lo = df["Lower_Limit"].dropna()
     hi = df["Upper_Limit"].dropna()
     return (float(lo.iloc[0]) if len(lo) else np.nan,
