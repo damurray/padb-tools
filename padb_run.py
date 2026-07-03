@@ -50,8 +50,33 @@ class _Tee(io.TextIOBase):
 # Job config
 # ---------------------------------------------------------------------------
 
+def _padb_quoted_list(values: list) -> str:
+    """Format a Python list as PADB's comma-separated quoted string: 'a','b','c'."""
+    return ",".join(f"'{v}'" for v in values)
+
+
+# Friendly job.json list fields that map to [Extract] subex overrides.
+# Each entry: (job_key, Extract_key).
+_LIST_FIELD_MAP = [
+    ("run_datetimes", "TestRun_RunDateTime"),
+    ("serial_nums",   "TestRun_SerialNum"),
+    ("run_labels",    "TestRun_RunLabel"),
+]
+
+
 def load_job(job_path: Path) -> dict:
-    """Load job.json, resolving relative paths against the job file location."""
+    """Load job.json, resolving relative paths against the job file location.
+
+    Friendly list fields are converted to PADB-format subex overrides so
+    callers don't have to hand-format the 'val1','val2' quoting:
+
+        "run_datetimes": ["06/04/2026 01:06:18 PM", "06/09/2026 11:04:19 AM"]
+        "serial_nums":   ["US65080415", "US65080423"]
+        "run_labels":    ["DDS Harmonics", "Spectral YTO Mode 0 ALC ON"]
+
+    These are merged into "subex" before any raw subex keys, so an explicit
+    subex entry for the same key takes precedence.
+    """
     with open(job_path, encoding="utf-8") as f:
         cfg = json.load(f)
 
@@ -68,6 +93,16 @@ def load_job(job_path: Path) -> dict:
     cfg.setdefault("padb_exe", r"C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe")
     cfg.setdefault("run_analytics", True)
     cfg.setdefault("padb_timeout", 600)
+
+    # Convert friendly list fields into subex overrides (raw subex wins on conflict)
+    list_overrides = {}
+    for job_key, extract_key in _LIST_FIELD_MAP:
+        vals = cfg.get(job_key)
+        if vals:  # non-empty list → inject as subex
+            list_overrides[extract_key] = _padb_quoted_list(vals)
+    if list_overrides:
+        merged = {**list_overrides, **cfg.get("subex", {})}
+        cfg["subex"] = merged
 
     return cfg
 
