@@ -3773,7 +3773,7 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
             x=xs + xs[::-1],
             y=mx + mn[::-1],
             fill="toself",
-            fillcolor=col.replace(")", ",0.15)").replace("rgb", "rgba") if col.startswith("rgb") else col + "26",
+            fillcolor="rgba({},{},{},0.15)".format(*[int(col.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)]),
             line=dict(width=0),
             showlegend=False,
             name=glabel,
