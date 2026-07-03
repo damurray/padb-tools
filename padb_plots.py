@@ -3666,3 +3666,233 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
+
+
+def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
+    """
+    Interactive summary statistics plot from a PADB Type=90 SummaryPlot CSV.
+
+    For each group (AlcState, HarmonicNumber, Mode, etc.) shows:
+      - Mean measurement line
+      - Min-to-Max shaded band (population spread)
+      - Upper/Lower TTL estimate lines (dashed)
+      - Spec limit lines
+    vs frequency.
+
+    Group visibility controlled via interactive dropdown selector.
+    Log X auto-detected when freq range spans >= 2 decades.
+    """
+    # --- load ---
+    df = pd.read_csv(csv_path)
+    df.columns = [c.strip() for c in df.columns]
+
+    x_col = "X value"
+    mean_col = "mean (Sum.)"
+    min_col = "Min Data"
+    max_col = "Max Data"
+    uttl_col = "Upper TTL (est)"
+    lttl_col = "Lower TTL (est)"
+    hi_spec_col = "Upper Limit"
+    lo_spec_col = "Lower Limit"
+
+    required = {x_col, mean_col, min_col, max_col, "Group"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"summary_plot: missing columns {missing}")
+
+    for c in [x_col, mean_col, min_col, max_col, uttl_col, lttl_col, hi_spec_col, lo_spec_col]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    title  = cfg.get("title", output_html.stem)
+    y_label = cfg.get("y_label", "Level (dBc)")
+    y_lim  = cfg.get("y_lim")
+
+    # --- group keys (exclude serial-like values) ---
+    _serial_re  = re.compile(r"^[A-Z]{2,3}\d{5,}$")
+    _serial_kws = ("serial", "unit id", "dut id", "s/n")
+    unique_groups = df["Group"].dropna().unique()
+    group_kv = {g: _parse_group_kv(str(g)) for g in unique_groups}
+    all_keys = {k for kv in group_kv.values() for k in kv}
+    cond_keys: list[str] = []
+    for key in sorted(all_keys):
+        if any(kw in key.lower() for kw in _serial_kws):
+            continue
+        vals = {kv.get(key, "") for kv in group_kv.values() if key in kv}
+        if vals and sum(_serial_re.match(v) is not None for v in vals) / len(vals) > 0.5:
+            continue
+        if len(vals) >= 1:
+            cond_keys.append(key)
+
+    def _group_label(g):
+        kv = group_kv.get(g, {})
+        parts = [f"{k}: {kv[k]}" for k in cond_keys if k in kv]
+        return "  ".join(parts) if parts else str(g)
+
+    df["_group_label"] = df["Group"].map(_group_label)
+
+    # --- freq axis ---
+    freqs_all = df[x_col].dropna()
+    freq_min = float(freqs_all.min()) if len(freqs_all) else 0.0
+    freq_max = float(freqs_all.max()) if len(freqs_all) else 1.0
+    log_x_cfg = cfg.get("log_x")
+    log_x = bool(log_x_cfg) if log_x_cfg is not None else (
+        freq_min > 0 and freq_max / freq_min >= 100
+    )
+
+    # --- spec limits (first non-NaN values across all rows) ---
+    def _first_valid(col):
+        if col not in df.columns:
+            return float("nan")
+        v = df[col].dropna()
+        return float(v.iloc[0]) if len(v) else float("nan")
+
+    hi_spec = _first_valid(hi_spec_col)
+    lo_spec = _first_valid(lo_spec_col)
+
+    # --- palette ---
+    palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+    ]
+
+    # --- build figure ---
+    fig = go.Figure()
+    group_labels = sorted(df["_group_label"].dropna().unique())
+
+    for gi, glabel in enumerate(group_labels):
+        sub = df[df["_group_label"] == glabel].sort_values(x_col)
+        col = palette[gi % len(palette)]
+        xs = sub[x_col].tolist()
+
+        # min-max band
+        mn = sub[min_col].tolist()
+        mx = sub[max_col].tolist()
+        fig.add_trace(go.Scatter(
+            x=xs + xs[::-1],
+            y=mx + mn[::-1],
+            fill="toself",
+            fillcolor=col.replace(")", ",0.15)").replace("rgb", "rgba") if col.startswith("rgb") else col + "26",
+            line=dict(width=0),
+            showlegend=False,
+            name=glabel,
+            legendgroup=glabel,
+            hoverinfo="skip",
+        ))
+
+        # mean line
+        fig.add_trace(go.Scatter(
+            x=xs, y=sub[mean_col].tolist(),
+            mode="lines",
+            name=glabel,
+            legendgroup=glabel,
+            line=dict(color=col, width=2),
+            hovertemplate=f"<b>{glabel}</b><br>Freq: %{{x:.4g}} MHz<br>Mean: %{{y:.2f}} dBc<extra></extra>",
+        ))
+
+        # TTL lines
+        if uttl_col in sub.columns and sub[uttl_col].notna().any():
+            fig.add_trace(go.Scatter(
+                x=xs, y=sub[uttl_col].tolist(),
+                mode="lines",
+                name=f"{glabel} TTL",
+                legendgroup=glabel,
+                showlegend=False,
+                line=dict(color=col, width=1, dash="dash"),
+                hovertemplate=f"<b>{glabel} Upper TTL</b><br>Freq: %{{x:.4g}} MHz<br>TTL: %{{y:.2f}} dBc<extra></extra>",
+            ))
+        if lttl_col in sub.columns and sub[lttl_col].notna().any():
+            fig.add_trace(go.Scatter(
+                x=xs, y=sub[lttl_col].tolist(),
+                mode="lines",
+                name=f"{glabel} TTL lo",
+                legendgroup=glabel,
+                showlegend=False,
+                line=dict(color=col, width=1, dash="dash"),
+                hoverinfo="skip",
+            ))
+
+    # spec limit lines
+    if not np.isnan(hi_spec):
+        fig.add_hline(y=hi_spec, line_dash="solid", line_color="red", line_width=1.5,
+                      annotation_text=f"Spec {hi_spec:.0f} dBc",
+                      annotation_position="bottom right")
+    if not np.isnan(lo_spec):
+        fig.add_hline(y=lo_spec, line_dash="solid", line_color="red", line_width=1.5,
+                      annotation_text=f"Spec {lo_spec:.0f} dBc",
+                      annotation_position="top right")
+
+    # --- layout ---
+    xaxis_cfg = dict(
+        title="Frequency (MHz)",
+        type="log" if log_x else "linear",
+        showgrid=True, gridcolor="#e0e0e0",
+    )
+    yaxis_cfg = dict(title=y_label, showgrid=True, gridcolor="#e0e0e0")
+    if y_lim:
+        yaxis_cfg["range"] = y_lim
+
+    fig.update_layout(
+        title=title,
+        xaxis=xaxis_cfg,
+        yaxis=yaxis_cfg,
+        hovermode="closest",
+        legend=dict(title="Group", itemclick="toggle", itemdoubleclick="toggleothers"),
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=60, r=30, t=60, b=50),
+    )
+
+    # --- group-by dropdown (one entry per unique condition key value) ---
+    # Build buttons: "All", then one per individual group label
+    buttons = [dict(label="All", method="update",
+                    args=[{"visible": [True] * len(fig.data)}])]
+    # Determine which traces belong to each group (3 possible traces per group: band, mean, TTL)
+    traces_per_group: dict[str, list[bool]] = {}
+    for t in fig.data:
+        lg = t.legendgroup or ""
+        for gl in group_labels:
+            traces_per_group.setdefault(gl, [])
+    trace_idx = 0
+    gi = 0
+    for glabel in group_labels:
+        sub = df[df["_group_label"] == glabel]
+        has_uttl = uttl_col in sub.columns and sub[uttl_col].notna().any()
+        has_lttl = lttl_col in sub.columns and sub[lttl_col].notna().any()
+        n_traces = 2 + int(has_uttl) + int(has_lttl)  # band + mean + optional TTLs
+        traces_per_group[glabel] = list(range(trace_idx, trace_idx + n_traces))
+        trace_idx += n_traces
+
+    total_traces = len(fig.data)
+    for glabel in group_labels:
+        vis = [False] * total_traces
+        for i in traces_per_group.get(glabel, []):
+            if i < total_traces:
+                vis[i] = True
+        buttons.append(dict(label=glabel[:40], method="update", args=[{"visible": vis}]))
+
+    if len(group_labels) > 1:
+        fig.update_layout(updatemenus=[dict(
+            buttons=buttons,
+            direction="down",
+            showactive=True,
+            x=0.01, xanchor="left",
+            y=1.12, yanchor="top",
+            bgcolor="#f5f5f5",
+            bordercolor="#cccccc",
+        )])
+
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    html = _plo.plot(fig, include_plotlyjs="cdn", output_type="div", config={"responsive": True})
+    output_html.write_text(
+        f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        f"<title>{title}</title>"
+        f"<style>body{{margin:0;padding:8px;font-family:sans-serif}}"
+        f".note{{color:#666;font-size:0.85em;margin-bottom:4px}}</style></head><body>"
+        f"<p class='note'>Shaded band = Min–Max data range &nbsp;|&nbsp; "
+        f"Solid line = Mean &nbsp;|&nbsp; Dashed = TTL estimate &nbsp;|&nbsp; "
+        f"Red = Spec limit &nbsp;|&nbsp; Click legend to show/hide groups</p>"
+        f"{html}</body></html>",
+        encoding="utf-8",
+    )
