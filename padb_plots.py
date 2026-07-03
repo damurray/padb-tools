@@ -394,11 +394,13 @@ def _parse_group_fields(df: pd.DataFrame) -> pd.DataFrame:
         return df
     all_keys: set[str] = set()
     for g in df["Group"].dropna().unique():
-        for k, _ in re.findall(r'(\w+):\s*(\S+)', str(g)):
+        for k in _parse_group_kv(str(g)):
             all_keys.add(k)
     df = df.copy()
     for key in sorted(all_keys):
-        df[f"_grp_{key}"] = df["Group"].str.extract(rf'{re.escape(key)}:\s*(\S+)')
+        df[f"_grp_{key}"] = df["Group"].apply(
+            lambda g: _parse_group_kv(str(g)).get(key) if pd.notna(g) else None
+        )
     return df
 
 
