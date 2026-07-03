@@ -90,6 +90,14 @@ function updateBadge(col){
 function getSelected(col){
   return Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]:checked')).map(function(c){return c.value;});
 }
+function getHoverSelected(){
+  return Array.from(document.querySelectorAll('.hchk:checked')).map(function(c){return c.value;});
+}
+function toggleAllHover(){
+  var allChk=document.getElementById('all_hover');
+  document.querySelectorAll('.hchk').forEach(function(c){c.checked=allChk.checked;});
+  update();
+}
 
 /* ---------- log X toggle ---------- */
 function isLogX(){ return document.getElementById('log_x_chk').checked; }
@@ -177,29 +185,48 @@ function buildTraces(filtered){
   else if(sortBy==='median_desc') entries.sort(function(a,b){
     return median(b[1].map(function(r){return r.Value;}))-median(a[1].map(function(r){return r.Value;}));
   });
+  var hoverSel=getHoverSelected();
   return entries.map(function(entry){
     var key=entry[0],rows=entry[1];
     var sorted=rows.slice().sort(function(a,b){return a.Frequency_MHz-b.Frequency_MHz;});
+    var customdata=sorted.map(function(r){
+      return HOVER_COLS.map(function(hc){var v=r[hc[0]];return (v===null||v===undefined)?'':v;});
+    });
+    var tmpl='<b>'+key+'</b><br>Freq: %{x:.3f} MHz<br>'+Y_LABEL+': %{y:.4f}';
+    HOVER_COLS.forEach(function(hc,i){
+      if(hoverSel.indexOf(hc[0])>=0) tmpl+='<br>'+hc[1]+': %{customdata['+i+']}';
+    });
+    tmpl+='<extra></extra>';
     return {
       type:'scattergl',
       x:sorted.map(function(r){return r.Frequency_MHz;}),
       y:sorted.map(function(r){return r.Value;}),
+      customdata:customdata,
       mode:'lines+markers',marker:{size:3},name:key,
-      hovertemplate:'<b>'+key+'</b><br>Freq: %{x:.3f} MHz<br>'+Y_LABEL+': %{y:.4f}<extra></extra>'
+      hovertemplate:tmpl
     };
   });
 }
 
-function buildLayout(){
+function buildLayout(filtered){
   var shapes=[],annotations=[];
-  if(LO_SPEC!==null){
-    shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:LO_SPEC,y1:LO_SPEC,line:{color:'red',dash:'dash',width:1.5}});
-    annotations.push({xref:'paper',yref:'y',x:0.01,y:LO_SPEC,text:'Lo='+LO_SPEC,showarrow:false,xanchor:'left',font:{color:'red',size:11}});
-  }
-  if(HI_SPEC!==null){
-    shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:HI_SPEC,y1:HI_SPEC,line:{color:'red',dash:'dash',width:1.5}});
-    annotations.push({xref:'paper',yref:'y',x:0.99,y:HI_SPEC,text:'Hi='+HI_SPEC,showarrow:false,xanchor:'right',font:{color:'red',size:11}});
-  }
+  var hiSpecs={},loSpecs={};
+  (filtered||DATA).forEach(function(r){
+    if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit)))
+      hiSpecs[Math.round(Number(r.Upper_Limit)*100)/100]=true;
+    if(r.Lower_Limit!==null&&r.Lower_Limit!==undefined&&r.Lower_Limit!==''&&!isNaN(Number(r.Lower_Limit)))
+      loSpecs[Math.round(Number(r.Lower_Limit)*100)/100]=true;
+  });
+  if(!Object.keys(hiSpecs).length&&HI_SPEC!==null) hiSpecs[Math.round(HI_SPEC*100)/100]=true;
+  if(!Object.keys(loSpecs).length&&LO_SPEC!==null) loSpecs[Math.round(LO_SPEC*100)/100]=true;
+  Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
+    shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
+    annotations.push({xref:'paper',yref:'y',x:0.99,y:v,text:'Spec '+v,showarrow:false,xanchor:'right',yanchor:'bottom',font:{color:'red',size:11}});
+  });
+  Object.keys(loSpecs).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
+    shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
+    annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec '+v,showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
+  });
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
@@ -219,6 +246,9 @@ function resetFilters(){
     if(allChk){allChk.checked=true;allChk.indeterminate=false;}
     document.getElementById('badge_'+col).classList.remove('active');
   });
+  document.querySelectorAll('.hchk').forEach(function(c){c.checked=true;});
+  var allHover=document.getElementById('all_hover');
+  if(allHover){allHover.checked=true;allHover.indeterminate=false;}
   document.getElementById('freq_lo').value=FREQ_MIN;
   document.getElementById('freq_hi').value=FREQ_MAX;
   document.getElementById('freq_lo_val').textContent=parseFloat(FREQ_MIN).toFixed(3);
@@ -229,10 +259,10 @@ function resetFilters(){
 function update(){
   var filtered=applyFilters(DATA);
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
-  Plotly.react('plot',buildTraces(filtered),buildLayout());
+  Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
 }
 
-Plotly.newPlot('plot',buildTraces(DATA),buildLayout());
+Plotly.newPlot('plot',buildTraces(DATA),buildLayout(DATA));
 document.getElementById('n_points').textContent=DATA.length.toLocaleString()+' pts';
 """
 
@@ -291,6 +321,8 @@ def _load_scatter_csv(csv_path: Path) -> pd.DataFrame:
     out["Lower_Limit"]   = df[lo_col].map(_sfloat)   if lo_col  else np.nan
     out["Upper_Limit"]   = df[hi_col].map(_sfloat)   if hi_col  else np.nan
     out["Group"]         = df[group_col].str.strip()  if group_col else ""
+    test_step_col = next((col_lower[k] for k in col_lower if k == "test step"), None)
+    out["Test_Step"]     = df[test_step_col].str.strip() if test_step_col else ""
     out["_val_col_name"] = val_col or "Value"
 
     out = out.dropna(subset=["Frequency_MHz", "Value"])
@@ -416,6 +448,8 @@ def _detect_group_cols(df: pd.DataFrame) -> list[tuple[str, str]]:
         result.append(("Station", "Test Station"))
     if "Serial" in df.columns and df["Serial"].replace("", pd.NA).nunique(dropna=True) > 1:
         result.append(("Serial", "Serial"))
+    if "Test_Step" in df.columns and df["Test_Step"].replace("", pd.NA).nunique(dropna=True) > 1:
+        result.append(("Test_Step", "Temperature"))
     return result
 
 
@@ -446,8 +480,15 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
 
     group_cols = _detect_group_cols(df)
 
+    # Columns available for hover tooltip (group dims + spec limits)
+    hover_col_list = list(group_cols)
+    if "Upper_Limit" in df.columns and df["Upper_Limit"].notna().any():
+        hover_col_list.append(("Upper_Limit", "Spec Hi"))
+    if "Lower_Limit" in df.columns and df["Lower_Limit"].notna().any():
+        hover_col_list.append(("Lower_Limit", "Spec Lo"))
+
     # Columns to embed as JSON
-    json_cols = ["Frequency_MHz", "Value"] + [c for c, _ in group_cols]
+    json_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit"] + [c for c, _ in group_cols]
     json_cols = [c for c in json_cols if c in df.columns]
     records = json.loads(df[json_cols].to_json(orient="records"))
 
@@ -474,6 +515,22 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
             panels.append(_checkbox_panel(col, label, vals))
     panels_html = "\n  ".join(panels)
 
+    # Hover-field selector panel
+    hover_items = "".join(
+        f'<label class="fitem"><input type="checkbox" class="hchk" value="{c}"'
+        f' onchange="update()" checked> {lbl}</label>'
+        for c, lbl in hover_col_list
+    )
+    hover_panel_html = (
+        '<div class="filter-wrap">'
+        '<button class="filter-btn" onclick="togglePanel(\'hover\')">'
+        'Hover&thinsp;&#9662;</button>'
+        '<div class="filter-panel" id="panel_hover">'
+        '<label class="fitem fall"><input type="checkbox" id="all_hover" checked'
+        ' onchange="toggleAllHover()"><b>Select&nbsp;all</b></label>'
+        f'<hr class="fdiv">{hover_items}</div></div>'
+    ) if hover_col_list else ""
+
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
 
@@ -486,6 +543,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var LOG_X={'true' if log_x else 'false'};",
         f"var TITLE={json.dumps(title)};",
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in group_cols])};",
+        f"var HOVER_COLS={json.dumps([[c, l] for c, l in hover_col_list])};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
     ])
@@ -547,6 +605,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  <label><input type="checkbox" id="log_x_chk"'
         + (' checked' if log_x else '')
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
+        '  <div class="sep"></div>\n'
+        f'  {hover_panel_html}\n'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         '  <button class="reset-btn" style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
@@ -658,54 +718,198 @@ def population_envelope(csv_path: Path, cfg: dict, output_html: Path) -> None:
 
 def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
     """
-    Distribution analysis: histogram + KDE + best-fit parametric PDF + spec lines.
-    Uses all Value data (across all frequencies and serials).
+    Interactive distribution: histogram + spec lines with group-dimension filters and pass-only toggle.
+    Filters are derived from the Group column (HarmonicNumber, AlcState, Mode, Serial, etc.)
+    and the Test_Step column when present.
     """
     df = _load_scatter_csv(csv_path)
+    df = _parse_group_fields(df)
     lo_spec, hi_spec = _get_spec(df, cfg)
+    title   = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
-    data = pst._clean(df["Value"].values)
+    y_lim   = cfg.get("y_lim")
 
-    if len(data) < 5:
+    if len(df) < 5:
         go.Figure().write_html(str(output_html), include_plotlyjs=_PLOTLY_JS)
         return
 
-    x_kde, y_kde = pst.kde(data)
-    _, pdf_vals, fit_info = pst.best_fit_pdf(data, x_kde)
+    group_cols = _detect_group_cols(df)
+    json_cols  = ["Value", "Upper_Limit", "Lower_Limit"] + [c for c, _ in group_cols]
+    json_cols  = [c for c in json_cols if c in df.columns]
+    records    = json.loads(df[json_cols].to_json(orient="records"))
 
-    fig = go.Figure()
+    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
+    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
 
-    fig.add_trace(go.Histogram(
-        x=data, nbinsx=40, histnorm="probability density",
-        marker_color="steelblue", opacity=0.5, name="Data",
-    ))
-    fig.add_trace(go.Scatter(
-        x=x_kde, y=y_kde, mode="lines",
-        line=dict(color="navy", width=2), name="KDE",
-    ))
-    if fit_info:
-        fig.add_trace(go.Scatter(
-            x=x_kde, y=pdf_vals, mode="lines",
-            line=dict(color="darkorange", width=2, dash="dash"),
-            name=f"Best fit: {fit_info['name']} (AIC={fit_info['aic']:.1f})",
-        ))
+    grp_opts = "\n".join(
+        f'<option value="{c}">{lbl}</option>' for c, lbl in group_cols
+    ) if group_cols else ""
 
-    if not np.isnan(lo_spec):
-        fig.add_vline(x=lo_spec, line=dict(color="red", dash="dash"),
-                      annotation_text=f"Lo={lo_spec:g}")
-    if not np.isnan(hi_spec):
-        fig.add_vline(x=hi_spec, line=dict(color="red", dash="dash"),
-                      annotation_text=f"Hi={hi_spec:g}")
+    panels: list[str] = []
+    for col, label in group_cols:
+        vals = sorted(str(v) for v in df[col].dropna().replace("", pd.NA).dropna().unique())
+        if vals:
+            panels.append(_checkbox_panel(col, label, vals))
+    panels_html = "\n  ".join(panels)
 
-    fig.update_xaxes(title_text=y_label)
-    fig.update_yaxes(title_text="Probability Density")
-    n = len(data)
-    fig.add_annotation(
-        xref="paper", yref="paper", x=0.98, y=0.98, xanchor="right", yanchor="top",
-        text=f"n={n} | mean={np.mean(data):.4f} | std={np.std(data,ddof=1):.4f}",
-        showarrow=False, font=dict(size=11), bgcolor="white", bordercolor="#ccc",
+    constants = "\n".join([
+        f"var DATA={json.dumps(records)};",
+        f"var LO_SPEC={lo_js};",
+        f"var HI_SPEC={hi_js};",
+        f"var Y_LABEL={json.dumps(y_label)};",
+        f"var Y_LIM={json.dumps(y_lim)};",
+        f"var TITLE={json.dumps(title)};",
+        f"var GROUP_COLS={json.dumps([[c, l] for c, l in group_cols])};",
+    ])
+
+    css = (
+        "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
+        ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
+        ".ctrl-bar label{white-space:nowrap;}"
+        ".ctrl-bar select{font-size:13px;padding:2px 4px;border:1px solid #bbb;border-radius:3px;}"
+        ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
+        ".filter-wrap{position:relative;display:inline-block;}"
+        ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
+        "cursor:pointer;background:#fff;white-space:nowrap;}"
+        ".filter-btn:hover{background:#e8e8e8;}"
+        ".filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
+        "background:#fff;border:1px solid #ccc;border-radius:4px;"
+        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:160px;max-height:280px;"
+        "overflow-y:auto;padding:6px 8px;}"
+        ".filter-panel.open{display:block;}"
+        ".fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px;}"
+        ".fall{padding-bottom:2px;}"
+        ".fdiv{margin:4px 0;border:none;border-top:1px solid #eee;}"
+        ".badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;"
+        "padding:1px 6px;margin-right:2px;display:none;}"
+        ".badge.active{display:inline;}"
+        "button.reset-btn{font-size:12px;padding:2px 10px;border:1px solid #999;"
+        "border-radius:3px;cursor:pointer;background:#fff;}"
+        "button.reset-btn:hover{background:#e8e8e8;}"
+        "#n_points{font-size:12px;color:#666;margin-left:auto;}"
     )
-    _write(fig, output_html, cfg)
+
+    dist_js = r"""
+function togglePanel(col){
+  var panel=document.getElementById('panel_'+col);
+  var isOpen=panel.classList.contains('open');
+  document.querySelectorAll('.filter-panel').forEach(function(p){p.classList.remove('open');});
+  if(!isOpen) panel.classList.add('open');
+}
+document.addEventListener('click',function(e){
+  if(!e.target.closest('.filter-wrap'))
+    document.querySelectorAll('.filter-panel').forEach(function(p){p.classList.remove('open');});
+});
+function toggleAll(col){
+  var allChk=document.getElementById('all_'+col);
+  document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=allChk.checked;});
+  updateBadge(col); update();
+}
+function chkChanged(col){
+  var chks=Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]'));
+  var allChk=document.getElementById('all_'+col);
+  var nChecked=chks.filter(function(c){return c.checked;}).length;
+  allChk.checked=(nChecked===chks.length);
+  allChk.indeterminate=(nChecked>0&&nChecked<chks.length);
+  updateBadge(col); update();
+}
+function updateBadge(col){
+  var chks=Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]'));
+  var n=chks.filter(function(c){return c.checked;}).length;
+  var badge=document.getElementById('badge_'+col);
+  if(n<chks.length){badge.textContent=n+'/'+chks.length;badge.classList.add('active');}
+  else badge.classList.remove('active');
+}
+function getSelected(col){
+  return Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]:checked')).map(function(c){return c.value;});
+}
+function applyFilters(data){
+  var passOnly=document.getElementById('pass_only').checked;
+  var selections={};
+  GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
+  return data.filter(function(r){
+    for(var col in selections){
+      var allowed=selections[col];
+      if(!allowed.length) return false;
+      var v=String(r[col]===null||r[col]===undefined?'':r[col]);
+      if(allowed.indexOf(v)<0) return false;
+    }
+    if(passOnly){
+      var hi=Number(r.Upper_Limit);
+      if(!isNaN(hi)&&r.Value>hi) return false;
+    }
+    return true;
+  });
+}
+function update(){
+  var filtered=applyFilters(DATA);
+  var values=filtered.map(function(r){return r.Value;});
+  document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
+  var shapes=[],annotations=[];
+  var hiSpecs={},loSpecs={};
+  filtered.forEach(function(r){
+    if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit)))
+      hiSpecs[Math.round(Number(r.Upper_Limit)*100)/100]=true;
+    if(r.Lower_Limit!==null&&r.Lower_Limit!==undefined&&r.Lower_Limit!==''&&!isNaN(Number(r.Lower_Limit)))
+      loSpecs[Math.round(Number(r.Lower_Limit)*100)/100]=true;
+  });
+  if(!Object.keys(hiSpecs).length&&HI_SPEC!==null) hiSpecs[Math.round(HI_SPEC*100)/100]=true;
+  if(!Object.keys(loSpecs).length&&LO_SPEC!==null) loSpecs[Math.round(LO_SPEC*100)/100]=true;
+  Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
+    shapes.push({type:'line',xref:'x',x0:v,x1:v,y0:0,y1:1,yref:'paper',line:{color:'red',dash:'dash',width:1.5}});
+    annotations.push({xref:'x',yref:'paper',x:v,y:0.98,text:'Spec '+v,showarrow:false,xanchor:'left',yanchor:'top',font:{color:'red',size:11}});
+  });
+  Object.keys(loSpecs).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
+    shapes.push({type:'line',xref:'x',x0:v,x1:v,y0:0,y1:1,yref:'paper',line:{color:'red',dash:'dash',width:1.5}});
+    annotations.push({xref:'x',yref:'paper',x:v,y:0.98,text:'Spec '+v,showarrow:false,xanchor:'right',yanchor:'top',font:{color:'red',size:11}});
+  });
+  var layout={
+    title:{text:TITLE,x:0.5,font:{size:15}},
+    template:'plotly_white',
+    xaxis:{title:Y_LABEL,range:Y_LIM},
+    yaxis:{title:'Count'},
+    shapes:shapes,annotations:annotations,height:480,
+    margin:{l:60,r:30,t:60,b:60}
+  };
+  Plotly.react('plot',[{type:'histogram',x:values,nbinsx:60,marker:{color:'steelblue',opacity:0.7},name:'Data'}],layout);
+}
+function resetFilters(){
+  GROUP_COLS.forEach(function(pair){
+    var col=pair[0];
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=true;});
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){allChk.checked=true;allChk.indeterminate=false;}
+    document.getElementById('badge_'+col).classList.remove('active');
+  });
+  document.getElementById('pass_only').checked=false;
+  update();
+}
+update();
+"""
+
+    html = (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        f'<meta charset="utf-8"><title>{title}</title>\n'
+        f"<style>{css}</style>\n"
+        "</head>\n<body>\n"
+        '<div class="ctrl-bar">\n'
+        f'  {panels_html}\n'
+        '  <div class="sep"></div>\n'
+        '  <label><input type="checkbox" id="pass_only" onchange="update()"> Pass&nbsp;only</label>\n'
+        '  <div class="sep"></div>\n'
+        '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        '  <span id="n_points"></span>\n'
+        "</div>\n"
+        '<div id="plot"></div>\n'
+        f"<script>{_get_plotlyjs()}</script>\n"
+        "<script>\n"
+        + constants + "\n"
+        + dist_js
+        + "</script>\n</body>\n</html>"
+    )
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html, encoding="utf-8")
 
 
 def empirical_cdf(csv_path: Path, cfg: dict, output_html: Path) -> None:
@@ -3841,7 +4045,7 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
         legend=dict(title="Group", itemclick="toggle", itemdoubleclick="toggleothers"),
         plot_bgcolor="white",
         paper_bgcolor="white",
-        margin=dict(l=60, r=30, t=60, b=50),
+        margin=dict(l=60, r=30, t=60, b=110),
     )
 
     # --- group-by dropdown (one entry per unique condition key value) ---
@@ -3877,8 +4081,8 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
             buttons=buttons,
             direction="down",
             showactive=True,
-            x=0.01, xanchor="left",
-            y=1.12, yanchor="top",
+            x=0.0, xanchor="left",
+            y=-0.10, yanchor="top",
             bgcolor="#f5f5f5",
             bordercolor="#cccccc",
         )])
