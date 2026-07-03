@@ -142,10 +142,16 @@ All configuration for a run lives in `job.json`.
 
     "padb_timeout": 7200,
 
+    "run_datetimes": [
+        "06/22/2026 04:38:01 PM",
+        "06/23/2026 02:33:43 AM"
+    ],
+
+    "serial_nums": ["US65080415", "US65080423", "US65080431"],
+
     "subex": {
-        "TestRun_SerialNum": "'US65080401','US65080415'",
-        "Device_MinDate":    "2026-06-01",
-        "Device_MaxDate":    "2026-06-30"
+        "Device_MinDate": "2026-06-01",
+        "Device_MaxDate": "2026-06-30"
     },
 
     "run_analytics": true,
@@ -167,27 +173,52 @@ All configuration for a run lives in `job.json`.
 | `padb_exe` | Full path to PADB-R.exe. |
 | `results_dir` | Output folder, relative to `job.json`. Default: `results`. |
 | `padb_timeout` | Seconds before PADB-R.exe is killed. Default: `600`. Large datasets need 7200+. |
-| `subex` | Key=value overrides for the `[Extract]` section of the pod. |
+| `run_datetimes` | List of specific test run timestamps to extract. Overrides `TestRun_RunDateTime` in the pod. |
+| `serial_nums` | List of DUT serial numbers. Overrides `TestRun_SerialNum` in the pod. |
+| `run_labels` | List of run label strings. Overrides `TestRun_RunLabel` in the pod. |
+| `subex` | Raw key=value overrides for any `[Extract]` field. Use for fields not covered by the list keys above. |
 | `run_analytics` | `true` to run PADB analytics. Default: `true`. |
 | `secondary_plots` | List of plot configurations (see below). |
 | `publish.destination` | UNC or local path to copy `results\` to. Omit to skip publish. |
 
-### subex key format
+### Selecting specific test runs
 
-Values must match PADB's expected format exactly. Serial numbers require single quotes inside the JSON double-quoted string:
+Use `run_datetimes` to restrict extraction to specific test runs identified by their Oracle timestamp. Copy the timestamps exactly as PADB records them (MM/DD/YYYY HH:MM:SS AM/PM):
+
+```json
+"run_datetimes": [
+    "06/22/2026 04:38:01 PM",
+    "06/23/2026 02:33:43 AM",
+    "06/23/2026 12:33:33 PM"
+]
+```
+
+Use `serial_nums` and `run_labels` the same way — plain JSON lists, no manual quoting required:
+
+```json
+"serial_nums": ["US65080415", "US65080423", "US65080431"],
+"run_labels":  ["DDS Harmonics", "Spectral YTO Mode 0 ALC ON"]
+```
+
+Omit any of these keys (or set to `[]`) to use whatever is baked into the pod.
+
+### subex — raw Extract overrides
+
+Use `subex` for `[Extract]` fields not covered by the list keys above. Values must match PADB's expected format exactly:
 
 ```json
 "subex": {
-    "TestRun_SerialNum":  "'US65080401','US65080415','US65080427'",
-    "Device_MinDate":     "2026-06-13",
-    "Device_MaxDate":     "2026-06-30",
-    "TestRun_RunStatus":  "{All}"
+    "Device_MinDate":    "2026-06-13",
+    "Device_MaxDate":    "2026-06-30",
+    "TestRun_RunStatus": "{All}"
 }
 ```
 
 `TestRun_RunStatus: "{All}"` is required when a pod is configured to filter to passing runs only (the PADB default). Without it, PADB may return no data for pods that have a RunStatus filter.
 
-The original `.pod` is never modified. A `_run.pod` copy is written to `results\` with these substitutions applied.
+If a `subex` key duplicates a list field (`run_datetimes`, `serial_nums`, `run_labels`), the explicit `subex` entry wins.
+
+The original `.pod` is never modified. A `_run.pod` copy is written to `results\` with all substitutions applied.
 
 ---
 
@@ -407,7 +438,8 @@ Edit `secondary_plots`, re-run. Takes seconds.
 
 ### Add a new serial to an existing run
 
-Update `subex.TestRun_SerialNum`, re-run (full run, not `--plots-only`).
+Add the serial to the `serial_nums` list and re-run (full run, not `--plots-only`).
+If using raw `subex` instead, update `TestRun_SerialNum` with the full quoted list.
 
 ### Compare two lots or date ranges
 

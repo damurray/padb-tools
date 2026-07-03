@@ -60,8 +60,14 @@ If a CSV lands in `results\padb\` with an unexpected filename, use `csv_file` (e
     "results_dir": "results",
     "padb_timeout": 7200,
 
+    "run_datetimes": [
+        "06/04/2026 01:06:18 PM",
+        "06/09/2026 11:04:19 AM"
+    ],
+
+    "serial_nums": ["US65080401", "US65080415", "US65080427"],
+
     "subex": {
-        "TestRun_SerialNum": "'US65080401','US65080415','US65080427'",
         "Device_MinDate": "2026-06-01",
         "Device_MaxDate": "2026-06-30"
     },
@@ -100,12 +106,23 @@ If a CSV lands in `results\padb\` with an unexpected filename, use `csv_file` (e
 }
 ```
 
+### Selecting specific runs
+
+| Field | What it controls | Format |
+|---|---|---|
+| `run_datetimes` | Specific test run timestamps | JSON list of `"MM/DD/YYYY HH:MM:SS AM/PM"` strings |
+| `serial_nums` | DUT serials to include | JSON list of serial strings |
+| `run_labels` | Run label filter | JSON list of label strings |
+
+Omit any of these keys to use the values baked into the pod.
+
 ### Key subex notes
 
 | Situation | Fix |
 |---|---|
-| PADB returns no data | Add `"TestRun_RunStatus": "{All}"` to subex — some pods default to passing runs only |
+| PADB returns no data | Add `"TestRun_RunStatus": "{All}"` to `subex` — some pods default to passing runs only |
 | Need all dates | Set `Device_MinDate` far in the past, `Device_MaxDate` far in the future |
+| Override a list field explicitly | Add the raw key to `subex` — e.g. `"TestRun_SerialNum": "{All}"` — it takes precedence |
 
 ### csv vs csv_file
 
