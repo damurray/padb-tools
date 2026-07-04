@@ -4118,17 +4118,26 @@ function buildTraces(active){
       });
     }
   });
-  /* spec lines */
+  /* spec lines — collect unique values from active groups, fall back to globals */
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
-  if(HI_SPEC!==null)
-    traces.push({type:'scatter',x:[fLo,fHi],y:[HI_SPEC,HI_SPEC],mode:'lines',
-      line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
-      hovertemplate:'Spec Hi: '+HI_SPEC.toFixed(4)+'<extra></extra>'});
-  if(LO_SPEC!==null)
-    traces.push({type:'scatter',x:[fLo,fHi],y:[LO_SPEC,LO_SPEC],mode:'lines',
-      line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
-      hovertemplate:'Spec Lo: '+LO_SPEC.toFixed(4)+'<extra></extra>'});
+  var hiSpecs={},loSpecs={};
+  active.forEach(function(cd){
+    if(cd.spec_hi!==null&&cd.spec_hi!==undefined) hiSpecs[Math.round(cd.spec_hi*100)/100]=true;
+    if(cd.spec_lo!==null&&cd.spec_lo!==undefined) loSpecs[Math.round(cd.spec_lo*100)/100]=true;
+  });
+  if(!Object.keys(hiSpecs).length&&HI_SPEC!==null) hiSpecs[Math.round(HI_SPEC*100)/100]=true;
+  if(!Object.keys(loSpecs).length&&LO_SPEC!==null) loSpecs[Math.round(LO_SPEC*100)/100]=true;
+  Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
+    traces.push({type:'scatter',x:[fLo,fHi],y:[v,v],mode:'lines',
+      line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi '+v,
+      hovertemplate:'Spec Hi: '+v.toFixed(4)+'<extra></extra>'});
+  });
+  Object.keys(loSpecs).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
+    traces.push({type:'scatter',x:[fLo,fHi],y:[v,v],mode:'lines',
+      line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
+      hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
+  });
   return traces;
 }
 
@@ -4261,6 +4270,9 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
                 return [None] * len(_sub)
             return [None if pd.isna(v) else round(float(v), 6) for v in _sub[col]]
 
+        g_hi = float(sub[hi_spec_col].dropna().iloc[0]) if hi_spec_col in sub.columns and sub[hi_spec_col].notna().any() else None
+        g_lo = float(sub[lo_spec_col].dropna().iloc[0]) if lo_spec_col in sub.columns and sub[lo_spec_col].notna().any() else None
+
         records.append({
             "condition": glabel,
             "cond_keys": {k: kv.get(k, "") for k in cond_keys},
@@ -4270,16 +4282,14 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
             "max_data": _to_list(max_col),
             "uttl":     _to_list(uttl_col),
             "lttl":     _to_list(lttl_col),
+            "spec_hi":  g_hi,
+            "spec_lo":  g_lo,
         })
 
-        if np.isnan(hi_spec) and hi_spec_col in sub.columns:
-            v = sub[hi_spec_col].dropna()
-            if len(v):
-                hi_spec = float(v.iloc[0])
-        if np.isnan(lo_spec) and lo_spec_col in sub.columns:
-            v = sub[lo_spec_col].dropna()
-            if len(v):
-                lo_spec = float(v.iloc[0])
+        if np.isnan(hi_spec) and g_hi is not None:
+            hi_spec = g_hi
+        if np.isnan(lo_spec) and g_lo is not None:
+            lo_spec = g_lo
 
     # Freq axis
     all_freqs_s = df[x_col].dropna()

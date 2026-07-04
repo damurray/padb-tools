@@ -346,14 +346,21 @@ def find_csvs(results_padb: Path, analytics: list[dict]) -> dict[str, Path]:
     def _stems(s: str) -> list[str]:
         """
         Return candidate filename stems for a name string.
-        PADB replaces spaces with underscores and preserves hyphens.
-        We try the hyphen-as-underscore variant as a fallback.
+        PADB replaces spaces with underscores, hyphens kept, and decimal points
+        become underscores (e.g. "1.5" → "1_5" in filenames).
+        We try four variants: (hyphen kept | hyphen→_) × (dot kept | dot→_).
         """
         if not s:
             return []
-        primary = s.replace(" ", "_")          # spaces → underscores, hyphens kept
-        secondary = primary.replace("-", "_")  # hyphens → underscores (fallback)
-        return [primary, secondary] if primary != secondary else [primary]
+        p0 = s.replace(" ", "_")                           # spaces→_, hyphens/dots kept
+        p1 = p0.replace(".", "_")                          # spaces→_, dots→_
+        p2 = p0.replace("-", "_")                          # spaces→_, hyphens→_
+        p3 = p2.replace(".", "_")                          # spaces→_, hyphens→_, dots→_
+        seen: list[str] = []
+        for stem in (p0, p1, p2, p3):
+            if stem not in seen:
+                seen.append(stem)
+        return seen
 
     csv_map: dict[str, Path] = {}
     for a in analytics:
@@ -501,8 +508,9 @@ def make_index_html(
         for name in [a.get("name") or "", a.get("output_file") or ""]:
             if not name:
                 continue
-            primary = name.replace(" ", "_")
-            for stem in [primary, primary.replace("-", "_")]:
+            p0 = name.replace(" ", "_")
+            for stem in [p0, p0.replace("-", "_"),
+                         p0.replace(".", "_"), p0.replace("-", "_").replace(".", "_")]:
                 if stem in csv_stems_found:
                     return "ok", "✓"
         return "missing", "✗"
