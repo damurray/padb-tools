@@ -109,17 +109,33 @@ function toggleLogX(){
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
 }
 
-/* ---------- frequency sliders ---------- */
+/* ---------- frequency sliders + text entry ---------- */
 function syncFreq(){
   var lo=document.getElementById('freq_lo');
   var hi=document.getElementById('freq_hi');
   var loV=parseFloat(lo.value),hiV=parseFloat(hi.value);
   if(loV>hiV){lo.value=hiV;loV=hiV;}
-  document.getElementById('freq_lo_val').textContent=loV.toFixed(3);
-  document.getElementById('freq_hi_val').textContent=parseFloat(hi.value).toFixed(3);
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=parseFloat(hi.value).toFixed(3);
   var log=isLogX();
   var range=log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV];
   Plotly.relayout('plot',{'xaxis.range':range});
+}
+function freqTxtChange(which){
+  var txt=document.getElementById('freq_'+which+'_txt');
+  var slider=document.getElementById('freq_'+which);
+  var v=parseFloat(txt.value);
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
+  v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
+  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(3);slider.value=v;syncFreq();update();
+}
+function setFreqBand(lo,hi){
+  var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+  s1.value=Math.max(parseFloat(s1.min),lo);
+  s2.value=Math.min(parseFloat(s2.max),hi);
+  syncFreq();update();
 }
 
 /* ---------- save filtered CSV ---------- */
@@ -202,7 +218,7 @@ function buildTraces(filtered){
       x:sorted.map(function(r){return r.Frequency_MHz;}),
       y:sorted.map(function(r){return r.Value;}),
       customdata:customdata,
-      mode:'lines+markers',marker:{size:3},name:key,
+      mode:TRACE_MODE,marker:{size:3},name:key,
       hovertemplate:tmpl
     };
   });
@@ -251,8 +267,8 @@ function resetFilters(){
   if(allHover){allHover.checked=true;allHover.indeterminate=false;}
   document.getElementById('freq_lo').value=FREQ_MIN;
   document.getElementById('freq_hi').value=FREQ_MAX;
-  document.getElementById('freq_lo_val').textContent=parseFloat(FREQ_MIN).toFixed(3);
-  document.getElementById('freq_hi_val').textContent=parseFloat(FREQ_MAX).toFixed(3);
+  document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
+  document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
   update();
 }
 
@@ -531,6 +547,16 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'<hr class="fdiv">{hover_items}</div></div>'
     ) if hover_col_list else ""
 
+    # Frequency band preset buttons
+    freq_bands = cfg.get("freq_bands", [])
+    band_btns_html = ""
+    for _b in freq_bands:
+        band_btns_html += (
+            f'  <button class="reset-btn" onclick="setFreqBand({_b["lo"]},{_b["hi"]})">'
+            f'{_b["label"]}</button>\n'
+        )
+    band_section_html = (f'  <div class="sep"></div>\n{band_btns_html}') if freq_bands else ""
+
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
 
@@ -544,6 +570,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var TITLE={json.dumps(title)};",
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in group_cols])};",
         f"var HOVER_COLS={json.dumps([[c, l] for c, l in hover_col_list])};",
+        f"var TRACE_MODE={json.dumps(cfg.get('mode', 'lines+markers'))};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
     ])
@@ -555,6 +582,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         ".ctrl-bar label{white-space:nowrap;}"
         ".ctrl-bar select{font-size:13px;padding:2px 4px;border:1px solid #bbb;border-radius:3px;}"
         ".ctrl-bar input[type=range]{vertical-align:middle;width:100px;}"
+        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
+        "border-radius:3px;text-align:right;margin-left:2px;}"
         ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
         ".filter-wrap{position:relative;display:inline-block;}"
         ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
@@ -597,14 +626,19 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<span id="freq_lo_val">{freq_min:.3f}</span>&nbsp;MHz</label>\n'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f' onchange="freqTxtChange(\'lo\')"'
+        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'lo\')">&nbsp;MHz</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<span id="freq_hi_val">{freq_max:.3f}</span>&nbsp;MHz</label>\n'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f' onchange="freqTxtChange(\'hi\')"'
+        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'hi\')">&nbsp;MHz</label>\n'
         f'  <label><input type="checkbox" id="log_x_chk"'
         + (' checked' if log_x else '')
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
+        f'{band_section_html}'
         '  <div class="sep"></div>\n'
         f'  {hover_panel_html}\n'
         '  <div class="sep"></div>\n'
@@ -734,16 +768,16 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         return
 
     group_cols = _detect_group_cols(df)
-    json_cols  = ["Value", "Upper_Limit", "Lower_Limit"] + [c for c, _ in group_cols]
+    json_cols  = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit"] + [c for c, _ in group_cols]
     json_cols  = [c for c in json_cols if c in df.columns]
     records    = json.loads(df[json_cols].to_json(orient="records"))
 
+    freq_min  = float(df["Frequency_MHz"].min())
+    freq_max  = float(df["Frequency_MHz"].max())
+    freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
+
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
-
-    grp_opts = "\n".join(
-        f'<option value="{c}">{lbl}</option>' for c, lbl in group_cols
-    ) if group_cols else ""
 
     panels: list[str] = []
     for col, label in group_cols:
@@ -751,6 +785,15 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         if vals:
             panels.append(_checkbox_panel(col, label, vals))
     panels_html = "\n  ".join(panels)
+
+    freq_bands = cfg.get("freq_bands", [])
+    band_btns_html = ""
+    for _b in freq_bands:
+        band_btns_html += (
+            f'  <button class="reset-btn" onclick="setFreqBand({_b["lo"]},{_b["hi"]})">'
+            f'{_b["label"]}</button>\n'
+        )
+    band_section_html = f'  <div class="sep"></div>\n{band_btns_html}' if freq_bands else ""
 
     constants = "\n".join([
         f"var DATA={json.dumps(records)};",
@@ -760,6 +803,8 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var TITLE={json.dumps(title)};",
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in group_cols])};",
+        f"var FREQ_MIN={freq_min!r};",
+        f"var FREQ_MAX={freq_max!r};",
     ])
 
     css = (
@@ -768,6 +813,9 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
         ".ctrl-bar label{white-space:nowrap;}"
         ".ctrl-bar select{font-size:13px;padding:2px 4px;border:1px solid #bbb;border-radius:3px;}"
+        ".ctrl-bar input[type=range]{vertical-align:middle;width:100px;}"
+        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
+        "border-radius:3px;text-align:right;margin-left:2px;}"
         ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
         ".filter-wrap{position:relative;display:inline-block;}"
         ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
@@ -824,11 +872,41 @@ function updateBadge(col){
 function getSelected(col){
   return Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]:checked')).map(function(c){return c.value;});
 }
+function syncFreq(){
+  var lo=document.getElementById('freq_lo');
+  var hi=document.getElementById('freq_hi');
+  var loV=parseFloat(lo.value),hiV=parseFloat(hi.value);
+  if(loV>hiV){lo.value=hiV;loV=hiV;}
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=parseFloat(hi.value).toFixed(3);
+  update();
+}
+function freqTxtChange(which){
+  var txt=document.getElementById('freq_'+which+'_txt');
+  var slider=document.getElementById('freq_'+which);
+  var v=parseFloat(txt.value);
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
+  v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
+  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(3);slider.value=v;update();
+}
+function setFreqBand(lo,hi){
+  var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+  s1.value=Math.max(parseFloat(s1.min),lo);
+  s2.value=Math.min(parseFloat(s2.max),hi);
+  document.getElementById('freq_lo_txt').value=parseFloat(s1.value).toFixed(3);
+  document.getElementById('freq_hi_txt').value=parseFloat(s2.value).toFixed(3);
+  update();
+}
 function applyFilters(data){
   var passOnly=document.getElementById('pass_only').checked;
+  var freqLo=parseFloat(document.getElementById('freq_lo').value);
+  var freqHi=parseFloat(document.getElementById('freq_hi').value);
   var selections={};
   GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
   return data.filter(function(r){
+    if(r.Frequency_MHz<freqLo||r.Frequency_MHz>freqHi) return false;
     for(var col in selections){
       var allowed=selections[col];
       if(!allowed.length) return false;
@@ -883,6 +961,10 @@ function resetFilters(){
     document.getElementById('badge_'+col).classList.remove('active');
   });
   document.getElementById('pass_only').checked=false;
+  document.getElementById('freq_lo').value=FREQ_MIN;
+  document.getElementById('freq_hi').value=FREQ_MAX;
+  document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
+  document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
   update();
 }
 update();
@@ -897,6 +979,20 @@ update();
         f'  {panels_html}\n'
         '  <div class="sep"></div>\n'
         '  <label><input type="checkbox" id="pass_only" onchange="update()"> Pass&nbsp;only</label>\n'
+        '  <div class="sep"></div>\n'
+        f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f' onchange="freqTxtChange(\'lo\')"'
+        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'lo\')">&nbsp;MHz</label>\n'
+        f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f' onchange="freqTxtChange(\'hi\')"'
+        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'hi\')">&nbsp;MHz</label>\n'
+        f'{band_section_html}'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         '  <span id="n_points"></span>\n'
