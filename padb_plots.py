@@ -3968,30 +3968,232 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     output_html.write_text(html, encoding="utf-8")
 
 
+_SUMPLOT_JS = r"""
+/* globals: DATA, COND_DIMS, FREQ_MIN, FREQ_MAX, HI_SPEC, LO_SPEC,
+            Y_LABEL, Y_LIM, TITLE, LOG_X */
+var PALETTE=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
+             '#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf',
+             '#aec7e8','#ffbb78','#98df8a','#ff9896','#c5b0d5'];
+
+/* ---- panel open/close ---- */
+function togglePanel(col){
+  var p=document.getElementById('panel_'+col);
+  var open=p.classList.contains('open');
+  document.querySelectorAll('.filter-panel').forEach(function(x){x.classList.remove('open');});
+  if(!open)p.classList.add('open');
+}
+document.addEventListener('click',function(e){
+  if(!e.target.closest('.filter-wrap'))
+    document.querySelectorAll('.filter-panel').forEach(function(p){p.classList.remove('open');});
+});
+
+/* ---- checkbox logic ---- */
+function toggleAll(col){
+  var a=document.getElementById('all_'+col);
+  document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=a.checked;});
+  updateBadge(col);update();
+}
+function chkChanged(col){
+  var chks=Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]'));
+  var a=document.getElementById('all_'+col);
+  var n=chks.filter(function(c){return c.checked;}).length;
+  a.checked=(n===chks.length);a.indeterminate=(n>0&&n<chks.length);
+  updateBadge(col);update();
+}
+function updateBadge(col){
+  var chks=Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]'));
+  var n=chks.filter(function(c){return c.checked;}).length;
+  var b=document.getElementById('badge_'+col);
+  if(b){if(n<chks.length){b.textContent=n+'/'+chks.length;b.classList.add('active');}
+        else b.classList.remove('active');}
+}
+function getSelected(col){
+  return Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]:checked'))
+    .map(function(c){return c.value;});
+}
+
+/* ---- log X ---- */
+function isLogX(){return document.getElementById('log_x_chk').checked;}
+function toggleLogX(){
+  var log=isLogX();
+  var lo=parseFloat(document.getElementById('freq_lo').value);
+  var hi=parseFloat(document.getElementById('freq_hi').value);
+  Plotly.relayout('plot',{'xaxis.type':log?'log':'linear',
+    'xaxis.range':log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi]});
+}
+
+/* ---- freq sliders + text entry ---- */
+function syncFreq(){
+  var lo=document.getElementById('freq_lo');
+  var hi=document.getElementById('freq_hi');
+  var loV=parseFloat(lo.value),hiV=parseFloat(hi.value);
+  if(loV>hiV){lo.value=hiV;loV=hiV;}
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=parseFloat(hi.value).toFixed(3);
+  var log=isLogX();
+  var range=log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV];
+  Plotly.relayout('plot',{'xaxis.range':range});
+}
+function freqTxtChange(which){
+  var txt=document.getElementById('freq_'+which+'_txt');
+  var slider=document.getElementById('freq_'+which);
+  var v=parseFloat(txt.value);
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
+  v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
+  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(3);slider.value=v;syncFreq();update();
+}
+function setFreqBand(lo,hi){
+  var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+  s1.value=Math.max(parseFloat(s1.min),lo);
+  s2.value=Math.min(parseFloat(s2.max),hi);
+  syncFreq();update();
+}
+
+/* ---- active groups ---- */
+function getActive(){
+  return DATA.filter(function(cd){
+    return COND_DIMS.every(function(dim){
+      var allowed=getSelected('cond_'+dim.col_id);
+      var v=String(cd.cond_keys[dim.col]!==undefined?cd.cond_keys[dim.col]:'');
+      return allowed.length>0&&allowed.indexOf(v)>=0;
+    });
+  });
+}
+
+/* ---- build traces ---- */
+function hexToRgba(hex,a){
+  var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return 'rgba('+r+','+g+','+b+','+a+')';
+}
+function buildTraces(active){
+  var freqLo=parseFloat(document.getElementById('freq_lo').value);
+  var freqHi=parseFloat(document.getElementById('freq_hi').value);
+  var traces=[];
+  active.forEach(function(cd,ci){
+    var color=PALETTE[ci%PALETTE.length];
+    var idxs=[];
+    cd.freqs.forEach(function(f,i){if(f>=freqLo&&f<=freqHi)idxs.push(i);});
+    if(!idxs.length)return;
+    var freqs=idxs.map(function(i){return cd.freqs[i];});
+    var means=idxs.map(function(i){return cd.mean[i];});
+    var mins=idxs.map(function(i){return cd.min_data[i];});
+    var maxs=idxs.map(function(i){return cd.max_data[i];});
+    var uttls=idxs.map(function(i){return cd.uttl[i];});
+    var lttls=idxs.map(function(i){return cd.lttl[i];});
+    /* min-max band */
+    traces.push({
+      type:'scatter',
+      x:freqs.concat(freqs.slice().reverse()),
+      y:maxs.concat(mins.slice().reverse()),
+      fill:'toself',fillcolor:hexToRgba(color,0.15),
+      line:{width:0,color:'rgba(0,0,0,0)'},
+      showlegend:false,name:cd.condition,legendgroup:cd.condition,
+      hoverinfo:'skip'
+    });
+    /* mean line */
+    traces.push({
+      type:'scatter',x:freqs,y:means,mode:'lines',
+      line:{color:color,width:2},
+      name:cd.condition,legendgroup:cd.condition,
+      hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4g} MHz<br>Mean: %{y:.2f}<extra></extra>'
+    });
+    /* TTL upper */
+    if(uttls.some(function(v){return v!==null&&v!==undefined;})){
+      traces.push({
+        type:'scatter',x:freqs,y:uttls,mode:'lines',
+        line:{color:color,width:1,dash:'dash'},
+        name:cd.condition+' TTL↑',legendgroup:cd.condition,showlegend:false,
+        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4g} MHz<br>TTL↑: %{y:.2f}<extra></extra>'
+      });
+    }
+    /* TTL lower */
+    if(lttls.some(function(v){return v!==null&&v!==undefined;})){
+      traces.push({
+        type:'scatter',x:freqs,y:lttls,mode:'lines',
+        line:{color:color,width:1,dash:'dash'},
+        name:cd.condition+' TTL↓',legendgroup:cd.condition,showlegend:false,
+        hoverinfo:'skip'
+      });
+    }
+  });
+  /* spec lines */
+  var fLo=parseFloat(document.getElementById('freq_lo').value);
+  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  if(HI_SPEC!==null)
+    traces.push({type:'scatter',x:[fLo,fHi],y:[HI_SPEC,HI_SPEC],mode:'lines',
+      line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
+      hovertemplate:'Spec Hi: '+HI_SPEC.toFixed(4)+'<extra></extra>'});
+  if(LO_SPEC!==null)
+    traces.push({type:'scatter',x:[fLo,fHi],y:[LO_SPEC,LO_SPEC],mode:'lines',
+      line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
+      hovertemplate:'Spec Lo: '+LO_SPEC.toFixed(4)+'<extra></extra>'});
+  return traces;
+}
+
+function buildLayout(){
+  var log=isLogX();
+  var lo=parseFloat(document.getElementById('freq_lo').value);
+  var hi=parseFloat(document.getElementById('freq_hi').value);
+  var range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  return {
+    title:{text:TITLE,x:0.5,font:{size:15}},
+    template:'plotly_white',
+    xaxis:{title:'Frequency (MHz)',type:log?'log':'linear',range:range},
+    yaxis:{title:Y_LABEL,range:Y_LIM},
+    height:520,
+    legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
+    margin:{l:60,r:30,t:60,b:60}
+  };
+}
+
+/* ---- reset ---- */
+function resetFilters(){
+  COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=true;});
+    var a=document.getElementById('all_'+col);
+    if(a){a.checked=true;a.indeterminate=false;}
+    var b=document.getElementById('badge_'+col);
+    if(b)b.classList.remove('active');
+  });
+  document.getElementById('freq_lo').value=FREQ_MIN;
+  document.getElementById('freq_hi').value=FREQ_MAX;
+  document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
+  document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
+  update();
+}
+
+/* ---- main update ---- */
+function update(){
+  var active=getActive();
+  document.getElementById('n_groups').textContent=active.length+' groups';
+  Plotly.react('plot',buildTraces(active),buildLayout());
+}
+
+Plotly.newPlot('plot',buildTraces(DATA),buildLayout());
+document.getElementById('n_groups').textContent=DATA.length+' groups';
+"""
+
+
 def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
     """
     Interactive summary statistics plot from a PADB Type=90 SummaryPlot CSV.
 
-    For each group (AlcState, HarmonicNumber, Mode, etc.) shows:
-      - Mean measurement line
-      - Min-to-Max shaded band (population spread)
-      - Upper/Lower TTL estimate lines (dashed)
-      - Spec limit lines
-    vs frequency.
-
-    Group visibility controlled via interactive dropdown selector.
-    Log X auto-detected when freq range spans >= 2 decades.
+    Checkbox panels filter by each condition dimension (HarmonicNumber, AlcState, Mode, etc.)
+    parsed from the Group column.  Freq sliders (with text entry) trim the X axis.
+    Log X auto-detected when range spans >= 2 decades.
     """
-    # --- load ---
     df = pd.read_csv(csv_path)
     df.columns = [c.strip() for c in df.columns]
 
-    x_col = "X value"
-    mean_col = "mean (Sum.)"
-    min_col = "Min Data"
-    max_col = "Max Data"
-    uttl_col = "Upper TTL (est)"
-    lttl_col = "Lower TTL (est)"
+    x_col      = "X value"
+    mean_col   = "mean (Sum.)"
+    min_col    = "Min Data"
+    max_col    = "Max Data"
+    uttl_col   = "Upper TTL (est)"
+    lttl_col   = "Lower TTL (est)"
     hi_spec_col = "Upper Limit"
     lo_spec_col = "Lower Limit"
 
@@ -4004,16 +4206,17 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
         if c in df.columns:
             df[c] = pd.to_numeric(df[c], errors="coerce")
 
-    title  = cfg.get("title", output_html.stem)
+    title   = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", "Level (dBc)")
-    y_lim  = cfg.get("y_lim")
+    y_lim   = cfg.get("y_lim")
 
-    # --- group keys (exclude serial-like values) ---
+    # Parse group key-value pairs (exclude serial-like keys/values)
     _serial_re  = re.compile(r"^[A-Z]{2,3}\d{5,}$")
     _serial_kws = ("serial", "unit id", "dut id", "s/n")
     unique_groups = df["Group"].dropna().unique()
-    group_kv = {g: _parse_group_kv(str(g)) for g in unique_groups}
-    all_keys = {k for kv in group_kv.values() for k in kv}
+    group_kv: dict[str, dict] = {g: _parse_group_kv(str(g)) for g in unique_groups}
+    all_keys: set[str] = {k for kv in group_kv.values() for k in kv}
+
     cond_keys: list[str] = []
     for key in sorted(all_keys):
         if any(kw in key.lower() for kw in _serial_kws):
@@ -4024,175 +4227,186 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
         if len(vals) >= 1:
             cond_keys.append(key)
 
-    def _group_label(g):
-        kv = group_kv.get(g, {})
-        parts = [f"{k}: {kv[k]}" for k in cond_keys if k in kv]
-        return "  ".join(parts) if parts else str(g)
+    # Collect distinct values per condition key
+    dim_vals: dict[str, set] = {}
+    for kv in group_kv.values():
+        for k, v in kv.items():
+            if k in cond_keys:
+                dim_vals.setdefault(k, set()).add(v)
 
-    df["_group_label"] = df["Group"].map(_group_label)
+    def _sort_num(vals):
+        try:
+            return sorted(vals, key=float)
+        except (ValueError, TypeError):
+            return sorted(vals)
 
-    # --- freq axis ---
-    freqs_all = df[x_col].dropna()
-    freq_min = float(freqs_all.min()) if len(freqs_all) else 0.0
-    freq_max = float(freqs_all.max()) if len(freqs_all) else 1.0
+    cond_dims = []
+    for key in cond_keys:
+        vals = _sort_num(dim_vals.get(key, []))
+        if len(vals) > 1:
+            col_id = re.sub(r"\W+", "_", key)
+            cond_dims.append({"col": key, "col_id": col_id, "label": key, "vals": vals})
+
+    # Build per-group JSON records
+    hi_spec = float("nan")
+    lo_spec = float("nan")
+    records: list[dict] = []
+
+    for glabel in sorted(str(g) for g in df["Group"].dropna().unique()):
+        sub = df[df["Group"] == glabel].dropna(subset=[x_col]).sort_values(x_col)
+        kv  = group_kv.get(glabel, {})
+
+        def _to_list(col: str, _sub=sub) -> list:
+            if col not in _sub.columns:
+                return [None] * len(_sub)
+            return [None if pd.isna(v) else round(float(v), 6) for v in _sub[col]]
+
+        records.append({
+            "condition": glabel,
+            "cond_keys": {k: kv.get(k, "") for k in cond_keys},
+            "freqs":    [round(float(v), 6) for v in sub[x_col]],
+            "mean":     _to_list(mean_col),
+            "min_data": _to_list(min_col),
+            "max_data": _to_list(max_col),
+            "uttl":     _to_list(uttl_col),
+            "lttl":     _to_list(lttl_col),
+        })
+
+        if np.isnan(hi_spec) and hi_spec_col in sub.columns:
+            v = sub[hi_spec_col].dropna()
+            if len(v):
+                hi_spec = float(v.iloc[0])
+        if np.isnan(lo_spec) and lo_spec_col in sub.columns:
+            v = sub[lo_spec_col].dropna()
+            if len(v):
+                lo_spec = float(v.iloc[0])
+
+    # Freq axis
+    all_freqs_s = df[x_col].dropna()
+    freq_min  = float(all_freqs_s.min()) if len(all_freqs_s) else 0.0
+    freq_max  = float(all_freqs_s.max()) if len(all_freqs_s) else 1.0
+    freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
+
     log_x_cfg = cfg.get("log_x")
     log_x = bool(log_x_cfg) if log_x_cfg is not None else (
         freq_min > 0 and freq_max / freq_min >= 100
     )
 
-    # --- spec limits (first non-NaN values across all rows) ---
-    def _first_valid(col):
-        if col not in df.columns:
-            return float("nan")
-        v = df[col].dropna()
-        return float(v.iloc[0]) if len(v) else float("nan")
+    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
+    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
 
-    hi_spec = _first_valid(hi_spec_col)
-    lo_spec = _first_valid(lo_spec_col)
+    # Checkbox panels
+    panels: list[str] = []
+    for dim in cond_dims:
+        pid   = "cond_" + dim["col_id"]
+        items = "".join(
+            f'<label class="fitem"><input type="checkbox" class="fchk" data-col="{pid}"'
+            f' value="{v}" checked onchange="chkChanged(\'{pid}\')">{v}</label>'
+            for v in dim["vals"]
+        )
+        panels.append(
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'{pid}\')">'
+            f'{dim["label"]}&thinsp;<span id="badge_{pid}" class="badge"></span>&#9662;</button>'
+            f'<div class="filter-panel" id="panel_{pid}">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_{pid}"'
+            f' checked onchange="toggleAll(\'{pid}\')"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{items}</div></div>'
+        )
+    panels_html = "\n  ".join(panels)
 
-    # --- palette ---
-    palette = [
-        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
-    ]
+    # Freq band preset buttons (optional)
+    freq_bands = cfg.get("freq_bands", [])
+    band_btns_html = ""
+    for _b in freq_bands:
+        band_btns_html += (
+            f'  <button class="reset-btn" onclick="setFreqBand({_b["lo"]},{_b["hi"]})">'
+            f'{_b["label"]}</button>\n'
+        )
+    band_section_html = (f'  <div class="sep"></div>\n{band_btns_html}') if freq_bands else ""
 
-    # --- build figure ---
-    fig = go.Figure()
-    group_labels = sorted(df["_group_label"].dropna().unique())
+    constants = "\n".join([
+        f"var DATA={json.dumps(records)};",
+        f"var COND_DIMS={json.dumps(cond_dims)};",
+        f"var HI_SPEC={hi_js};",
+        f"var LO_SPEC={lo_js};",
+        f"var Y_LABEL={json.dumps(y_label)};",
+        f"var Y_LIM={json.dumps(y_lim)};",
+        f"var TITLE={json.dumps(title)};",
+        f"var LOG_X={'true' if log_x else 'false'};",
+        f"var FREQ_MIN={freq_min!r};",
+        f"var FREQ_MAX={freq_max!r};",
+    ])
 
-    for gi, glabel in enumerate(group_labels):
-        sub = df[df["_group_label"] == glabel].sort_values(x_col)
-        col = palette[gi % len(palette)]
-        xs = sub[x_col].tolist()
-
-        # min-max band
-        mn = sub[min_col].tolist()
-        mx = sub[max_col].tolist()
-        fig.add_trace(go.Scatter(
-            x=xs + xs[::-1],
-            y=mx + mn[::-1],
-            fill="toself",
-            fillcolor="rgba({},{},{},0.15)".format(*[int(col.lstrip("#")[i:i+2], 16) for i in (0, 2, 4)]),
-            line=dict(width=0),
-            showlegend=False,
-            name=glabel,
-            legendgroup=glabel,
-            hoverinfo="skip",
-        ))
-
-        # mean line
-        fig.add_trace(go.Scatter(
-            x=xs, y=sub[mean_col].tolist(),
-            mode="lines",
-            name=glabel,
-            legendgroup=glabel,
-            line=dict(color=col, width=2),
-            hovertemplate=f"<b>{glabel}</b><br>Freq: %{{x:.4g}} MHz<br>Mean: %{{y:.2f}} dBc<extra></extra>",
-        ))
-
-        # TTL lines
-        if uttl_col in sub.columns and sub[uttl_col].notna().any():
-            fig.add_trace(go.Scatter(
-                x=xs, y=sub[uttl_col].tolist(),
-                mode="lines",
-                name=f"{glabel} TTL",
-                legendgroup=glabel,
-                showlegend=False,
-                line=dict(color=col, width=1, dash="dash"),
-                hovertemplate=f"<b>{glabel} Upper TTL</b><br>Freq: %{{x:.4g}} MHz<br>TTL: %{{y:.2f}} dBc<extra></extra>",
-            ))
-        if lttl_col in sub.columns and sub[lttl_col].notna().any():
-            fig.add_trace(go.Scatter(
-                x=xs, y=sub[lttl_col].tolist(),
-                mode="lines",
-                name=f"{glabel} TTL lo",
-                legendgroup=glabel,
-                showlegend=False,
-                line=dict(color=col, width=1, dash="dash"),
-                hoverinfo="skip",
-            ))
-
-    # spec limit lines
-    if not np.isnan(hi_spec):
-        fig.add_hline(y=hi_spec, line_dash="solid", line_color="red", line_width=1.5,
-                      annotation_text=f"Spec {hi_spec:.0f} dBc",
-                      annotation_position="bottom right")
-    if not np.isnan(lo_spec):
-        fig.add_hline(y=lo_spec, line_dash="solid", line_color="red", line_width=1.5,
-                      annotation_text=f"Spec {lo_spec:.0f} dBc",
-                      annotation_position="top right")
-
-    # --- layout ---
-    xaxis_cfg = dict(
-        title="Frequency (MHz)",
-        type="log" if log_x else "linear",
-        showgrid=True, gridcolor="#e0e0e0",
-    )
-    yaxis_cfg = dict(title=y_label, showgrid=True, gridcolor="#e0e0e0")
-    if y_lim:
-        yaxis_cfg["range"] = y_lim
-
-    fig.update_layout(
-        title=title,
-        xaxis=xaxis_cfg,
-        yaxis=yaxis_cfg,
-        hovermode="closest",
-        legend=dict(title="Group", itemclick="toggle", itemdoubleclick="toggleothers"),
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        margin=dict(l=60, r=30, t=60, b=110),
+    css = (
+        "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
+        ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
+        ".ctrl-bar label{white-space:nowrap;}"
+        ".ctrl-bar input[type=range]{vertical-align:middle;width:100px;}"
+        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
+        "border-radius:3px;text-align:right;margin-left:2px;}"
+        ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
+        ".filter-wrap{position:relative;display:inline-block;}"
+        ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
+        "cursor:pointer;background:#fff;white-space:nowrap;}"
+        ".filter-btn:hover{background:#e8e8e8;}"
+        ".filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
+        "background:#fff;border:1px solid #ccc;border-radius:4px;"
+        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:160px;max-height:280px;"
+        "overflow-y:auto;padding:6px 8px;}"
+        ".filter-panel.open{display:block;}"
+        ".fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px;}"
+        ".fall{padding-bottom:2px;}"
+        ".fdiv{margin:4px 0;border:none;border-top:1px solid #eee;}"
+        ".badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;"
+        "padding:1px 6px;margin-right:2px;display:none;}"
+        ".badge.active{display:inline;}"
+        "button.reset-btn{font-size:12px;padding:2px 10px;border:1px solid #999;"
+        "border-radius:3px;cursor:pointer;background:#fff;}"
+        "button.reset-btn:hover{background:#e8e8e8;}"
+        "#n_groups{font-size:12px;color:#666;margin-left:auto;}"
     )
 
-    # --- group-by dropdown (one entry per unique condition key value) ---
-    # Build buttons: "All", then one per individual group label
-    buttons = [dict(label="All", method="update",
-                    args=[{"visible": [True] * len(fig.data)}])]
-    # Determine which traces belong to each group (3 possible traces per group: band, mean, TTL)
-    traces_per_group: dict[str, list[bool]] = {}
-    for t in fig.data:
-        lg = t.legendgroup or ""
-        for gl in group_labels:
-            traces_per_group.setdefault(gl, [])
-    trace_idx = 0
-    gi = 0
-    for glabel in group_labels:
-        sub = df[df["_group_label"] == glabel]
-        has_uttl = uttl_col in sub.columns and sub[uttl_col].notna().any()
-        has_lttl = lttl_col in sub.columns and sub[lttl_col].notna().any()
-        n_traces = 2 + int(has_uttl) + int(has_lttl)  # band + mean + optional TTLs
-        traces_per_group[glabel] = list(range(trace_idx, trace_idx + n_traces))
-        trace_idx += n_traces
+    sep = '<div class="sep"></div>'
 
-    total_traces = len(fig.data)
-    for glabel in group_labels:
-        vis = [False] * total_traces
-        for i in traces_per_group.get(glabel, []):
-            if i < total_traces:
-                vis[i] = True
-        buttons.append(dict(label=glabel[:40], method="update", args=[{"visible": vis}]))
-
-    if len(group_labels) > 1:
-        fig.update_layout(updatemenus=[dict(
-            buttons=buttons,
-            direction="down",
-            showactive=True,
-            x=0.0, xanchor="left",
-            y=-0.10, yanchor="top",
-            bgcolor="#f5f5f5",
-            bordercolor="#cccccc",
-        )])
-
+    html = (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        f'<meta charset="utf-8"><title>{title}</title>\n'
+        f"<style>{css}</style>\n"
+        "</head>\n<body>\n"
+        '<div class="ctrl-bar">\n'
+        + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
+        + f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f' onchange="freqTxtChange(\'lo\')"'
+        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'lo\')">&nbsp;MHz</label>\n'
+        f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f' onchange="freqTxtChange(\'hi\')"'
+        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'hi\')">&nbsp;MHz</label>\n'
+        f'  <label><input type="checkbox" id="log_x_chk"'
+        + (" checked" if log_x else "")
+        + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
+        + band_section_html
+        + f'  {sep}\n'
+        + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        + '  <span id="n_groups"></span>\n'
+        + "</div>\n"
+        + '<p style="font-size:12px;color:#666;margin:0 8px 4px">'
+        + 'Shaded band&nbsp;=&nbsp;Min–Max &nbsp;|&nbsp; Solid&nbsp;=&nbsp;Mean'
+        + ' &nbsp;|&nbsp; Dashed&nbsp;=&nbsp;TTL estimate'
+        + ' &nbsp;|&nbsp; Red dashed&nbsp;=&nbsp;Spec limit</p>\n'
+        + '<div id="plot"></div>\n'
+        + f"<script>{_get_plotlyjs()}</script>\n"
+        + "<script>\n"
+        + constants + "\n"
+        + _SUMPLOT_JS
+        + "</script>\n</body>\n</html>"
+    )
     output_html.parent.mkdir(parents=True, exist_ok=True)
-    html = _plo.plot(fig, include_plotlyjs="cdn", output_type="div", config={"responsive": True})
-    output_html.write_text(
-        f"<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        f"<title>{title}</title>"
-        f"<style>body{{margin:0;padding:8px;font-family:sans-serif}}"
-        f".note{{color:#666;font-size:0.85em;margin-bottom:4px}}</style></head><body>"
-        f"<p class='note'>Shaded band = Min–Max data range &nbsp;|&nbsp; "
-        f"Solid line = Mean &nbsp;|&nbsp; Dashed = TTL estimate &nbsp;|&nbsp; "
-        f"Red = Spec limit &nbsp;|&nbsp; Click legend to show/hide groups</p>"
-        f"{html}</body></html>",
-        encoding="utf-8",
-    )
+    output_html.write_text(html, encoding="utf-8")
