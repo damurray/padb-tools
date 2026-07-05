@@ -15,8 +15,22 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_plots.py` | Plot library — all interactive HTML plot types |
 | `padb_scheduler.py` | tkinter GUI for managing Windows Task Scheduler entries |
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
-| `harmonics_v2_job.json` | Example V2 job file |
 | `v1.0/` | Archive of the original V1.0 scripts |
+
+### Job files
+
+| File | Description |
+|---|---|
+| `amplitude_job.json` | Amplitude accuracy — all temps |
+| `harmonics_job.json` | Harmonics — all temps |
+| `harmonics_v2_job.json` | Harmonics — V2 pipeline |
+| `clockspurs_job.json` | Non-harmonic clock spurs |
+| `linespurs_job.json` | Line-related spurs |
+| `closein_job.json` | Close-in non-harmonics |
+| `absphase_noise_job.json` | Absolute phase noise |
+| `maxpower2_job.json` | Max power |
+| `v2_probe_job.json` | V2 probe run |
+| `job.json` | Scratch / template |
 
 ---
 
