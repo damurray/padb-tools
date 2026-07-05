@@ -1,0 +1,11 @@
+{
+    "description": "V2.0 pod probe — run single scatter analytic",
+    "pod": "Harmonics_Latest_all_data_all_Spec_DUTS_July4th.pod",
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+    "results_dir": "v2_probe_results",
+    "padb_timeout": 1800,
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+    "secondary_plots": []
+}

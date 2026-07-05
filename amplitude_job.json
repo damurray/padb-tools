@@ -1,0 +1,98 @@
+{
+    "description": "SG6311A Amplitude Accuracy — all temps, June 2026",
+
+    "pod": "Amplitude_Accuracy_All_temps_062526.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "amplitude_results",
+
+    "padb_timeout": 7200,
+
+    "subex": {
+        "TestRun_SerialNum": "'US65080401','US65080415','US65080427','US65080431','US66060501','US66060502'",
+        "Device_MinDate": "2026-06-13",
+        "Device_MaxDate": "2026-06-26"
+    },
+
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir":   "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+
+    "secondary_plots": [
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Test Step",
+            "title": "Amplitude Accuracy — by Test Step (all serials)",
+            "y_label": "Accuracy (dB)",
+            "y_lim": [-0.5, 0.5]
+        },
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Serial Number",
+            "title": "Amplitude Accuracy — by Serial Number",
+            "y_label": "Accuracy (dB)",
+            "y_lim": [-0.5, 0.5]
+        },
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Lev_Acc_Closed_Loop_YIG_8MHz_20000MHz.csv",
+            "title": "Level Accuracy Relative — Closed Loop YIG",
+            "y_label": "Accuracy (dB)",
+            "y_lim": [-0.5, 0.5]
+        },
+        {
+            "type": "distribution",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Test Step",
+            "title": "Distribution — Amplitude Accuracy",
+            "y_label": "Accuracy (dB)"
+        },
+        {
+            "type": "stat_summary",
+            "csv_file": "Lev_Acc_Closed_Loop_YIG_8MHz_20000MHz.csv",
+            "title": "Level Accuracy — Statistical Summary",
+            "y_label": "Level Error (dB)",
+            "y_lim": [-0.25, 0.25],
+            "proportion": 0.90,
+            "confidence": 0.90
+        },
+        {
+            "type": "stat_boxplot",
+            "csv_file": "Lev_Acc_Closed_Loop_YIG_8MHz_20000MHz.csv",
+            "title": "Level Accuracy — Box Plot",
+            "y_label": "Level Error (dB)",
+            "y_lim": [-0.25, 0.25]
+        },
+        {
+            "type": "de_summary",
+            "csv": "Lev Acc Rel Closed Loop YIG 8-20000MHz",
+            "title": "Level Accuracy — Environmental Delta (Relative)",
+            "y_label": "Delta (dB)",
+            "y_lim": [-0.35, 0.35]
+        },
+        {
+            "type": "de_summary",
+            "csv": "Lev Acc Abs Closed Loop YIG 8-20000MHz",
+            "title": "Level Accuracy — Environmental Delta (Absolute)",
+            "y_label": "Delta (dB)",
+            "y_lim": [-0.65, 0.65]
+        },
+        {
+            "type": "de_summary",
+            "csv": "Lev Acc Ref Closed Loop YIG 8-20000MHz",
+            "title": "Level Accuracy — Environmental Delta (Reference)",
+            "y_label": "Delta (dB)",
+            "y_lim": [-0.5, 0.5]
+        }
+    ],
+
+    "_notes": [
+        "Analytics 2,4,5,8 are Type=60 (Environmental) — no secondary_plots for these yet.",
+        "Analytics 1,3 each write their own uniquely-named CSV.",
+        "Analytics 6,7 share OutputFile=Lev Acc Closed Loop YIG 8MHz-20000MHz — csv key matches on substring."
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\AmplitudeAccuracy"
+    }
+}

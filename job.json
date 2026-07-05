@@ -1,0 +1,82 @@
+{
+    "description": "SG6311A Amplitude Accuracy — all temperatures, June 2026 lot",
+
+    "pod": "Amplitude_Accuracy_All_temps_062526.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "results",
+
+    "padb_timeout": 600,
+
+    "subex": {
+        "TestRun_SerialNum": "'US65080401','US65080415','US65080427','US65080431','US66060501','US66060502'",
+        "Device_MinDate": "2026-06-13",
+        "Device_MaxDate": "2026-06-25"
+    },
+
+    "run_analytics": true,
+
+    "secondary_plots": [
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Serial Number",
+            "title": "Absolute Accuracy vs Frequency (by Serial)",
+            "y_label": "Absolute Accuracy (dB)",
+            "y_lim": [-0.6, 0.6],
+            "log_x": false
+        },
+        {
+            "type": "population_envelope",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Serial Number",
+            "title": "Population Envelope — Absolute Accuracy",
+            "y_label": "Absolute Accuracy (dB)",
+            "y_lim": [-0.6, 0.6],
+            "proportion": 0.90,
+            "confidence": 0.90
+        },
+        {
+            "type": "distribution",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Serial Number",
+            "title": "Distribution — Absolute Accuracy",
+            "y_label": "Absolute Accuracy (dB)"
+        },
+        {
+            "type": "empirical_cdf",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Serial Number",
+            "title": "Empirical CDF — Absolute Accuracy",
+            "y_label": "Absolute Accuracy (dB)"
+        },
+        {
+            "type": "spec_derivation",
+            "csv": "Amplitude Accuracy Ref Scatter Order by Serial Number",
+            "title": "Spec Derivation — Absolute Accuracy by Band",
+            "y_label": "Absolute Accuracy (dB)",
+            "proportion": 0.90,
+            "confidence": 0.90,
+            "freq_bands": [
+                ["8-100 MHz",      8,      100],
+                ["100 MHz-1 GHz",  100,   1000],
+                ["1-6 GHz",        1000,  6000],
+                ["6-14 GHz",       6000, 14000],
+                ["14-20 GHz",     14000, 20000]
+            ]
+        },
+        {
+            "type": "de_summary",
+            "csv": "Lev Acc Abs Closed Loop YIG 8-20000MHz",
+            "title": "DE Summary — Absolute Level Accuracy",
+            "y_label": "Mean Env. deviation (dB)",
+            "y_lim": [-0.6, 0.6]
+        },
+        {
+            "type": "de_heatmap",
+            "csv": "Lev Acc Rel Closed Loop YIG 8-20000MHz",
+            "title": "DE Heatmap — Relative Level Accuracy"
+        }
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\AmplitudeAccuracy"
+    }
+}

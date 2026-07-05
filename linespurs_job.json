@@ -1,0 +1,59 @@
+{
+    "description": "SG6311A Line-Related Spurs — all spec DUTs, June 2026",
+
+    "pod": "Line_Related_Spurs_all_Spec_DUTS_June10.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "linespurs_results",
+
+    "padb_timeout": 7200,
+
+    "subex": {
+        "TestRun_SerialNum": "'US65080401','US65080415','US65080416','US65080423','US65080426','US65080427','US65080431','US65080433','US66060502'",
+        "Device_MinDate": "2026-05-29",
+        "Device_MaxDate": "2026-06-26",
+        "TestRun_RunStatus": "{All}"
+    },
+
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir":   "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+
+    "secondary_plots": [
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Scatter_Line_related_All_Spec_Duts.csv",
+            "title": "Line-Related Spurs vs Frequency",
+            "y_label": "Level (dBc)",
+            "y_lim": [-140, 0],
+            "spec_limits": [null, -55]
+        },
+        {
+            "type": "distribution",
+            "csv_file": "Scatter_Line_related_All_Spec_Duts.csv",
+            "title": "Distribution — Line-Related Spurs",
+            "y_label": "Level (dBc)"
+        },
+        {
+            "_note": "Type=20 BoxPlot has no CSV; uses Scatter CSV from Analytic1.",
+            "type": "stat_boxplot",
+            "csv_file": "Scatter_Line_related_All_Spec_Duts.csv",
+            "title": "Line-Related Spurs — Box Plot (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-140, 0],
+            "spec_limits": [null, -55]
+        },
+        {
+            "_note": "Type=60 Environmental.",
+            "type": "de_summary",
+            "csv_file": "Environmental_Line_related_All_Spec_Duts.csv",
+            "title": "Line-Related Spurs — Environmental Delta",
+            "y_label": "Delta (dBc)"
+        }
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\LineSpurs"
+    }
+}

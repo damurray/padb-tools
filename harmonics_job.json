@@ -1,0 +1,152 @@
+{
+    "description": "SG6311A Harmonics and Sub-Harmonics — all spec DUTs, July 2026",
+
+    "pod": "Harmonics_Latest_all_Spec_DUTS_July2nd.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "harmonics_results",
+
+    "padb_timeout": 7200,
+
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+
+    "secondary_plots": [
+
+        {
+            "type": "summary_plot",
+            "csv_file": "Summary_harmonics_all_temps.csv",
+            "title": "Harmonics — Summary Statistics All Temperatures",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "comment": "Type=90 SummaryPlot, no Test Step filter. Shows mean + min/max band + TTL estimate vs frequency per group."
+        },
+
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Harmonics_Env_Dataset.csv",
+            "title": "Harmonics — All Temperatures (Env Coverage)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "freq_bands": [
+                {"label": "All",  "lo": 8,     "hi": 20000},
+                {"label": "Low",  "lo": 8,     "hi": 3200},
+                {"label": "Mid",  "lo": 3200,  "hi": 10000},
+                {"label": "High", "lo": 10000, "hi": 20000}
+            ],
+            "comment": "Type=80 scatter, no Test Step filter — ordered by temperature. Port (RF1/RF2) and Serial Number groups visible."
+        },
+
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Harmonics.csv",
+            "title": "Harmonics and Sub-Harmonics — Room (all serials)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "mode": "markers",
+            "freq_bands": [
+                {"label": "All",  "lo": 8,     "hi": 20000},
+                {"label": "Low",  "lo": 8,     "hi": 3200},
+                {"label": "Mid",  "lo": 3200,  "hi": 10000},
+                {"label": "High", "lo": 10000, "hi": 20000}
+            ],
+            "comment": "Type=80 scatter, Room only. Groups: AlcState, HarmonicNumber, Mode, Serial Number."
+        },
+        {
+            "type": "stat_summary",
+            "csv_file": "Harmonics.csv",
+            "title": "Harmonics — Statistical Summary (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "proportion": 0.90,
+            "confidence": 0.90,
+            "comment": "P90/C90 tolerance interval per frequency. Room data only."
+        },
+        {
+            "type": "distribution",
+            "csv_file": "Harmonics.csv",
+            "title": "Harmonics — Distribution (Room, all serials)",
+            "y_label": "Level (dBc)",
+            "freq_bands": [
+                {"label": "All",  "lo": 8,     "hi": 20000},
+                {"label": "Low",  "lo": 8,     "hi": 3200},
+                {"label": "Mid",  "lo": 3200,  "hi": 10000},
+                {"label": "High", "lo": 10000, "hi": 20000}
+            ],
+            "comment": "Histogram + KDE of all dBc values across serials, frequencies, and harmonic numbers."
+        },
+
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Harmonics_By_station.csv",
+            "title": "Harmonics — By Test Station (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "comment": "Type=80 scatter, one trace per test station. Station-to-station consistency check."
+        },
+
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Parallel_Scatter_second_Harmonic___Select_Frequencies.csv",
+            "title": "2nd Harmonic — Select Frequencies (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "spec_limits": [null, -55],
+            "comment": "Type=80 scatter at select frequencies. Groups: AlcState, HarmonicNumber, Mode, Serial Number. Spec: -55 dBc (>50 MHz)."
+        },
+        {
+            "type": "stat_summary",
+            "csv_file": "Parallel_Scatter_second_Harmonic___Select_Frequencies.csv",
+            "title": "2nd Harmonic — Statistical Summary at Select Frequencies (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "spec_limits": [null, -55],
+            "proportion": 0.90,
+            "confidence": 0.90
+        },
+
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Parallel_Scatter_0_5_Sub_Harmonic___Select_Frequency.csv",
+            "title": "0.5x Sub-Harmonic — Select Frequencies (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "spec_limits": [null, -60],
+            "comment": "Type=80 scatter at select frequencies — 0.5x sub-harmonic (fc/2). Spec: -60 dBc."
+        },
+
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Parallel_Scatter_1_5_Sub_Harmonic___Select_Frequency.csv",
+            "title": "1.5x Sub-Harmonic — Select Frequencies (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "spec_limits": [null, -60],
+            "comment": "Type=80 scatter at select frequencies — 1.5x sub-harmonic (1.5 x fc). Spec: -60 dBc."
+        },
+
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Parallel_Scatter_1_5_SubHarmonic_Selec_Freqs.csv",
+            "title": "1.5x Sub-Harmonic — Select Frequencies v2 (Room)",
+            "y_label": "Level (dBc)",
+            "y_lim": [-130, 0],
+            "spec_limits": [null, -60],
+            "comment": "Type=80 scatter at select frequencies — analytic 13 variant of 1.5x sub-harmonic. Spec: -60 dBc."
+        }
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\Harmonics"
+    },
+
+    "_notes": [
+        "Pod: Harmonics_Latest_all_Spec_DUTS_July2nd.pod — 9 serials.",
+        "Analytic 14 (Harmonics_Env_Dataset): no Test Step filter, Port (RF1/RF2) grouping — env coverage view.",
+        "Analytics 1, 9-13: Type=80 Scatter — produce CSVs, all plotted above.",
+        "Analytics 2-4: Type=20 BoxPlot — no CSV loader, no secondary plots.",
+        "Analytics 5-8: Type=90 SummaryPlot — pre-aggregated stats (Min/Max/Mean/TTL per freq bin), not compatible with scatter plot types. Need a dedicated summary_plot type."
+    ]
+}

@@ -1,0 +1,75 @@
+{
+    "description": "SG6311A Absolute Phase Noise EP6 — Closed Loop, Room, All DUTs",
+
+    "pod": "Spectral Purity Pods (Phase and Broadband Noise)\\Absolute Phase Noise EP6 Spec Setting.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "absphase_noise_results",
+
+    "padb_timeout": 7200,
+
+    "subex": {
+        "TestRun_RunStatus": "{All}"
+    },
+
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir":   "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+
+    "secondary_plots": [
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "EP6 Closed Loop Phase Noise EFC at Defined Offsets",
+            "title": "Phase Noise EFC — Closed Loop (Normal)",
+            "y_label": "Phase Noise (dBc/Hz)",
+            "y_lim": [-180, -60]
+        },
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "EP6 Closed Loop Phase Noise DCFM at Defined Offsets",
+            "title": "Phase Noise DCFM — Closed Loop (Normal)",
+            "y_label": "Phase Noise (dBc/Hz)",
+            "y_lim": [-180, -50]
+        },
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "EP6 Closed Loop Phase Noise EFC",
+            "title": "Phase Noise EFC — Flagged Measurements",
+            "y_label": "Phase Noise (dBc/Hz)",
+            "y_lim": [-180, -90]
+        },
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "EP6 Closed Loop Phase Noise DCFM",
+            "title": "Phase Noise DCFM — Flagged Measurements",
+            "y_label": "Phase Noise (dBc/Hz)",
+            "y_lim": [-180, -60]
+        },
+        {
+            "type": "stat_summary",
+            "csv": "EP6 Closed Loop Phase Noise DCFM at Defined Offsets",
+            "title": "Phase Noise DCFM — Population Summary",
+            "y_label": "Phase Noise (dBc/Hz)",
+            "y_lim": [-180, -50]
+        },
+        {
+            "type": "stat_summary",
+            "csv": "EP6 Closed Loop Phase Noise EFC at Defined Offsets",
+            "title": "Phase Noise EFC — Population Summary",
+            "y_label": "Phase Noise (dBc/Hz)",
+            "y_lim": [-180, -90]
+        },
+        {
+            "type": "stat_summary",
+            "csv": "EP6 Closed Loop Phase Noise DCFM at Defined Offsets",
+            "title": "Phase Noise DCFM — Defined Offsets Population Summary",
+            "y_label": "Phase Noise (dBc/Hz)",
+            "y_lim": [-180, -50]
+        }
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\AbsPhaseNoise"
+    }
+}

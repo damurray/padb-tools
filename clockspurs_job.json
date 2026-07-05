@@ -1,0 +1,56 @@
+{
+    "description": "SG6311A Non-Harmonic Clock Spurs — all spec DUTs, June 2026",
+
+    "pod": "Non-Harmonic_Clock_spurs_all_Spec_DUTS_June10.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "clockspurs_results",
+
+    "padb_timeout": 7200,
+
+    "subex": {
+        "TestRun_SerialNum": "'US65080401','US65080415','US65080416','US65080423','US65080426','US65080427','US65080431','US65080433','US66060502'",
+        "Device_MinDate": "2026-05-29",
+        "Device_MaxDate": "2026-06-26",
+        "TestRun_RunStatus": "{All}"
+    },
+
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir":   "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+
+    "secondary_plots": [
+        {
+            "type": "accuracy_vs_freq",
+            "csv_file": "Clock_spurs_All_Spec_Duts.csv",
+            "title": "Clock Spurs vs Frequency",
+            "y_label": "Level (dBc)",
+            "y_lim": [-140, 0]
+        },
+        {
+            "type": "distribution",
+            "csv_file": "Clock_spurs_All_Spec_Duts.csv",
+            "title": "Distribution — Clock Spurs",
+            "y_label": "Level (dBc)"
+        },
+        {
+            "type": "de_summary",
+            "csv_file": "Env_Clock_spurs_All_Spec_Duts.csv",
+            "title": "Clock Spurs — Environmental Delta",
+            "y_label": "Delta (dBc)",
+            "y_lim": [-20, 20]
+        }
+    ],
+
+    "_notes": [
+        "Analytics 4-5 are Type=20 (BoxPlot) — no secondary_plot for these yet.",
+        "Analytic 3 is Type=90 (SummaryPlot) — no secondary_plot for this yet.",
+        "All 5 analytics share OutputFile=Clock_spurs_All_Spec_Duts.",
+        "Env_Clock_spurs_All_Spec_Duts.csv copied from R-Plots manually (Environmental analytic doesn't write CSV via --plots-only path)."
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\ClockSpurs"
+    }
+}

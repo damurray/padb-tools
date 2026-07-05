@@ -1,0 +1,50 @@
+{
+    "description": "SG6311A Non-Harmonic Close-In Spurs — all spec DUTs, June 2026",
+
+    "pod": "Non-Harmonics_Close-In_all_Spec_DUTS_June10.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "closein_results",
+
+    "padb_timeout": 7200,
+
+    "subex": {
+        "TestRun_SerialNum": "'US65080401','US65080415','US65080416','US65080423','US65080426','US65080427','US65080431','US65080433','US66060501','US66060502'",
+        "Device_MinDate": "2026-05-21",
+        "Device_MaxDate": "2026-06-25",
+        "TestRun_RunStatus": "{All}"
+    },
+
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+
+    "secondary_plots": [
+        {
+            "type": "accuracy_vs_freq",
+            "csv": "Close-In_Non-Harmonic_Spurs",
+            "title": "Close-In Non-Harmonic Spurs vs Frequency",
+            "y_label": "Level (dBc)",
+            "y_lim": [-140, -50],
+            "log_x": false
+        },
+        {
+            "type": "distribution",
+            "csv": "Close-In_Non-Harmonic_Spurs",
+            "title": "Distribution — Close-In Non-Harmonic Spurs",
+            "y_label": "Level (dBc)"
+        }
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\CloseInSpurs"
+    },
+
+    "_notes": [
+        "Analytic 4 (Analysis 4) is Type=10 (BarPlot) with OutputCSV=0 — no CSV expected, shown as N/A in index.",
+        "Analytics 1-3 share OutputConfig_OutputFile=Close-in_Non-Harmonics_All_Spec_Duts.",
+        "AnalyticNames contain hyphens — PADB preserves hyphens in CSV filenames.",
+        "Expected CSV filenames: Close-In_Non-Harmonic_Spurs.csv, Summary_Close-in_Non-Harmonics.csv, Box_Plot_Close-in_Select_Freqs.csv"
+    ]
+}

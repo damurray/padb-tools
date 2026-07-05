@@ -1,0 +1,68 @@
+{
+    "description": "SG6311A Max Power — Leveled and Unleveled, Room, All DUTs",
+
+    "pod": "MaxPower2.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "maxpower2_results",
+
+    "padb_timeout": 7200,
+
+    "subex": {
+        "TestRun_RunStatus": "{All}"
+    },
+
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir":   "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs",
+
+    "secondary_plots": [
+        {
+            "_note": "Analytic1 Type=80 — Unleveled Max Power, log X, grouped by Port x Mode",
+            "type": "accuracy_vs_freq",
+            "csv_file": "Scatter_Max_Power_Unleveled_log.csv",
+            "title": "Unleveled Max Power vs Frequency (Log)",
+            "y_label": "Measured Power (dBm)"
+        },
+        {
+            "_note": "Analytic2 Type=80 — Leveled Max Power, log X, grouped by Port x Mode",
+            "type": "accuracy_vs_freq",
+            "csv_file": "Scatter_Max_Power_Leveled_Log.csv",
+            "title": "Leveled Max Power vs Frequency (Log)",
+            "y_label": "Measured Power (dBm)"
+        },
+        {
+            "_note": "Analytic3 Type=80 — Leveled Max Power, linear X, grouped by Port only",
+            "type": "accuracy_vs_freq",
+            "csv_file": "Scatter_Max_Power_Leveled_Linear.csv",
+            "title": "Leveled Max Power vs Frequency",
+            "y_label": "Measured Power (dBm)"
+        },
+        {
+            "_note": "Analytic4 Type=80 — Unleveled Max Power, linear X, grouped by Port x Mode",
+            "type": "accuracy_vs_freq",
+            "csv_file": "Scatter_Max_Power_Unleveled_Linear.csv",
+            "title": "Unleveled Max Power vs Frequency",
+            "y_label": "Measured Power (dBm)"
+        },
+        {
+            "_note": "Analytic3 scatter reused for stat_summary — P/C TI bands + serial filter. n=17 DUTs: parametric TI valid, NP TI requires n>=29.",
+            "type": "stat_summary",
+            "csv_file": "Scatter_Max_Power_Leveled_Linear.csv",
+            "title": "Leveled Max Power — Population Statistics",
+            "y_label": "Measured Power (dBm)"
+        },
+        {
+            "_note": "Analytic6 Type=60 Environmental — EMPTY until pod is fixed: change Environment_TestStep={All} in extract and set Parameters_Environmental_StandardName=Room in Analytic6.",
+            "type": "de_summary",
+            "csv_file": "Environmental_Max_Power_Leveled_Linear.csv",
+            "title": "Leveled Max Power — Environmental Delta",
+            "y_label": "Delta (dBm)"
+        }
+    ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\MaxPower2"
+    }
+}
