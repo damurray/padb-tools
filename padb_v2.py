@@ -140,22 +140,17 @@ def render_scatter(
     output_html: Path,
 ) -> None:
     """
-    Accuracy-vs-frequency scatter (room temperature only, per DUT).
+    Accuracy-vs-frequency scatter (all temperatures, with env_bar filter).
     Wraps V1.0 accuracy_vs_freq by writing a temporary CSV.
-
-    TODO V2.0: Replace temp-CSV round-trip with a direct DataFrame renderer
-               once _build_av_freq_html() is extracted from accuracy_vs_freq().
     """
-    room_temps = cfg.get("room_values", ["Room"])
-    room_df = df[df["Temperature"].isin(["Room"] + room_temps)].copy()
-    if room_df.empty:
+    if df.empty:
         _write_placeholder(output_html, cfg.get("title", output_html.stem),
-                           "No room-temperature rows found.")
+                           "No data rows found.")
         return
 
     _tmp = output_html.parent / "_v2_tmp_scatter.csv"
     try:
-        _df_to_scatter_csv(room_df, _tmp)
+        _df_to_scatter_csv(df, _tmp)
         _pp.accuracy_vs_freq(_tmp, cfg, output_html)
     finally:
         _tmp.unlink(missing_ok=True)
@@ -420,7 +415,7 @@ _VIEW_FN = {
 }
 
 _VIEW_LABELS = {
-    "scatter":      "Scatter (Room)",
+    "scatter":      "Scatter (All Temps)",
     "stat_summary": "Statistical Summary (Room)",
     "boxplot":      "Box Plots",
     "distribution": "Distribution (Room)",

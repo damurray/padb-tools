@@ -93,6 +93,10 @@ function getSelected(col){
 function getHoverSelected(){
   return Array.from(document.querySelectorAll('.hchk:checked')).map(function(c){return c.value;});
 }
+function getSelectedTemps(){
+  if(!TEMPS||TEMPS.length<=1) return null;
+  return Array.from(document.querySelectorAll('.env_chk:checked')).map(function(c){return c.value;});
+}
 function toggleAllHover(){
   var allChk=document.getElementById('all_hover');
   document.querySelectorAll('.hchk').forEach(function(c){c.checked=allChk.checked;});
@@ -158,6 +162,7 @@ function saveCSV(){
   var filtered=applyFilters(DATA);
   if(!filtered.length){alert('No data matches current filters.');return;}
   var colMap={'Frequency_MHz':'Frequency_MHz','Value':Y_LABEL.replace(/[,"\n]/g,'')};
+  if(TEMPS&&TEMPS.length>1) colMap['Test_Step']='Temperature';
   GROUP_COLS.forEach(function(p){colMap[p[0]]=p[1].replace(/[,"\n]/g,'');});
   var cols=Object.keys(filtered[0]).filter(function(c){return colMap[c];});
   var rows=[cols.map(function(c){return colMap[c];}).join(',')];
@@ -181,10 +186,18 @@ function saveCSV(){
 function applyFilters(data){
   var freqLo=parseFloat(document.getElementById('freq_lo').value);
   var freqHi=parseFloat(document.getElementById('freq_hi').value);
+  var selTemps=getSelectedTemps();
+  var gfChk=document.getElementById('gf_chk');
+  var applyGf=gfChk&&gfChk.checked&&_gfExcluded&&_gfExcluded.size>0;
   var selections={};
   GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
   return data.filter(function(r){
     if(r.Frequency_MHz<freqLo||r.Frequency_MHz>freqHi) return false;
+    if(selTemps){
+      var t=String(r.Test_Step===null||r.Test_Step===undefined?'':r.Test_Step);
+      if(selTemps.indexOf(t)<0) return false;
+    }
+    if(applyGf&&_gfExcluded.has(_buildPointKey(r))) return false;
     for(var col in selections){
       var allowed=selections[col];
       if(!allowed.length) return false;
@@ -270,6 +283,7 @@ function buildLayout(filtered){
 }
 
 function resetFilters(){
+  document.querySelectorAll('.env_chk').forEach(function(c){if(!c.disabled)c.checked=true;});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
     document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=true;});
@@ -287,12 +301,52 @@ function resetFilters(){
   update();
 }
 
+/* ---------- global filter (localStorage) ---------- */
+var _gfExcluded=null;
+function _buildPointKey(r){
+  var condParts=[];
+  GROUP_COLS.forEach(function(p){
+    if(p[0].indexOf('_grp_')===0){
+      condParts.push(p[1]+'='+String(r[p[0]]===null||r[p[0]]===undefined?'':r[p[0]]));
+    }
+  });
+  condParts.sort();
+  var ser=String(r.Serial===null||r.Serial===undefined?'unknown':r.Serial);
+  var tmp=String(r.Test_Step===null||r.Test_Step===undefined?'Room':r.Test_Step);
+  var frq=typeof r.Frequency_MHz==='number'?r.Frequency_MHz.toFixed(3):String(r.Frequency_MHz);
+  return ser+'||'+condParts.join('|')+'||'+tmp+'||'+frq;
+}
+function _loadGlobalFilter(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    if(!raw){_gfExcluded=null;}else{var obj=JSON.parse(raw);_gfExcluded=new Set(obj.excluded||[]);}
+  }catch(e){_gfExcluded=null;}
+  _updateGfIndicator();
+}
+function _updateGfIndicator(){
+  var badge=document.getElementById('gf_badge');
+  var lbl=document.getElementById('gf_label');
+  if(!badge||!lbl) return;
+  var chk=document.getElementById('gf_chk');
+  var active=chk&&chk.checked&&_gfExcluded&&_gfExcluded.size>0;
+  lbl.style.display=(_gfExcluded&&_gfExcluded.size>0)?'':'none';
+  badge.textContent=_gfExcluded?_gfExcluded.size+' pts globally excluded':'';
+  badge.style.background=active?'#ffeaea':'#f0f0f0';
+  badge.style.color=active?'#900':'#666';
+  badge.style.borderColor=active?'#c88':'#ccc';
+  if(active) update();
+}
+window.addEventListener('storage',function(e){
+  if(e.key==='padb_v2_excluded'){_loadGlobalFilter();update();}
+});
+
 function update(){
   var filtered=applyFilters(DATA);
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
 }
 
+_loadGlobalFilter();
 Plotly.newPlot('plot',buildTraces(DATA),buildLayout(DATA));
 document.getElementById('n_points').textContent=DATA.length.toLocaleString()+' pts';
 """
@@ -511,6 +565,18 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
 
     group_cols = _detect_group_cols(df)
 
+    # Temperature env_bar: if Test_Step has >1 unique value, show it as an inline
+    # env_bar (green bar) rather than as a collapsible filter-panel dropdown.
+    temps_present: list[str] = []
+    if "Test_Step" in df.columns:
+        _raw = sorted(str(v) for v in df["Test_Step"].replace("", pd.NA).dropna().unique())
+        # Room always first (disabled), then remaining temps in sort order
+        temps_present = (["Room"] if "Room" in _raw else []) + [v for v in _raw if v != "Room"]
+    show_env_bar = len(temps_present) > 1
+    # filter_cols = group_cols used for GROUP_COLS JS constant (drives applyFilters).
+    # Exclude Test_Step here because it's filtered via env_chk checkboxes instead.
+    filter_cols = [(c, l) for c, l in group_cols if not (c == "Test_Step" and show_env_bar)]
+
     # Columns available for hover tooltip (group dims + spec limits)
     hover_col_list = list(group_cols)
     if "Upper_Limit" in df.columns and df["Upper_Limit"].notna().any():
@@ -538,9 +604,11 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'<option value="{c}">{lbl}</option>' for c, lbl in group_cols
     ) if group_cols else '<option value="Station">Test Station</option>'
 
-    # Checkbox panels — one per filter dimension
+    # Checkbox panels — one per filter dimension (skip Test_Step; handled by env_bar)
     panels: list[str] = []
     for col, label in group_cols:
+        if col == "Test_Step" and show_env_bar:
+            continue
         vals = sorted(str(v) for v in df[col].dropna().replace("", pd.NA).dropna().unique())
         if vals:
             panels.append(_checkbox_panel(col, label, vals))
@@ -583,18 +651,35 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var LOG_X={'true' if log_x else 'false'};",
         f"var TITLE={json.dumps(title)};",
-        f"var GROUP_COLS={json.dumps([[c, l] for c, l in group_cols])};",
+        f"var GROUP_COLS={json.dumps([[c, l] for c, l in filter_cols])};",
         f"var HOVER_COLS={json.dumps([[c, l] for c, l in hover_col_list])};",
         f"var TRACE_MODE={json.dumps(cfg.get('mode', 'lines+markers'))};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
+        f"var TEMPS={json.dumps(temps_present)};",
     ])
+
+    env_chks_html = "\n  ".join(
+        f'<label><input type="checkbox" class="env_chk" value="{t}"'
+        + (' checked disabled' if t == "Room" else ' checked onchange="update()"')
+        + f'>&nbsp;{t}</label>'
+        for t in temps_present
+    )
+    env_bar_html = (
+        '\n<div class="env-bar" onclick="event.stopPropagation()">\n'
+        '  <b>Temperature&nbsp;steps:</b>\n'
+        f'  {env_chks_html}\n'
+        '</div>'
+    ) if show_env_bar else ""
 
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
-        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
+        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".env-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:5px 14px;background:#edf7ee;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".env-bar label{white-space:nowrap;cursor:pointer;}"
         ".ctrl-bar label{white-space:nowrap;}"
         ".ctrl-bar select{font-size:13px;padding:2px 4px;border:1px solid #bbb;border-radius:3px;}"
         ".ctrl-bar input[type=range]{vertical-align:middle;width:100px;}"
@@ -661,11 +746,16 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         '  <button class="reset-btn" style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
         ' onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        '  <label id="gf_label" style="display:none;white-space:nowrap">'
+        '<input type="checkbox" id="gf_chk" checked onchange="_updateGfIndicator();update()">'
+        '&nbsp;<span id="gf_badge" style="font-size:12px;border:1px solid #ccc;'
+        'border-radius:3px;padding:1px 6px"></span></label>\n'
         '  <span id="n_points"></span>\n'
         "</div>\n"
-        '<div id="plot"></div>\n'
-        f"<script>{_get_plotlyjs()}</script>\n"
-        "<script>\n"
+        + env_bar_html + "\n"
+        + '<div id="plot"></div>\n'
+        + f"<script>{_get_plotlyjs()}</script>\n"
+        + "<script>\n"
         + constants + "\n"
         + _AV_FREQ_JS
         + "</script>\n</body>\n</html>"
@@ -1412,10 +1502,15 @@ def _load_scatter_for_stats(csv_path: Path) -> pd.DataFrame:
             if v is None:
                 return "Room"
             s = str(v).strip()
-            # look for patterns like "20.0 Deg C" or "Room" inside the string
+            # "20.0 Deg C" — PADB native format
             m = re.search(r'([\d.]+)\s*[Dd]eg\s*[Cc]', s)
             if m:
                 return _parse_temp_tag(m.group(0))
+            # "20°C" — already-parsed format written by _df_to_scatter_csv
+            m2 = re.search(r'([\d.]+)\s*°', s)
+            if m2:
+                t = float(m2.group(1))
+                return f"{t:.0f}°C" if t == int(t) else f"{t}°C"
             if re.search(r'\broom\b|\bambient\b', s, re.IGNORECASE):
                 return "Room"
             return "Room"
@@ -3646,16 +3741,38 @@ function percentileSorted(sorted,p){
   var lo=Math.floor(idx),hi=Math.ceil(idx);
   return lo===hi?sorted[lo]:sorted[lo]+(sorted[hi]-sorted[lo])*(idx-lo);
 }
-function computeBoxStats(vals){
+function computeBoxStats(vals,k){
   if(!vals||!vals.length) return null;
+  k=k||1.5;
   var n=vals.length;
   var sorted=vals.slice().sort(function(a,b){return a-b;});
   var q1=percentileSorted(sorted,25),q2=percentileSorted(sorted,50),q3=percentileSorted(sorted,75);
   var mean=0;for(var i=0;i<n;i++) mean+=sorted[i];mean/=n;
-  var iqr=q3-q1,loF=q1-1.5*iqr,hiF=q3+1.5*iqr;
+  var iqr=q3-q1,loF=q1-k*iqr,hiF=q3+k*iqr;
   return {n:n,mean:mean,q1:q1,q2:q2,q3:q3,
     lo_w:loF,hi_w:hiF,
     outliers:sorted.filter(function(v){return v<loF||v>hiF;})};
+}
+function getIqrK(){var el=document.getElementById('box_iqr_k');return el?Math.max(0.5,parseFloat(el.value)||1.5):1.5;}
+function isExcludeOutliers(){var el=document.getElementById('box_excl_out_chk');return el&&el.checked;}
+/* Normalize "_cond" string "A: 1  B: 2" → "A=1|B=2" for cross-plot global filter keys */
+function condToKey(cond){
+  return (cond||'').split(/  +/).map(function(p){return p.replace(/\s*:\s*/,'=').trim();}).filter(Boolean).sort().join('|');
+}
+/* Risk metrics for one outlier removed from allVals */
+function outlierRisk(outlierVal,allVals){
+  var n=allVals.length;
+  if(n<2) return {sigma:0,dNpTi:0};
+  var mean=0;for(var i=0;i<n;i++) mean+=allVals[i];mean/=n;
+  var v2=0;for(var i=0;i<n;i++) v2+=(allVals[i]-mean)*(allVals[i]-mean);
+  var std=Math.sqrt(v2/(n-1));
+  var sigma=std>0?(outlierVal-mean)/std:0;
+  var sorted=allVals.slice().sort(function(a,b){return a-b;});
+  var oldRange=sorted[n-1]-sorted[0];
+  var removed=false;
+  var newArr=sorted.filter(function(v){if(!removed&&v===outlierVal){removed=true;return false;}return true;});
+  var dNpTi=newArr.length>0?(oldRange-(newArr[newArr.length-1]-newArr[0]))/2:oldRange/2;
+  return {sigma:sigma,dNpTi:dNpTi};
 }
 /* Build freq-numeric → freq-label map from box data (done once at call time) */
 function _getFreqToLabel(){
@@ -3684,8 +3801,16 @@ function _specFromStats(selConds,freqToLabel){
   return {hi:hi,lo:lo};
 }
 function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
+  var k=getIqrK();
+  var excl=isExcludeOutliers();
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
+  var passActive=yFlt&&yFlt.mode==='passing';
+  var yActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
+  var iqrActive=excl||(Math.abs(k-1.5)>0.001);
+  var needsRecompute=serActive||yActive||passActive||iqrActive;
+  var rlo=yActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+  var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
   var traces=[];
   var condIdxMap={};var ci=0;
   BOX_DATA.forEach(function(cd){if(condIdxMap[cd.condition]===undefined) condIdxMap[cd.condition]=ci++;});
@@ -3693,25 +3818,24 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
     var fs;
-    var passActive=yFlt&&yFlt.mode==='passing';
-    var yActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
-    if(serActive||yActive||passActive){
-      var rlo=yActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
-      var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+    if(needsRecompute){
       fs=[];
       cd.freq_stats.forEach(function(f){
-        var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
-          .filter(function(d){
-            return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
-              &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
-          });
+        var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
+        var detail=allDet.filter(function(d){
+          return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
+            &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
+        });
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
-        var s=computeBoxStats(fv);
+        var s=computeBoxStats(fv,k);
         if(!s) return;
         var outDet=detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;});
+        var boxDet=excl?detail.filter(function(d){return d.v>=s.lo_w&&d.v<=s.hi_w;}):detail;
+        var bs=excl&&boxDet.length>0?computeBoxStats(boxDet.map(function(d){return d.v;}),k):s;
+        if(!bs) return;
         fs.push({freq:f.freq,freq_label:f.freq_label,
-          n:s.n,mean:s.mean,q1:s.q1,q2:s.q2,q3:s.q3,lo_w:s.lo_w,hi_w:s.hi_w,
+          n:detail.length,mean:bs.mean,q1:bs.q1,q2:bs.q2,q3:bs.q3,lo_w:bs.lo_w,hi_w:bs.hi_w,
           outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:detail});
       });
     } else {
@@ -3907,11 +4031,101 @@ function saveBoxCSV(){
   a.href=url;a.download=(BOX_TITLE+'_boxplot_filtered').replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
+/* ---- outlier risk panel ---- */
+function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
+  var k=getIqrK();
+  var allSers=getAllBoxSerials();
+  var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
+  var passActive=yFlt&&yFlt.mode==='passing';
+  var yActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
+  var rlo=yActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+  var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+  var result=[];
+  BOX_DATA.forEach(function(cd){
+    if(selConds.indexOf(cd.condition)<0) return;
+    if(selTemps.indexOf(cd.temp)<0) return;
+    cd.freq_stats.forEach(function(f){
+      var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
+      var detail=allDet.filter(function(d){
+        return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
+          &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
+      });
+      if(detail.length<2) return;
+      var fv=detail.map(function(d){return d.v;});
+      var s=computeBoxStats(fv,k);
+      if(!s) return;
+      detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;}).forEach(function(d){
+        var risk=outlierRisk(d.v,fv);
+        result.push({cond:cd.condition,temp:cd.temp,freq:f.freq,freqLabel:f.freq_label,
+          serial:d.s,value:d.v,sigma:risk.sigma,dNpTi:risk.dNpTi,
+          key:d.s+'||'+condToKey(cd.condition)+'||'+cd.temp+'||'+f.freq.toFixed(3)});
+      });
+    });
+  });
+  return result;
+}
+function updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers){
+  var panel=document.getElementById('box_outlier_panel');
+  if(!panel||panel.style.display==='none') return;
+  var outliers=_collectOutliers(selConds,selTemps,yFlt,selBoxSers);
+  window._currentOutlierKeys=outliers.map(function(o){return o.key;});
+  var applyBtn=document.getElementById('box_apply_gf_btn');
+  if(applyBtn) applyBtn.textContent='Set as global filter ('+outliers.length+' pt'+(outliers.length!==1?'s':'')+')';
+  if(!outliers.length){
+    panel.innerHTML='<div style="padding:6px 14px;color:#888;font-size:12px">No outliers at current k×IQR threshold.</div>';
+    return;
+  }
+  outliers.sort(function(a,b){return Math.abs(b.sigma)-Math.abs(a.sigma);});
+  var hasSpec=LO_SPEC!==null||HI_SPEC!==null;
+  var rows=outliers.map(function(o){
+    var absSig=Math.abs(o.sigma);
+    var sigStyle=absSig>=3?'color:#c00;font-weight:bold':absSig>=2?'color:#c80;font-weight:bold':'color:#555';
+    var specCell=hasSpec?'<td style="'+(((LO_SPEC!==null&&o.value<LO_SPEC)||(HI_SPEC!==null&&o.value>HI_SPEC))?'color:#c00;font-weight:bold':'color:#080')+'">'+(((LO_SPEC!==null&&o.value<LO_SPEC)||(HI_SPEC!==null&&o.value>HI_SPEC))?'FAIL':'Pass')+'</td>':'';
+    return '<tr><td>'+o.cond+'</td><td>'+o.temp+'</td><td>'+o.freqLabel+'</td>'+
+      '<td>'+(o.serial==='unknown'?'&mdash;':o.serial)+'</td>'+
+      '<td>'+o.value.toFixed(4)+'</td>'+
+      '<td style="'+sigStyle+'">'+o.sigma.toFixed(2)+'σ</td>'+
+      '<td>'+o.dNpTi.toFixed(4)+'</td>'+specCell+'</tr>';
+  });
+  var specHdr=hasSpec?'<th>Pass/Fail</th>':'';
+  panel.innerHTML='<table class="stbl"><thead><tr>'+
+    '<th>Condition</th><th>Temp</th><th>Frequency</th><th>Serial</th>'+
+    '<th>Value</th><th>σ from mean</th><th>Δ NP TI/2</th>'+specHdr+
+    '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
+}
+function toggleOutlierPanel(){
+  var panel=document.getElementById('box_outlier_panel');
+  var btn=document.getElementById('box_outlier_toggle_btn');
+  if(!panel||!btn) return;
+  var show=panel.style.display==='none';
+  panel.style.display=show?'':'none';
+  btn.textContent=(show?'▼':'▶')+' Outlier Detail';
+  if(show){
+    var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
+    updateOutlierPanel(selConds,selTemps,yFlt,getSelectedBoxSerials());
+  }
+}
+/* ---- global filter (localStorage) ---- */
+function applyGlobalFilter(){
+  var keys=window._currentOutlierKeys;
+  if(!keys||!keys.length){alert('No outliers to exclude at current settings.');return;}
+  try{
+    localStorage.setItem('padb_v2_excluded',JSON.stringify({v:1,excluded:keys}));
+    var btn=document.getElementById('box_gf_status');
+    if(btn) btn.textContent=keys.length+' pts in global filter';
+  }catch(e){alert('localStorage write failed: '+e.message);}
+}
+function clearGlobalFilter(){
+  try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
+  var s=document.getElementById('box_gf_status');
+  if(s) s.textContent='';
+}
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
   Plotly.react('plot',buildBoxTraces(selConds,selTemps,yFlt,selBoxSers),buildLayout());
   updateStatsTable(selConds,yFlt,selBoxSers);
+  updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
 }
 (function init(){
   var allConds=[];
@@ -4105,6 +4319,13 @@ def _build_box_interactive_html(
         '  <label title="Overlay individual DUT measurement points on each box">'
         '<input type="checkbox" id="box_show_pts_chk" onchange="update()">'
         '&nbsp;Show&nbsp;points</label>\n'
+        '  <span class="sep"></span>\n'
+        '  <label title="IQR fence multiplier: points beyond Q1 - k×IQR or Q3 + k×IQR are flagged as outliers">'
+        'k&thinsp;&times;&thinsp;IQR:&nbsp;<input type="number" id="box_iqr_k" value="1.5"'
+        ' min="0.5" max="5" step="0.1" style="width:52px" oninput="update()"></label>\n'
+        '  <label title="Recompute box statistics with outlier points removed from Q1/Q2/Q3 calculation">'
+        '<input type="checkbox" id="box_excl_out_chk" onchange="update()">'
+        '&nbsp;Exclude&nbsp;outliers&nbsp;from&nbsp;box</label>\n'
         '  <button class="csv-btn" onclick="saveBoxCSV()">&#8595;&nbsp;CSV</button>\n'
         '</div>\n'
     )
@@ -4132,11 +4353,21 @@ def _build_box_interactive_html(
         "</head>\n<body>\n"
         + ctrl_bar + env_bar + filter_bar
         + '<div id="plot"></div>\n'
-        + '<div style="display:flex;gap:8px;align-items:center;padding:4px 8px">\n'
+        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
         + '  <button class="toggle-btn" id="box_stat_toggle_btn"'
         ' onclick="toggleStatPanel()">&#9658; Statistics Table</button>\n'
+        + '  <button class="toggle-btn" id="box_outlier_toggle_btn"'
+        ' onclick="toggleOutlierPanel()">&#9658; Outlier Detail</button>\n'
+        + '  <button class="toggle-btn" id="box_apply_gf_btn"'
+        ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
+        ' onclick="applyGlobalFilter()">Set as global filter</button>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#fff0f0;border-color:#c00;color:#c00"'
+        ' onclick="clearGlobalFilter()">Clear global filter</button>\n'
+        + '  <span id="box_gf_status" style="font-size:12px;color:#555"></span>\n'
         + '</div>\n'
         + '<div id="box_stat_panel" style="display:none;overflow-x:auto;padding:4px"></div>\n'
+        + '<div id="box_outlier_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + f"<script>\n{constants}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
     )
