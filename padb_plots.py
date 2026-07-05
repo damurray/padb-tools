@@ -131,6 +131,21 @@ function freqTxtChange(which){
   else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
   txt.value=v.toFixed(3);slider.value=v;syncFreq();update();
 }
+function freqStep(which,dir){
+  var fv=FREQ_VALS,txt=document.getElementById('freq_'+which+'_txt'),slider=document.getElementById('freq_'+which);
+  var cur=parseFloat(txt.value),idx=-1;
+  for(var i=0;i<fv.length;i++){if(Math.abs(fv[i]-cur)<0.0001){idx=i;break;}}
+  if(idx<0){var best=0;for(var i=1;i<fv.length;i++){if(Math.abs(fv[i]-cur)<Math.abs(fv[best]-cur))best=i;}idx=best;}
+  var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
+  if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
+  else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
+  txt.value=nv.toFixed(3);slider.value=nv;update();
+}
+function freqKeyDown(e,which){
+  if(e.key==='Enter')freqTxtChange(which);
+  else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
+  else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
+}
 function setFreqBand(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
   s1.value=Math.max(parseFloat(s1.min),lo);
@@ -573,6 +588,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var TRACE_MODE={json.dumps(cfg.get('mode', 'lines+markers'))};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
+        f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
     ])
 
     css = (
@@ -628,13 +644,13 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
-        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'lo\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
-        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'hi\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
         f'  <label><input type="checkbox" id="log_x_chk"'
         + (' checked' if log_x else '')
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
@@ -805,6 +821,7 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in group_cols])};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
+        f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
     ])
 
     css = (
@@ -836,6 +853,9 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "border-radius:3px;cursor:pointer;background:#fff;}"
         "button.reset-btn:hover{background:#e8e8e8;}"
         "#n_points{font-size:12px;color:#666;margin-left:auto;}"
+        ".stbl{border-collapse:collapse;font-size:12px;margin:4px 0;}"
+        ".stbl th{background:#e8eaf6;padding:4px 10px;text-align:left;border:1px solid #ccc;white-space:nowrap;}"
+        ".stbl td{padding:3px 10px;border:1px solid #ddd;white-space:nowrap;}"
     )
 
     dist_js = r"""
@@ -891,6 +911,21 @@ function freqTxtChange(which){
   else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
   txt.value=v.toFixed(3);slider.value=v;update();
 }
+function freqStep(which,dir){
+  var fv=FREQ_VALS,txt=document.getElementById('freq_'+which+'_txt'),slider=document.getElementById('freq_'+which);
+  var cur=parseFloat(txt.value),idx=-1;
+  for(var i=0;i<fv.length;i++){if(Math.abs(fv[i]-cur)<0.0001){idx=i;break;}}
+  if(idx<0){var best=0;for(var i=1;i<fv.length;i++){if(Math.abs(fv[i]-cur)<Math.abs(fv[best]-cur))best=i;}idx=best;}
+  var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
+  if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
+  else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
+  txt.value=nv.toFixed(3);slider.value=nv;update();
+}
+function freqKeyDown(e,which){
+  if(e.key==='Enter')freqTxtChange(which);
+  else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
+  else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
+}
 function setFreqBand(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
   s1.value=Math.max(parseFloat(s1.min),lo);
@@ -900,7 +935,6 @@ function setFreqBand(lo,hi){
   update();
 }
 function applyFilters(data){
-  var passOnly=document.getElementById('pass_only').checked;
   var freqLo=parseFloat(document.getElementById('freq_lo').value);
   var freqHi=parseFloat(document.getElementById('freq_hi').value);
   var selections={};
@@ -913,23 +947,34 @@ function applyFilters(data){
       var v=String(r[col]===null||r[col]===undefined?'':r[col]);
       if(allowed.indexOf(v)<0) return false;
     }
-    if(passOnly){
-      var hi=Number(r.Upper_Limit);
-      if(!isNaN(hi)&&r.Value>hi) return false;
-    }
+    return true;
+  });
+}
+function applyPassOnly(data){
+  var passOnly=document.getElementById('pass_only').checked;
+  if(!passOnly) return data;
+  return data.filter(function(r){
+    var hi=r.Upper_Limit!=null?Number(r.Upper_Limit):NaN;
+    var lo=r.Lower_Limit!=null?Number(r.Lower_Limit):NaN;
+    if(isNaN(hi)&&isNaN(lo)) return false;
+    if(!isNaN(hi)&&r.Value>hi) return false;
+    if(!isNaN(lo)&&r.Value<lo) return false;
     return true;
   });
 }
 function update(){
-  var filtered=applyFilters(DATA);
+  var freqLo=parseFloat(document.getElementById('freq_lo').value);
+  var groupFiltered=applyFilters(DATA);
+  var filtered=applyPassOnly(groupFiltered);
   var values=filtered.map(function(r){return r.Value;});
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   var shapes=[],annotations=[];
   var hiSpecs={},loSpecs={};
-  filtered.forEach(function(r){
-    if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit)))
+  groupFiltered.forEach(function(r){
+    if(r.Frequency_MHz<=freqLo) return;
+    if(r.Upper_Limit!=null&&!isNaN(Number(r.Upper_Limit)))
       hiSpecs[Math.round(Number(r.Upper_Limit)*100)/100]=true;
-    if(r.Lower_Limit!==null&&r.Lower_Limit!==undefined&&r.Lower_Limit!==''&&!isNaN(Number(r.Lower_Limit)))
+    if(r.Lower_Limit!=null&&!isNaN(Number(r.Lower_Limit)))
       loSpecs[Math.round(Number(r.Lower_Limit)*100)/100]=true;
   });
   if(!Object.keys(hiSpecs).length&&HI_SPEC!==null) hiSpecs[Math.round(HI_SPEC*100)/100]=true;
@@ -951,6 +996,42 @@ function update(){
     margin:{l:60,r:30,t:60,b:60}
   };
   Plotly.react('plot',[{type:'histogram',x:values,nbinsx:60,marker:{color:'steelblue',opacity:0.7},name:'Data'}],layout);
+  updateDistStats(values);
+}
+function mean(arr){var s=0;for(var i=0;i<arr.length;i++)s+=arr[i];return arr.length?s/arr.length:NaN;}
+function stddev(arr,mu){
+  if(arr.length<2) return 0;
+  var s=0;for(var i=0;i<arr.length;i++)s+=Math.pow(arr[i]-mu,2);
+  return Math.sqrt(s/(arr.length-1));
+}
+function updateDistStats(values){
+  var el=document.getElementById('dist_stats_panel');
+  if(!el) return;
+  var n=values.length;
+  if(!n){el.innerHTML='<i>No data</i>';return;}
+  var sorted=values.slice().sort(function(a,b){return a-b;});
+  var mu=mean(values);
+  var s=stddev(values,mu);
+  var median=n%2?sorted[Math.floor(n/2)]:(sorted[n/2-1]+sorted[n/2])/2;
+  /* skewness (adjusted Fisher–Pearson) */
+  var sk=0,ku=0;
+  for(var i=0;i<n;i++){var z=(values[i]-mu)/s;sk+=Math.pow(z,3);ku+=Math.pow(z,4);}
+  var skew=n>2?(n/((n-1)*(n-2)))*sk:NaN;
+  var kurt=n>3?((n*(n+1))/((n-1)*(n-2)*(n-3)))*ku - (3*(n-1)*(n-1))/((n-2)*(n-3)):NaN;
+  /* normality classification */
+  var label,color;
+  if(Math.abs(skew)<=0.5&&Math.abs(kurt)<=1){label='Normal';color='#2ca02c';}
+  else if(Math.abs(skew)>1.5){
+    label=skew>0?'Right-skewed (positive)':'Left-skewed (negative)';color='#d62728';
+  } else if(Math.abs(kurt)>3){label='Heavy-tailed (leptokurtic)';color='#d62728';}
+  else if(kurt<-1){label='Light-tailed (platykurtic)';color='#ff7f0e';}
+  else {label='Mild skew / non-normal';color='#ff7f0e';}
+  function fmt(v,d){return isNaN(v)?'—':v.toFixed(d!==undefined?d:4);}
+  el.innerHTML='<table class="stbl"><tr>'
+    +'<th>n</th><th>Mean</th><th>Std</th><th>Median</th><th>Skewness</th><th>Excess Kurt.</th><th>Distribution</th></tr>'
+    +'<tr><td>'+n+'</td><td>'+fmt(mu,4)+'</td><td>'+fmt(s,4)+'</td><td>'+fmt(median,4)+'</td>'
+    +'<td>'+fmt(skew,3)+'</td><td>'+fmt(kurt,3)+'</td>'
+    +'<td style="color:'+color+';font-weight:bold">'+label+'</td></tr></table>';
 }
 function resetFilters(){
   GROUP_COLS.forEach(function(pair){
@@ -985,19 +1066,20 @@ update();
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
-        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'lo\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
-        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'hi\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
         f'{band_section_html}'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         '  <span id="n_points"></span>\n'
         "</div>\n"
         '<div id="plot"></div>\n'
+        '<div id="dist_stats_panel" style="padding:4px 8px;overflow-x:auto"></div>\n'
         f"<script>{_get_plotlyjs()}</script>\n"
         "<script>\n"
         + constants + "\n"
@@ -1748,12 +1830,20 @@ function computeFreqResult(fs,params){
   var g_lo=params.mu+dev_lo+params.gb+params.drift;
   var tll_up=(spec_up!=null)?spec_up-g_up:null;
   var tll_lo=(spec_lo_mag!=null)?-spec_lo_mag+g_lo:null;
+  var ssu_up=ti_up+g_up;   // spec supportable from data (upper): TI_up + full budget
+  var ssu_lo=ti_lo-g_lo;   // spec supportable (lower): TI_lo - full budget
+  var margin_up=(spec_up!==null)?spec_up-ssu_up:null;   // positive = passing with margin
+  var margin_lo=(spec_lo_mag!==null)?ssu_lo-(-spec_lo_mag):null;
   return {n_use:n_use,k:k,ti_up:ti_up,ti_lo:ti_lo,np_active:useNp,
           tll_up:tll_up,tll_lo:tll_lo,
+          ssu_up:ssu_up,ssu_lo:ssu_lo,
+          margin_up:margin_up,margin_lo:margin_lo,
           denv_up:dev_up,denv_lo:dev_lo,
           spec_lo:-spec_lo_mag,spec_up:spec_up,
           pass_up:tll_up===null||ti_up<=tll_up,
-          pass_lo:tll_lo===null||ti_lo>=tll_lo};
+          pass_lo:tll_lo===null||ti_lo>=tll_lo,
+          ssu_pass_up:spec_up===null||ssu_up<=spec_up,
+          ssu_pass_lo:spec_lo_mag===null||ssu_lo>=-spec_lo_mag};
 }
 
 /* ---- CSV export ---- */
@@ -1821,9 +1911,9 @@ function buildTraces(conds,params){
   conds.forEach(function(cd,ci){
     var color=PALETTE[ci%PALETTE.length];
     var sorted=(cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;});
-    // Always push 4 traces per condition to keep index stable for Plotly.react
+    // Always push 5 traces per condition to keep index stable for Plotly.react
     if(!sorted.length){
-      for(var i=0;i<4;i++)
+      for(var i=0;i<5;i++)
         traces.push({type:'scatter',x:[],y:[],mode:'lines',showlegend:false,hoverinfo:'skip'});
       return;
     }
@@ -1894,21 +1984,84 @@ function buildTraces(conds,params){
       name:cd.condition+' FAIL',legendgroup:cd.condition,
       showlegend:fail_x.length>0,hoverinfo:'skip'
     });
+    // Trace 5: Spec supportable = TI_up + MU + DEnv + GB (bottom-up view)
+    // Shows what spec this population can commit to at each frequency.
+    // Green markers where ssu <= spec (passing with margin); red where ssu > spec.
+    var ssu_x=[],ssu_y=[],ssu_cols=[],ssu_hover=[];
+    var any_ssu_fail=false;
+    sorted.forEach(function(fs){
+      var r=computeFreqResult(fs,params);
+      ssu_x.push(fs.freq);
+      ssu_y.push(r.ssu_up);
+      var col=r.spec_up!==null?(r.ssu_pass_up?'#2ca02c':'#d62728'):'#9467bd';
+      if(!r.ssu_pass_up) any_ssu_fail=true;
+      ssu_cols.push(col);
+      var budgetStr='MU='+params.mu.toFixed(2)+' ΔEnv='+r.denv_up.toFixed(2)+' GB='+params.gb.toFixed(2);
+      var mStr=r.margin_up!==null?
+        'Margin: '+(r.margin_up>=0?'+':'')+r.margin_up.toFixed(3)+' dB '+(r.margin_up>=0?'✔':'✘'):
+        'No spec defined';
+      ssu_hover.push('Spec supportable: '+r.ssu_up.toFixed(3)+'<br>'+budgetStr+'<br>'+mStr);
+    });
+    traces.push({
+      type:'scatter',x:ssu_x,y:ssu_y,mode:'lines+markers',
+      line:{color:color,width:1,dash:'dot'},
+      marker:{size:6,color:ssu_cols,line:{color:'white',width:0.5}},
+      name:cd.condition+' ▲Spec',legendgroup:cd.condition,
+      showlegend:any_ssu_fail,
+      text:ssu_hover,
+      hovertemplate:'<b>'+cd.condition+'</b><br>%{text}<extra></extra>'
+    });
   });
 
   // Spec + TLL reference lines
   if(!all_freqs.length) return traces;
   var fMin=Math.min.apply(null,all_freqs),fMax=Math.max.apply(null,all_freqs);
-  function hline(y,name,color,dash){
-    return {type:'scatter',x:[fMin,fMax],y:[y,y],mode:'lines',
-            line:{color:color,dash:dash,width:1.5},name:name,
-            hovertemplate:name+': '+y.toFixed(4)+'<extra></extra>'};
+  /* Build per-frequency spec segments from ACTIVE conditions' freq_stats values.
+     This makes the spec line update dynamically when condition filters change. */
+  function buildStatSpecRanges(specKey){
+    var ranges={};
+    conds.forEach(function(cd){
+      (cd.freq_stats||[]).forEach(function(fs){
+        var sv=fs[specKey];
+        if(sv===null||sv===undefined) return;
+        var k=Math.round(sv*100)/100;
+        if(!ranges[k]) ranges[k]={fMin:fs.freq,fMax:fs.freq};
+        else{ranges[k].fMin=Math.min(ranges[k].fMin,fs.freq);ranges[k].fMax=Math.max(ranges[k].fMax,fs.freq);}
+      });
+    });
+    return ranges;
   }
-  var specLoRaw=(LO_SPEC!==null)?LO_SPEC:params.spec_lo_override;
-  var specHi=(HI_SPEC!==null)?HI_SPEC:params.spec_hi_override;
-  var specLo=specLoRaw!==null?-Math.abs(specLoRaw):null;
-  if(specLo!==null) traces.push(hline(specLo,'Spec Lo','red','dash'));
-  if(specHi!==null) traces.push(hline(specHi,'Spec Hi','red','dash'));
+  /* priority: user spec override > per-condition data > global constant */
+  var hiRanges={},loRanges={};
+  if(params.spec_hi_override!==null){
+    hiRanges[Math.round(params.spec_hi_override*100)/100]={fMin:fMin,fMax:fMax};
+  } else {
+    hiRanges=buildStatSpecRanges('spec_up');
+    if(!Object.keys(hiRanges).length&&HI_SPEC!==null)
+      hiRanges[Math.round(HI_SPEC*100)/100]={fMin:fMin,fMax:fMax};
+  }
+  if(params.spec_lo_override!==null){
+    var oLo=-Math.abs(params.spec_lo_override);
+    loRanges[Math.round(oLo*100)/100]={fMin:fMin,fMax:fMax};
+  } else {
+    loRanges=buildStatSpecRanges('spec_lo');
+    if(!Object.keys(loRanges).length&&LO_SPEC!==null){
+      var gLo=-Math.abs(LO_SPEC);
+      loRanges[Math.round(gLo*100)/100]={fMin:fMin,fMax:fMax};
+    }
+  }
+  Object.keys(hiRanges).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
+    var r=hiRanges[v];
+    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
+      line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi '+v,
+      hovertemplate:'Spec Hi: '+v.toFixed(4)+'<extra></extra>'});
+  });
+  Object.keys(loRanges).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
+    var r=loRanges[v];
+    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
+      line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
+      hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
+  });
 
   // TLL: per-frequency worst-case across all visible conditions
   // Collecting worst-case (min tll_up, max tll_lo) per frequency avoids a single
@@ -2003,12 +2156,14 @@ function buildLayout(){
 /* ---- TLL display ---- */
 function updateTLLDisplay(conds,params){
   var el=document.getElementById('tll_display');if(!el)return;
-  var ups=[],los=[];
+  var ups=[],los=[],margins_up=[],margins_lo=[];
   conds.forEach(function(cd){
     (cd.freq_stats||[]).forEach(function(fs){
       var r=computeFreqResult(fs,params);
       if(r.tll_up!==null) ups.push(r.tll_up);
       if(r.tll_lo!==null) los.push(r.tll_lo);
+      if(r.margin_up!==null) margins_up.push(r.margin_up);
+      if(r.margin_lo!==null) margins_lo.push(r.margin_lo);
     });
   });
   function rng(arr){
@@ -2016,7 +2171,17 @@ function updateTLLDisplay(conds,params){
     var mn=Math.min.apply(null,arr),mx=Math.max.apply(null,arr);
     return Math.abs(mx-mn)<0.001?mn.toFixed(4):mn.toFixed(4)+' to '+mx.toFixed(4);
   }
-  el.textContent='TLL↑: '+rng(ups)+'  |  TLL↓: '+rng(los);
+  var parts=['TLL↑: '+rng(ups)+'  |  TLL↓: '+rng(los)];
+  if(margins_up.length){
+    var wm=Math.min.apply(null,margins_up);
+    var pass=wm>=0;
+    parts.push('Margin↑ (worst): '+(pass?'+':'')+wm.toFixed(3)+' dB '+(pass?'✔':'✘'));
+  }
+  if(margins_lo.length){
+    var wml=Math.min.apply(null,margins_lo);
+    parts.push('Margin↓ (worst): '+(wml>=0?'+':'')+wml.toFixed(3)+' dB '+(wml>=0?'✔':'✘'));
+  }
+  el.textContent=parts.join('  |  ');
 }
 
 /* ---- statistics summary table ---- */
@@ -2043,13 +2208,17 @@ function updateStatPanel(conds,params){
     var sorted=(cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;});
     sorted.forEach(function(fs){
       var r=computeFreqResult(fs,params);
-      var pass=r.pass_up&&r.pass_lo;
+      var pass=r.pass_up&&r.pass_lo&&r.ssu_pass_up&&r.ssu_pass_lo;
       if(!pass) nFail++;
       var bg=pass?'':'background:#fff0f0';
       var tiStr=(r.np_active?'[NP] ':'')+
                '['+r.ti_lo.toFixed(4)+', '+r.ti_up.toFixed(4)+']';
       var tllStr=(r.tll_lo!==null&&r.tll_up!==null)?
         '['+r.tll_lo.toFixed(4)+', '+r.tll_up.toFixed(4)+']':'—';
+      var ssuStr=r.ssu_up.toFixed(4);
+      var marginStr=r.margin_up!==null?
+        '<span style="color:'+(r.margin_up>=0?'green':'red')+';font-weight:bold">'+
+        (r.margin_up>=0?'+':'')+r.margin_up.toFixed(4)+'</span>':'—';
       var outCells='';
       if(fs.outliers&&fs.outliers.length){
         outCells='<td class="out"><b>'+fs.outliers.length+'</b>: '+
@@ -2065,6 +2234,8 @@ function updateStatPanel(conds,params){
         '<td>'+fs.s.toFixed(4)+'</td>'+
         '<td>'+tiStr+'</td>'+
         '<td>'+tllStr+'</td>'+
+        '<td>'+ssuStr+'</td>'+
+        '<td>'+marginStr+'</td>'+
         '<td style="text-align:center">'+(pass?
           '<span style="color:green">✔</span>':
           '<span style="color:red;font-weight:bold">✘ FAIL</span>')+'</td>'+
@@ -2084,6 +2255,7 @@ function updateStatPanel(conds,params){
     '<th>Condition</th><th>Freq (MHz)</th><th>n</th>'+
     '<th>Mean</th><th>Std</th>'+
     '<th>TI Bounds</th><th>TLL Bounds</th>'+
+    '<th>Spec Spt↑</th><th>Margin↑</th>'+
     '<th>Pass</th><th>Method</th><th>Normality</th><th>Outliers</th></tr></thead><tbody>';
   el.innerHTML=banner+hdr+rows.join('')+'</tbody></table>';
 }
@@ -2120,9 +2292,34 @@ function applyDataFilter(conds,params,flt){
 function syncFreq(){
   var lo=parseFloat(document.getElementById('freq_lo').value);
   var hi=parseFloat(document.getElementById('freq_hi').value);
-  document.getElementById('freq_lo_val').textContent=lo.toFixed(2);
-  document.getElementById('freq_hi_val').textContent=hi.toFixed(2);
+  document.getElementById('freq_lo_txt').value=lo.toFixed(3);
+  document.getElementById('freq_hi_txt').value=hi.toFixed(3);
   update();
+}
+function freqTxtChange(which){
+  var txt=document.getElementById('freq_'+which+'_txt');
+  var slider=document.getElementById('freq_'+which);
+  var v=parseFloat(txt.value);
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
+  v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
+  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(3);slider.value=v;update();
+}
+function freqStep(which,dir){
+  var fv=FREQ_VALS,txt=document.getElementById('freq_'+which+'_txt'),slider=document.getElementById('freq_'+which);
+  var cur=parseFloat(txt.value),idx=-1;
+  for(var i=0;i<fv.length;i++){if(Math.abs(fv[i]-cur)<0.0001){idx=i;break;}}
+  if(idx<0){var best=0;for(var i=1;i<fv.length;i++){if(Math.abs(fv[i]-cur)<Math.abs(fv[best]-cur))best=i;}idx=best;}
+  var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
+  if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
+  else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
+  txt.value=nv.toFixed(3);slider.value=nv;update();
+}
+function freqKeyDown(e,which){
+  if(e.key==='Enter')freqTxtChange(which);
+  else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
+  else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
 }
 
 /* ---- main update ---- */
@@ -2275,6 +2472,7 @@ def _build_stat_summary_html(
         f"var DEFAULT_GB={default_gb!r};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var TEMPS_PRESENT={json.dumps(['Room'] + non_room_temps)};",
+        f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
     ])
 
     css = (
@@ -2332,6 +2530,8 @@ def _build_stat_summary_html(
         ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
         "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;}"
         ".csv-btn:hover{background:#cce4ff;}"
+        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
+        "border-radius:3px;text-align:right;margin-left:2px;}"
     )
 
     sep = '<div class="sep"></div>'
@@ -2340,13 +2540,15 @@ def _build_stat_summary_html(
         f'<label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<span id="freq_lo_val">{freq_min:.2f}</span>&nbsp;MHz</label>'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>'
     )
     freq_hi_html = (
         f'<label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<span id="freq_hi_val">{freq_max:.2f}</span>&nbsp;MHz</label>'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>'
     )
     log_x_html = (
         f'<label><input type="checkbox" id="log_x_chk"'
@@ -2658,11 +2860,36 @@ function updateBadge(col){
 function syncFreq(){
   var lo=parseFloat(document.getElementById('env_freq_lo').value);
   var hi=parseFloat(document.getElementById('env_freq_hi').value);
-  var lv=document.getElementById('env_freq_lo_val');
-  var hv=document.getElementById('env_freq_hi_val');
-  if(lv) lv.textContent=lo.toFixed(2);
-  if(hv) hv.textContent=hi.toFixed(2);
+  var lv=document.getElementById('env_freq_lo_txt');
+  var hv=document.getElementById('env_freq_hi_txt');
+  if(lv) lv.value=lo.toFixed(3);
+  if(hv) hv.value=hi.toFixed(3);
   update();
+}
+function freqTxtChange(which){
+  var txt=document.getElementById('env_freq_'+which+'_txt');
+  var slider=document.getElementById('env_freq_'+which);
+  var v=parseFloat(txt.value);
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
+  v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
+  if(which==='lo'){var h=parseFloat(document.getElementById('env_freq_hi').value);if(v>h)v=h;}
+  else{var l=parseFloat(document.getElementById('env_freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(3);slider.value=v;update();
+}
+function freqStep(which,dir){
+  var fv=ENV_FREQ_VALS,txt=document.getElementById('env_freq_'+which+'_txt'),slider=document.getElementById('env_freq_'+which);
+  var cur=parseFloat(txt.value),idx=-1;
+  for(var i=0;i<fv.length;i++){if(Math.abs(fv[i]-cur)<0.0001){idx=i;break;}}
+  if(idx<0){var best=0;for(var i=1;i<fv.length;i++){if(Math.abs(fv[i]-cur)<Math.abs(fv[best]-cur))best=i;}idx=best;}
+  var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
+  if(which==='lo'){if(nv>parseFloat(document.getElementById('env_freq_hi').value))return;}
+  else{if(nv<parseFloat(document.getElementById('env_freq_lo').value))return;}
+  txt.value=nv.toFixed(3);slider.value=nv;update();
+}
+function freqKeyDown(e,which){
+  if(e.key==='Enter')freqTxtChange(which);
+  else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
+  else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
 }
 function saveCSV(){
   var selConds=getSelectedConds();
@@ -2815,6 +3042,7 @@ def _build_env_summary_html(
     freq_min: float,
     freq_max: float,
     palette: list,
+    freq_vals: list = None,
     p_std=None,
     p_env=None,
     c_std=None,
@@ -2863,6 +3091,8 @@ def _build_env_summary_html(
         ".env-yin{width:68px;font-size:12px;padding:1px 3px;}"
         ".pc-lbl{font-size:11px;color:#555;white-space:nowrap;}"
         ".pc-lbl b{color:#333;}"
+        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
+        "border-radius:3px;text-align:right;margin-left:2px;}"
     )
 
     # Condition filter panels
@@ -2891,13 +3121,15 @@ def _build_env_summary_html(
         f'<label>Freq&nbsp;min:<input type="range" id="env_freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<span id="env_freq_lo_val">{freq_min:.2f}</span>&nbsp;MHz</label>'
+        f'<input class="freq-txt" id="env_freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>'
     )
     freq_hi_html = (
         f'<label>Freq&nbsp;max:<input type="range" id="env_freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<span id="env_freq_hi_val">{freq_max:.2f}</span>&nbsp;MHz</label>'
+        f'<input class="freq-txt" id="env_freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>'
     )
     log_x_html = (
         f'<label><input type="checkbox" id="env_log_x_chk"'
@@ -2968,6 +3200,7 @@ def _build_env_summary_html(
             ' [&minus;LDE, +UDE] &nbsp;|&nbsp; Dotted lines: estimated TTL</div>\n'
         )
 
+    _freq_vals_js = json.dumps(sorted(set(freq_vals))) if freq_vals else "[]"
     constants = "\n".join([
         f"var ENV_DATA={json.dumps(env_data)};",
         f"var ENV_TITLE={json.dumps(title)};",
@@ -2975,6 +3208,7 @@ def _build_env_summary_html(
         f"var ENV_Y_LIM={json.dumps(y_lim)};",
         f"var ENV_FREQ_MIN={freq_min!r};",
         f"var ENV_FREQ_MAX={freq_max!r};",
+        f"var ENV_FREQ_VALS={_freq_vals_js};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var PALETTE={json.dumps(palette)};",
     ])
@@ -3008,7 +3242,7 @@ def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
     y_label = cfg.get("y_label", "Delta (dB)")
     y_lim = cfg.get("y_lim")
 
-    all_freqs = [f for cd in env_data for f in cd["freqs"] if f is not None]
+    all_freqs = sorted(set(f for cd in env_data for f in cd["freqs"] if f is not None))
     freq_min = float(min(all_freqs)) if all_freqs else 0.0
     freq_max = float(max(all_freqs)) if all_freqs else 1.0
 
@@ -3063,6 +3297,7 @@ def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
 
     html = _build_env_summary_html(
         env_data, cond_dims, title, y_label, y_lim, log_x, freq_min, freq_max, palette,
+        freq_vals=all_freqs,
         p_std=_first_int("Proportion (Std.)"),
         p_env=_first_int("Proportion (Env.)"),
         c_std=_first_int("Confidence (Std.)"),
@@ -3422,6 +3657,32 @@ function computeBoxStats(vals){
     lo_w:loF,hi_w:hiF,
     outliers:sorted.filter(function(v){return v<loF||v>hiF;})};
 }
+/* Build freq-numeric → freq-label map from box data (done once at call time) */
+function _getFreqToLabel(){
+  var m={};
+  BOX_DATA.forEach(function(cd){
+    cd.freq_stats.forEach(function(fs){if(fs.freq!==undefined&&fs.freq_label)m[fs.freq]=fs.freq_label;});
+  });
+  return m;
+}
+/* Compute per-freq-cat spec limits from BOX_STATS for the active conditions.
+   Uses the most restrictive limit: min(upper), max(lower) across active conditions. */
+function _specFromStats(selConds,freqToLabel){
+  var hi={},lo={};
+  BOX_STATS.forEach(function(cd){
+    if(selConds.indexOf(cd.condition)<0) return;
+    (cd.freq_stats||[]).forEach(function(fs){
+      var fl=freqToLabel[fs.freq];if(!fl) return;
+      if(fs.spec_up!==null&&fs.spec_up!==undefined){
+        hi[fl]=(hi[fl]===undefined)?fs.spec_up:Math.min(hi[fl],fs.spec_up);
+      }
+      if(fs.spec_lo!==null&&fs.spec_lo!==undefined){
+        lo[fl]=(lo[fl]===undefined)?fs.spec_lo:Math.max(lo[fl],fs.spec_lo);
+      }
+    });
+  });
+  return {hi:hi,lo:lo};
+}
 function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
@@ -3512,14 +3773,22 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         hovertemplate:'%{text}<extra></extra>'});
     }
   });
-  if(LO_SPEC!==null) traces.push({type:'scatter',mode:'lines',
-    x:BOX_FREQ_ORDER,y:BOX_FREQ_ORDER.map(function(){return LO_SPEC;}),
+  /* Dynamic per-freq-cat spec lines derived from active conditions */
+  var f2l=_getFreqToLabel();
+  var specMaps=_specFromStats(selConds,f2l);
+  var hiX=[],hiY=[],loX=[],loY=[];
+  BOX_FREQ_ORDER.forEach(function(fl){
+    var hv=specMaps.hi[fl]; if(hv===undefined&&HI_SPEC!==null) hv=HI_SPEC;
+    var lv=specMaps.lo[fl]; if(lv===undefined&&LO_SPEC!==null) lv=LO_SPEC;
+    if(hv!==undefined){hiX.push(fl);hiY.push(hv);}
+    if(lv!==undefined){loX.push(fl);loY.push(lv);}
+  });
+  if(loX.length) traces.push({type:'scatter',mode:'lines',x:loX,y:loY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
-    hovertemplate:'Spec Lo: '+LO_SPEC.toFixed(4)+'<extra></extra>'});
-  if(HI_SPEC!==null) traces.push({type:'scatter',mode:'lines',
-    x:BOX_FREQ_ORDER,y:BOX_FREQ_ORDER.map(function(){return HI_SPEC;}),
+    hovertemplate:'Spec Lo: %{y:.4f}<extra></extra>'});
+  if(hiX.length) traces.push({type:'scatter',mode:'lines',x:hiX,y:hiY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
-    hovertemplate:'Spec Hi: '+HI_SPEC.toFixed(4)+'<extra></extra>'});
+    hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
   return traces;
 }
 function buildLayout(){
@@ -4042,7 +4311,22 @@ function freqTxtChange(which){
   v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
   if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
   else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
-  txt.value=v.toFixed(3);slider.value=v;syncFreq();update();
+  txt.value=v.toFixed(3);slider.value=v;update();
+}
+function freqStep(which,dir){
+  var fv=FREQ_VALS,txt=document.getElementById('freq_'+which+'_txt'),slider=document.getElementById('freq_'+which);
+  var cur=parseFloat(txt.value),idx=-1;
+  for(var i=0;i<fv.length;i++){if(Math.abs(fv[i]-cur)<0.0001){idx=i;break;}}
+  if(idx<0){var best=0;for(var i=1;i<fv.length;i++){if(Math.abs(fv[i]-cur)<Math.abs(fv[best]-cur))best=i;}idx=best;}
+  var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
+  if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
+  else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
+  txt.value=nv.toFixed(3);slider.value=nv;update();
+}
+function freqKeyDown(e,which){
+  if(e.key==='Enter')freqTxtChange(which);
+  else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
+  else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
 }
 function setFreqBand(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
@@ -4087,8 +4371,8 @@ function buildTraces(active){
       type:'scatter',
       x:freqs.concat(freqs.slice().reverse()),
       y:maxs.concat(mins.slice().reverse()),
-      fill:'toself',fillcolor:hexToRgba(color,0.15),
-      line:{width:0,color:'rgba(0,0,0,0)'},
+      fill:'toself',fillcolor:hexToRgba(color,0.28),
+      line:{width:0.5,color:hexToRgba(color,0.4)},
       showlegend:false,name:cd.condition,legendgroup:cd.condition,
       hoverinfo:'skip'
     });
@@ -4101,40 +4385,57 @@ function buildTraces(active){
     });
     /* TTL upper */
     if(uttls.some(function(v){return v!==null&&v!==undefined;})){
+      var ttlLabel=cd.uttl_is_estimate?' TTL↑ (est)':' TTL↑';
       traces.push({
         type:'scatter',x:freqs,y:uttls,mode:'lines',
-        line:{color:color,width:1,dash:'dash'},
-        name:cd.condition+' TTL↑',legendgroup:cd.condition,showlegend:false,
-        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4g} MHz<br>TTL↑: %{y:.2f}<extra></extra>'
+        line:{color:color,width:1.5,dash:cd.uttl_is_estimate?'dot':'dash'},
+        name:cd.condition+ttlLabel,legendgroup:cd.condition,showlegend:false,
+        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4g} MHz<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
       });
     }
     /* TTL lower */
     if(lttls.some(function(v){return v!==null&&v!==undefined;})){
+      var ttlLabelLo=cd.uttl_is_estimate?' TTL↓ (est)':' TTL↓';
       traces.push({
         type:'scatter',x:freqs,y:lttls,mode:'lines',
-        line:{color:color,width:1,dash:'dash'},
-        name:cd.condition+' TTL↓',legendgroup:cd.condition,showlegend:false,
+        line:{color:color,width:1.5,dash:cd.uttl_is_estimate?'dot':'dash'},
+        name:cd.condition+ttlLabelLo,legendgroup:cd.condition,showlegend:false,
         hoverinfo:'skip'
       });
     }
   });
-  /* spec lines — collect unique values from active groups, fall back to globals */
+  /* spec lines — per-frequency, drawn as segments per unique spec value */
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
-  var hiSpecs={},loSpecs={};
-  active.forEach(function(cd){
-    if(cd.spec_hi!==null&&cd.spec_hi!==undefined) hiSpecs[Math.round(cd.spec_hi*100)/100]=true;
-    if(cd.spec_lo!==null&&cd.spec_lo!==undefined) loSpecs[Math.round(cd.spec_lo*100)/100]=true;
-  });
-  if(!Object.keys(hiSpecs).length&&HI_SPEC!==null) hiSpecs[Math.round(HI_SPEC*100)/100]=true;
-  if(!Object.keys(loSpecs).length&&LO_SPEC!==null) loSpecs[Math.round(LO_SPEC*100)/100]=true;
-  Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
-    traces.push({type:'scatter',x:[fLo,fHi],y:[v,v],mode:'lines',
+  // specRanges[val] = {fMin, fMax} — frequency extent where that spec value applies
+  function buildSpecRanges(listKey,fallback){
+    var ranges={};
+    active.forEach(function(cd){
+      var slist=cd[listKey]||[];
+      cd.freqs.forEach(function(f,i){
+        if(f<fLo||f>fHi) return;
+        var sv=slist[i];
+        if(sv===null||sv===undefined) return;
+        var k=Math.round(sv*100)/100;
+        if(!ranges[k]) ranges[k]={fMin:f,fMax:f};
+        else{ranges[k].fMin=Math.min(ranges[k].fMin,f);ranges[k].fMax=Math.max(ranges[k].fMax,f);}
+      });
+    });
+    if(!Object.keys(ranges).length&&fallback!==null)
+      ranges[Math.round(fallback*100)/100]={fMin:fLo,fMax:fHi};
+    return ranges;
+  }
+  var hiRanges=buildSpecRanges('spec_hi_list',HI_SPEC);
+  var loRanges=buildSpecRanges('spec_lo_list',LO_SPEC);
+  Object.keys(hiRanges).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
+    var r=hiRanges[v];
+    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
       line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi '+v,
       hovertemplate:'Spec Hi: '+v.toFixed(4)+'<extra></extra>'});
   });
-  Object.keys(loSpecs).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
-    traces.push({type:'scatter',x:[fLo,fHi],y:[v,v],mode:'lines',
+  Object.keys(loRanges).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
+    var r=loRanges[v];
+    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
       line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
       hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
   });
@@ -4171,12 +4472,86 @@ function resetFilters(){
   document.getElementById('freq_hi').value=FREQ_MAX;
   document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
   document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
+  var allRad=document.querySelector('input[name="sum_flt"][value="all"]');
+  if(allRad){allRad.checked=true;toggleRangeInputs();}
+  var ylo=document.getElementById('sum_ylo');if(ylo)ylo.value='';
+  var yhi=document.getElementById('sum_yhi');if(yhi)yhi.value='';
   update();
+}
+
+/* ---- data filter (pass/Y-range) ---- */
+function getDataFilter(){
+  var mode='all';
+  document.querySelectorAll('input[name="sum_flt"]').forEach(function(r){if(r.checked)mode=r.value;});
+  var ylo=parseFloat(document.getElementById('sum_ylo').value);
+  var yhi=parseFloat(document.getElementById('sum_yhi').value);
+  return {mode:mode,ylo:isNaN(ylo)?-Infinity:ylo,yhi:isNaN(yhi)?Infinity:yhi};
+}
+function toggleRangeInputs(){
+  var el=document.getElementById('sum_range_inputs');
+  if(el){var r=document.querySelector('input[name="sum_flt"][value="range"]');
+    el.style.display=(r&&r.checked)?'inline-flex':'none';}
+}
+function applyDataFilter(active){
+  var flt=getDataFilter();
+  if(flt.mode==='all') return active;
+  var fLo=parseFloat(document.getElementById('freq_lo').value);
+  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  return active.filter(function(cd){
+    var vis=[];cd.freqs.forEach(function(f,i){if(f>=fLo&&f<=fHi)vis.push(i);});
+    if(!vis.length) return false;
+    if(flt.mode==='passing'){
+      return vis.every(function(i){
+        var hi=(cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi;
+        var lo=(cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
+        var uOk=(hi===null||cd.uttl[i]===null||Number(cd.uttl[i])<=hi);
+        var lOk=(lo===null||cd.lttl[i]===null||Number(cd.lttl[i])>=lo);
+        return uOk&&lOk;
+      });
+    }
+    if(flt.mode==='range'){
+      return vis.some(function(i){
+        return cd.max_data[i]>=flt.ylo&&cd.min_data[i]<=flt.yhi;
+      });
+    }
+    return true;
+  });
+}
+function saveCSV(){
+  var active=applyDataFilter(getActive());
+  var fLo=parseFloat(document.getElementById('freq_lo').value);
+  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var rows=['Condition,Freq_MHz,Mean,Min,Max,TTL_upper,TTL_lower,Spec_hi,Spec_lo'];
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  active.forEach(function(cd){
+    cd.freqs.forEach(function(f,i){
+      if(f<fLo||f>fHi) return;
+      var hi=(cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi;
+      var lo=(cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
+      rows.push([
+        esc(cd.condition),
+        f.toFixed(4),
+        cd.mean[i]!=null?Number(cd.mean[i]).toFixed(4):'',
+        cd.min_data[i]!=null?Number(cd.min_data[i]).toFixed(4):'',
+        cd.max_data[i]!=null?Number(cd.max_data[i]).toFixed(4):'',
+        cd.uttl[i]!=null?Number(cd.uttl[i]).toFixed(4):'',
+        cd.lttl[i]!=null?Number(cd.lttl[i]).toFixed(4):'',
+        hi!=null?hi:'',
+        lo!=null?lo:''
+      ].join(','));
+    });
+  });
+  var blob=new Blob([rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url;a.download=(TITLE+'_summary').replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /* ---- main update ---- */
 function update(){
-  var active=getActive();
+  var active=applyDataFilter(getActive());
   document.getElementById('n_groups').textContent=active.length+' groups';
   Plotly.react('plot',buildTraces(active),buildLayout());
 }
@@ -4184,6 +4559,173 @@ function update(){
 Plotly.newPlot('plot',buildTraces(DATA),buildLayout());
 document.getElementById('n_groups').textContent=DATA.length+' groups';
 """
+
+
+def _build_summary_html(
+    records: list,
+    cond_dims: list,
+    cfg: dict,
+    output_html: Path,
+    *,
+    hi_spec: float = float("nan"),
+    lo_spec: float = float("nan"),
+    freq_min: float,
+    freq_max: float,
+    freq_vals: list,
+) -> None:
+    """Assemble and write the interactive summary-plot HTML from pre-built records."""
+    title   = cfg.get("title", output_html.stem)
+    y_label = cfg.get("y_label", "Level (dBc)")
+    y_lim   = cfg.get("y_lim")
+
+    log_x_cfg = cfg.get("log_x")
+    log_x = bool(log_x_cfg) if log_x_cfg is not None else (
+        freq_min > 0 and freq_max / freq_min >= 100
+    )
+
+    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
+    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
+
+    freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
+
+    panels: list[str] = []
+    for dim in cond_dims:
+        pid   = "cond_" + dim["col_id"]
+        items = "".join(
+            f'<label class="fitem"><input type="checkbox" class="fchk" data-col="{pid}"'
+            f' value="{v}" checked onchange="chkChanged(\'{pid}\')">{v}</label>'
+            for v in dim["vals"]
+        )
+        panels.append(
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'{pid}\')">'
+            f'{dim["label"]}&thinsp;<span id="badge_{pid}" class="badge"></span>&#9662;</button>'
+            f'<div class="filter-panel" id="panel_{pid}">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_{pid}"'
+            f' checked onchange="toggleAll(\'{pid}\')"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{items}</div></div>'
+        )
+    panels_html = "\n  ".join(panels)
+
+    freq_bands = cfg.get("freq_bands", [])
+    band_btns_html = ""
+    for _b in freq_bands:
+        band_btns_html += (
+            f'  <button class="reset-btn" onclick="setFreqBand({_b["lo"]},{_b["hi"]})">'
+            f'{_b["label"]}</button>\n'
+        )
+    band_section_html = (f'  <div class="sep"></div>\n{band_btns_html}') if freq_bands else ""
+
+    constants = "\n".join([
+        f"var DATA={json.dumps(records)};",
+        f"var COND_DIMS={json.dumps(cond_dims)};",
+        f"var HI_SPEC={hi_js};",
+        f"var LO_SPEC={lo_js};",
+        f"var Y_LABEL={json.dumps(y_label)};",
+        f"var Y_LIM={json.dumps(y_lim)};",
+        f"var TITLE={json.dumps(title)};",
+        f"var LOG_X={'true' if log_x else 'false'};",
+        f"var FREQ_MIN={freq_min!r};",
+        f"var FREQ_MAX={freq_max!r};",
+        f"var FREQ_VALS={json.dumps(sorted(float(f) for f in freq_vals))};",
+    ])
+
+    css = (
+        "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
+        ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
+        ".ctrl-bar label{white-space:nowrap;}"
+        ".ctrl-bar input[type=range]{vertical-align:middle;width:100px;}"
+        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
+        "border-radius:3px;text-align:right;margin-left:2px;}"
+        ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
+        ".filter-wrap{position:relative;display:inline-block;}"
+        ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
+        "cursor:pointer;background:#fff;white-space:nowrap;}"
+        ".filter-btn:hover{background:#e8e8e8;}"
+        ".filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
+        "background:#fff;border:1px solid #ccc;border-radius:4px;"
+        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:160px;max-height:280px;"
+        "overflow-y:auto;padding:6px 8px;}"
+        ".filter-panel.open{display:block;}"
+        ".fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px;}"
+        ".fall{padding-bottom:2px;}"
+        ".fdiv{margin:4px 0;border:none;border-top:1px solid #eee;}"
+        ".badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;"
+        "padding:1px 6px;margin-right:2px;display:none;}"
+        ".badge.active{display:inline;}"
+        "button.reset-btn{font-size:12px;padding:2px 10px;border:1px solid #999;"
+        "border-radius:3px;cursor:pointer;background:#fff;}"
+        "button.reset-btn:hover{background:#e8e8e8;}"
+        "#n_groups{font-size:12px;color:#666;margin-left:auto;}"
+        ".flt-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:5px 14px;background:#f5f5e8;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".flt-bar label{white-space:nowrap;cursor:pointer;}"
+        ".flt-bar input[type=number]{width:72px;font-size:13px;padding:2px 4px;"
+        "border:1px solid #bbb;border-radius:3px;}"
+        ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
+        "cursor:pointer;background:#e8f4ff;color:#0066cc;}"
+        ".csv-btn:hover{background:#cce4ff;}"
+    )
+
+    sep = '<div class="sep"></div>'
+    html = (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        f'<meta charset="utf-8"><title>{title}</title>\n'
+        f"<style>{css}</style>\n"
+        "</head>\n<body>\n"
+        '<div class="ctrl-bar">\n'
+        + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
+        + f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f' onchange="freqTxtChange(\'lo\')"'
+        f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
+        f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f' onchange="freqTxtChange(\'hi\')"'
+        f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
+        f'  <label><input type="checkbox" id="log_x_chk"'
+        + (" checked" if log_x else "")
+        + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
+        + band_section_html
+        + f'  {sep}\n'
+        + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        + '  <span id="n_groups"></span>\n'
+        + "</div>\n"
+        + '<div class="flt-bar" onclick="event.stopPropagation()">\n'
+        + '  <b>Data&nbsp;filter:</b>\n'
+        + '  <label><input type="radio" name="sum_flt" value="all" checked'
+        + ' onchange="toggleRangeInputs();update()"> All&nbsp;data</label>\n'
+        + '  <label><input type="radio" name="sum_flt" value="passing"'
+        + ' onchange="toggleRangeInputs();update()"> Passing&nbsp;only&nbsp;(TTL&nbsp;&#8804;&nbsp;Spec)</label>\n'
+        + '  <label><input type="radio" name="sum_flt" value="range"'
+        + ' onchange="toggleRangeInputs();update()"> Y&nbsp;range</label>\n'
+        + '  <span id="sum_range_inputs" style="display:none;align-items:center;gap:4px">\n'
+        + '    <input type="number" id="sum_ylo" placeholder="Y min" step="0.001" oninput="update()">\n'
+        + '    &ndash;\n'
+        + '    <input type="number" id="sum_yhi" placeholder="Y max" step="0.001" oninput="update()">\n'
+        + '    <small style="color:#666">(hides conditions where band is outside range)</small>\n'
+        + '  </span>\n'
+        + '  <span class="sep"></span>\n'
+        + '  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        + '</div>\n'
+        + '<p style="font-size:12px;color:#666;margin:0 8px 4px">'
+        + 'Shaded band&nbsp;=&nbsp;Min–Max &nbsp;|&nbsp; Solid&nbsp;=&nbsp;Mean'
+        + ' &nbsp;|&nbsp; Dashed&nbsp;=&nbsp;TTL estimate'
+        + ' &nbsp;|&nbsp; Red dashed&nbsp;=&nbsp;Spec limit</p>\n'
+        + '<div id="plot"></div>\n'
+        + f"<script>{_get_plotlyjs()}</script>\n"
+        + "<script>\n"
+        + constants + "\n"
+        + _SUMPLOT_JS
+        + "</script>\n</body>\n</html>"
+    )
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html, encoding="utf-8")
 
 
 def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
@@ -4203,6 +4745,9 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
     max_col    = "Max Data"
     uttl_col   = "Upper TTL (est)"
     lttl_col   = "Lower TTL (est)"
+    # Fallback TTL columns when PADB didn't compute Upper/Lower TTL (est)
+    uttl_fallback = "Inner Proportion (upper)"
+    lttl_fallback = "Inner Proportion (lower)"
     hi_spec_col = "Upper Limit"
     lo_spec_col = "Lower Limit"
 
@@ -4270,20 +4815,34 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
                 return [None] * len(_sub)
             return [None if pd.isna(v) else round(float(v), 6) for v in _sub[col]]
 
-        g_hi = float(sub[hi_spec_col].dropna().iloc[0]) if hi_spec_col in sub.columns and sub[hi_spec_col].notna().any() else None
-        g_lo = float(sub[lo_spec_col].dropna().iloc[0]) if lo_spec_col in sub.columns and sub[lo_spec_col].notna().any() else None
+        spec_hi_list = _to_list(hi_spec_col)
+        spec_lo_list = _to_list(lo_spec_col)
+        g_hi = next((v for v in spec_hi_list if v is not None), None)
+        g_lo = next((v for v in spec_lo_list if v is not None), None)
+
+        uttl_data = _to_list(uttl_col)
+        lttl_data = _to_list(lttl_col)
+        uttl_from_fallback = all(v is None for v in uttl_data)
+        lttl_from_fallback = all(v is None for v in lttl_data)
+        if uttl_from_fallback:
+            uttl_data = _to_list(uttl_fallback)
+        if lttl_from_fallback:
+            lttl_data = _to_list(lttl_fallback)
 
         records.append({
-            "condition": glabel,
-            "cond_keys": {k: kv.get(k, "") for k in cond_keys},
-            "freqs":    [round(float(v), 6) for v in sub[x_col]],
-            "mean":     _to_list(mean_col),
-            "min_data": _to_list(min_col),
-            "max_data": _to_list(max_col),
-            "uttl":     _to_list(uttl_col),
-            "lttl":     _to_list(lttl_col),
-            "spec_hi":  g_hi,
-            "spec_lo":  g_lo,
+            "condition":         glabel,
+            "cond_keys":         {k: kv.get(k, "") for k in cond_keys},
+            "freqs":             [round(float(v), 6) for v in sub[x_col]],
+            "mean":              _to_list(mean_col),
+            "min_data":          _to_list(min_col),
+            "max_data":          _to_list(max_col),
+            "uttl":              uttl_data,
+            "lttl":              lttl_data,
+            "uttl_is_estimate":  uttl_from_fallback,
+            "spec_hi":           g_hi,
+            "spec_lo":           g_lo,
+            "spec_hi_list":      spec_hi_list,
+            "spec_lo_list":      spec_lo_list,
         })
 
         if np.isnan(hi_spec) and g_hi is not None:
@@ -4291,132 +4850,13 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
         if np.isnan(lo_spec) and g_lo is not None:
             lo_spec = g_lo
 
-    # Freq axis
     all_freqs_s = df[x_col].dropna()
     freq_min  = float(all_freqs_s.min()) if len(all_freqs_s) else 0.0
     freq_max  = float(all_freqs_s.max()) if len(all_freqs_s) else 1.0
-    freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
+    freq_vals = sorted(float(f) for f in all_freqs_s.unique())
 
-    log_x_cfg = cfg.get("log_x")
-    log_x = bool(log_x_cfg) if log_x_cfg is not None else (
-        freq_min > 0 and freq_max / freq_min >= 100
+    _build_summary_html(
+        records, cond_dims, cfg, output_html,
+        hi_spec=hi_spec, lo_spec=lo_spec,
+        freq_min=freq_min, freq_max=freq_max, freq_vals=freq_vals,
     )
-
-    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
-    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
-
-    # Checkbox panels
-    panels: list[str] = []
-    for dim in cond_dims:
-        pid   = "cond_" + dim["col_id"]
-        items = "".join(
-            f'<label class="fitem"><input type="checkbox" class="fchk" data-col="{pid}"'
-            f' value="{v}" checked onchange="chkChanged(\'{pid}\')">{v}</label>'
-            for v in dim["vals"]
-        )
-        panels.append(
-            f'<div class="filter-wrap">'
-            f'<button class="filter-btn" onclick="togglePanel(\'{pid}\')">'
-            f'{dim["label"]}&thinsp;<span id="badge_{pid}" class="badge"></span>&#9662;</button>'
-            f'<div class="filter-panel" id="panel_{pid}">'
-            f'<label class="fitem fall"><input type="checkbox" id="all_{pid}"'
-            f' checked onchange="toggleAll(\'{pid}\')"><b>Select&nbsp;all</b></label>'
-            f'<hr class="fdiv">{items}</div></div>'
-        )
-    panels_html = "\n  ".join(panels)
-
-    # Freq band preset buttons (optional)
-    freq_bands = cfg.get("freq_bands", [])
-    band_btns_html = ""
-    for _b in freq_bands:
-        band_btns_html += (
-            f'  <button class="reset-btn" onclick="setFreqBand({_b["lo"]},{_b["hi"]})">'
-            f'{_b["label"]}</button>\n'
-        )
-    band_section_html = (f'  <div class="sep"></div>\n{band_btns_html}') if freq_bands else ""
-
-    constants = "\n".join([
-        f"var DATA={json.dumps(records)};",
-        f"var COND_DIMS={json.dumps(cond_dims)};",
-        f"var HI_SPEC={hi_js};",
-        f"var LO_SPEC={lo_js};",
-        f"var Y_LABEL={json.dumps(y_label)};",
-        f"var Y_LIM={json.dumps(y_lim)};",
-        f"var TITLE={json.dumps(title)};",
-        f"var LOG_X={'true' if log_x else 'false'};",
-        f"var FREQ_MIN={freq_min!r};",
-        f"var FREQ_MAX={freq_max!r};",
-    ])
-
-    css = (
-        "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
-        ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
-        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
-        ".ctrl-bar label{white-space:nowrap;}"
-        ".ctrl-bar input[type=range]{vertical-align:middle;width:100px;}"
-        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
-        "border-radius:3px;text-align:right;margin-left:2px;}"
-        ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
-        ".filter-wrap{position:relative;display:inline-block;}"
-        ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
-        "cursor:pointer;background:#fff;white-space:nowrap;}"
-        ".filter-btn:hover{background:#e8e8e8;}"
-        ".filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
-        "background:#fff;border:1px solid #ccc;border-radius:4px;"
-        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:160px;max-height:280px;"
-        "overflow-y:auto;padding:6px 8px;}"
-        ".filter-panel.open{display:block;}"
-        ".fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px;}"
-        ".fall{padding-bottom:2px;}"
-        ".fdiv{margin:4px 0;border:none;border-top:1px solid #eee;}"
-        ".badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;"
-        "padding:1px 6px;margin-right:2px;display:none;}"
-        ".badge.active{display:inline;}"
-        "button.reset-btn{font-size:12px;padding:2px 10px;border:1px solid #999;"
-        "border-radius:3px;cursor:pointer;background:#fff;}"
-        "button.reset-btn:hover{background:#e8e8e8;}"
-        "#n_groups{font-size:12px;color:#666;margin-left:auto;}"
-    )
-
-    sep = '<div class="sep"></div>'
-
-    html = (
-        "<!DOCTYPE html>\n<html>\n<head>\n"
-        f'<meta charset="utf-8"><title>{title}</title>\n'
-        f"<style>{css}</style>\n"
-        "</head>\n<body>\n"
-        '<div class="ctrl-bar">\n'
-        + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
-        + f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
-        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
-        f' onchange="freqTxtChange(\'lo\')"'
-        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'lo\')">&nbsp;MHz</label>\n'
-        f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
-        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
-        f' onchange="freqTxtChange(\'hi\')"'
-        f' onkeydown="if(event.key===\'Enter\')freqTxtChange(\'hi\')">&nbsp;MHz</label>\n'
-        f'  <label><input type="checkbox" id="log_x_chk"'
-        + (" checked" if log_x else "")
-        + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
-        + band_section_html
-        + f'  {sep}\n'
-        + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
-        + '  <span id="n_groups"></span>\n'
-        + "</div>\n"
-        + '<p style="font-size:12px;color:#666;margin:0 8px 4px">'
-        + 'Shaded band&nbsp;=&nbsp;Min–Max &nbsp;|&nbsp; Solid&nbsp;=&nbsp;Mean'
-        + ' &nbsp;|&nbsp; Dashed&nbsp;=&nbsp;TTL estimate'
-        + ' &nbsp;|&nbsp; Red dashed&nbsp;=&nbsp;Spec limit</p>\n'
-        + '<div id="plot"></div>\n'
-        + f"<script>{_get_plotlyjs()}</script>\n"
-        + "<script>\n"
-        + constants + "\n"
-        + _SUMPLOT_JS
-        + "</script>\n</body>\n</html>"
-    )
-    output_html.parent.mkdir(parents=True, exist_ok=True)
-    output_html.write_text(html, encoding="utf-8")
