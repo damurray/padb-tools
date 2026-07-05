@@ -1,0 +1,13 @@
+{
+    "description": "SG6311A Harmonics V2.0 — all views from single scatter CSV",
+    "analytic": "Harmonics_Env_Dataset",
+    "results_dir": "harmonics_v2_results",
+    "title_prefix": "SG6311A Harmonics",
+    "y_label": "Power (dBc)",
+    "y_lim": [-120, 0],
+    "room_values": ["Room"],
+    "proportion": 0.90,
+    "confidence": 0.90,
+    "views": ["scatter", "stat_summary", "boxplot", "distribution", "env_coverage", "summary"],
+    "publish_to": ""
+}
