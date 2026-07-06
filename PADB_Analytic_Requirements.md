@@ -196,6 +196,8 @@ Requires `"freq_bands"` in job.json. Spec limits from `Lower Limit` / `Upper Lim
 
 **NP TI** is computed server-side by scipy and embedded in the HTML at generation time. It is set to null when the serial filter is active (client-side recomputation is not feasible for NP TI).
 
+**Show points** embeds per-DUT values as `dut_vals: [{s: serial, v: value}]` in each `freq_stats` entry. This requires the serial identification step above — without a serial source, all DUTs are merged and individual point overlay is not meaningful.
+
 ---
 
 ### `stat_boxplot`
@@ -262,14 +264,36 @@ With fewer DUTs (e.g., n=6–15 in early production), P90/C90 is the maximum sup
 
 ---
 
-## 6. Future Plot Types (Not Yet Implemented)
+## 6. Overlay and Comparison Controls
 
-### Parallel scatter overlay for `stat_boxplot` — ✅ Implemented
+### "Show points" — `stat_boxplot` and `stat_summary`
 
-Individual DUT measurement points are overlaid on the box-and-whisker traces using the **"Show points"** checkbox in the filter bar. No second CSV is required — per-DUT values (`vals_detail: [{s, v}]`) are already embedded in `BOX_DATA` at HTML generation time.
+Individual per-DUT measurement points can be overlaid on the active traces using the **"Show points"** checkbox in the filter bar. No additional CSV is required — per-DUT values are embedded at HTML generation time.
 
-The scatter overlay:
-- Respects the serial filter and Y-range filter (same `vals_detail` array is used for both filtered and unfiltered paths)
-- Uses filled circle markers (size 5, opacity 0.55) in the same colour as the box trace
+**`stat_boxplot`** (`vals_detail: [{s, v}]` in `BOX_DATA`):
+- Respects the serial filter and Y-range filter
+- Filled circle markers (size 5, opacity 0.55) in the same colour as the box trace
 - Outlier markers remain `circle-open` (larger, size 7) for visual distinction
-- Hovering over a scatter point shows the serial number and value
+- Hovering shows the serial number and value
+
+**`stat_summary`** (`dut_vals: [{s, v}]` in each `freq_stats` entry of `STAT_DATA`):
+- Respects the serial filter — points for excluded serials are shown in grey (rgba(160,160,160,0.4)) rather than hidden, so the full population remains visible while statistics reflect only selected DUTs
+- Markers size 5, opacity 0.7, white border
+
+### "Show excluded" — `stat_summary`, `de_summary`, `distribution` (V2), `summary` (V2)
+
+A checkbox that renders conditions currently hidden by the condition filter as dim grey background traces. The selected conditions remain in full colour in front. Useful for comparing a filtered subset against the full population without toggling the filter off.
+
+| Plot | Excluded rendering |
+|---|---|
+| `stat_summary` | Dim grey mean ± σ band |
+| `de_summary` | Dim grey UDE/LDE band |
+| `distribution` (V2 delta-env) | Dim dotted grey KDE curve |
+| `summary` (V2) | Dim grey min/max fill band + mean line |
+
+### Condition filter in `summary` (V2)
+
+The V2 `summary` plot includes condition filter dropdowns for all dimensions found in the data. For datasets with per-DUT conditions (e.g. harmonics with HarmonicNumber, Port, and Serial Number all in the Group string), the filter includes:
+- **HarmonicNumber** — filter to specific harmonics
+- **Port** (RF1/RF2 or similar path-labelled values) — filter to a specific port
+- **Serial** — filter to specific DUTs (individual DUT min/max/mean bands)

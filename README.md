@@ -78,11 +78,16 @@ Opens a GUI that reads `*_job.json` files from a directory and manages Windows T
 | `population_envelope` | Type=80 Scatter | — |
 | `empirical_cdf` | Type=80 Scatter | — |
 | `spec_derivation` | Type=80 Scatter | — |
-| `stat_summary` | Type=80 Scatter | Condition filter, freq sliders (arrow-key stepping), serial filter, TI/NP-TI toggle, stats table, log X, CSV export |
-| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, stats table, log X, CSV export |
-| `de_summary` | Type=60 Environmental | Condition filter, freq sliders (arrow-key stepping), stats table, log X, CSV export |
+| `stat_summary` | Type=80 Scatter | Condition filter, freq sliders, serial filter, TI/NP-TI toggle, show points, stats table, log X, CSV export |
+| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, show points, stats table, log X, CSV export |
+| `de_summary` | Type=60 Environmental | Condition filter, show excluded, freq sliders, stats table, log X, CSV export |
 
-V2 adds a `summary` plot (all-temperature summary with Min/Max/Mean bands and TTL estimates) and an `env_coverage` plot.
+**V2 pipeline** (`padb_v2.py`) adds two additional plot types built from a single scatter CSV:
+
+| Type | Interactive controls |
+|---|---|
+| `summary` (V2) | Condition filter (harmonic, port, serial), show excluded, freq sliders, log X |
+| `env_coverage` (V2) | Scatter of all temperature conditions vs frequency |
 
 ---
 

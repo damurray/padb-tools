@@ -1,6 +1,6 @@
 # PADB Modern Analysis Tools — User Guide
 
-**Tools:** `padb_run.py`, `padb_plots.py`, `padb_stats.py`, `padb_scheduler.py`  
+**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_stats.py`, `padb_scheduler.py`  
 **Location:** `C:\apps\padb\tools\`  
 **Purpose:** Automate PADB extraction from a `.pod` file, generate interactive self-contained HTML plots, and publish results to a shared drive.
 
@@ -318,6 +318,8 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Serial number filter** — uncheck individual DUTs to exclude them; statistics recompute live
 - **TI toggle** — show/hide parametric tolerance interval band
 - **NP TI toggle** — show/hide non-parametric tolerance interval bounds (requires server-side scipy; displayed when data is sufficient)
+- **Show points** — overlay individual per-DUT measurement points on each trace. Points for serials currently excluded by the serial filter are shown in grey rather than hidden, so the full population remains visible while the statistics reflect only the selected DUTs.
+- **Show excluded** — display conditions currently excluded by the condition filter as dim grey traces in the background, so you can compare filtered and unfiltered populations without switching the filter off.
 - **Frequency sliders** — min/max zoom on the X axis
 - **Log X toggle**
 - **Statistics Table toggle** — opens a scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality (Shapiro-Wilk W), NP TI bounds, outliers with serial numbers
@@ -342,6 +344,7 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Temperature filter** — show/hide individual temperature conditions
 - **Serial number filter** — uncheck individual DUTs; box statistics recompute live
 - **Y-range filter** — All data / Passing only / Custom min–max
+- **Show points** — overlay individual per-DUT measurement points on each box trace (size 5, semi-transparent). Points for serials excluded by the serial filter are shown in grey; outliers remain as open-circle markers for visual distinction. Hovering a scatter point shows the serial number and value.
 - **Log X toggle**
 - **Statistics Table toggle** — scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality, NP TI bounds, outliers with serial numbers
 - **CSV export**
@@ -360,6 +363,7 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 
 **Interactive controls:**
 - **Condition filter dropdowns** — one per varying condition dimension
+- **Show excluded** — display conditions excluded by the condition filter as dim grey UDE/LDE bands in the background.
 - **Frequency sliders** — min/max zoom on the X axis
 - **Log X toggle**
 - **Statistics Table toggle** — scrollable table showing per-condition × per-frequency: UDE, LDE, Min(Env.), Max(Env.), Mean(Env.), TTL↑, TTL↓, Spec Lo, Spec Hi. Rows where TTL exceeds spec are highlighted red.
@@ -516,6 +520,44 @@ Available for use in custom scripts. All functions handle NaN and the PADB INT_M
 | `bootstrap_ci(data, statistic, n_boot, confidence)` | `(lower, upper, point_estimate)` — bootstrap CI |
 | `band_summary(data, proportion, confidence)` | `dict` — full summary: descriptive + TI + bootstrap CI |
 | `sample_size_adequacy(n, proportion, confidence)` | `(adequate, n_required, message)` |
+
+---
+
+## V2 Pipeline
+
+`padb_v2.py` is a lighter driver that generates all plot views from a single PADB Scatter (Type=80) CSV — no full `padb_run.py` orchestration required.
+
+```
+py padb_v2.py job_v2.json --csv path\to\Scatter.csv
+```
+
+V2 job JSON schema (all keys optional unless marked):
+
+| Key | Description |
+|---|---|
+| `title_prefix` | Stem used for all output filenames and plot titles |
+| `y_label` | Y-axis label for all plots |
+| `y_lim` | `[min, max]` Y-axis range |
+| `room_values` | List of Test Step strings treated as room temperature (default `["Room"]`) |
+| `proportion` | TI proportion (default `0.90`) |
+| `confidence` | TI confidence (default `0.90`) |
+| `views` | List of views to generate: `scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary` |
+| `results_dir` | Output folder relative to job file (default `v2_results`) |
+| `publish_to` | Optional UNC or local path to copy results to |
+
+### V2 plot: `summary`
+
+**What it shows:** All-temperature summary. For each condition group: a min/max shaded band and a mean line across all frequencies, covering every temperature in the dataset. A TTL band is overlaid when available.
+
+**Interactive controls:**
+- **Condition filter dropdowns** — one per condition dimension found in the data. For harmonics datasets this includes HarmonicNumber, Port (RF1/RF2), and Serial Number — each with individual checkboxes.
+- **Show excluded** — dim grey min/max/mean bands for conditions excluded by the filter, rendered behind the active traces for side-by-side comparison.
+- **Frequency sliders** — min/max zoom on the X axis.
+- **Log X toggle**
+
+### V2 plot: `env_coverage`
+
+Scatter of all measurement values across all temperatures vs frequency. Used to confirm environmental coverage — that measurements were collected at the required temperature points.
 
 ---
 

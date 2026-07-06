@@ -1180,6 +1180,1050 @@ update();
     output_html.write_text(html, encoding="utf-8")
 
 
+def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
+    """
+    Multi-temperature overlaid KDE distribution with ΔEnv analysis.
+
+    Detects suspected uncompensated DUTs via IQR on per-DUT mean ΔTemp.
+    Supports per-serial, per-port, and per-condition (harmonic) filtering in JS.
+    Option 2: apply derived correction (median δ of well-compensated DUTs).
+    Option 3: exclude flagged DUTs (settable radio button).
+    """
+    if df.empty or len(df) < 5:
+        return (
+            "<!DOCTYPE html><html><body style='font-family:Arial;padding:16px'>"
+            f"<h3>{title}</h3><p><i>No data available.</i></p></body></html>"
+        )
+
+    lo_spec, hi_spec = _get_spec(df, cfg)
+    y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
+    y_lim   = cfg.get("y_lim")
+
+    # -------------------------------------------------------------------------
+    # 1.  Temperatures, conditions, serials, ports
+    # -------------------------------------------------------------------------
+    temps_all = sorted(str(t) for t in df["Temperature"].dropna().unique())
+    temps_present = (["Room"] if "Room" in temps_all else []) + [
+        t for t in temps_all if t != "Room"
+    ]
+    non_room_temps = [t for t in temps_present if t != "Room"]
+
+    raw_groups = sorted(
+        str(g) for g in df["Group"].dropna().replace("", pd.NA).dropna().unique()
+    )
+    conds = raw_groups if raw_groups else ["(all)"]
+    if not raw_groups:
+        df = df.copy()
+        df["Group"] = "(all)"
+
+    all_serials = sorted(str(s) for s in df["Serial"].dropna().unique())
+
+    port_col = "_grp_Port" if "_grp_Port" in df.columns else None
+    all_ports: list = []
+    cond_port: list = []   # per-condition: port string or ""
+    if port_col:
+        all_ports = sorted(str(p) for p in df[port_col].dropna().unique())
+        for cond in conds:
+            sub_p = df[df["Group"] == cond][port_col].dropna().unique()
+            cond_port.append(str(sub_p[0]) if len(sub_p) == 1 else "")
+    else:
+        cond_port = [""] * len(conds)
+
+    # Harmonic order extraction from "HarmonicNumber: X" in condition names
+    _harm_re = re.compile(r'HarmonicNumber:\s*(\S+)', re.IGNORECASE)
+    def _extract_harmonic(name: str) -> str:
+        m = _harm_re.search(name)
+        return m.group(1) if m else ""
+    cond_harmonic = [_extract_harmonic(c) for c in conds]
+    def _harm_sort_key(x: str) -> float:
+        try:
+            return float(x)
+        except ValueError:
+            return float("inf")
+    harmonic_orders = sorted(
+        set(h for h in cond_harmonic if h),
+        key=_harm_sort_key
+    )
+
+    # Serial extraction from "Serial Number: X" in condition names
+    _ser_re = re.compile(r'Serial Number:\s*(\S+)', re.IGNORECASE)
+    def _extract_cond_serial(name: str) -> str:
+        m = _ser_re.search(name)
+        return m.group(1) if m else ""
+    cond_serial = [_extract_cond_serial(c) for c in conds]
+    all_cond_serials = sorted(set(s for s in cond_serial if s))
+
+    # -------------------------------------------------------------------------
+    # 2.  Per-DUT ΔTemp: compute delta from Room per (Serial, Group, Freq)
+    # -------------------------------------------------------------------------
+    room_df = (
+        df[df["Temperature"] == "Room"][["Serial", "Group", "Frequency_MHz", "Value"]]
+        .copy()
+        .rename(columns={"Value": "Room_Value"})
+    )
+    non_room_df = df[df["Temperature"] != "Room"].copy()
+
+    merged = pd.DataFrame()
+    dut_temp_delta = pd.DataFrame()
+    flagged_serials: set = set()
+
+    if len(room_df) > 0 and len(non_room_df) > 0:
+        merged = non_room_df.merge(
+            room_df, on=["Serial", "Group", "Frequency_MHz"], how="inner"
+        )
+        merged["delta"] = merged["Value"] - merged["Room_Value"]
+        dut_temp_delta = (
+            merged.groupby(["Serial", "Temperature"])["delta"]
+            .mean()
+            .reset_index()
+        )
+        for temp in non_room_temps:
+            tdf = dut_temp_delta[dut_temp_delta["Temperature"] == temp].copy()
+            if len(tdf) < 4:
+                continue
+            q1 = float(tdf["delta"].quantile(0.25))
+            q3 = float(tdf["delta"].quantile(0.75))
+            iqr = q3 - q1
+            if iqr < 1e-9:
+                continue
+            mask = (tdf["delta"] < q1 - 1.5 * iqr) | (tdf["delta"] > q3 + 1.5 * iqr)
+            flagged_serials.update(tdf.loc[mask, "Serial"].tolist())
+
+    # -------------------------------------------------------------------------
+    # 3.  Derived corrections: median δ of non-flagged DUTs per (temp, group, freq)
+    # -------------------------------------------------------------------------
+    flagged_merged = pd.DataFrame()
+
+    if len(merged) > 0 and flagged_serials:
+        good_m = merged[~merged["Serial"].isin(flagged_serials)]
+        if len(good_m) > 0:
+            med_good = (
+                good_m.groupby(["Temperature", "Group", "Frequency_MHz"])["delta"]
+                .median()
+                .reset_index()
+                .rename(columns={"delta": "median_delta_good"})
+            )
+        else:
+            med_good = pd.DataFrame(
+                columns=["Temperature", "Group", "Frequency_MHz", "median_delta_good"]
+            )
+
+        flag_m = merged[merged["Serial"].isin(flagged_serials)].copy()
+        if len(flag_m) > 0:
+            if len(med_good) > 0:
+                flag_m = flag_m.merge(
+                    med_good, on=["Temperature", "Group", "Frequency_MHz"], how="left"
+                )
+                flag_m["median_delta_good"] = flag_m["median_delta_good"].fillna(0)
+            else:
+                flag_m["median_delta_good"] = 0.0
+            flag_m["corrected_value"] = flag_m["Room_Value"] + flag_m["median_delta_good"]
+            flag_m["corrected_delta"] = flag_m["median_delta_good"]
+            flagged_merged = flag_m
+
+    # -------------------------------------------------------------------------
+    # 4.  Pre-aggregate value arrays per (cond, temp, serial) in 3 modes
+    #     VALS[ci][ti] = {serial: {r:[], c:[], e:[]}, ...}
+    # -------------------------------------------------------------------------
+    def _rl(series):
+        return [round(float(v), 3) for v in series.dropna()]
+
+    ser_set = set(flagged_serials)
+    vals_js:  list = []   # VALS[ci][ti][serial]  = {r:[], c:[], e:[]}
+    delta_js: list = []   # DELTA[ci][ti][serial] = {r:[], c:[], e:[]}
+
+    for cond in conds:
+        c_vals: list = []
+        c_delta: list = []
+        sub_cond = df[df["Group"] == cond]
+        merged_cond = (
+            merged[merged["Group"] == cond] if len(merged) > 0 else pd.DataFrame()
+        )
+        flag_cond = (
+            flagged_merged[flagged_merged["Group"] == cond]
+            if len(flagged_merged) > 0 else pd.DataFrame()
+        )
+
+        for temp in temps_present:
+            ser_vals:  dict = {}
+            ser_delta: dict = {}
+            sub_ct = sub_cond[sub_cond["Temperature"] == temp]
+            merged_ct = (
+                merged_cond[merged_cond["Temperature"] == temp]
+                if len(merged_cond) > 0 else pd.DataFrame()
+            )
+            flag_ct = (
+                flag_cond[flag_cond["Temperature"] == temp]
+                if len(flag_cond) > 0 else pd.DataFrame()
+            )
+
+            for serial in all_serials:
+                raw_v = _rl(sub_ct[sub_ct["Serial"] == serial]["Value"])
+                is_fl = serial in ser_set
+
+                if temp == "Room":
+                    ser_vals[serial]  = {"r": raw_v, "c": raw_v, "e": [] if is_fl else raw_v}
+                    ser_delta[serial] = {"r": [], "c": [], "e": []}
+                else:
+                    # Delta for this serial
+                    raw_d: list = []
+                    if len(merged_ct) > 0:
+                        raw_d = _rl(merged_ct[merged_ct["Serial"] == serial]["delta"])
+
+                    if not is_fl:
+                        ser_vals[serial]  = {"r": raw_v, "c": raw_v, "e": raw_v}
+                        ser_delta[serial] = {"r": raw_d, "c": raw_d, "e": raw_d}
+                    else:
+                        # Flagged: corrected = Room_Value + median_delta_good
+                        corr_v: list = []
+                        corr_d: list = []
+                        if len(flag_ct) > 0:
+                            fc_s = flag_ct[flag_ct["Serial"] == serial]
+                            corr_v = _rl(fc_s["corrected_value"])
+                            corr_d = _rl(fc_s["corrected_delta"])
+                        ser_vals[serial]  = {"r": raw_v, "c": corr_v or raw_v, "e": []}
+                        ser_delta[serial] = {"r": raw_d, "c": corr_d or raw_d, "e": []}
+
+            c_vals.append(ser_vals)
+            c_delta.append(ser_delta)
+
+        vals_js.append(c_vals)
+        delta_js.append(c_delta)
+
+    # -------------------------------------------------------------------------
+    # 4b. Delta arrays for all non-Room reference temperatures (raw mode only)
+    # -------------------------------------------------------------------------
+    delta_alt_js: dict = {}   # {ref_temp: same shape as delta_js, only "r" key}
+
+    for ref_temp in temps_present:
+        if ref_temp == "Room":
+            continue
+        ref_rows = (
+            df[df["Temperature"] == ref_temp][["Serial", "Group", "Frequency_MHz", "Value"]]
+            .copy()
+            .rename(columns={"Value": "Ref_Value"})
+        )
+        ref_d_js: list = []
+        for cond in conds:
+            ref_c_delta: list = []
+            sub_cond_r = df[df["Group"] == cond]
+            ref_cond_r = ref_rows[ref_rows["Group"] == cond][
+                ["Serial", "Frequency_MHz", "Ref_Value"]
+            ]
+            for temp in temps_present:
+                ref_ser: dict = {}
+                if temp == ref_temp:
+                    for serial in all_serials:
+                        ref_ser[serial] = {"r": []}
+                else:
+                    sub_ct_r = sub_cond_r[sub_cond_r["Temperature"] == temp]
+                    if len(ref_cond_r) > 0 and len(sub_ct_r) > 0:
+                        mrgd = sub_ct_r.merge(
+                            ref_cond_r, on=["Serial", "Frequency_MHz"], how="inner"
+                        ).copy()
+                        mrgd["delta"] = mrgd["Value"] - mrgd["Ref_Value"]
+                    else:
+                        mrgd = pd.DataFrame()
+                    for serial in all_serials:
+                        raw_d = (
+                            _rl(mrgd[mrgd["Serial"] == serial]["delta"])
+                            if len(mrgd) else []
+                        )
+                        ref_ser[serial] = {"r": raw_d}
+                ref_c_delta.append(ref_ser)
+            ref_d_js.append(ref_c_delta)
+        delta_alt_js[ref_temp] = ref_d_js
+
+    # -------------------------------------------------------------------------
+    # 5.  ΔEnv stats per temperature (per-DUT mean δ across all conds/freqs)
+    # -------------------------------------------------------------------------
+    def _s4(lst: list) -> float:
+        return round(float(np.nanmean(lst)), 4) if lst else 0.0
+
+    delta_stats: dict = {}
+    if len(dut_temp_delta) > 0:
+        for temp in non_room_temps:
+            tdf    = dut_temp_delta[dut_temp_delta["Temperature"] == temp]
+            all_d  = tdf["delta"].dropna().tolist()
+            good_d = tdf[~tdf["Serial"].isin(flagged_serials)]["delta"].dropna().tolist()
+            flag_d = tdf[tdf["Serial"].isin(flagged_serials)]["delta"].dropna().tolist()
+
+            delta_stats[temp] = {
+                "n":            len(all_d),
+                "n_good":       len(good_d),
+                "n_flagged":    len(flag_d),
+                "mean":         _s4(all_d),
+                "median":       round(float(np.nanmedian(all_d)), 4) if all_d else 0.0,
+                "std":          round(float(np.nanstd(all_d, ddof=1)), 4) if len(all_d) > 1 else 0.0,
+                "good_mean":    _s4(good_d),
+                "good_median":  round(float(np.nanmedian(good_d)), 4) if good_d else 0.0,
+                "flagged_mean": _s4(flag_d) if flag_d else None,
+            }
+
+    # Stats for non-Room references: per-DUT mean delta from the alt arrays
+    delta_stats_alt: dict = {}
+    for ref_temp, ref_d_js in delta_alt_js.items():
+        ref_stats: dict = {}
+        for ti, temp in enumerate(temps_present):
+            if temp == ref_temp:
+                continue
+            per_dut: list = []
+            for serial in all_serials:
+                dut_vals: list = []
+                for ci in range(len(conds)):
+                    dut_vals.extend(
+                        (ref_d_js[ci][ti] if ref_d_js else {}).get(serial, {}).get("r", [])
+                    )
+                if dut_vals:
+                    per_dut.append(float(np.nanmean(dut_vals)))
+            if per_dut:
+                ref_stats[temp] = {
+                    "n":      len(per_dut),
+                    "mean":   _s4(per_dut),
+                    "median": round(float(np.nanmedian(per_dut)), 4),
+                    "std":    round(float(np.nanstd(per_dut, ddof=1)), 4) if len(per_dut) > 1 else 0.0,
+                }
+        delta_stats_alt[ref_temp] = ref_stats
+
+    # Per-DUT flagged detail
+    flagged_detail = []
+    for serial in sorted(flagged_serials):
+        by_temp: dict = {}
+        for temp in non_room_temps:
+            row = dut_temp_delta[
+                (dut_temp_delta["Serial"] == serial)
+                & (dut_temp_delta["Temperature"] == temp)
+            ]
+            if len(row):
+                by_temp[temp] = round(float(row["delta"].iloc[0]), 3)
+        flagged_detail.append({"serial": serial, "by_temp": by_temp})
+
+    # -------------------------------------------------------------------------
+    # 6.  Build JS constants
+    # -------------------------------------------------------------------------
+    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
+    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
+
+    _pal = ["#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0",
+            "#00BCD4", "#795548", "#E91E63", "#8BC34A", "#607D8B"]
+    temp_colors = {t: _pal[i % len(_pal)] for i, t in enumerate(temps_present)}
+
+    constants = "\n".join([
+        f"var CONDS={json.dumps(conds)};",
+        f"var COND_PORT={json.dumps(cond_port)};",
+        f"var COND_HARMONIC={json.dumps(cond_harmonic)};",
+        f"var HARM_ORDERS={json.dumps(harmonic_orders)};",
+        f"var COND_SERIAL={json.dumps(cond_serial)};",
+        f"var SERIALS_ALL={json.dumps(all_serials)};",
+        f"var PORTS_ALL={json.dumps(all_ports)};",
+        f"var TEMPS={json.dumps(temps_present)};",
+        f"var FLAGGED_SERIALS={json.dumps(sorted(flagged_serials))};",
+        f"var FLAGGED_DETAIL={json.dumps(flagged_detail)};",
+        f"var DELTA_STATS={json.dumps(delta_stats)};",
+        f"var DELTA_STATS_ALT={json.dumps(delta_stats_alt)};",
+        f"var VALS={json.dumps(vals_js)};",
+        f"var DELTA={json.dumps(delta_js)};",
+        f"var DELTA_ALT={json.dumps(delta_alt_js)};",
+        f"var ROOM_TEMP={json.dumps('Room')};",
+        f"var LO_SPEC={lo_js};",
+        f"var HI_SPEC={hi_js};",
+        f"var Y_LABEL={json.dumps(y_label)};",
+        f"var Y_LIM={json.dumps(y_lim)};",
+        f"var TITLE={json.dumps(title)};",
+        f"var TEMP_COLORS={json.dumps(temp_colors)};",
+    ])
+
+    # -------------------------------------------------------------------------
+    # 7.  Env bar HTML
+    # -------------------------------------------------------------------------
+    env_chks = ""
+    for temp in temps_present:
+        env_chks += (
+            f'<label><input type="checkbox" class="env_chk" value="{temp}"'
+            f' checked onchange="update()">&nbsp;{temp}</label>\n'
+        )
+
+    # Reference temperature dropdown
+    ref_opts = "\n".join(
+        f'<option value="{t}">{t}</option>' for t in temps_present
+    )
+
+    # Condition checkboxes with harmonic-order grouping
+    all_cond_ports = sorted(set(p for p in cond_port if p))
+
+    cond_chk_rows = ""
+    for i, c in enumerate(conds):
+        harm = cond_harmonic[i]
+        ser = cond_serial[i]
+        port = cond_port[i]
+        cond_chk_rows += (
+            f'<div class="cond_chk_row" data-harm="{harm}" data-serial="{ser}" data-port="{port}"'
+            f' style="display:none">'
+            f'<label style="white-space:nowrap">'
+            f'<input type="checkbox" class="cond_chk" value="{i}" checked'
+            f' onchange="update()">&nbsp;{c}</label></div>\n'
+        )
+
+    def _dist_filter_panel(panel_id, label, opts_list, badge_id):
+        items = "".join(
+            f'<label class="dist-fitem"><input type="checkbox" class="dist_{panel_id}_chk"'
+            f' value="{v}" checked onchange="updateCondCheckboxes()">&nbsp;{v}</label>\n'
+            for v in opts_list
+        )
+        return (
+            f'<div class="dist-filter-wrap">'
+            f'<button class="dist-filter-btn" onclick="toggleDistPanel(\'{panel_id}\')">'
+            f'<span id="dist_badge_{badge_id}" class="dist-badge"></span>{label}&thinsp;&#9662;</button>'
+            f'<div class="dist-filter-panel" id="dist_panel_{panel_id}">'
+            f'<label class="dist-fitem dist-fall"><input type="checkbox" id="dist_all_{panel_id}"'
+            f' checked onchange="distToggleAll(\'{panel_id}\')">&nbsp;<b>All</b></label>'
+            f'<hr class="dist-fdiv">{items}</div></div>'
+        )
+
+    harm_panel_html = _dist_filter_panel('harm', 'Harmonic', harmonic_orders, 'harm')
+    ser_panel_html = _dist_filter_panel('ser', 'Serial', all_cond_serials, 'ser')
+    port_panel_html = _dist_filter_panel('port', 'Port', all_cond_ports, 'port') if all_cond_ports else ""
+
+    # Serial checkboxes (serial filter)
+    ser_chks = ""
+    for s in all_serials:
+        ser_chks += (
+            f'<label style="white-space:nowrap">'
+            f'<input type="checkbox" class="ser_chk" value="{s}" checked'
+            f' onchange="update()">&nbsp;{s}</label>\n'
+        )
+
+    n_flagged = len(flagged_serials)
+
+    # -------------------------------------------------------------------------
+    # 8.  CSS
+    # -------------------------------------------------------------------------
+    css = (
+        "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
+        ".env-bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;"
+        "padding:6px 14px;background:#edf7ee;border-radius:6px;margin-bottom:4px;"
+        "font-size:13px;border:1px solid #c8e6c9;}"
+        ".filter-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;"
+        "padding:5px 14px;background:#f5f5f5;border-radius:6px;margin-bottom:4px;"
+        "font-size:13px;border:1px solid #e0e0e0;}"
+        ".filter-lbl{font-weight:600;color:#444;margin-right:4px;white-space:nowrap;}"
+        ".filter-chk-panel{display:flex;flex-wrap:wrap;gap:6px;align-items:center;"
+        "padding:4px 14px;background:#fafafa;border-radius:6px;margin-bottom:4px;"
+        "font-size:12px;border:1px solid #e8e8e8;}"
+        ".filter-chk-panel .lbl{font-weight:600;color:#444;margin-right:4px;white-space:nowrap;}"
+        ".cond_chk_row{display:none;}"
+        "button.sel-btn{font-size:11px;padding:1px 7px;border:1px solid #bbb;"
+        "border-radius:3px;cursor:pointer;background:#fff;white-space:nowrap;}"
+        "button.sel-btn:hover{background:#e8e8e8;}"
+        "button.port-btn{font-size:12px;padding:2px 10px;border:1px solid #90caf9;"
+        "border-radius:3px;cursor:pointer;background:#e3f2fd;color:#1565c0;white-space:nowrap;}"
+        "button.port-btn:hover{background:#bbdefb;}"
+        ".dist-filter-wrap{position:relative;display:inline-block;}"
+        ".dist-filter-btn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;"
+        "cursor:pointer;background:#fff;white-space:nowrap;}"
+        ".dist-filter-btn:hover{background:#e8e8e8;}"
+        ".dist-filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
+        "background:#fff;border:1px solid #ccc;border-radius:4px;"
+        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:130px;max-height:240px;"
+        "overflow-y:auto;padding:5px 7px;}"
+        ".dist-filter-panel.open{display:block;}"
+        ".dist-fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:12px;}"
+        ".dist-fall{padding-bottom:2px;}"
+        ".dist-fdiv{margin:3px 0;border:none;border-top:1px solid #eee;}"
+        ".dist-badge{font-size:10px;background:#0066cc;color:#fff;border-radius:10px;"
+        "padding:1px 5px;margin-right:2px;display:none;}"
+        ".dist-badge.active{display:inline;}"
+        ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
+        ".ctrl-bar label{white-space:nowrap;}"
+        ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
+        "button.reset-btn{font-size:12px;padding:2px 10px;border:1px solid #999;"
+        "border-radius:3px;cursor:pointer;background:#fff;}"
+        "button.reset-btn:hover{background:#e8e8e8;}"
+        "#n_pts{font-size:12px;color:#666;margin-left:auto;}"
+        ".stbl{border-collapse:collapse;font-size:12px;margin:4px 0;}"
+        ".stbl th{background:#e8eaf6;padding:4px 10px;text-align:left;"
+        "border:1px solid #ccc;white-space:nowrap;}"
+        ".stbl td{padding:3px 10px;border:1px solid #ddd;white-space:nowrap;}"
+        ".panel-section{padding:4px 14px 8px 14px;}"
+        ".panel-title{font-size:13px;font-weight:600;margin-bottom:4px;color:#444;}"
+        "#corr_bar{display:none;flex-wrap:wrap;gap:8px;align-items:center;"
+        "font-size:13px;padding:5px 14px;background:#fff8e1;border-radius:5px;"
+        "margin-bottom:6px;border:1px solid #ffe082;}"
+        "#multimodal_warn{background:#fff3e0;border:1px solid #ffcc02;border-radius:4px;"
+        "padding:4px 10px;font-size:12px;color:#e65100;display:none;"
+        "margin:0 14px 4px 14px;}"
+        ".flagged-hdr{cursor:pointer;font-size:13px;font-weight:600;"
+        "padding:5px 14px;color:#c62828;display:inline-block;user-select:none;}"
+        ".flagged-hdr:hover{text-decoration:underline;}"
+        "#flagged_panel{padding:0 14px 8px 14px;}"
+    )
+
+    # -------------------------------------------------------------------------
+    # 9.  JavaScript (raw string — no f-string interpolation)
+    # -------------------------------------------------------------------------
+    dist_env_js = r"""
+/* ---------- KDE / math helpers ---------- */
+function _mean(a){var s=0,n=a.length;for(var i=0;i<n;i++)s+=a[i];return n?s/n:NaN;}
+function _sd(a,mu){
+  if(a.length<2) return 0.01;
+  var s=0;for(var i=0;i<a.length;i++)s+=Math.pow(a[i]-mu,2);
+  var v=Math.sqrt(s/(a.length-1));
+  return v>1e-12?v:0.01;
+}
+function _bw(a){var mu=_mean(a);return 1.06*_sd(a,mu)*Math.pow(a.length,-0.2);}
+function _linspace(lo,hi,n){
+  var s=(hi-lo)/(n-1||1),out=[];
+  for(var i=0;i<n;i++) out.push(lo+i*s);
+  return out;
+}
+function _kde(vals,xs,h){
+  var n=vals.length,c=1/(h*Math.sqrt(2*Math.PI)*n);
+  return xs.map(function(x){
+    var s=0;for(var i=0;i<n;i++){var z=(x-vals[i])/h;s+=Math.exp(-0.5*z*z);}
+    return s*c;
+  });
+}
+function _h2r(hex,a){
+  var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return 'rgba('+r+','+g+','+b+','+a+')';
+}
+function _fd(v,d){return (v===null||v===undefined)?'—':Number(v).toFixed(d||3);}
+
+/* ---------- State readers ---------- */
+function getMode(){var e=document.querySelector('input[name="view_mode"]:checked');return e?e.value:'delta';}
+function getCM(){var e=document.querySelector('input[name="corr_mode"]:checked');return e?e.value:'r';}
+function getRefTemp(){var e=document.getElementById('ref_temp_sel');return e?e.value:ROOM_TEMP;}
+function getSelTemps(){
+  return Array.from(document.querySelectorAll('.env_chk:checked')).map(function(c){return c.value;});
+}
+function getSelCondIdxs(){
+  var chks=document.querySelectorAll('.cond_chk:checked');
+  if(!chks.length) return CONDS.map(function(_,i){return i;});
+  return Array.from(chks).map(function(c){return parseInt(c.value);});
+}
+function getSelSers(){
+  var chks=document.querySelectorAll('.ser_chk:checked');
+  if(!chks.length) return SERIALS_ALL;
+  return Array.from(chks).map(function(c){return c.value;});
+}
+
+/* ---------- Value aggregation — per (cond, temp, serial) ---------- */
+function gv(selConds,selSers,ti,isAbs,cm){
+  var src,effectiveCm;
+  if(isAbs){
+    src=VALS; effectiveCm=cm;
+  } else {
+    var ref=getRefTemp();
+    if(ref===ROOM_TEMP){src=DELTA;effectiveCm=cm;}
+    else{src=DELTA_ALT[ref]||[];effectiveCm='r';}
+  }
+  var out=[];
+  selConds.forEach(function(ci){
+    var td=(src[ci]||[])[ti]||{};
+    selSers.forEach(function(ser){
+      var d=td[ser]||{};
+      out=out.concat(d[effectiveCm]||d['r']||[]);
+    });
+  });
+  return out;
+}
+
+/* ---------- Harmonic + serial + port filter ---------- */
+function toggleDistPanel(id){
+  var p=document.getElementById('dist_panel_'+id);
+  if(!p) return;
+  var isOpen=p.classList.contains('open');
+  document.querySelectorAll('.dist-filter-panel').forEach(function(x){x.classList.remove('open');});
+  if(!isOpen) p.classList.add('open');
+}
+document.addEventListener('click',function(e){
+  if(!e.target.closest('.dist-filter-wrap'))
+    document.querySelectorAll('.dist-filter-panel').forEach(function(p){p.classList.remove('open');});
+});
+function distToggleAll(id){
+  var allEl=document.getElementById('dist_all_'+id);
+  document.querySelectorAll('.dist_'+id+'_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  _distUpdateBadge(id);
+  updateCondCheckboxes();
+}
+function _distUpdateBadge(id){
+  var all=document.querySelectorAll('.dist_'+id+'_chk');
+  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var allEl=document.getElementById('dist_all_'+id);
+  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
+  var b=document.getElementById('dist_badge_'+id);
+  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
+}
+function _distGetChecked(id){
+  return Array.from(document.querySelectorAll('.dist_'+id+'_chk:checked')).map(function(c){return c.value;});
+}
+function updateCondCheckboxes(){
+  var harms=_distGetChecked('harm');
+  var sers=_distGetChecked('ser');
+  var ports=_distGetChecked('port');
+  _distUpdateBadge('harm'); _distUpdateBadge('ser'); _distUpdateBadge('port');
+  document.querySelectorAll('.cond_chk_row').forEach(function(row){
+    var show=(!harms.length||harms.indexOf(row.dataset.harm)>=0)&&
+             (!sers.length||sers.indexOf(row.dataset.serial)>=0)&&
+             (!ports.length||ports.indexOf(row.dataset.port)>=0);
+    row.style.display=show?'':'none';
+    row.querySelector('.cond_chk').checked=show;
+  });
+  update();
+}
+
+/* ---------- Selection helpers ---------- */
+function selAllConds(on){
+  document.querySelectorAll('.cond_chk').forEach(function(c){c.checked=on;});
+  update();
+}
+function selAllVisibleConds(on){
+  document.querySelectorAll('.cond_chk_row').forEach(function(row){
+    if(row.style.display!=='none') row.querySelector('.cond_chk').checked=on;
+  });
+  update();
+}
+function selAllSers(on){
+  document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=on;});
+  update();
+}
+
+/* ---------- Main update ---------- */
+function update(){
+  var isAbs=getMode()==='abs',cm=getCM(),refTemp=getRefTemp();
+  var selConds=getSelCondIdxs(),selSers=getSelSers(),selTemps=getSelTemps();
+  var traces=[],allN=0,tData=[];
+  var xlo=Infinity,xhi=-Infinity;
+
+  var wEl=document.getElementById('multimodal_warn');
+  if(wEl) wEl.style.display=(isAbs&&selConds.length>1)?'block':'none';
+
+  for(var ti=0;ti<TEMPS.length;ti++){
+    var temp=TEMPS[ti];
+    if(selTemps.indexOf(temp)<0) continue;
+    if(!isAbs&&temp===refTemp) continue;
+    var vals=gv(selConds,selSers,ti,isAbs,cm);
+    if(vals.length<3) continue;
+    allN+=vals.length;
+    var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);
+    if(mn<xlo) xlo=mn;
+    if(mx>xhi) xhi=mx;
+    tData.push({temp:temp,vals:vals});
+  }
+
+  if(!tData.length){
+    Plotly.react('kde_plot',[],{title:{text:TITLE,x:0.5},height:300,margin:{l:60,r:30,t:55,b:40}});
+    document.getElementById('n_pts').textContent='0 pts';
+    updateDeltaTable(); updateFlaggedPanel(); updateCorrBar();
+    return;
+  }
+
+  // Collect excluded condition data when "Show excluded" is on
+  var showExcl=document.getElementById('show_excl_chk');
+  showExcl=showExcl?showExcl.checked:false;
+  var exclTData=[];
+  if(showExcl){
+    var allCIs=CONDS.map(function(_,i){return i;});
+    var exclCIs=allCIs.filter(function(ci){return selConds.indexOf(ci)<0;});
+    if(exclCIs.length){
+      for(var ti2=0;ti2<TEMPS.length;ti2++){
+        var temp2=TEMPS[ti2];
+        if(selTemps.indexOf(temp2)<0) continue;
+        if(!isAbs&&temp2===refTemp) continue;
+        var ev=gv(exclCIs,selSers,ti2,isAbs,cm);
+        if(ev.length<3) continue;
+        var emn=Math.min.apply(null,ev),emx=Math.max.apply(null,ev);
+        if(emn<xlo) xlo=emn;
+        if(emx>xhi) xhi=emx;
+        exclTData.push({temp:temp2,vals:ev});
+      }
+    }
+  }
+
+  var pad=(xhi-xlo)*0.12||1;
+  var xs=_linspace(xlo-pad,xhi+pad,300);
+
+  // Excluded conditions KDE — dim dotted gray, rendered behind selected
+  for(var ke=0;ke<exclTData.length;ke++){
+    var dte=exclTData[ke],he=_bw(dte.vals),yse=_kde(dte.vals,xs,he);
+    traces.push({
+      type:'scatter',x:xs,y:yse,mode:'lines',
+      name:'excl '+dte.temp+' (n='+dte.vals.length+')',
+      line:{color:'rgba(160,160,160,0.6)',width:1.2,dash:'dot'},
+      fill:'tozeroy',fillcolor:'rgba(190,190,190,0.07)',
+      showlegend:false,hoverinfo:'skip'
+    });
+  }
+
+  for(var k=0;k<tData.length;k++){
+    var td=tData[k],h=_bw(td.vals),ys=_kde(td.vals,xs,h);
+    var color=TEMP_COLORS[td.temp]||'#888',isRoom=td.temp==='Room';
+    traces.push({
+      type:'scatter',x:xs,y:ys,mode:'lines',
+      name:td.temp+' (n='+td.vals.length+')',
+      line:{color:color,width:isRoom?2.5:2},
+      fill:'tozeroy',fillcolor:_h2r(color,isRoom?0.25:0.15),
+      hoverinfo:'skip'
+    });
+  }
+
+  var shapes=[],anns=[];
+  if(isAbs){
+    if(HI_SPEC!==null){
+      shapes.push({type:'line',xref:'x',x0:HI_SPEC,x1:HI_SPEC,y0:0,y1:1,yref:'paper',
+        line:{color:'red',dash:'dash',width:1.5}});
+      anns.push({xref:'x',yref:'paper',x:HI_SPEC,y:0.97,text:'Spec '+HI_SPEC,
+        showarrow:false,xanchor:'left',yanchor:'top',font:{color:'red',size:11}});
+    }
+    if(LO_SPEC!==null){
+      shapes.push({type:'line',xref:'x',x0:LO_SPEC,x1:LO_SPEC,y0:0,y1:1,yref:'paper',
+        line:{color:'red',dash:'dash',width:1.5}});
+      anns.push({xref:'x',yref:'paper',x:LO_SPEC,y:0.97,text:'Spec '+LO_SPEC,
+        showarrow:false,xanchor:'right',yanchor:'top',font:{color:'red',size:11}});
+    }
+  } else {
+    shapes.push({type:'line',xref:'x',x0:0,x1:0,y0:0,y1:1,yref:'paper',
+      line:{color:'#888',dash:'dot',width:1.2}});
+    anns.push({xref:'x',yref:'paper',x:0,y:0.97,text:refTemp+' ref (0)',
+      showarrow:false,xanchor:'left',yanchor:'top',font:{color:'#888',size:10}});
+  }
+
+  var xLbl=isAbs?Y_LABEL:('ΔTemp from '+refTemp+' ('+(Y_LABEL||'Value')+')');
+  var xrange=(isAbs&&Y_LIM)?Y_LIM:null;
+  Plotly.react('kde_plot',traces,{
+    title:{text:TITLE+(isAbs?'':(' — ΔTemp from '+refTemp)),x:0.5,font:{size:14}},
+    template:'plotly_white',
+    xaxis:{title:xLbl,range:xrange},
+    yaxis:{title:'Density'},
+    shapes:shapes,annotations:anns,
+    height:400,margin:{l:60,r:30,t:55,b:60},
+    legend:{orientation:'h',y:-0.26}
+  });
+
+  updateDeltaTable();
+  updateFlaggedPanel();
+  updateCorrBar();
+  document.getElementById('n_pts').textContent=allN.toLocaleString()+' pts';
+}
+
+function updateCorrBar(){
+  var ref=getRefTemp();
+  var el=document.getElementById('corr_bar');
+  /* corrections only meaningful when Room is the reference */
+  if(el) el.style.display=(ref===ROOM_TEMP&&FLAGGED_SERIALS.length)?'flex':'none';
+}
+
+function updateDeltaTable(){
+  var el=document.getElementById('delta_tbl');
+  if(!el) return;
+  var isAbs=getMode()==='abs';
+  var ref=getRefTemp();
+  var isRoomRef=(ref===ROOM_TEMP);
+  var cm=getCM();
+  var selConds=getSelCondIdxs();
+  var selTemps=getSelTemps();
+
+  var src=isRoomRef?DELTA:(DELTA_ALT[ref]||[]);
+  if(!src.length){
+    el.innerHTML='<i style="font-size:12px;color:#888">No delta data for selected reference.</i>';
+    return;
+  }
+
+  var dutSet={};
+  selConds.forEach(function(ci){var s=COND_SERIAL[ci];if(s)dutSet[s]=1;});
+  var dutSers=Object.keys(dutSet).sort();
+  if(!dutSers.length){
+    el.innerHTML='<i style="font-size:12px;color:#888">No conditions selected.</i>';
+    return;
+  }
+
+  function _med(a){
+    var s=a.slice().sort(function(x,y){return x-y;});
+    var m=Math.floor(s.length/2);
+    return s.length%2?s[m]:(s[m-1]+s[m])/2;
+  }
+  function _std2(a,mu){
+    if(a.length<2) return 0;
+    var s=0;for(var i=0;i<a.length;i++)s+=Math.pow(a[i]-mu,2);
+    return Math.sqrt(s/(a.length-1));
+  }
+
+  /* Per-DUT means from the delta source at temperature index ti */
+  function dutMeansAt(ti){
+    return dutSers.map(function(ser){
+      var vals=[];
+      selConds.forEach(function(ci){
+        if(COND_SERIAL[ci]!==ser) return;
+        var td=(src[ci]||[])[ti]||{};
+        Object.keys(td).forEach(function(dfSer){
+          var d=td[dfSer]||{};
+          var v=isRoomRef?(d[cm]||d['r']||[]):(d['r']||[]);
+          vals=vals.concat(v);
+        });
+      });
+      return vals.length?_mean(vals):null;
+    }).filter(function(v){return v!==null;});
+  }
+
+  /* Per-DUT means from VALS (absolute) at temperature index ti */
+  function dutMeansAbsAt(ti){
+    return dutSers.map(function(ser){
+      var vals=[];
+      selConds.forEach(function(ci){
+        if(COND_SERIAL[ci]!==ser) return;
+        var td=(VALS[ci]||[])[ti]||{};
+        Object.keys(td).forEach(function(dfSer){
+          var d=td[dfSer]||{};
+          var v=d[cm]||d['r']||[];
+          vals=vals.concat(v);
+        });
+      });
+      return vals.length?_mean(vals):null;
+    }).filter(function(v){return v!==null;});
+  }
+
+  /* Room row — always first */
+  var tiRoom=TEMPS.indexOf(ROOM_TEMP);
+  var roomRow=null;
+  if(tiRoom>=0&&selTemps.indexOf(ROOM_TEMP)>=0){
+    if(isAbs){
+      /* Absolute mode: show actual Room measurement stats */
+      var rdms=dutMeansAbsAt(tiRoom);
+      if(rdms.length){
+        var mn=_mean(rdms);
+        roomRow={temp:ROOM_TEMP,n:rdms.length,mean:mn,median:_med(rdms),std:_std2(rdms,mn),isRef:false};
+      }
+    } else if(isRoomRef){
+      /* Delta mode, Room is reference: delta = 0 by definition */
+      var rdms=dutMeansAbsAt(tiRoom);
+      roomRow={temp:ROOM_TEMP,n:rdms.length,mean:0,median:0,std:0,isRef:true};
+    }
+    /* Delta mode, non-Room reference: Room appears as a regular row in the loop */
+  }
+
+  /* Rows for all other temperatures */
+  var rows=[];
+  for(var ti=0;ti<TEMPS.length;ti++){
+    var temp=TEMPS[ti];
+    if(temp===ref) continue;
+    if(temp===ROOM_TEMP&&(isAbs||isRoomRef)) continue; /* Room handled separately */
+    if(selTemps.indexOf(temp)<0) continue;
+    var dms=isAbs?dutMeansAt(ti):dutMeansAt(ti);
+    if(!dms.length) continue;
+    var mn=_mean(dms),med=_med(dms),std=_std2(dms,mn);
+    rows.push({temp:temp,n:dms.length,mean:mn,median:med,std:std,isRef:false});
+  }
+
+  if(!roomRow&&!rows.length){
+    el.innerHTML='<i style="font-size:12px;color:#888">No delta data for the active selection.</i>';
+    return;
+  }
+
+  var colHdr=isAbs?'Mean (dB)':'Mean &#916; (dB)';
+  var html='<table class="stbl"><thead><tr>'
+    +'<th>Temperature</th><th>n DUTs</th><th>'+colHdr+'</th>'
+    +'<th>'+(isAbs?'Median (dB)':'Median &#916; (dB)')+'</th>'
+    +'<th>'+(isAbs?'Std (dB)':'Std &#916; (dB)')+'</th>'
+    +'</tr></thead><tbody>';
+
+  function rowHtml(r){
+    var col=TEMP_COLORS[r.temp]||'#888';
+    var refStyle=r.isRef?'background:#f5f5f5;color:#999;font-style:italic':'';
+    var mc=r.isRef?'':(Math.abs(r.mean)>0.5?'color:#d62728':Math.abs(r.mean)>0.1?'color:#e65100':'color:#2ca02c');
+    var label=r.isRef?(r.temp+' (ref)'):r.temp;
+    return '<tr style="'+refStyle+'"><td><b style="color:'+col+'">&#9632;</b>&nbsp;'+label+'</td>'
+      +'<td>'+r.n+'</td><td style="'+mc+'">'+_fd(r.mean)+'</td>'
+      +'<td>'+_fd(r.median)+'</td><td>'+_fd(r.std)+'</td>'
+      +'</tr>';
+  }
+
+  if(roomRow) html+=rowHtml(roomRow);
+  rows.forEach(function(r){html+=rowHtml(r);});
+  html+='</tbody></table>';
+  el.innerHTML=html;
+}
+
+function updateFlaggedPanel(){
+  var el=document.getElementById('flagged_panel');
+  if(!el) return;
+  if(!FLAGGED_DETAIL.length){
+    el.innerHTML='<p style="font-size:12px;color:#2ca02c;margin:4px 0">'
+      +'✓ No suspected uncompensated DUTs detected (IQR×1.5 criterion across all temperatures).</p>';
+    return;
+  }
+  var nr=TEMPS.filter(function(t){return t!=='Room';});
+  var html='<p style="font-size:12px;color:#888;margin:2px 0 4px 0">'
+    +'Flagged via IQR×1.5 on per-DUT mean ΔTemp (all conditions combined). '
+    +'Derived correction = median Δ of well-compensated DUTs.</p>'
+    +'<table class="stbl"><thead><tr><th>Serial</th>';
+  nr.forEach(function(t){html+='<th>'+t+' mean Δ (dB)</th>';});
+  html+='</tr></thead><tbody>';
+  FLAGGED_DETAIL.forEach(function(d){
+    html+='<tr><td><b>'+d.serial+'</b></td>';
+    nr.forEach(function(t){
+      var v=d.by_temp[t];
+      var st=(v!==undefined)?'color:'+(Math.abs(v)>0.5?'#d62728':'#e65100'):'';
+      html+='<td style="'+st+'">'+(v!==undefined?Number(v).toFixed(3):'—')+'</td>';
+    });
+    html+='</tr>';
+  });
+  html+='</tbody></table>';
+  el.innerHTML=html;
+}
+
+function toggleFlagged(){
+  var p=document.getElementById('flagged_panel'),b=document.getElementById('flagged_btn');
+  if(!p||!b) return;
+  var open=p.style.display!=='none';
+  p.style.display=open?'none':'block';
+  b.textContent=(open?'▶':'▼')+' Suspected uncompensated DUTs ('+FLAGGED_DETAIL.length+')';
+}
+
+function resetView(){
+  document.querySelectorAll('.env_chk:not([disabled])').forEach(function(c){c.checked=true;});
+  document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=true;});
+  var dm=document.querySelector('input[name="view_mode"][value="delta"]');
+  if(dm) dm.checked=true;
+  var rm=document.querySelector('input[name="corr_mode"][value="r"]');
+  if(rm) rm.checked=true;
+  var rs=document.getElementById('ref_temp_sel');
+  if(rs) rs.value=ROOM_TEMP;
+  /* Reset dist filter panels */
+  ['harm','ser','port'].forEach(function(id){
+    document.querySelectorAll('.dist_'+id+'_chk').forEach(function(c){c.checked=true;});
+    _distUpdateBadge(id);
+  });
+  var ec=document.getElementById('show_excl_chk');
+  if(ec) ec.checked=false;
+  updateCondCheckboxes();
+}
+
+/* ---- global filter (localStorage) ---- */
+var _distGfExcluded=null;
+function _loadDistGlobalFilter(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    _distGfExcluded=raw?new Set(JSON.parse(raw).excluded||[]):null;
+  }catch(e){_distGfExcluded=null;}
+  _updateDistGfBadge();
+}
+function _updateDistGfBadge(){
+  var el=document.getElementById('dist_gf_badge');
+  if(!el) return;
+  var n=_distGfExcluded?_distGfExcluded.size:0;
+  el.textContent=n>0?n+' globally excl.':'';
+  el.style.display=n>0?'':'none';
+}
+window.addEventListener('storage',function(e){
+  if(e.key==='padb_v2_excluded'){_loadDistGlobalFilter();update();}
+});
+/* Extract serials mentioned in any excluded key; use as coarse serial exclusion */
+function _distGfExclSers(){
+  if(!_distGfExcluded||!_distGfExcluded.size) return null;
+  var sers=new Set();
+  _distGfExcluded.forEach(function(k){sers.add(k.split('||')[0]);});
+  return sers;
+}
+/* Override getSelSers to subtract GF-excluded serials */
+var _getSelSersOrig=getSelSers;
+getSelSers=function(){
+  var base=_getSelSersOrig();
+  var gfSers=_distGfExclSers();
+  if(!gfSers) return base;
+  return base.filter(function(s){return !gfSers.has(s);});
+};
+
+_loadDistGlobalFilter();
+updateCorrBar();
+updateCondCheckboxes();
+"""
+
+    flagged_hdr = (
+        f'<span class="flagged-hdr" id="flagged_btn" onclick="toggleFlagged()">'
+        f"&#9654; Suspected uncompensated DUTs ({n_flagged})</span>\n"
+    )
+
+    # Multiple conditions warning shown when >1 condition active in Absolute mode
+    multimodal_warn = (
+        '<div id="multimodal_warn">&#9888; Multiple conditions selected in Absolute mode '
+        "combine different harmonic levels &mdash; the distribution will be multimodal. "
+        "Select a single condition or use ΔTemp view for a meaningful distribution.</div>\n"
+    )
+
+    html = (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        f'<meta charset="utf-8"><title>{title}</title>\n'
+        f"<style>{css}</style>\n"
+        "</head>\n<body>\n"
+        # Temperature env bar
+        '<div class="env-bar">\n'
+        '<span style="font-size:12px;font-weight:600;color:#2e7d32;margin-right:8px">'
+        "Temperatures:</span>\n"
+        + env_chks
+        + '<div class="sep" style="margin-left:8px"></div>\n'
+        + '<span style="font-size:12px;font-weight:600;color:#1565c0;margin-left:4px">Ref:</span>\n'
+        + f'<select id="ref_temp_sel" style="font-size:12px;padding:1px 4px;border:1px solid #90caf9;'
+          f'border-radius:3px;background:#e3f2fd;color:#1565c0" onchange="update()">\n'
+        + ref_opts + "\n</select>\n"
+        + "</div>\n"
+        # Harmonic + serial + port collapsible dropdown panels, then per-condition checkbox panel
+        + '<div class="filter-bar" style="gap:6px;align-items:center">\n'
+        + harm_panel_html + '\n'
+        + ser_panel_html + '\n'
+        + (port_panel_html + '\n' if port_panel_html else '')
+        + '<button class="sel-btn" style="margin-left:4px" onclick="selAllVisibleConds(true)">All conds</button>\n'
+        + '<button class="sel-btn" onclick="selAllVisibleConds(false)">None</button>\n'
+        + "</div>\n"
+        + '<div class="filter-chk-panel" id="harm_chk_panel">\n'
+        + cond_chk_rows
+        + "</div>\n"
+        # View / mode ctrl bar
+        + '<div class="ctrl-bar">\n'
+        '  <span>View:</span>\n'
+        '  <label><input type="radio" name="view_mode" value="abs"'
+        ' onchange="update()">&nbsp;Absolute</label>\n'
+        '  <label><input type="radio" name="view_mode" value="delta"'
+        ' checked onchange="update()">&nbsp;ΔTemp</label>\n'
+        '  <div class="sep"></div>\n'
+        '  <label title="Show deselected conditions as dim background KDE">'
+        '<input type="checkbox" id="show_excl_chk" onchange="update()">'
+        '&nbsp;Show&nbsp;excluded</label>\n'
+        '  <div class="sep"></div>\n'
+        '  <button class="reset-btn" onclick="resetView()">Reset</button>\n'
+        '  <span id="dist_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
+        'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
+        'margin-left:4px"></span>\n'
+        '  <span id="n_pts"></span>\n'
+        "</div>\n"
+        '<div id="corr_bar">\n'
+        '  <span style="font-weight:600;color:#795548">Correction:</span>\n'
+        '  <label><input type="radio" name="corr_mode" value="r"'
+        ' checked onchange="update()">&nbsp;Raw</label>\n'
+        '  <label><input type="radio" name="corr_mode" value="c"'
+        ' onchange="update()">&nbsp;Apply&nbsp;derived&nbsp;correction</label>\n'
+        '  <label><input type="radio" name="corr_mode" value="e"'
+        ' onchange="update()">&nbsp;Exclude&nbsp;flagged&nbsp;DUTs</label>\n'
+        "</div>\n"
+        + multimodal_warn
+        + '<div id="kde_plot"></div>\n'
+        '<div class="panel-section">\n'
+        '  <div class="panel-title">ΔEnv Summary &mdash; mean shift from reference'
+        " per DUT (aggregated across all conditions &amp; frequencies)</div>\n"
+        '  <div id="delta_tbl"></div>\n'
+        "</div>\n"
+        + flagged_hdr
+        + '<div id="flagged_panel" style="display:none"></div>\n'
+        f"<script>{_get_plotlyjs()}</script>\n"
+        "<script>\n"
+        + constants
+        + "\n"
+        + dist_env_js
+        + "</script>\n</body>\n</html>"
+    )
+    return html
+
+
 def empirical_cdf(csv_path: Path, cfg: dict, output_html: Path) -> None:
     """
     Empirical CDF, one trace per serial. Spec limits shown as vertical lines.
@@ -2006,10 +3050,10 @@ function buildTraces(conds,params){
   conds.forEach(function(cd,ci){
     var color=PALETTE[ci%PALETTE.length];
     var sorted=(cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;});
-    // Always push 5 traces per condition to keep index stable for Plotly.react
+    // Always push 6 traces per condition to keep index stable for Plotly.react
     if(!sorted.length){
-      for(var i=0;i<5;i++)
-        traces.push({type:'scatter',x:[],y:[],mode:'lines',showlegend:false,hoverinfo:'skip'});
+      for(var i=0;i<6;i++)
+        traces.push({type:'scatter',x:[],y:[],mode:'markers',showlegend:false,hoverinfo:'skip'});
       return;
     }
     var freqs=[],ti_ups=[],ti_los=[],means=[],nmCols=[],markerSyms=[],hover=[];
@@ -2106,6 +3150,32 @@ function buildTraces(conds,params){
       text:ssu_hover,
       hovertemplate:'<b>'+cd.condition+'</b><br>%{text}<extra></extra>'
     });
+    // Trace 6: Individual dut_vals scatter points — toggle via "Show points"
+    var showPts=document.getElementById('show_pts_chk');
+    showPts=showPts?showPts.checked:false;
+    var selSers2=getAllSerials().length>1?getSelectedSerials():[];
+    var useSerFlt=selSers2.length>0&&selSers2.length<getAllSerials().length;
+    var hasGfForPts=_gfExcluded&&_gfExcluded.size>0;
+    var pt_x=[],pt_y=[],pt_cols=[],pt_txt=[];
+    if(showPts){
+      sorted.forEach(function(fs){
+        (fs.dut_vals||[]).forEach(function(dv){
+          var serExcl=useSerFlt&&selSers2.indexOf(dv.s)<0;
+          var gfExcl=hasGfForPts&&_isStatGfExcl(dv.s,cd.condition,fs.freq);
+          pt_x.push(fs.freq);
+          pt_y.push(dv.v);
+          pt_cols.push(gfExcl?'rgba(220,80,40,0.5)':serExcl?'rgba(160,160,160,0.4)':color);
+          pt_txt.push(dv.s||'');
+        });
+      });
+    }
+    traces.push(showPts&&pt_x.length?{
+      type:'scatter',x:pt_x,y:pt_y,mode:'markers',
+      marker:{size:5,color:pt_cols,opacity:0.7,line:{color:'white',width:0.5}},
+      name:cd.condition+' pts',legendgroup:cd.condition,showlegend:false,
+      text:pt_txt,
+      hovertemplate:'<b>%{text}</b>: %{y:.4f}<extra></extra>'
+    }:{type:'scatter',x:[],y:[],mode:'markers',showlegend:false,hoverinfo:'skip'});
   });
 
   // Spec + TLL reference lines
@@ -2212,8 +3282,46 @@ function toggleAllSer(){
   document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
   serChkChanged();
 }
-function recomputeFreqStat(fs,selSers){
-  var dv=(fs.dut_vals||[]).filter(function(d){return selSers.indexOf(d.s)>=0;});
+/* ---- global filter (localStorage) ---- */
+var _gfExcluded=null;
+function _loadStatGlobalFilter(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    _gfExcluded=raw?new Set(JSON.parse(raw).excluded||[]):null;
+  }catch(e){_gfExcluded=null;}
+  _updateStatGfBadge();
+}
+function _updateStatGfBadge(){
+  var el=document.getElementById('stat_gf_badge');
+  if(!el) return;
+  var n=_gfExcluded?_gfExcluded.size:0;
+  el.textContent=n>0?n+' globally excl.':'';
+  el.style.display=n>0?'':'none';
+}
+window.addEventListener('storage',function(e){
+  if(e.key==='padb_v2_excluded'){_loadStatGlobalFilter();update();}
+});
+/* Build a condition key without serial parts (matches boxplot key format) */
+function _condKeyForStat(cond){
+  var serKws=['serial','unit id','dut id','s/n'];
+  return (cond||'').split(/  +/).map(function(p){
+    return p.replace(/\s*:\s*/,'=').trim();
+  }).filter(function(p){
+    var lo=p.toLowerCase();
+    return p&&!serKws.some(function(kw){return lo.indexOf(kw)===0;});
+  }).sort().join('|');
+}
+function _isStatGfExcl(serial,cond,freq){
+  if(!_gfExcluded||!_gfExcluded.size) return false;
+  var key=(serial||'unknown')+'||'+_condKeyForStat(cond)+'||Room||'+freq.toFixed(3);
+  return _gfExcluded.has(key);
+}
+function recomputeFreqStat(fs,selSers,cond,freq){
+  var f=freq!==undefined?freq:(fs.freq||0);
+  var c=cond||'';
+  var dv=(fs.dut_vals||[]).filter(function(d){
+    return selSers.indexOf(d.s)>=0&&!_isStatGfExcl(d.s,c,f);
+  });
   if(!dv.length) return null;
   var n=dv.length,vals=dv.map(function(d){return d.v;});
   var mean=0;vals.forEach(function(v){mean+=v;});mean/=n;
@@ -2429,10 +3537,15 @@ function update(){
   });
   var params=getParams();
   var selSers=getSelectedSerials();var allSers=getAllSerials();
-  if(allSers.length>1&&selSers.length<allSers.length){
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var hasGf=_gfExcluded&&_gfExcluded.size>0;
+  if(serFlt||hasGf){
+    var activeSers=serFlt?selSers:allSers;
     conds=conds.map(function(cd){
       var nfs=[];
-      (cd.freq_stats||[]).forEach(function(fs){var r=recomputeFreqStat(fs,selSers);if(r) nfs.push(r);});
+      (cd.freq_stats||[]).forEach(function(fs){
+        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq);if(r) nfs.push(r);
+      });
       return Object.assign({},cd,{freq_stats:nfs});
     });
   }
@@ -2457,6 +3570,7 @@ function update(){
   }
 }
 
+_loadStatGlobalFilter();
 Plotly.newPlot('plot',buildTraces(STAT_DATA,getParams()),buildLayout(),{responsive:true});
 updateTLLDisplay(STAT_DATA,getParams());
 updateStatPanel(STAT_DATA,getParams());
@@ -2760,6 +3874,13 @@ def _build_stat_summary_html(
         ' for Non-normal and Marginal frequencies">'
         '<input type="checkbox" id="np_ti_chk" onchange="update()">'
         '&nbsp;Non-parametric&nbsp;TI</label>\n'
+        '  <span class="sep"></span>\n'
+        '  <label title="Overlay individual measurement points on the plot">'
+        '<input type="checkbox" id="show_pts_chk" onchange="update()">'
+        '&nbsp;Show&nbsp;points</label>\n'
+        '  <span id="stat_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
+        'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
+        'margin-left:4px"></span>\n'
         '  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         '</div>\n'
     )
@@ -2841,10 +3962,26 @@ function hexAlpha(hex,a){
   var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return 'rgba('+r+','+g+','+b+','+a+')';
 }
-function buildTraces(selConds){
+function buildTraces(selConds,exclConds){
+  exclConds=exclConds||[];
   var traces=[];
   var fr=getFreqRange();
   var flt=getEnvDataFilter();
+  /* Excluded conditions — dim gray bands rendered first (behind selected) */
+  exclConds.forEach(function(cd){
+    var idxs=getFilteredIdxs(cd,fr,flt);
+    if(!idxs.length) return;
+    var freqs=idxs.map(function(j){return cd.freqs[j];});
+    var ude=idxs.map(function(j){return cd.ude[j];});
+    var neg_lde=idxs.map(function(j){return -cd.lde[j];});
+    traces.push({type:'scatter',x:freqs,y:ude,mode:'lines',
+      line:{color:'rgba(190,190,190,0.55)',width:0.8},showlegend:false,hoverinfo:'skip'});
+    traces.push({type:'scatter',x:freqs,y:neg_lde,mode:'lines',
+      fill:'tonexty',fillcolor:'rgba(200,200,200,0.09)',
+      line:{color:'rgba(190,190,190,0.55)',width:0.8},
+      name:cd.condition,showlegend:false,
+      hovertemplate:cd.condition+' (excluded)<extra></extra>'});
+  });
   selConds.forEach(function(cd,i){
     var color=PALETTE[i%PALETTE.length];
     var idxs=getFilteredIdxs(cd,fr,flt);
@@ -3061,10 +4198,14 @@ function updateEnvStatsTable(selConds){
   }
 }
 function update(){
-  Plotly.react('plot',buildTraces(getSelectedConds()),buildLayout());
-  updateEnvStatsTable(getSelectedConds());
+  var selConds=getSelectedConds();
+  var showExcl=document.getElementById('show_excl_chk');
+  showExcl=showExcl?showExcl.checked:false;
+  var exclConds=showExcl?ENV_DATA.filter(function(cd){return selConds.indexOf(cd)<0;}):[];
+  Plotly.react('plot',buildTraces(selConds,exclConds),buildLayout());
+  updateEnvStatsTable(selConds);
 }
-Plotly.newPlot('plot',buildTraces(getSelectedConds()),buildLayout(),{responsive:true,scrollZoom:true});
+Plotly.newPlot('plot',buildTraces(getSelectedConds(),[]),buildLayout(),{responsive:true,scrollZoom:true});
 """
 
 
@@ -3274,6 +4415,9 @@ def _build_env_summary_html(
         + f'  {log_x_html}\n'
         + f'  {sep}\n'
         + f'  {data_filter_html}\n'
+        + f'  <label title="Show non-selected conditions as dim gray bands">'
+        + f'<input type="checkbox" id="show_excl_chk" onchange="update()">'
+        + f'&nbsp;Show&nbsp;excluded</label>\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + f'  <button class="stat-btn" id="env_stat_btn" onclick="toggleEnvStatPanel()">&#9658;&nbsp;Statistics</button>\n'
         + (f'  {sep}\n{pc_html}' if pc_html else '')
@@ -3377,6 +4521,19 @@ def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
         {"col": key, "col_id": re.sub(r"\W+", "_", key), "label": key, "vals": _sort_numeric(v)}
         for key, v in sorted(dim_vals.items()) if len(v) > 1
     ]
+
+    # Add serial filter — extracted from condition strings (excluded by default serial-detection logic)
+    _ser_re_sum = re.compile(r'Serial Number:\s*(\S+)', re.IGNORECASE)
+    _ser_vals_sum = sorted(set(
+        m.group(1) for cd in env_data for m in [_ser_re_sum.search(cd["condition"])] if m
+    ))
+    if len(_ser_vals_sum) > 1:
+        cond_dims.append({
+            "col": "Serial Number",
+            "col_id": "Serial_Number",
+            "label": "Serial",
+            "vals": _ser_vals_sum,
+        })
 
     palette = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -3671,17 +4828,41 @@ function togglePanel(id){
   var p=document.getElementById('panel_'+id);
   if(p) p.classList.toggle('open');
 }
+/* Sync longform checkboxes from the intersection of all COND_DIMS selections */
+function _syncLfFromAllDims(){
+  if(!COND_DIMS||!COND_DIMS.length) return;
+  document.querySelectorAll('.box_cond_lf_row').forEach(function(row){
+    var cond=row.querySelector('.box_cond_lf_chk').value;
+    var ok=COND_DIMS.every(function(dim){
+      var sel=getSelected('box_cond_'+dim.col_id);
+      if(!sel.length) return true;
+      var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+      var m=cond.match(new RegExp(safe+':?\\s*(\\S+)'));
+      return m&&sel.indexOf(m[1])>=0;
+    });
+    row.querySelector('.box_cond_lf_chk').checked=ok;
+  });
+}
 function toggleAll(col){
   var allChk=document.getElementById('all_'+col);
   document.querySelectorAll('.'+col).forEach(function(c){c.checked=allChk.checked;});
-  updateBadge(col);update();
+  updateBadge(col);
+  _syncLfFromAllDims();
+  if(col==='box_cond_HarmonicNumber'){var hs=document.getElementById('box_harm_sel');if(hs&&allChk&&allChk.checked)hs.value='all';}
+  update();
 }
 function chkChanged(col){
   var all=document.querySelectorAll('.'+col);
   var chk=Array.from(all).filter(function(c){return c.checked;});
   var allEl=document.getElementById('all_'+col);
   if(allEl){allEl.checked=chk.length===all.length;allEl.indeterminate=chk.length>0&&chk.length<all.length;}
-  updateBadge(col);update();
+  updateBadge(col);
+  _syncLfFromAllDims();
+  if(col==='box_cond_HarmonicNumber'){
+    var hs=document.getElementById('box_harm_sel');
+    if(hs){var hSel=getSelected('box_cond_HarmonicNumber');hs.value=(hSel.length===1)?hSel[0]:'all';}
+  }
+  update();
 }
 function updateBadge(col){
   var all=document.querySelectorAll('.'+col);
@@ -3692,6 +4873,13 @@ function updateBadge(col){
 function getSelectedConds(){
   var allConds=[];
   BOX_DATA.forEach(function(cd){if(allConds.indexOf(cd.condition)<0) allConds.push(cd.condition);});
+  /* Longform checkboxes take precedence when present */
+  var lfChks=document.querySelectorAll('.box_cond_lf_chk');
+  if(lfChks.length){
+    var checked=Array.from(document.querySelectorAll('.box_cond_lf_chk:checked')).map(function(c){return c.value;});
+    return checked.length?checked:allConds;
+  }
+  /* Fallback: per-dimension dropdowns */
   if(!COND_DIMS||!COND_DIMS.length) return allConds;
   return allConds.filter(function(cond){
     return COND_DIMS.every(function(dim){
@@ -3832,14 +5020,33 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         if(!s) return;
         var outDet=detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;});
         var boxDet=excl?detail.filter(function(d){return d.v>=s.lo_w&&d.v<=s.hi_w;}):detail;
-        var bs=excl&&boxDet.length>0?computeBoxStats(boxDet.map(function(d){return d.v;}),k):s;
-        if(!bs) return;
+        if(!boxDet.length) return;
+        var bsVals=boxDet.map(function(d){return d.v;});
+        var bsRaw=computeBoxStats(bsVals,k);
+        if(!bsRaw) return;
+        /* Box stats from active set; whiskers span active set extent.
+           Exclude mode → inlier-only set → shorter whiskers, no floating specs. */
+        var whiskerVals=excl?bsVals:fv;
+        var bs={n:bsRaw.n,mean:bsRaw.mean,q1:bsRaw.q1,q2:bsRaw.q2,q3:bsRaw.q3,
+                lo_w:Math.min.apply(null,whiskerVals),hi_w:Math.max.apply(null,whiskerVals),
+                outliers:bsRaw.outliers};
         fs.push({freq:f.freq,freq_label:f.freq_label,
           n:detail.length,mean:bs.mean,q1:bs.q1,q2:bs.q2,q3:bs.q3,lo_w:bs.lo_w,hi_w:bs.hi_w,
           outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:detail});
       });
     } else {
-      fs=cd.freq_stats.slice();
+      /* Override Python-computed IQR-fence whiskers with actual data extent so that
+         outlier circles always sit at the whisker tips, not beyond them. */
+      fs=cd.freq_stats.map(function(f){
+        var vd=f.vals_detail;
+        if(!vd||!vd.length) return f;
+        var mn=Infinity,mx=-Infinity;
+        for(var i=0;i<vd.length;i++){if(vd[i].v<mn)mn=vd[i].v;if(vd[i].v>mx)mx=vd[i].v;}
+        return {freq:f.freq,freq_label:f.freq_label,n:f.n,mean:f.mean,
+                q1:f.q1,q2:f.q2,q3:f.q3,lo_w:mn,hi_w:mx,
+                outlier_detail:f.outlier_detail,outliers:f.outliers,
+                vals_detail:f.vals_detail,vals:f.vals};
+      });
     }
     if(!fs.length) return;
     var color=PALETTE[(condIdxMap[cd.condition]||0)%PALETTE.length];
@@ -3890,9 +5097,12 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         (f.outliers||[]).forEach(function(v){oxArr.push(f.freq_label);oyArr.push(v);oText.push(name+' outlier: '+v.toFixed(4));});
       }
     });
-    if(oxArr.length){
+    /* Only draw outlier circles in normal mode; in exclude mode the shorter
+       whisker itself signals what was removed — no circles dangling beyond it. */
+    if(oxArr.length&&!excl){
       traces.push({type:'scatter',x:oxArr,y:oyArr,mode:'markers',text:oText,
-        marker:{symbol:'circle-open',size:7,color:color,line:{width:2,color:color}},
+        marker:{symbol:'circle-open',size:7,color:color,opacity:0.9,
+          line:{width:2,color:color}},
         name:name+' outliers',showlegend:false,
         hovertemplate:'%{text}<extra></extra>'});
     }
@@ -4105,14 +5315,73 @@ function toggleOutlierPanel(){
     updateOutlierPanel(selConds,selTemps,yFlt,getSelectedBoxSerials());
   }
 }
+/* ---- Longform harmonic filter ---- */
+function updateBoxHarmonic(){
+  var harm=document.getElementById('box_harm_sel').value;
+  /* Sync the COND_DIMS HarmonicNumber panel (if present) so _syncLfFromAllDims reads it */
+  if(COND_DIMS){
+    COND_DIMS.forEach(function(dim){
+      if(dim.col_id!=='HarmonicNumber') return;
+      var col='box_cond_'+dim.col_id;
+      document.querySelectorAll('.'+col).forEach(function(c){c.checked=(harm==='all'||c.value===harm);});
+      var allEl=document.getElementById('all_'+col);if(allEl)allEl.checked=(harm==='all');
+      updateBadge(col);
+    });
+  }
+  _syncLfFromAllDims();
+  update();
+}
+function selAllBoxLf(on){
+  document.querySelectorAll('.box_cond_lf_chk').forEach(function(c){c.checked=on;});
+  update();
+}
+
+/* ---- Clear everything ---- */
+function clearEverything(){
+  /* Longform harmonic + checkboxes */
+  var hs=document.getElementById('box_harm_sel');
+  if(hs) hs.value='all';
+  document.querySelectorAll('.box_cond_lf_chk').forEach(function(c){c.checked=true;});
+  /* Per-dimension dropdowns */
+  if(COND_DIMS) COND_DIMS.forEach(function(dim){
+    var id='box_cond_'+dim.col_id;
+    document.querySelectorAll('.'+id).forEach(function(c){c.checked=true;});
+    var allEl=document.getElementById('all_'+id);if(allEl)allEl.checked=true;
+    var b=document.getElementById('badge_'+id);if(b){b.textContent='';b.classList.remove('active');}
+  });
+  /* Temperature */
+  document.querySelectorAll('.box_env_chk').forEach(function(c){c.checked=true;});
+  /* Serial */
+  document.querySelectorAll('.box_ser_chk').forEach(function(c){c.checked=true;});
+  var allSer=document.getElementById('all_box_ser');if(allSer)allSer.checked=true;
+  var bSer=document.getElementById('badge_box_ser');if(bSer){bSer.textContent='';bSer.classList.remove('active');}
+  /* Data filter */
+  var allFlt=document.querySelector('input[name="box_flt"][value="all"]');
+  if(allFlt)allFlt.checked=true;
+  toggleRangeInputs();
+  /* IQR k */
+  var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value='1.5';
+  /* Checkboxes */
+  var exEl=document.getElementById('box_excl_out_chk');if(exEl)exEl.checked=false;
+  var ptEl=document.getElementById('box_show_pts_chk');if(ptEl)ptEl.checked=false;
+  /* Global filter */
+  try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
+  var gEl=document.getElementById('box_gf_status');if(gEl)gEl.textContent='';
+  update();
+}
+
 /* ---- global filter (localStorage) ---- */
 function applyGlobalFilter(){
-  var keys=window._currentOutlierKeys;
-  if(!keys||!keys.length){alert('No outliers to exclude at current settings.');return;}
+  var selConds=getSelectedConds(),selTemps=getSelectedTemps();
+  var yFlt=getYFilter(),selBoxSers=getSelectedBoxSerials();
+  var outliers=_collectOutliers(selConds,selTemps,yFlt,selBoxSers);
+  var keys=outliers.map(function(o){return o.key;});
+  if(!keys.length){alert('No outliers at current k\xd7IQR threshold.');return;}
   try{
     localStorage.setItem('padb_v2_excluded',JSON.stringify({v:1,excluded:keys}));
-    var btn=document.getElementById('box_gf_status');
-    if(btn) btn.textContent=keys.length+' pts in global filter';
+    window._currentOutlierKeys=keys;
+    var el=document.getElementById('box_gf_status');
+    if(el) el.textContent=keys.length+' pts in global filter';
   }catch(e){alert('localStorage write failed: '+e.message);}
 }
 function clearGlobalFilter(){
@@ -4195,6 +5464,7 @@ def _build_box_interactive_html(
     box_data: list, stat_data_box: list, freq_cat_order: list, all_temps: list,
     cond_dims: list, lo_js: str, hi_js: str, title: str, y_label: str, y_lim, palette: list,
     all_box_serials: list = None,
+    box_cond_harm=None, harm_orders_box=None, all_conds_ordered=None,
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -4236,6 +5506,11 @@ def _build_box_interactive_html(
         ".stbl td{padding:3px 8px;border:1px solid #ddd;white-space:nowrap;}"
         ".stbl tr:hover td{background:#f5f5ff;}"
         ".out{color:#c00;font-size:11px;}"
+        ".box_lf_bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;"
+        "padding:5px 14px;background:#f5f5f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".box_lf_panel{display:flex;flex-wrap:wrap;gap:4px;padding:4px 14px;"
+        "background:#fafafa;border-radius:6px;margin-bottom:4px;font-size:12px;"
+        "border:1px solid #e8e8e8;max-height:200px;overflow-y:auto;}"
     )
 
     panels_html = ""
@@ -4281,6 +5556,23 @@ def _build_box_interactive_html(
             ctrl_parts.append(sep_div)
         ctrl_parts.append(box_serial_panel_html)
     ctrl_bar = (f'<div class="ctrl-bar">\n  ' + '\n  '.join(ctrl_parts) + '\n</div>\n') if ctrl_parts else ""
+
+    # Longform condition checkboxes (all rows always visible)
+    box_lf_harm_opts = '<option value="all">All harmonics</option>\n'
+    if harm_orders_box:
+        box_lf_harm_opts += "\n".join(
+            f'<option value="{h}">Harmonic {h}</option>' for h in harm_orders_box
+        )
+    box_lf_rows = ""
+    if all_conds_ordered and box_cond_harm is not None:
+        for i, cond in enumerate(all_conds_ordered):
+            harm = box_cond_harm[i]
+            box_lf_rows += (
+                f'<div class="box_cond_lf_row" data-harm="{harm}">'
+                f'<label style="white-space:nowrap;font-size:12px">'
+                f'<input type="checkbox" class="box_cond_lf_chk" value="{cond}" checked'
+                f' onchange="update()">&nbsp;{cond}</label></div>\n'
+            )
 
     env_bar = ""
     if all_temps:
@@ -4343,6 +5635,7 @@ def _build_box_interactive_html(
         f"var TEMPS_PRESENT={json.dumps(all_temps)};",
         f"var PALETTE={json.dumps(palette)};",
         f"var ALL_BOX_SERIALS={json.dumps(all_box_serials or [])};",
+        f"var BOX_COND_HARM={json.dumps(box_cond_harm or [])};",
     ])
 
     return (
@@ -4351,6 +5644,14 @@ def _build_box_interactive_html(
         f"<style>{css}</style>\n"
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
+        + '<div class="box_lf_bar">\n'
+        + '<span style="font-weight:600;color:#444;margin-right:4px">Harmonic:</span>\n'
+        + f'<select id="box_harm_sel" style="font-size:12px;padding:1px 4px;border:1px solid #bbb;border-radius:3px" onchange="updateBoxHarmonic()">\n'
+        + box_lf_harm_opts + "\n</select>\n"
+        + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;margin-left:6px" onclick="selAllBoxLf(true)">All</button>\n'
+        + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff" onclick="selAllBoxLf(false)">None</button>\n'
+        + '</div>\n'
+        + (('<div class="box_lf_panel">\n' + box_lf_rows + '</div>\n') if box_lf_rows else "")
         + ctrl_bar + env_bar + filter_bar
         + '<div id="plot"></div>\n'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
@@ -4364,6 +5665,9 @@ def _build_box_interactive_html(
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' onclick="clearGlobalFilter()">Clear global filter</button>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
+        ' onclick="clearEverything()">Clear everything</button>\n'
         + '  <span id="box_gf_status" style="font-size:12px;color:#555"></span>\n'
         + '</div>\n'
         + '<div id="box_stat_panel" style="display:none;overflow-x:auto;padding:4px"></div>\n'
@@ -4450,6 +5754,18 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         for key, v in sorted(dim_vals.items()) if len(v) > 1
     ]
 
+    # Harmonic extraction for longform panel
+    _harm_re_box = re.compile(r'HarmonicNumber:\s*(\S+)', re.IGNORECASE)
+    def _extract_harm_box(cond: str) -> str:
+        m = _harm_re_box.search(cond)
+        return m.group(1) if m else ""
+    all_conds_ordered = [cd["condition"] for cd in stat_data_box]
+    box_cond_harm = [_extract_harm_box(c) for c in all_conds_ordered]
+    harm_orders_box = sorted(
+        set(h for h in box_cond_harm if h),
+        key=lambda x: float(x) if x else float("inf")
+    )
+
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
     palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -4463,6 +5779,9 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     html = _build_box_interactive_html(
         box_data, stat_data_box, freq_cat_order, all_temps,
         cond_dims, lo_js, hi_js, title, y_label, y_lim, palette, all_box_serials,
+        box_cond_harm=box_cond_harm,
+        harm_orders_box=harm_orders_box,
+        all_conds_ordered=all_conds_ordered,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -4582,10 +5901,36 @@ function hexToRgba(hex,a){
   var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return 'rgba('+r+','+g+','+b+','+a+')';
 }
-function buildTraces(active){
+function buildTraces(active,excl){
+  excl=excl||[];
   var freqLo=parseFloat(document.getElementById('freq_lo').value);
   var freqHi=parseFloat(document.getElementById('freq_hi').value);
   var traces=[];
+  /* Excluded conditions — dim gray bands rendered first (behind active) */
+  excl.forEach(function(cd){
+    var idxs=[];
+    cd.freqs.forEach(function(f,i){if(f>=freqLo&&f<=freqHi)idxs.push(i);});
+    if(!idxs.length)return;
+    var freqs=idxs.map(function(i){return cd.freqs[i];});
+    var mins=idxs.map(function(i){return cd.min_data[i];});
+    var maxs=idxs.map(function(i){return cd.max_data[i];});
+    var means=idxs.map(function(i){return cd.mean[i];});
+    traces.push({
+      type:'scatter',
+      x:freqs.concat(freqs.slice().reverse()),
+      y:maxs.concat(mins.slice().reverse()),
+      fill:'toself',fillcolor:'rgba(210,210,210,0.18)',
+      line:{width:0.5,color:'rgba(190,190,190,0.4)'},
+      showlegend:false,name:cd.condition,legendgroup:cd.condition+'_excl',
+      hoverinfo:'skip'
+    });
+    traces.push({
+      type:'scatter',x:freqs,y:means,mode:'lines',
+      line:{color:'rgba(170,170,170,0.55)',width:1.2},
+      name:cd.condition+' (excl)',legendgroup:cd.condition+'_excl',showlegend:false,
+      hovertemplate:'<b>'+cd.condition+'</b> (excluded)<br>Freq: %{x:.4g} MHz<br>Mean: %{y:.2f}<extra></extra>'
+    });
+  });
   active.forEach(function(cd,ci){
     var color=PALETTE[ci%PALETTE.length];
     var idxs=[];
@@ -4707,6 +6052,7 @@ function resetFilters(){
   if(allRad){allRad.checked=true;toggleRangeInputs();}
   var ylo=document.getElementById('sum_ylo');if(ylo)ylo.value='';
   var yhi=document.getElementById('sum_yhi');if(yhi)yhi.value='';
+  var ec=document.getElementById('sum_show_excl_chk');if(ec)ec.checked=false;
   update();
 }
 
@@ -4780,14 +6126,57 @@ function saveCSV(){
   URL.revokeObjectURL(url);
 }
 
+/* ---- global filter (localStorage) ---- */
+var _sumGfExcluded=null;
+function _loadSumGlobalFilter(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    _sumGfExcluded=raw?new Set(JSON.parse(raw).excluded||[]):null;
+  }catch(e){_sumGfExcluded=null;}
+  _updateSumGfBadge();
+}
+function _updateSumGfBadge(){
+  var el=document.getElementById('sum_gf_badge');
+  if(!el) return;
+  var n=_sumGfExcluded?_sumGfExcluded.size:0;
+  el.textContent=n>0?n+' globally excl.':'';
+  el.style.display=n>0?'':'none';
+}
+window.addEventListener('storage',function(e){
+  if(e.key==='padb_v2_excluded'){_loadSumGlobalFilter();update();}
+});
+/* Extract set of serials mentioned in any excluded key */
+function _sumGfExclSers(){
+  if(!_sumGfExcluded||!_sumGfExcluded.size) return null;
+  var sers=new Set();
+  _sumGfExcluded.forEach(function(k){sers.add(k.split('||')[0]);});
+  return sers;
+}
+/* Extract serial from a condition string (Serial Number: X pattern) */
+function _sumSerFromCond(cond){
+  var m=(cond||'').match(/Serial Number:\s*(\S+)/i);
+  return m?m[1]:null;
+}
 /* ---- main update ---- */
 function update(){
   var active=applyDataFilter(getActive());
+  /* Apply global exclusion filter — exclude conditions whose serial is in GF */
+  var gfSers=_sumGfExclSers();
+  if(gfSers){
+    active=active.filter(function(cd){
+      var ser=_sumSerFromCond(cd.condition);
+      return !ser||!gfSers.has(ser);
+    });
+  }
   document.getElementById('n_groups').textContent=active.length+' groups';
-  Plotly.react('plot',buildTraces(active),buildLayout());
+  var showExcl=document.getElementById('sum_show_excl_chk');
+  showExcl=showExcl?showExcl.checked:false;
+  var excl=showExcl?DATA.filter(function(cd){return active.indexOf(cd)<0;}):[];
+  Plotly.react('plot',buildTraces(active,excl),buildLayout());
 }
 
-Plotly.newPlot('plot',buildTraces(DATA),buildLayout());
+_loadSumGlobalFilter();
+Plotly.newPlot('plot',buildTraces(DATA,[]),buildLayout());
 document.getElementById('n_groups').textContent=DATA.length+' groups';
 """
 
@@ -4942,6 +6331,12 @@ def _build_summary_html(
         + '    <small style="color:#666">(hides conditions where band is outside range)</small>\n'
         + '  </span>\n'
         + '  <span class="sep"></span>\n'
+        + '  <label title="Show non-selected conditions as dim gray bands">'
+        + '<input type="checkbox" id="sum_show_excl_chk" onchange="update()">'
+        + '&nbsp;Show&nbsp;excluded</label>\n'
+        + '  <span id="sum_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
+        + 'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
+        + 'margin-left:4px"></span>\n'
         + '  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + '</div>\n'
         + '<p style="font-size:12px;color:#666;margin:0 8px 4px">'

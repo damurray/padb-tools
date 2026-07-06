@@ -1,5 +1,5 @@
 """
-padb_v2.py — PADB Analytics V2.0
+padb_v2.py — PADB Analytics V2.1
 
 Single-scatter approach: one PADB Scatter (Type=80) CSV with Test Step encoding
 temperature supplies all data needed for every plot view.
@@ -205,24 +205,17 @@ def render_distribution(
     output_html: Path,
 ) -> None:
     """
-    Histogram / violin distribution chart (room temperature).
-    Wraps V1.0 distribution via temp-CSV.
-
-    TODO V2.0: Replace temp-CSV round-trip with direct renderer.
+    Multi-temperature overlaid KDE distribution with ΔEnv analysis.
+    Detects suspected uncompensated DUTs; supports derived correction and exclusion.
     """
-    room_temps = cfg.get("room_values", ["Room"])
-    room_df = df[df["Temperature"].isin(["Room"] + room_temps)].copy()
-    if room_df.empty:
+    if df.empty:
         _write_placeholder(output_html, cfg.get("title", output_html.stem),
-                           "No room-temperature rows found.")
+                           "No data rows found.")
         return
-
-    _tmp = output_html.parent / "_v2_tmp_dist.csv"
-    try:
-        _df_to_scatter_csv(room_df, _tmp)
-        _pp.distribution(_tmp, cfg, output_html)
-    finally:
-        _tmp.unlink(missing_ok=True)
+    title = cfg.get("title", output_html.stem)
+    html = _pp._build_env_distribution_html(df, cfg, title)
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html, encoding="utf-8")
 
 
 def render_env_coverage(
@@ -279,6 +272,24 @@ def render_summary(
         return False
 
     cond_cols = [c for c in all_grp if not _is_exclude(c)]
+
+    # Also include serial columns so per-DUT filtering is available
+    for col in all_grp:
+        if col in cond_cols:
+            continue
+        name = col.removeprefix("_grp_").lower()
+        if any(kw in name for kw in _serial_kws):
+            vals = df[col].dropna().unique()
+            if 1 < len(vals) <= 30:
+                cond_cols.append(col)
+
+    # Include port/path-labelled columns (excluded by _path_pat but meaningful as test conditions)
+    for col in all_grp:
+        if col in cond_cols:
+            continue
+        vals = df[col].dropna().unique()
+        if 1 < len(vals) <= 20 and all(_path_pat.match(str(v)) for v in vals):
+            cond_cols.append(col)
 
     def _cond_label(row: pd.Series) -> str:
         parts = [f"{c.removeprefix('_grp_')}: {row[c]}" for c in cond_cols if pd.notna(row[c])]
@@ -418,7 +429,7 @@ _VIEW_LABELS = {
     "scatter":      "Scatter (All Temps)",
     "stat_summary": "Statistical Summary (Room)",
     "boxplot":      "Box Plots",
-    "distribution": "Distribution (Room)",
+    "distribution": "Distribution (Delta-Env)",
     "env_coverage": "Environmental Coverage",
     "summary":      "Summary (All Temps)",
 }
@@ -618,7 +629,7 @@ def _run_padb_for_csv(cfg: dict, job_dir: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
-        description="PADB Analytics V2.0 — generate all views from one scatter CSV"
+        description="PADB Analytics V2.1 — generate all views from one scatter CSV"
     )
     parser.add_argument("job", help="Path to V2 job JSON file")
     parser.add_argument(
@@ -648,7 +659,7 @@ def main(argv: list[str] | None = None) -> None:
 
     print()
     print("=" * 60)
-    print("  PADB Analytics V2.0")
+    print("  PADB Analytics V2.1")
     print("=" * 60)
     print(f"  Job  : {job_path}")
     print(f"  Out  : {output_dir}")

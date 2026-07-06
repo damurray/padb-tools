@@ -179,9 +179,16 @@ Each scheduled run produces a `padb_run_YYYYMMDD_HHMMSS.log` in the results dire
 | `population_envelope` | Type=80 Scatter | — | Min/max/P5-P95/median bands + TI bounds across all serials |
 | `empirical_cdf` | Type=80 Scatter | — | eCDF per serial — read pass yield directly |
 | `spec_derivation` | Type=80 Scatter | — | Per-band TI + margin to spec (for datasheet derivation) |
-| `stat_summary` | Type=80 Scatter | Condition filter, freq sliders, serial filter, TI/NP-TI toggle, stats table, log X, CSV export | Per-frequency statistics: mean, TI bounds, NP-TI bounds, pass/fail markers |
-| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, stats table, log X, CSV export | Box-and-whisker per condition × temperature with outlier hover |
-| `de_summary` | Type=60 Environmental | Condition filter, freq sliders, stats table, log X, CSV export | UDE/LDE environmental contribution band + estimated TTL per condition |
+| `stat_summary` | Type=80 Scatter | Condition filter, freq sliders, serial filter, TI/NP-TI toggle, show points, show excluded, stats table, log X, CSV export | Per-frequency statistics: mean, TI bounds, NP-TI bounds, pass/fail markers |
+| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, show points, stats table, log X, CSV export | Box-and-whisker per condition × temperature with outlier hover |
+| `de_summary` | Type=60 Environmental | Condition filter, show excluded, freq sliders, stats table, log X, CSV export | UDE/LDE environmental contribution band + estimated TTL per condition |
+
+**V2 pipeline only** (run via `padb_v2.py --csv`):
+
+| type | Interactive controls | What it shows |
+|---|---|---|
+| `summary` | Condition/serial/port filter, show excluded, freq sliders, log X | All-temperature Min/Max/Mean bands + TTL estimates per condition |
+| `env_coverage` | — | Scatter of all temperature measurements vs frequency |
 
 ---
 
