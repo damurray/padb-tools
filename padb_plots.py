@@ -43,6 +43,36 @@ def _get_plotlyjs() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Shared: CSV dropdown button (two options: filtered vs filtered+excluded)
+# ---------------------------------------------------------------------------
+
+_CSV_DROPDOWN_CSS = (
+    ".csv-wrap{position:relative;display:inline-block;vertical-align:middle;}"
+    ".csv-menu{display:none;position:absolute;right:0;top:100%;background:#fff;"
+    "border:1px solid #0066cc;border-radius:3px;min-width:190px;z-index:600;"
+    "box-shadow:0 2px 8px rgba(0,0,0,.15);margin-top:2px;}"
+    ".csv-wrap:hover .csv-menu{display:block;}"
+    ".csv-menu button{display:block;width:100%;text-align:left;padding:7px 14px;"
+    "font-size:12px;cursor:pointer;background:none;border:none;color:#0066cc;"
+    "white-space:nowrap;border-bottom:1px solid #e8f0ff;}"
+    ".csv-menu button:last-child{border-bottom:none;}"
+    ".csv-menu button:hover{background:#e8f4ff;}"
+)
+
+
+def _csv_btn(fn: str = "saveCSV") -> str:
+    """Return HTML for a two-option CSV dropdown button."""
+    return (
+        f'<div class="csv-wrap">'
+        f'<button class="csv-btn" onclick="return false">&#8595;&nbsp;CSV&thinsp;&#9662;</button>'
+        f'<div class="csv-menu">'
+        f'<button onclick="{fn}(false)">Filtered data</button>'
+        f'<button onclick="{fn}(true)">Filtered&nbsp;+&nbsp;excluded</button>'
+        f'</div></div>'
+    )
+
+
+# ---------------------------------------------------------------------------
 # JS for accuracy_vs_freq interactive plot (raw string — no Python escaping)
 # ---------------------------------------------------------------------------
 _AV_FREQ_JS = r"""
@@ -158,26 +188,47 @@ function setFreqBand(lo,hi){
 }
 
 /* ---------- save filtered CSV ---------- */
-function saveCSV(){
+function saveCSV(withExcluded){
+  var freqLo=parseFloat(document.getElementById('freq_lo').value);
+  var freqHi=parseFloat(document.getElementById('freq_hi').value);
+  var gfChk=document.getElementById('gf_chk');
+  var wasChecked=gfChk&&gfChk.checked;
+  if(withExcluded&&gfChk) gfChk.checked=false;
   var filtered=applyFilters(DATA);
+  if(withExcluded&&gfChk) gfChk.checked=wasChecked;
   if(!filtered.length){alert('No data matches current filters.');return;}
+  /* GF set for exclusion tagging (non-null only when GF was active and is now bypassed) */
+  var gfSet=(withExcluded&&wasChecked&&_gfExcluded&&_gfExcluded.size>0)?_gfExcluded:null;
   var colMap={'Frequency_MHz':'Frequency_MHz','Value':Y_LABEL.replace(/[,"\n]/g,'')};
   if(TEMPS&&TEMPS.length>1) colMap['Test_Step']='Temperature';
   GROUP_COLS.forEach(function(p){colMap[p[0]]=p[1].replace(/[,"\n]/g,'');});
   var cols=Object.keys(filtered[0]).filter(function(c){return colMap[c];});
-  var rows=[cols.map(function(c){return colMap[c];}).join(',')];
+  var hdrs=cols.map(function(c){return colMap[c];});
+  if(withExcluded) hdrs.push('Excluded');
+  var rows=[hdrs.join(',')];
+  function esc(v){var s=String(v===null||v===undefined?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   filtered.forEach(function(r){
-    rows.push(cols.map(function(c){
-      var v=r[c];
-      if(v===null||v===undefined) return '';
-      var s=String(v);
-      return (s.indexOf(',')>=0||s.indexOf('"')>=0)?'"'+s.replace(/"/g,'""')+'"':s;
-    }).join(','));
+    var vals=cols.map(function(c){return esc(r[c]);});
+    if(withExcluded) vals.push(gfSet&&gfSet.has(_buildPointKey(r))?'global':'');
+    rows.push(vals.join(','));
   });
-  var blob=new Blob([rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  /* Metadata block */
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var gfSers=[];
+  if(_gfExcluded&&_gfExcluded.size>0) _gfExcluded.forEach(function(k){var s=k.split('||')[0];if(gfSers.indexOf(s)<0) gfSers.push(s);});
+  var condLines=[];
+  GROUP_COLS.forEach(function(p){var sel=getSelected(p[0]);condLines.push('# '+p[1]+': '+(sel.length?sel.join(', '):'(none)'));});
+  var meta=['# PADB Export','# Plot: '+TITLE,'# Generated: '+ts,
+    '# Export: '+(withExcluded?'Filtered + excluded (GF-excluded rows flagged in Excluded column)':'Filtered data'),
+    '# Freq range: '+freqLo.toFixed(2)+' - '+freqHi.toFixed(2)+' MHz']
+    .concat(condLines)
+    .concat(['# GF excluded DUTs ('+gfSers.length+'): '+(gfSers.length?gfSers.join(', '):'None'),'#'])
+    .join('\r\n');
+  var blob=new Blob([meta+'\r\n'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');
-  a.href=url;a.download=(TITLE+'_filtered').replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  var suffix=withExcluded?'_with_excl':'_filtered';
+  a.href=url;a.download=(TITLE+suffix).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -705,6 +756,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         "border-radius:3px;cursor:pointer;background:#fff;}"
         "button.reset-btn:hover{background:#e8e8e8;}"
         "#n_points{font-size:12px;color:#666;margin-left:auto;}"
+        + _CSV_DROPDOWN_CSS
     )
 
     html = (
@@ -744,8 +796,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  {hover_panel_html}\n'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
-        '  <button class="reset-btn" style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
-        ' onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        f'  {_csv_btn("saveCSV")}\n'
         '  <label id="gf_label" style="display:none;white-space:nowrap">'
         '<input type="checkbox" id="gf_chk" checked onchange="_updateGfIndicator();update()">'
         '&nbsp;<span id="gf_badge" style="font-size:12px;border:1px solid #ccc;'
@@ -2986,7 +3037,10 @@ function computeFreqResult(fs,params){
 }
 
 /* ---- CSV export ---- */
-function saveCSV(){
+function saveCSV(withExcluded){
+  /* Temporarily bypass global filter when withExcluded=true */
+  var savedGf=_gfExcluded;
+  if(withExcluded) _gfExcluded=null;
   var conds=getActiveConditions();
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
@@ -2995,6 +3049,21 @@ function saveCSV(){
       freq_stats:(cd.freq_stats||[]).filter(function(fs){return fs.freq>=fLo&&fs.freq<=fHi;})
     });
   });
+  /* Apply serial + GF filtering consistent with the current plot state */
+  var allSers=getAllSerials();var selSers=getSelectedSerials();
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var hasGf=_gfExcluded&&_gfExcluded.size>0;
+  if(serFlt||hasGf){
+    var activeSers=serFlt?selSers:allSers;
+    conds=conds.map(function(cd){
+      var nfs=[];
+      (cd.freq_stats||[]).forEach(function(fs){
+        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq);if(r) nfs.push(r);
+      });
+      return Object.assign({},cd,{freq_stats:nfs});
+    });
+  }
+  if(withExcluded) _gfExcluded=savedGf;
   var params=getParams();
   var flt=getDataFilter();
   conds=applyDataFilter(conds,params,flt);
@@ -3028,10 +3097,27 @@ function saveCSV(){
       ].join(','));
     });
   });
-  var blob=new Blob([rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  /* Metadata block */
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var gfSers=[];
+  if(savedGf&&savedGf.size>0) savedGf.forEach(function(k){var s=k.split('||')[0];if(gfSers.indexOf(s)<0) gfSers.push(s);});
+  var activeConds=conds.map(function(cd){return cd.condition;});
+  var allConds=STAT_DATA.map(function(cd){return cd.condition;}).filter(function(v,i,a){return a.indexOf(v)===i;});
+  var excConds=allConds.filter(function(c){return activeConds.indexOf(c)<0;});
+  var meta=['# PADB Export','# Plot: '+TITLE,'# Generated: '+ts,
+    '# Export: '+(withExcluded?'Filtered + excluded (GF bypassed; n reflects serial filter only)':'Filtered data'),
+    '# Freq range: '+fLo.toFixed(2)+' - '+fHi.toFixed(2)+' MHz',
+    '# Active conditions ('+activeConds.length+'): '+activeConds.join(', '),
+    '# Excluded conditions ('+excConds.length+'): '+(excConds.length?excConds.join(', '):'None'),
+    '# Active serials: '+(serFlt?selSers.join(', '):'All ('+allSers.length+')'),
+    '# GF excluded DUTs ('+gfSers.length+'): '+(gfSers.length?gfSers.join(', '):'None'),
+    '#'
+  ].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');
-  a.href=url;a.download=(TITLE+'_stat').replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  var suffix=withExcluded?'_with_excl':'_filtered';
+  a.href=url;a.download=(TITLE+suffix).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -3741,6 +3827,7 @@ def _build_stat_summary_html(
         ".csv-btn:hover{background:#cce4ff;}"
         "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
         "border-radius:3px;text-align:right;margin-left:2px;}"
+        + _CSV_DROPDOWN_CSS
     )
 
     sep = '<div class="sep"></div>'
@@ -3881,7 +3968,7 @@ def _build_stat_summary_html(
         '  <span id="stat_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
         'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
         'margin-left:4px"></span>\n'
-        '  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        f'  {_csv_btn("saveCSV")}\n'
         '</div>\n'
     )
 
@@ -4123,26 +4210,45 @@ function freqKeyDown(e,which){
   else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
   else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
 }
-function saveCSV(){
+function saveCSV(withExcluded){
   var selConds=getSelectedConds();
+  var exportConds=withExcluded?ENV_DATA:selConds;
   var fr=getFreqRange();
   var hdrs=['Condition','Freq_MHz','UDE','LDE','Min_Env','Max_Env','Mean_Env','TTL_up','TTL_lo','Spec_lo','Spec_hi'];
+  if(withExcluded) hdrs.push('Included');
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   var flt=getEnvDataFilter();
-  selConds.forEach(function(cd){
+  var selCondNames=selConds.map(function(cd){return cd.condition;});
+  exportConds.forEach(function(cd){
+    var isIncluded=selCondNames.indexOf(cd.condition)>=0;
     getFilteredIdxs(cd,fr,flt).forEach(function(j){
-      var f=cd.freqs[j];
-      rows.push([esc(cd.condition),f,
+      var row=[esc(cd.condition),cd.freqs[j],
         cd.ude[j],cd.lde[j],cd.min_env[j],cd.max_env[j],cd.mean_env[j],
         cd.ttu[j],cd.ttl[j],cd.spec_lo,cd.spec_hi
-      ].map(esc).join(','));
+      ].map(esc);
+      if(withExcluded) row.push(isIncluded?'true':'false');
+      rows.push(row.join(','));
     });
   });
-  var blob=new Blob([rows.join('\n')],{type:'text/csv'});
+  /* Metadata block */
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var allCondNames=ENV_DATA.map(function(cd){return cd.condition;});
+  var excCondNames=allCondNames.filter(function(c){return selCondNames.indexOf(c)<0;});
+  var frLo=isFinite(fr.lo)?fr.lo.toFixed(2):'min';
+  var frHi=isFinite(fr.hi)?fr.hi.toFixed(2):'max';
+  var meta=['# PADB Export','# Plot: '+ENV_TITLE,'# Generated: '+ts,
+    '# Export: '+(withExcluded?'Filtered + excluded (excluded conditions flagged in Included column)':'Filtered data'),
+    '# Freq range: '+frLo+' - '+frHi+' MHz',
+    '# Active conditions ('+selCondNames.length+'): '+selCondNames.join(', '),
+    '# Excluded conditions ('+excCondNames.length+'): '+(excCondNames.length?excCondNames.join(', '):'None'),
+    '#'
+  ].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
   var a=document.createElement('a');
+  var suffix=withExcluded?'_with_excl':'_filtered';
   a.href=URL.createObjectURL(blob);
-  a.download=ENV_TITLE.replace(/[^a-z0-9_\-]/gi,'_')+'.csv';
+  a.download=ENV_TITLE.replace(/[^a-z0-9_\-]/gi,'_')+suffix+'.csv';
   a.click();
 }
 function toggleEnvStatPanel(){
@@ -4311,6 +4417,7 @@ def _build_env_summary_html(
         "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;"
         "position:relative;z-index:201;}"
         ".csv-btn:hover{background:#cce4ff;}"
+        + _CSV_DROPDOWN_CSS +
         ".footnote{font-size:11px;color:#888;padding:2px 14px;}"
         ".stat-btn{font-size:13px;padding:3px 12px;border:1px solid #666;border-radius:3px;"
         "cursor:pointer;background:#f5f5f5;position:relative;z-index:201;}"
@@ -4418,7 +4525,7 @@ def _build_env_summary_html(
         + f'  <label title="Show non-selected conditions as dim gray bands">'
         + f'<input type="checkbox" id="show_excl_chk" onchange="update()">'
         + f'&nbsp;Show&nbsp;excluded</label>\n'
-        + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        + f'  {_csv_btn("saveCSV")}\n'
         + f'  <button class="stat-btn" id="env_stat_btn" onclick="toggleEnvStatPanel()">&#9658;&nbsp;Statistics</button>\n'
         + (f'  {sep}\n{pc_html}' if pc_html else '')
         + '</div>\n'
@@ -4759,7 +4866,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         "  if(el.style.display==='none'){el.style.display='';btn.textContent='▼ Statistics Table';}\n"
         "  else{el.style.display='none';btn.textContent='► Statistics Table';}\n"
         "}\n"
-        "function saveBoxCSV(){\n"
+        "function saveBoxCSV(withExcluded){\n"
         "  var hdrs=['Condition','Freq_MHz','n','Mean','Std','Q1','Median','Q3',\n"
         "            'Normality','W','p','DEnv_up','DEnv_lo','Spec_lo','Spec_hi','Outliers'];\n"
         "  var rows=[hdrs.join(',')];\n"
@@ -4787,10 +4894,16 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         "      ].join(','));\n"
         "    });\n"
         "  });\n"
-        "  var blob=new Blob([rows.join('\\r\\n')],{type:'text/csv;charset=utf-8;'});\n"
+        "  var ts=new Date().toISOString().replace('T',' ').replace(/\\.\\d+Z$/,' UTC');\n"
+        "  var meta=['# PADB Export','# Plot: '+BOX_TITLE,'# Generated: '+ts,\n"
+        "    '# Export: '+(withExcluded?'Filtered + excluded':'Filtered data'),\n"
+        "    '# Note: Static box plot — all conditions included regardless of filter',\n"
+        "    '#'].join('\\r\\n');\n"
+        "  var blob=new Blob([meta+'\\r\\n'+rows.join('\\r\\n')],{type:'text/csv;charset=utf-8;'});\n"
         "  var url=URL.createObjectURL(blob);\n"
         "  var a=document.createElement('a');\n"
-        "  a.href=url;a.download=(BOX_TITLE+'_boxplot').replace(/[^a-zA-Z0-9_\\-]/g,'_')+'.csv';\n"
+        "  var suffix=withExcluded?'_with_excl':'_filtered';\n"
+        "  a.href=url;a.download=(BOX_TITLE+'_boxplot'+suffix).replace(/[^a-zA-Z0-9_\\-]/g,'_')+'.csv';\n"
         "  document.body.appendChild(a);a.click();document.body.removeChild(a);\n"
         "  URL.revokeObjectURL(url);\n"
         "}\n"
@@ -4805,8 +4918,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         + '<div style="display:flex;gap:8px;align-items:center;padding:4px 8px">\n'
         + '<button class="toggle-btn" id="stat_toggle_btn"'
         ' onclick="toggleStatPanel()">&#9660; Statistics Table</button>\n'
-        + '<button class="toggle-btn" style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
-        ' onclick="saveBoxCSV()">&#8595;&nbsp;CSV</button>\n'
+        + f'{_csv_btn("saveBoxCSV")}\n'
         + '</div>\n'
         + '<div id="box_stat_panel"></div>\n'
         + f"<script>\n{box_js}</script>\n"
@@ -5219,26 +5331,53 @@ function toggleStatPanel(){
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
 }
-function saveBoxCSV(){
+function saveBoxCSV(withExcluded){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();
+  /* withExcluded: include all conditions/temps regardless of current filter */
+  var exportConds=withExcluded?BOX_DATA.map(function(cd){return cd.condition;}).filter(function(v,i,a){return a.indexOf(v)===i;}):selConds;
+  var exportTemps=withExcluded?TEMPS_PRESENT:selTemps;
   var hdrs=['Condition','Temperature','Freq_MHz','Freq_Label','n_raw','Mean','Q1','Median','Q3','LowerFence','UpperFence','Outliers'];
+  if(withExcluded) hdrs.push('Included');
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   BOX_DATA.forEach(function(cd){
-    if(selConds.indexOf(cd.condition)<0) return;
-    if(selTemps.indexOf(cd.temp)<0) return;
+    if(exportConds.indexOf(cd.condition)<0) return;
+    if(exportTemps.indexOf(cd.temp)<0) return;
+    var isIncluded=selConds.indexOf(cd.condition)>=0&&selTemps.indexOf(cd.temp)>=0;
     (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(fs){
-      rows.push([esc(cd.condition),esc(cd.temp),fs.freq.toFixed(4),esc(fs.freq_label),
+      var row=[esc(cd.condition),esc(cd.temp),fs.freq.toFixed(4),esc(fs.freq_label),
         fs.n,fs.mean.toFixed(6),fs.q1.toFixed(6),fs.q2.toFixed(6),fs.q3.toFixed(6),
         fs.lo_w.toFixed(6),fs.hi_w.toFixed(6),
         esc((fs.outliers||[]).map(function(v){return v.toFixed(4);}).join('; '))
-      ].join(','));
+      ];
+      if(withExcluded) row.push(isIncluded?'true':'false');
+      rows.push(row.join(','));
     });
   });
-  var blob=new Blob([rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  /* Metadata block */
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var allConds=BOX_DATA.map(function(cd){return cd.condition;}).filter(function(v,i,a){return a.indexOf(v)===i;});
+  var excConds=allConds.filter(function(c){return selConds.indexOf(c)<0;});
+  var allBoxSers=getAllBoxSerials();var selBoxSers=getSelectedBoxSerials();
+  var serFlt=allBoxSers.length>1&&selBoxSers.length<allBoxSers.length;
+  var gfKeys=[];
+  try{var gfRaw=localStorage.getItem('padb_v2_excluded');if(gfRaw) gfKeys=JSON.parse(gfRaw).excluded||[];}catch(e){}
+  var gfSers=[];
+  gfKeys.forEach(function(k){var s=k.split('||')[0];if(gfSers.indexOf(s)<0) gfSers.push(s);});
+  var meta=['# PADB Export','# Plot: '+BOX_TITLE,'# Generated: '+ts,
+    '# Export: '+(withExcluded?'Filtered + excluded (excluded condition/temp rows flagged in Included column)':'Filtered data'),
+    '# Active conditions ('+selConds.length+'): '+selConds.join(', '),
+    '# Excluded conditions ('+excConds.length+'): '+(excConds.length?excConds.join(', '):'None'),
+    '# Active temperatures: '+selTemps.join(', '),
+    '# Active serials: '+(serFlt?selBoxSers.join(', '):'All ('+allBoxSers.length+')'),
+    '# GF current DUTs ('+gfSers.length+'): '+(gfSers.length?gfSers.join(', '):'None'),
+    '#'
+  ].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');
-  a.href=url;a.download=(BOX_TITLE+'_boxplot_filtered').replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  var suffix=withExcluded?'_with_excl':'_filtered';
+  a.href=url;a.download=(BOX_TITLE+'_boxplot'+suffix).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 /* ---- outlier risk panel ---- */
@@ -5500,6 +5639,7 @@ def _build_box_interactive_html(
         ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
         "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;}"
         ".csv-btn:hover{background:#cce4ff;}"
+        + _CSV_DROPDOWN_CSS +
         ".stbl{border-collapse:collapse;font-size:12px;width:100%;}"
         ".stbl th{background:#e8eaf6;padding:4px 8px;text-align:left;border:1px solid #ccc;"
         "white-space:nowrap;position:sticky;top:0;}"
@@ -5618,7 +5758,7 @@ def _build_box_interactive_html(
         '  <label title="Recompute box statistics with outlier points removed from Q1/Q2/Q3 calculation">'
         '<input type="checkbox" id="box_excl_out_chk" onchange="update()">'
         '&nbsp;Exclude&nbsp;outliers&nbsp;from&nbsp;box</label>\n'
-        '  <button class="csv-btn" onclick="saveBoxCSV()">&#8595;&nbsp;CSV</button>\n'
+        f'  {_csv_btn("saveBoxCSV")}\n'
         '</div>\n'
     )
 
@@ -6094,8 +6234,11 @@ function applyDataFilter(active){
     return true;
   });
 }
-function saveCSV(){
+function saveCSV(withExcluded){
+  var savedGf=_sumGfExcluded;
+  if(withExcluded) _sumGfExcluded=null;
   var active=applyDataFilter(getActive());
+  if(withExcluded) _sumGfExcluded=savedGf;
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
   var rows=['Condition,Freq_MHz,Mean,Min,Max,TTL_upper,TTL_lower,Spec_hi,Spec_lo'];
@@ -6118,10 +6261,23 @@ function saveCSV(){
       ].join(','));
     });
   });
-  var blob=new Blob([rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  /* Metadata block */
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var gfSers=[];
+  if(savedGf&&savedGf.size>0) savedGf.forEach(function(k){var s=k.split('||')[0];if(gfSers.indexOf(s)<0) gfSers.push(s);});
+  var activeConds=active.map(function(cd){return cd.condition;});
+  var meta=['# PADB Export','# Plot: '+TITLE,'# Generated: '+ts,
+    '# Export: '+(withExcluded?'Filtered + excluded (GF bypassed; aggregated stats reflect all non-serial-filtered DUTs)':'Filtered data'),
+    '# Freq range: '+fLo.toFixed(2)+' - '+fHi.toFixed(2)+' MHz',
+    '# Active conditions ('+activeConds.length+'): '+activeConds.join(', '),
+    '# GF excluded DUTs ('+gfSers.length+'): '+(gfSers.length?gfSers.join(', '):'None'),
+    '#'
+  ].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob);
   var a=document.createElement('a');
-  a.href=url;a.download=(TITLE+'_summary').replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  var suffix=withExcluded?'_with_excl':'_filtered';
+  a.href=url;a.download=(TITLE+suffix).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -6286,6 +6442,7 @@ def _build_summary_html(
         ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
         "cursor:pointer;background:#e8f4ff;color:#0066cc;}"
         ".csv-btn:hover{background:#cce4ff;}"
+        + _CSV_DROPDOWN_CSS
     )
 
     sep = '<div class="sep"></div>'
@@ -6337,7 +6494,7 @@ def _build_summary_html(
         + '  <span id="sum_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
         + 'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
         + 'margin-left:4px"></span>\n'
-        + '  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        + f'  {_csv_btn("saveCSV")}\n'
         + '</div>\n'
         + '<p style="font-size:12px;color:#666;margin:0 8px 4px">'
         + 'Shaded band&nbsp;=&nbsp;Min–Max &nbsp;|&nbsp; Solid&nbsp;=&nbsp;Mean'
