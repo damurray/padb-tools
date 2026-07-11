@@ -1491,10 +1491,17 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     port_col = "_grp_Port" if "_grp_Port" in df.columns else None
     all_ports = sorted(str(p) for p in df[port_col].dropna().unique()) if port_col else []
 
-    # SpurType — use pre-parsed column if available, else regex on Group string
+    # SpurType — use pre-parsed column if available, else HarmonicNumber, else regex on Group string
     df = df.copy()
     if "_grp_SpurType" in df.columns:
         df["_spur"] = df["_grp_SpurType"].fillna("").astype(str)
+    elif "_grp_HarmonicNumber" in df.columns:
+        def _fmt_hn(v):
+            try:
+                return f"H{float(v):g}" if v else ""
+            except (ValueError, TypeError):
+                return str(v) if v else ""
+        df["_spur"] = df["_grp_HarmonicNumber"].fillna("").astype(str).apply(_fmt_hn)
     else:
         _spur_re_dist = re.compile(r"SpurType:\s*(.+?)(?:\s{2,}|$)", re.IGNORECASE)
         def _extr_spur(g):
@@ -1613,15 +1620,23 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     dist_freq_min = round(all_freqs_sorted[0], 1) if all_freqs_sorted else 0.0
     dist_freq_max = round(all_freqs_sorted[-1], 1) if all_freqs_sorted else 1000.0
 
+    _abs_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Serial"]
+    if port_col:
+        _abs_cols.append(port_col)
+
     raw_abs: list = []
     for spur in spur_types:
         spur_df = df[df["_spur"] == spur]
         row: list = []
         for temp in temps_present:
-            t_df = spur_df[spur_df["Temperature"] == temp][["Frequency_MHz", "Value"]].dropna()
+            t_df = spur_df[spur_df["Temperature"] == temp][_abs_cols].dropna(subset=["Frequency_MHz", "Value"])
             row.append({
-                "f": [round(float(x), 1) for x in t_df["Frequency_MHz"]],
-                "v": [round(float(x), 2) for x in t_df["Value"]]
+                "f":  [round(float(x), 1) for x in t_df["Frequency_MHz"]],
+                "v":  [round(float(x), 2) for x in t_df["Value"]],
+                "s":  [str(x) for x in t_df["Serial"]],
+                "p":  [str(x) for x in t_df[port_col]] if port_col else [""] * len(t_df),
+                "hi": [None if pd.isna(x) else round(float(x), 2) for x in t_df["Upper_Limit"]],
+                "lo": [None if pd.isna(x) else round(float(x), 2) for x in t_df["Lower_Limit"]],
             })
         raw_abs.append(row)
 
@@ -1634,10 +1649,12 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
             if len(t_m) > 0:
                 row.append({
                     "f": [round(float(x), 1) for x in t_m["Frequency_MHz"]],
-                    "d": [round(float(x), 3) for x in t_m["delta"]]
+                    "d": [round(float(x), 3) for x in t_m["delta"]],
+                    "s": [str(x) for x in t_m["Serial"]],
+                    "p": [str(x) for x in t_m[port_col]] if port_col and port_col in t_m.columns else [""] * len(t_m),
                 })
             else:
-                row.append({"f": [], "d": []})
+                row.append({"f": [], "d": [], "s": [], "p": []})
         raw_delta.append(row)
 
     # -------------------------------------------------------------------------
@@ -1666,6 +1683,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var TITLE={json.dumps(title)};",
         f"var RAW_ABS={json.dumps(raw_abs)};",
         f"var RAW_DELTA={json.dumps(raw_delta)};",
+        f"var DUT_PORT_MAP={json.dumps(dut_port_map)};",
         f"var DIST_FREQ_MIN={dist_freq_min};",
         f"var DIST_FREQ_MAX={dist_freq_max};",
     ])
@@ -1746,8 +1764,8 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         for t in temps_present
     )
     spur_panel_html  = _filter_panel("spur", "Spur Type", spur_types) if len(spur_types) > 1 else ""
-    ser_panel_html   = _filter_panel("ser", "Serial", all_serials, "updateDeltaTable")
-    port_panel_html  = _filter_panel("port", "Port", all_ports, "updateDeltaTable") if all_ports else ""
+    ser_panel_html   = _filter_panel("ser", "Serial", all_serials, "update")
+    port_panel_html  = _filter_panel("port", "Port", all_ports, "update") if all_ports else ""
 
     # -------------------------------------------------------------------------
     # 9.  JavaScript (raw string — no f-string interpolation)
@@ -1802,7 +1820,7 @@ function distToggleAll(id){
   var v=allChk?allChk.checked:true;
   document.querySelectorAll('.dist_'+id+'_chk').forEach(function(c){c.checked=v;});
   _distUpdateBadge(id);
-  if(id==='spur') update(); else updateDeltaTable();
+  update();
 }
 function _distUpdateBadge(id){
   var chks=Array.from(document.querySelectorAll('.dist_'+id+'_chk'));
@@ -1913,14 +1931,27 @@ function update(){
   var freqFlt=(typeof DIST_FREQ_MIN!=='undefined')&&
     (fr.lo>DIST_FREQ_MIN+0.09||fr.hi<DIST_FREQ_MAX-0.09);
 
+  var selSer=getSelSerials();
+  var selPor=getSelPorts();
+  var serFlt=(selSer.size<SERIALS.length)||(PORTS.length>0&&selPor.size<PORTS.length);
+
   if(isAbs){
     var tempIdxs=getSelTempIdxs();
     spurs.forEach(function(si){
       tempIdxs.forEach(function(ti){
         var kde;
-        if(freqFlt&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
+        if((freqFlt||serFlt)&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
           var raw=RAW_ABS[si][ti],vals=[];
-          for(var i=0;i<raw.f.length;i++){if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi)vals.push(raw.v[i]);}
+          for(var i=0;i<raw.f.length;i++){
+            if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi){
+              if(!serFlt){vals.push(raw.v[i]);}
+              else{
+                var ser=raw.s?raw.s[i]:'';
+                var port=raw.p?raw.p[i]:'';
+                if(selSer.has(ser)&&(!PORTS.length||selPor.has(port))) vals.push(raw.v[i]);
+              }
+            }
+          }
           kde=jsKde(vals);
         } else {
           kde=KDE_ABS[si]&&KDE_ABS[si][ti];
@@ -1941,9 +1972,18 @@ function update(){
     spurs.forEach(function(si){
       nrIdxs.forEach(function(di){
         var kde;
-        if(freqFlt&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
+        if((freqFlt||serFlt)&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
           var raw=RAW_DELTA[si][di],vals=[];
-          for(var i=0;i<raw.f.length;i++){if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi)vals.push(raw.d[i]);}
+          for(var i=0;i<raw.f.length;i++){
+            if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi){
+              if(!serFlt){vals.push(raw.d[i]);}
+              else{
+                var ser=raw.s?raw.s[i]:'';
+                var port=raw.p?raw.p[i]:'';
+                if(selSer.has(ser)&&(!PORTS.length||selPor.has(port))) vals.push(raw.d[i]);
+              }
+            }
+          }
           kde=jsKde(vals);
         } else {
           kde=KDE_DELTA[si]&&KDE_DELTA[si][di];
@@ -1967,10 +2007,28 @@ function update(){
     shapes.push({type:'line',xref:'x',yref:'paper',x0:0,x1:0,y0:0,y1:1,
       line:{color:'#888',width:1,dash:'dot'}});
   } else {
-    if(HI_SPEC!==null) shapes.push({type:'line',xref:'x',yref:'paper',
-      x0:HI_SPEC,x1:HI_SPEC,y0:0,y1:1,line:{color:'#F44336',width:1.5,dash:'dash'}});
-    if(LO_SPEC!==null) shapes.push({type:'line',xref:'x',yref:'paper',
-      x0:LO_SPEC,x1:LO_SPEC,y0:0,y1:1,line:{color:'#2196F3',width:1.5,dash:'dash'}});
+    var curHi=HI_SPEC,curLo=LO_SPEC;
+    if(freqFlt&&RAW_ABS){
+      var hiSet=[],loSet=[];
+      spurs.forEach(function(si){
+        if(!RAW_ABS[si]) return;
+        RAW_ABS[si].forEach(function(raw){
+          if(!raw||!raw.hi) return;
+          for(var i=0;i<raw.f.length;i++){
+            if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi){
+              if(raw.hi[i]!=null&&hiSet.indexOf(raw.hi[i])<0) hiSet.push(raw.hi[i]);
+              if(raw.lo&&raw.lo[i]!=null&&loSet.indexOf(raw.lo[i])<0) loSet.push(raw.lo[i]);
+            }
+          }
+        });
+      });
+      curHi=hiSet.length?Math.min.apply(null,hiSet):null;
+      curLo=loSet.length?Math.max.apply(null,loSet):null;
+    }
+    if(curHi!==null) shapes.push({type:'line',xref:'x',yref:'paper',
+      x0:curHi,x1:curHi,y0:0,y1:1,line:{color:'#F44336',width:1.5,dash:'dash'}});
+    if(curLo!==null) shapes.push({type:'line',xref:'x',yref:'paper',
+      x0:curLo,x1:curLo,y0:0,y1:1,line:{color:'#2196F3',width:1.5,dash:'dash'}});
   }
 
   var layout={
@@ -2008,22 +2066,46 @@ function updateDeltaTable(){
   var selNrIdxs=getSelNonRoomIdxs();
   if(!selNrIdxs.length) selNrIdxs=NON_ROOM_TEMPS.map(function(_,i){return i;});
   var nrTemps=selNrIdxs.map(function(i){return NON_ROOM_TEMPS[i];});
+  var fr=getFreqRange();
+  var freqFlt=(typeof DIST_FREQ_MIN!=='undefined')&&
+    (fr.lo>DIST_FREQ_MIN+0.09||fr.hi<DIST_FREQ_MAX-0.09);
 
-  /* Accumulate per-DUT means across selected spur types */
-  var dutAcc={};  /* serial -> {port, by_temp: {temp: [mean, ...]}} */
+  /* Accumulate per-DUT deltas across selected spurs, respecting freq/serial/port filters */
+  var dutAcc={};   /* serial -> {port, by_temp:{temp:[delta,...]}} */
+  var allAcc={};   /* temp -> [delta,...] for overall stats */
+
   selSpurIdxs.forEach(function(si){
     selNrIdxs.forEach(function(di){
       var temp=NON_ROOM_TEMPS[di];
-      var entries=DUT_DELTA[si]&&DUT_DELTA[si][di];
-      if(!entries) return;
-      entries.forEach(function(d){
-        if(!d) return;
-        if(!selSer.has(d.serial)) return;
-        if(selPor.size&&d.port&&!selPor.has(d.port)) return;
-        if(!dutAcc[d.serial]) dutAcc[d.serial]={serial:d.serial,port:d.port,by_temp:{}};
-        if(!dutAcc[d.serial].by_temp[temp]) dutAcc[d.serial].by_temp[temp]=[];
-        dutAcc[d.serial].by_temp[temp].push(d.mean);
-      });
+      if(!allAcc[temp]) allAcc[temp]=[];
+      var raw=RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di];
+      if(freqFlt&&raw&&raw.s&&raw.s.length){
+        /* Freq-filtered path: iterate raw (f,d,s) triples */
+        for(var i=0;i<raw.f.length;i++){
+          if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
+          var ser=raw.s[i],dv=raw.d[i];
+          if(!selSer.has(ser)) continue;
+          var port=DUT_PORT_MAP&&DUT_PORT_MAP[ser]||'';
+          if(selPor.size&&port&&!selPor.has(port)) continue;
+          if(!dutAcc[ser]) dutAcc[ser]={serial:ser,port:port,by_temp:{}};
+          if(!dutAcc[ser].by_temp[temp]) dutAcc[ser].by_temp[temp]=[];
+          dutAcc[ser].by_temp[temp].push(dv);
+          allAcc[temp].push(dv);
+        }
+      } else {
+        /* No freq filter: use pre-computed per-DUT means */
+        var entries=DUT_DELTA[si]&&DUT_DELTA[si][di];
+        if(!entries) return;
+        entries.forEach(function(d){
+          if(!d) return;
+          if(!selSer.has(d.serial)) return;
+          if(selPor.size&&d.port&&!selPor.has(d.port)) return;
+          if(!dutAcc[d.serial]) dutAcc[d.serial]={serial:d.serial,port:d.port,by_temp:{}};
+          if(!dutAcc[d.serial].by_temp[temp]) dutAcc[d.serial].by_temp[temp]=[];
+          dutAcc[d.serial].by_temp[temp].push(d.mean);
+          allAcc[temp].push(d.mean);
+        });
+      }
     });
   });
 
@@ -2031,8 +2113,9 @@ function updateDeltaTable(){
     return a.serial<b.serial?-1:a.serial>b.serial?1:0;
   });
 
+  var freqNote=freqFlt?(' <span style="font-size:11px;color:#888">['+fr.lo.toFixed(1)+'–'+fr.hi.toFixed(1)+' MHz]</span>'):'';
   var html='<table class="stbl"><thead><tr><th>Serial</th><th>Port</th>';
-  nrTemps.forEach(function(t){html+='<th>'+t+' mean Δ (dB)</th>';});
+  nrTemps.forEach(function(t){html+='<th>'+t+' mean Δ (dB)'+freqNote+'</th>';});
   html+='</tr></thead><tbody>';
 
   rows.forEach(function(row){
@@ -2053,20 +2136,22 @@ function updateDeltaTable(){
   }
   html+='</tbody></table>';
 
-  /* Overall aggregate stats */
-  if(Object.keys(DELTA_STATS).length){
+  /* Overall stats — computed from the same filtered data, not pre-computed DELTA_STATS */
+  function _tblMean(a){return a.length?a.reduce(function(x,y){return x+y;},0)/a.length:null;}
+  function _tblMed(a){if(!a.length)return null;var s=a.slice().sort(function(x,y){return x-y;});var m=s.length;return m%2?s[Math.floor(m/2)]:(s[m/2-1]+s[m/2])/2;}
+  function _tblStd(a){var mu=_tblMean(a);if(mu===null||a.length<2)return null;return Math.sqrt(a.reduce(function(s,x){return s+(x-mu)*(x-mu);},0)/(a.length-1));}
+  var hasSome=nrTemps.some(function(t){return allAcc[t]&&allAcc[t].length;});
+  if(hasSome){
     html+='<table class="stbl" style="margin-top:8px"><thead><tr>'
-         +'<th>Overall stat (all DUTs, selected SpurTypes)</th>';
-    nrTemps.forEach(function(t){html+='<th>'+t+'</th>';});
+         +'<th>Overall stat (filtered selection)</th>';
+    nrTemps.forEach(function(t){html+='<th>'+t+freqNote+'</th>';});
     html+='</tr></thead><tbody>';
-    ['mean','median','std'].forEach(function(stat){
-      html+='<tr><td>'+stat+'</td>';
-      nrTemps.forEach(function(t){
-        var s=DELTA_STATS[t];
-        html+='<td>'+_fd(s?s[stat]:null,4)+'</td>';
+    [['n',function(a){return a.length||null;}],['mean',_tblMean],['median',_tblMed],['std (σ)',_tblStd]]
+      .forEach(function(pair){
+        html+='<tr><td>'+pair[0]+'</td>';
+        nrTemps.forEach(function(t){html+='<td>'+_fd(pair[1](allAcc[t]||[]),pair[0]==='n'?0:4)+'</td>';});
+        html+='</tr>';
       });
-      html+='</tr>';
-    });
     html+='</tbody></table>';
   }
 

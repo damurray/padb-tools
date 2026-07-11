@@ -98,6 +98,16 @@ def load_scatter(csv_path: Path, cfg: dict | None = None) -> pd.DataFrame:
     df = _pp._load_scatter_for_stats(csv_path)
     df = _pp._parse_group_fields(df)
 
+    # If Serial column came back empty (serial lives in Group string, not a standalone CSV column),
+    # populate it from the first _grp_* column whose name contains "serial".
+    if df["Serial"].replace("", pd.NA).isna().all():
+        _ser_grp = next(
+            (c for c in df.columns if c.startswith("_grp_") and "serial" in c.lower()),
+            None,
+        )
+        if _ser_grp:
+            df["Serial"] = df[_ser_grp].fillna("").str.strip()
+
     # Apply frequency scaling (e.g. PADB exports Hz but column header says MHz: set freq_scale=1e-6)
     freq_scale = cfg.get("freq_scale", 1.0) if cfg else 1.0
     if freq_scale != 1.0:
