@@ -183,12 +183,16 @@ Each scheduled run produces a `padb_run_YYYYMMDD_HHMMSS.log` in the results dire
 | `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, show points, stats table, log X, CSV export | Box-and-whisker per condition × temperature with outlier hover |
 | `de_summary` | Type=60 Environmental | Condition filter, show excluded, freq sliders, stats table, log X, CSV export | UDE/LDE environmental contribution band + estimated TTL per condition |
 
-**V2 pipeline only** (run via `padb_v2.py --csv`):
+**V2 pipeline only** (run via `padb_v2.py`; two-step: `padb_run.py` extracts CSVs, then `padb_v2.py` builds HTML):
 
 | type | Interactive controls | What it shows |
 |---|---|---|
-| `summary` | Condition/serial/port filter, show excluded, freq sliders, log X | All-temperature Min/Max/Mean bands + TTL estimates per condition |
-| `env_coverage` | — | Scatter of all temperature measurements vs frequency |
+| `scatter` | Condition/serial/port/temp filter, freq sliders, log X, GF | Raw measurements vs frequency across all temperatures |
+| `stat_summary` | Condition/serial filter, TI/NP-TI, show points/excluded, freq sliders, stats table, CSV, GF | Per-frequency Room TI statistics |
+| `boxplot` | Condition/temp/serial/port filter, Y-range, show points, outlier panel, GF, set-as-GF | Box-and-whisker per condition × temperature with outlier identification |
+| `distribution` | Spur type/temp/serial/port filter, delta vs absolute mode, freq sliders, delta summary table | KDE curves per spur type for delta-from-room temperature distributions |
+| `env_coverage` | P/C/MU/spec-override inputs, serial/port/temp filter, freq sliders, stats table, CSV, GF | UDE/LDE ΔEnv TI bands + Room TI band + TTU/TTL spec margin lines per condition |
+| `summary` | Condition filter (no serial), show excluded, freq sliders, log X, GF | All-temperature Min/Max/NP-TI bands + mean line per condition |
 
 ---
 

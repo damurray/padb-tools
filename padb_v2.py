@@ -30,8 +30,13 @@ Job JSON schema:
     "room_values": ["Room"],                 # Test Step values treated as room temp
     "proportion": 0.90,
     "confidence": 0.90,
+    "freq_scale": 1.0,                       # optional: multiply Frequency_MHz by this (e.g. 1e-6 if CSV stores Hz)
     "views": ["scatter", "stat_summary", "boxplot", "distribution",
               "env_coverage", "summary"],
+    "env_coverage_csv": "",                  # optional: alternate CSV for env_coverage view (e.g. carrier power dBm)
+    "env_coverage_y_label": "",             # y-axis label override for env_coverage when env_coverage_csv is set
+    "env_coverage_y_lim": null,             # y-axis limits override [lo, hi] for env_coverage when env_coverage_csv is set
+    "env_coverage_freq_scale": 1.0,         # freq_scale override for env_coverage when env_coverage_csv is set
     "publish_to": ""                         # optional network path
 }
 """
@@ -92,6 +97,11 @@ def load_scatter(csv_path: Path, cfg: dict | None = None) -> pd.DataFrame:
 
     df = _pp._load_scatter_for_stats(csv_path)
     df = _pp._parse_group_fields(df)
+
+    # Apply frequency scaling (e.g. PADB exports Hz but column header says MHz: set freq_scale=1e-6)
+    freq_scale = cfg.get("freq_scale", 1.0) if cfg else 1.0
+    if freq_scale != 1.0:
+        df["Frequency_MHz"] = df["Frequency_MHz"] * freq_scale
 
     # Override Temperature 'Room' normalisation with cfg.room_values if provided
     if cfg:
@@ -224,17 +234,55 @@ def render_env_coverage(
     output_html: Path,
 ) -> None:
     """
-    Environmental coverage scatter — all temperatures overlaid.
-    Wraps V1.0 accuracy_vs_freq with the full multi-temperature DataFrame.
+    Interactive environmental delta TI plot with P/C sliders for Room and ΔEnv.
 
-    TODO V2.0: Extend with per-temp DEnv annotation lines.
+    Aggregates Room stats (mean, std, n per frequency) and paired delta stats
+    for each non-Room temperature from the raw scatter DataFrame.  The k-factor
+    table is embedded so JS can recompute UDE/LDE/TTU interactively.
     """
-    _tmp = output_html.parent / "_v2_tmp_env.csv"
-    try:
-        _df_to_scatter_csv(df, _tmp)
-        _pp.accuracy_vs_freq(_tmp, cfg, output_html)
-    finally:
-        _tmp.unlink(missing_ok=True)
+    if df.empty:
+        _write_placeholder(output_html, cfg.get("title", output_html.stem), "No data rows found.")
+        return
+
+    k_table = _pp._build_k_table()
+    env_data, cond_dims, non_room_temps, all_serials, all_ports = _pp._aggregate_env_coverage_data(df, cfg)
+
+    all_freqs = sorted(set(f for cd in env_data for f in cd["freqs"] if f is not None))
+    freq_min = float(min(all_freqs)) if all_freqs else 0.0
+    freq_max = float(max(all_freqs)) if all_freqs else 1.0
+
+    log_x_cfg = cfg.get("log_x")
+    log_x = bool(log_x_cfg) if log_x_cfg is not None else (freq_min > 0 and freq_max / max(freq_min, 1e-9) >= 100)
+
+    title = cfg.get("title", output_html.stem)
+
+    palette = [
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+        "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+        "#aec7e8", "#ffbb78", "#98df8a", "#ff9896", "#c5b0d5",
+    ]
+
+    html = _pp._build_env_coverage_html(
+        env_data=env_data,
+        cond_dims=cond_dims,
+        title=title,
+        y_label="ΔEnv (dB)",
+        y_lim=None,          # auto-scale; delta values are much smaller than absolute power range
+        log_x=log_x,
+        freq_min=freq_min,
+        freq_max=freq_max,
+        palette=palette,
+        freq_vals=all_freqs,
+        k_table=k_table,
+        non_room_temps=non_room_temps,
+        all_serials=all_serials,
+        all_ports=all_ports,
+        default_P=cfg.get("proportion", 0.90),
+        default_C=cfg.get("confidence", 0.90),
+        results_dir=cfg.get("results_dir", ""),
+    )
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html, encoding="utf-8")
 
 
 def render_summary(
@@ -273,17 +321,7 @@ def render_summary(
 
     cond_cols = [c for c in all_grp if not _is_exclude(c)]
 
-    # Also include serial columns so per-DUT filtering is available
-    for col in all_grp:
-        if col in cond_cols:
-            continue
-        name = col.removeprefix("_grp_").lower()
-        if any(kw in name for kw in _serial_kws):
-            vals = df[col].dropna().unique()
-            if 1 < len(vals) <= 30:
-                cond_cols.append(col)
-
-    # Include port/path-labelled columns (excluded by _path_pat but meaningful as test conditions)
+    # Include port/path-labelled columns as conditions (RF1 vs RF2 etc. are meaningful)
     for col in all_grp:
         if col in cond_cols:
             continue
@@ -344,6 +382,28 @@ def render_summary(
                 uttl_list.append(maxs[-1])
                 lttl_list.append(mins[-1])
 
+        # Per-temperature breakdown for JS temperature filter and stat controls
+        temps_in_cond = sorted(str(t) for t in cdf["Temperature"].dropna().unique())
+        by_temp: dict = {}
+        for temp in temps_in_cond:
+            tdf = cdf[cdf["Temperature"] == temp]
+            t_ns, t_means_t, t_stds, t_mins_t, t_maxs_t = [], [], [], [], []
+            for freq in all_freqs:
+                vals_t = tdf[tdf["Frequency_MHz"] == freq]["Value"].dropna().values
+                if len(vals_t) == 0:
+                    t_ns.append(0); t_means_t.append(None); t_stds.append(None)
+                    t_mins_t.append(None); t_maxs_t.append(None)
+                    continue
+                t_ns.append(int(len(vals_t)))
+                t_means_t.append(round(float(np.mean(vals_t)), 6))
+                t_stds.append(round(float(np.std(vals_t, ddof=1)) if len(vals_t) > 1 else 0.0, 6))
+                t_mins_t.append(round(float(np.min(vals_t)), 6))
+                t_maxs_t.append(round(float(np.max(vals_t)), 6))
+            by_temp[temp] = {
+                "n": t_ns, "mean": t_means_t, "std": t_stds,
+                "min_data": t_mins_t, "max_data": t_maxs_t,
+            }
+
         # cond_keys: label -> value for each condition dimension
         cond_keys_dict = {}
         for col in cond_cols:
@@ -365,6 +425,8 @@ def render_summary(
             "spec_lo":          g_lo,
             "spec_hi_list":     spec_hi_list,
             "spec_lo_list":     spec_lo_list,
+            "by_temp":          by_temp,
+            "temps":            temps_in_cond,
         })
 
         if np.isnan(hi_spec_global) and g_hi is not None:
@@ -372,6 +434,7 @@ def render_summary(
         if np.isnan(lo_spec_global) and g_lo is not None:
             lo_spec_global = g_lo
 
+    temps_all = sorted(set(t for r in records for t in r.get("temps", [])))
     freq_vals = sorted(float(f) for f in df["Frequency_MHz"].dropna().unique())
     freq_min  = freq_vals[0] if freq_vals else 0.0
     freq_max  = freq_vals[-1] if freq_vals else 1.0
@@ -380,6 +443,7 @@ def render_summary(
         records, cond_dims, cfg, output_html,
         hi_spec=hi_spec_global, lo_spec=lo_spec_global,
         freq_min=freq_min, freq_max=freq_max, freq_vals=freq_vals,
+        temps_all=temps_all,
     )
 
 
@@ -529,6 +593,28 @@ def generate_report(
     print(f"    Rows: {len(df):,}  |  Temps: {sorted(df['Temperature'].unique())}",
           flush=True)
 
+    # Load alternate env_coverage CSV if specified
+    ec_csv_raw = cfg.get("env_coverage_csv", "")
+    df_ec: pd.DataFrame | None = None
+    cfg_ec: dict | None = None
+    if ec_csv_raw:
+        ec_csv_path = Path(ec_csv_raw)
+        if not ec_csv_path.is_absolute():
+            ec_csv_path = csv_path.parent / ec_csv_raw
+        ec_cfg_overrides: dict[str, Any] = {}
+        if cfg.get("env_coverage_y_label"):
+            ec_cfg_overrides["y_label"] = cfg["env_coverage_y_label"]
+        if cfg.get("env_coverage_y_lim"):
+            ec_cfg_overrides["y_lim"] = cfg["env_coverage_y_lim"]
+        if cfg.get("env_coverage_freq_scale"):
+            ec_cfg_overrides["freq_scale"] = cfg["env_coverage_freq_scale"]
+        cfg_ec = _cfg_for_view(cfg, ec_cfg_overrides)
+        print(f"  Loading env_coverage CSV: {ec_csv_path.name}", flush=True)
+        df_ec = load_scatter(ec_csv_path, cfg_ec)
+        df_ec = _fill_spec_nulls(df_ec)
+        print(f"    Rows: {len(df_ec):,}  |  Temps: {sorted(df_ec['Temperature'].unique())}",
+              flush=True)
+
     views = cfg.get("views", list(_VIEW_FN.keys()))
     generated: list[Path] = []
 
@@ -542,11 +628,16 @@ def generate_report(
         html_name = re.sub(r"[^\w]+", "_", prefix) + "_" + slug + ".html"
         out_html = output_dir / html_name
 
-        view_cfg = _cfg_for_view(cfg, {"title": f"{prefix} — {_VIEW_LABELS[view]}"})
+        if view == "env_coverage" and df_ec is not None:
+            view_cfg = _cfg_for_view(cfg_ec, {"title": f"{prefix} — {_VIEW_LABELS[view]}"})
+            use_df = df_ec
+        else:
+            view_cfg = _cfg_for_view(cfg, {"title": f"{prefix} — {_VIEW_LABELS[view]}"})
+            use_df = df
 
         print(f"  Rendering {_VIEW_LABELS[view]} -> {html_name}", flush=True)
         try:
-            fn(df, view_cfg, out_html)
+            fn(use_df, view_cfg, out_html)
             generated.append(out_html)
         except Exception as exc:
             print(f"    [ERROR] {exc}", flush=True)
@@ -667,6 +758,9 @@ def main(argv: list[str] | None = None) -> None:
     # Locate scatter CSV
     if args.csv:
         csv_path = Path(args.csv).resolve()
+    elif cfg.get("csv_path"):
+        csv_path = Path(cfg["csv_path"]).resolve()
+        print(f"  CSV  : {csv_path.name} (from job json)")
     else:
         # Check if a CSV already exists in the results dir
         analytic = cfg.get("analytic", "")

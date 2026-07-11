@@ -107,32 +107,63 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 
 ### On load
 - [ ] Delta (relative) mode: plot renders immediately with KDE curves — **no blank page on first load**
-- [ ] KDE curves are visible for non-Room temperatures (0°C and 55°C in default delta-from-Room mode)
+- [ ] KDE curves visible for non-Room temperatures in default delta-from-Room mode
+- [ ] Spur type badge shows correct count (e.g. "24/24" if all selected, blank if all selected)
+- [ ] Chart area has fixed height — delta summary table below is always visible without scrolling
 
 ### Mode toggle
 - [ ] Toggle from Delta to Absolute → KDE curves update to absolute values
 - [ ] Toggle back → returns to delta
 
-### Condition filter
-- [ ] Uncheck conditions → those KDE curves disappear
-- [ ] Selected conditions remain coloured
+### Spur type filter
+- [ ] Spur type filter button shows badge when subset selected (e.g. "5/24")
+- [ ] Uncheck spurs → only selected spur KDE curves shown in chart
+- [ ] "Select all" / "Clear" buttons work; badge updates immediately
 
-### Show excluded
-- [ ] "Show excluded" checkbox present
-- [ ] Check it → excluded conditions appear as dim dotted grey KDE curves
-- [ ] Excluded curves have no legend entry
-
-### Serial filter (if present)
+### Serial / port filter
 - [ ] Uncheck serials → curves recompute with fewer DUTs
+- [ ] Badge on serial filter button updates to show count
+
+### Delta summary table
+- [ ] Table renders below the chart with per-spur-type delta statistics
+- [ ] Table remains visible when chart is present (does not toggle in/out)
+
+### State persistence
+- [ ] Adjust filters and frequency range, reload page → filters and range are restored
+- [ ] Temperature selections persist across page loads (shared with other plots via `temp_*` key)
+- [ ] If all spur types were previously saved as deselected, they are all restored to checked on load
 
 ---
 
 ## `SG6311A_Harmonics_env_coverage.html` (V2)
 
 ### On load
-- [ ] Scatter plot renders with multiple coloured traces (one per temperature)
-- [ ] All temperature conditions visible in legend
-- [ ] Hover shows temperature, frequency, and value
+- [ ] UDE/LDE shaded bands render for each condition (coloured, filled, symmetric about zero)
+- [ ] Room TI dashed bands visible where room data exists
+- [ ] Y-axis scales to the UDE/LDE data range — NOT to TTU/TTL (which may be at large negative dBm values)
+- [ ] No console errors (F12)
+
+### P / C / MU controls
+- [ ] Adjust P_env slider → UDE/LDE bands widen/narrow
+- [ ] Adjust P_room slider → Room TI band changes
+- [ ] Enter MU value → when Spec override is set, TTU/TTL lines move by the MU amount
+- [ ] Statistics table (if open) updates on every control change
+
+### Spec override inputs
+- [ ] Enter a Spec hi value → TTU dotted line appears on the plot
+- [ ] Enter a Spec lo value → TTL dotted line appears on the plot
+- [ ] TTU/TTL lines do NOT cause Y-axis to rescale (they may extend off the visible area)
+- [ ] Clear overrides → TTU/TTL disappear
+
+### Serial / port / temperature filter
+- [ ] Serial filter (if >1 DUT): uncheck a serial → UDE/LDE bands recompute
+- [ ] Temperature filter: uncheck a temp → that condition's contribution removed from ΔEnv stats
+- [ ] Frequency sliders narrow the X range
+
+### Statistics table
+- [ ] Click Statistics button → table appears below plot with UDE, LDE, TTU, TTL, Room μ, n columns
+- [ ] Rows with TTL below spec or TTU above spec highlighted red
+- [ ] CSV export downloads correctly
 
 ---
 
@@ -141,15 +172,21 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 ### On load
 - [ ] Shaded min/max bands and mean lines render for multiple conditions
 - [ ] Legend shows condition names
+- [ ] No serial number filter present (by design — data is pre-aggregated per condition)
 
-### Condition filter (HarmonicNumber, Port, Serial)
+### Condition filter (HarmonicNumber, Port)
 - [ ] HarmonicNumber dropdown present — deselecting a harmonic hides those bands
 - [ ] Port dropdown present — deselecting RF1 hides RF1 bands
-- [ ] Serial filter present — deselecting DUTs removes their contribution from bands
 
 ### Show excluded
 - [ ] "Show excluded" checkbox present
 - [ ] Deselect a harmonic, check "Show excluded" → excluded bands appear dim grey behind selected
+
+### Global filter (GF) integration
+- [ ] If GF is set in boxplot, GF badge appears in summary filter bar
+- [ ] In Exclude mode: conditions with GF-flagged DUTs are dimmed/removed
+- [ ] In Focus/Inspect mode: only conditions with GF-flagged DUTs are shown
+- [ ] Disabling the GF checkbox restores all conditions
 
 ### Reset
 - [ ] Reset / reset-filters button returns all filters to default
@@ -204,4 +241,6 @@ Record these in a spreadsheet or use `qa_padb.py` which asserts the stat_summary
 
 - NP TI is set to null when the serial filter is active — this is by design.
 - de_summary has no serial filter — pre-aggregated data, not per-DUT.
-- env_coverage has no interactive filter controls — display only.
+- summary (V2) has no serial filter — data is pre-aggregated per condition in Python; use boxplot or stat_summary for per-serial analysis.
+- env_coverage TTU/TTL require Spec override inputs when the source CSV has null Upper_Limit/Lower_Limit columns.
+- env_coverage TTU/TTL lines may extend outside the visible Y range — the axis is scaled to UDE/LDE data only, not to TTU/TTL values.

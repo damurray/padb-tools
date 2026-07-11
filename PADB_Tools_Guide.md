@@ -545,19 +545,95 @@ V2 job JSON schema (all keys optional unless marked):
 | `results_dir` | Output folder relative to job file (default `v2_results`) |
 | `publish_to` | Optional UNC or local path to copy results to |
 
-### V2 plot: `summary`
+### V2 plot: `distribution`
 
-**What it shows:** All-temperature summary. For each condition group: a min/max shaded band and a mean line across all frequencies, covering every temperature in the dataset. A TTL band is overlaid when available.
+**What it shows:** Kernel density estimate (KDE) curves for delta-from-room temperature distributions per spur type. Supports absolute and delta view modes.
 
 **Interactive controls:**
-- **Condition filter dropdowns** — one per condition dimension found in the data. For harmonics datasets this includes HarmonicNumber, Port (RF1/RF2), and Serial Number — each with individual checkboxes.
-- **Show excluded** — dim grey min/max/mean bands for conditions excluded by the filter, rendered behind the active traces for side-by-side comparison.
+- **View mode** — Delta (relative to Room) or Absolute values
+- **Spur type filter** — individual checkboxes per spur type
+- **Temperature filter** — include/exclude individual non-room temperatures
+- **Serial / port filter** — exclude individual DUTs or ports
+- **Frequency sliders** — restrict to a frequency sub-range
+- **Delta summary table** — per-spur-type statistics comparing temperature points
+- **State persistence** — filter selections and frequency range are remembered across page loads
+
+---
+
+### V2 plot: `summary`
+
+**What it shows:** All-temperature summary. For each condition group: a min/max shaded band, a NP-TI band, and a mean line across all frequencies, covering every temperature in the dataset.
+
+**Interactive controls:**
+- **Condition filter dropdowns** — one per condition dimension found in the data (e.g. HarmonicNumber, Port, AlcState). Serial number columns are intentionally excluded — the summary pre-aggregates all DUTs per condition in Python, so no per-serial data reaches the browser.
+- **Global filter (GF)** — cross-plot DUT exclusion set from the boxplot propagates here. Conditions whose pre-aggregated data includes GF-flagged DUTs are visually flagged. In Focus/Inspect mode only GF-flagged conditions are shown; in Exclude mode they are dimmed. GF matching strips both serial and temperature dimensions from the GF key before comparing against summary conditions (which aggregate both away).
+- **Show excluded** — dim grey min/max/mean bands for conditions excluded by the filter, rendered behind the active traces.
 - **Frequency sliders** — min/max zoom on the X axis.
 - **Log X toggle**
 
+**Note on serial filter:** Serial numbers are intentionally absent from the summary filter bar. The summary aggregates all DUT measurements per condition group in Python before generating the HTML — individual serial contributions are not separable in the browser. Use the boxplot or stat_summary for per-serial analysis.
+
+---
+
 ### V2 plot: `env_coverage`
 
-Scatter of all measurement values across all temperatures vs frequency. Used to confirm environmental coverage — that measurements were collected at the required temperature points.
+**What it shows:** Environmental coverage analysis. Per-frequency tolerance interval bands for the delta-from-room environmental contribution (UDE/LDE), Room measurement TI band, and Test Tolerance Upper/Lower (TTU/TTL) lines showing remaining spec margin after subtracting uncertainty. Y-axis scales to the UDE/LDE data range — TTU/TTL reference lines are rendered but do not drive the axis scale.
+
+**Interactive controls:**
+- **P / C sliders (Room and ΔEnv)** — tolerance interval probability and confidence for both the Room and delta-environmental components. k-factor table is embedded; all TI recompute live in the browser.
+- **M.U. input** — measurement uncertainty (dB) subtracted from spec limits to give TTU/TTL. `TTU = Spec_hi − UDE − MU`, `TTL = Spec_lo + LDE + MU`.
+- **Spec hi / Spec lo overrides** — enter explicit spec limits when the source CSV has no `Upper_Limit` / `Lower_Limit` values. Enables TTU/TTL lines that would otherwise be absent.
+- **n override inputs** — override the DUT count used for k-factor lookup (useful for extrapolating to a larger population).
+- **Temperature filter** — include/exclude individual non-room temperature conditions.
+- **Condition filter dropdowns** — one per varying condition dimension.
+- **Serial / port filter** — exclude individual DUTs or ports; TI recomputes live.
+- **Global filter (GF)** — cross-plot DUT exclusion reacts automatically.
+- **Show excluded** — dim grey UDE/LDE bands for GF-excluded conditions.
+- **Frequency sliders** — min/max zoom on the X axis.
+- **Log X toggle**
+- **Statistics table** — per-condition × per-frequency: UDE, LDE, TTU, TTL, Room μ, Room n, ΔEnv n. Rows where TTU/TTL exceeds the spec are highlighted red.
+- **CSV export**
+
+---
+
+## V2 Two-Step Workflow
+
+For V2 analyses, data extraction and plot generation are separate steps:
+
+**Step 1 — Extract from Oracle DB** (writes fresh CSVs to `padb_output_dir`):
+```
+py padb_run.py path\to\closein_env_v2_run_job.json
+```
+
+**Step 2 — Generate HTML plots** (reads existing CSVs, seconds to run):
+```
+py padb_v2.py path\to\closein_env_v2_job.json
+```
+
+The run job JSON (`*_run_job.json`) references the pod file and sets `padb_output_dir`. The plot job JSON (`*_v2_job.json`) references the CSV paths directly. The two are independent — re-run Step 2 alone whenever you tweak plot settings without needing fresh data.
+
+**V2 run job JSON keys:**
+
+| Key | Description |
+|---|---|
+| `pod` | Path to `.pod` file, relative to job file |
+| `padb_exe` | Full path to PADB-R.exe |
+| `results_dir` | Output folder for run logs and index |
+| `padb_timeout` | Seconds before PADB-R.exe is killed |
+| `subex` | `[Extract]` overrides — use `Device_MaxDate` to extend the date range |
+| `run_analytics` | `true` to run PADB analytics |
+| `padb_output_dir` | Directory where PADB writes CSV output files |
+| `padb_logs_dir` | Directory for run log files |
+
+**V2 plot job JSON additional keys:**
+
+| Key | Description |
+|---|---|
+| `csv_path` | Full path to the main scatter CSV |
+| `env_coverage_csv` | Full path to an alternate CSV for the env_coverage view (e.g. carrier power data) |
+| `env_coverage_y_label` | Y-axis label override for env_coverage |
+| `env_coverage_y_lim` | `[min, max]` Y-axis range for env_coverage |
+| `env_coverage_freq_scale` | Frequency scale multiplier for env_coverage (e.g. `0.000001` converts Hz to MHz) |
 
 ---
 
@@ -565,9 +641,15 @@ Scatter of all measurement values across all temperatures vs frequency. Used to 
 
 - **No serial filter for de_summary.** The Environmental CSV is pre-aggregated across all DUTs; per-DUT data is not available in this file format.
 
+- **No serial filter for summary (V2).** The summary pre-aggregates all DUTs per condition group in Python before generating the HTML. Individual serial contributions are not separable in the browser. Use boxplot or stat_summary for per-serial analysis.
+
 - **stat_boxplot box statistics are from the CSV.** The box stats (Q1, Q2, Q3, whiskers) shown in the plot come from the per-frequency aggregates in the CSV. Serial filter and Y-range filter recompute from the raw per-measurement rows (`vals_detail`) but NP TI cannot be recalculated client-side; NP TI is set to null when a filter is active.
 
 - **Tolerance intervals need adequate n.** With n=15, P90/C90 is the maximum well-supported level. The tool flags an adequacy warning automatically.
+
+- **env_coverage TTU/TTL require spec overrides when CSV has no limits.** If `Upper_Limit` / `Lower_Limit` are null in the source CSV (common for carrier power data), TTU/TTL lines are absent until you enter values in the Spec hi / Spec lo override inputs.
+
+- **env_coverage Y-axis excludes TTU/TTL from ranging.** TTU/TTL may be in absolute spec units (e.g. carrier power dBm) while UDE/LDE are delta values (dB). The Y-axis is always scaled to UDE/LDE/Room data only; TTU/TTL are rendered as reference lines and may extend outside the visible range.
 
 - **PADB INT_MAX sentinel.** PADB uses ±2,147,483,647 for missing computation results (e.g., UDE (Max) when environmental computation fails). These are filtered to `null` automatically.
 

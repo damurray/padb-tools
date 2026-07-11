@@ -82,12 +82,16 @@ Opens a GUI that reads `*_job.json` files from a directory and manages Windows T
 | `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, show points, stats table, log X, CSV export |
 | `de_summary` | Type=60 Environmental | Condition filter, show excluded, freq sliders, stats table, log X, CSV export |
 
-**V2 pipeline** (`padb_v2.py`) adds two additional plot types built from a single scatter CSV:
+**V2 pipeline** (`padb_v2.py`) generates all views from a single scatter CSV using a two-step workflow: `padb_run.py` extracts from the database → `padb_v2.py` builds the HTML.
 
 | Type | Interactive controls |
 |---|---|
-| `summary` (V2) | Condition filter (harmonic, port, serial), show excluded, freq sliders, log X |
-| `env_coverage` (V2) | Scatter of all temperature conditions vs frequency |
+| `scatter` (V2) | Condition/serial/port filter, temp filter, freq sliders, log X, GF |
+| `stat_summary` (V2) | Condition/serial filter, TI/NP-TI toggle, show points/excluded, freq sliders, log X, stats table, CSV, GF |
+| `boxplot` (V2) | Condition/temp/serial/port filter, Y-range, show points, outlier panel, GF, set-as-GF |
+| `distribution` (V2) | Spur type/temp/serial/port filter, delta vs absolute mode, freq sliders, delta summary table, state persistence |
+| `env_coverage` (V2) | P/C/MU/spec-override inputs, serial/port/temp filter, freq sliders, log X, stats table, CSV, GF |
+| `summary` (V2) | Condition filter (no serial — pre-aggregated), show excluded, freq sliders, log X, GF |
 
 ---
 

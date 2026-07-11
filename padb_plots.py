@@ -137,8 +137,9 @@ function toggleAllHover(){
 function isLogX(){ return document.getElementById('log_x_chk').checked; }
 function toggleLogX(){
   var log=isLogX();
-  var lo=parseFloat(document.getElementById('freq_lo').value);
-  var hi=parseFloat(document.getElementById('freq_hi').value);
+  var _lt=document.getElementById('freq_lo_txt'),_ht=document.getElementById('freq_hi_txt');
+  var lo=_lt&&_lt.value!==''?parseFloat(_lt.value):parseFloat(document.getElementById('freq_lo').value);
+  var hi=_ht&&_ht.value!==''?parseFloat(_ht.value):parseFloat(document.getElementById('freq_hi').value);
   var range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
 }
@@ -198,7 +199,7 @@ function saveCSV(withExcluded){
   if(withExcluded&&gfChk) gfChk.checked=wasChecked;
   if(!filtered.length){alert('No data matches current filters.');return;}
   /* GF set for exclusion tagging (non-null only when GF was active and is now bypassed) */
-  var gfSet=(withExcluded&&wasChecked&&_gfExcluded&&_gfExcluded.size>0)?_gfExcluded:null;
+  var gfSet=(withExcluded&&wasChecked&&_gfCoarseExcluded&&_gfCoarseExcluded.size>0)?_gfCoarseExcluded:null;
   var colMap={'Frequency_MHz':'Frequency_MHz','Value':Y_LABEL.replace(/[,"\n]/g,'')};
   if(TEMPS&&TEMPS.length>1) colMap['Test_Step']='Temperature';
   GROUP_COLS.forEach(function(p){colMap[p[0]]=p[1].replace(/[,"\n]/g,'');});
@@ -209,7 +210,7 @@ function saveCSV(withExcluded){
   function esc(v){var s=String(v===null||v===undefined?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   filtered.forEach(function(r){
     var vals=cols.map(function(c){return esc(r[c]);});
-    if(withExcluded) vals.push(gfSet&&gfSet.has(_buildPointKey(r))?'global':'');
+    if(withExcluded) vals.push(gfSet&&_isInGfFull(r)?'global':'');
     rows.push(vals.join(','));
   });
   /* Metadata block */
@@ -235,11 +236,12 @@ function saveCSV(withExcluded){
 
 /* ---------- filter & render ---------- */
 function applyFilters(data){
-  var freqLo=parseFloat(document.getElementById('freq_lo').value);
-  var freqHi=parseFloat(document.getElementById('freq_hi').value);
+  var _flt=document.getElementById('freq_lo_txt'),_fht=document.getElementById('freq_hi_txt');
+  var freqLo=_flt&&_flt.value!==''?parseFloat(_flt.value):parseFloat(document.getElementById('freq_lo').value);
+  var freqHi=_fht&&_fht.value!==''?parseFloat(_fht.value):parseFloat(document.getElementById('freq_hi').value);
   var selTemps=getSelectedTemps();
   var gfChk=document.getElementById('gf_chk');
-  var applyGf=gfChk&&gfChk.checked&&_gfExcluded&&_gfExcluded.size>0;
+  var applyGf=gfChk&&gfChk.checked&&_gfParsed&&_gfParsed.size>0;
   var selections={};
   GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
   return data.filter(function(r){
@@ -248,7 +250,7 @@ function applyFilters(data){
       var t=String(r.Test_Step===null||r.Test_Step===undefined?'':r.Test_Step);
       if(selTemps.indexOf(t)<0) return false;
     }
-    if(applyGf&&_gfExcluded.has(_buildPointKey(r))) return false;
+    if(applyGf){var _inGf=_isInGfFull(r);var _gfFcs=document.getElementById('gf_focus_chk')&&document.getElementById('gf_focus_chk').checked;if(_gfFcs?!_inGf:_inGf) return false;}
     for(var col in selections){
       var allowed=selections[col];
       if(!allowed.length) return false;
@@ -287,7 +289,7 @@ function buildTraces(filtered){
     var customdata=sorted.map(function(r){
       return HOVER_COLS.map(function(hc){var v=r[hc[0]];return (v===null||v===undefined)?'':v;});
     });
-    var tmpl='<b>'+key+'</b><br>Freq: %{x:.3f} MHz<br>'+Y_LABEL+': %{y:.4f}';
+    var tmpl='<b>'+key+'</b><br>Freq: %{x:.4f} MHz<br>'+Y_LABEL+': %{y:.4f}';
     HOVER_COLS.forEach(function(hc,i){
       if(hoverSel.indexOf(hc[0])>=0) tmpl+='<br>'+hc[1]+': %{customdata['+i+']}';
     });
@@ -306,21 +308,27 @@ function buildTraces(filtered){
 function buildLayout(filtered){
   var shapes=[],annotations=[];
   var hiSpecs={},loSpecs={};
+  /* Use integer-rounded keys to deduplicate nominal vs MU-adjusted spec values that differ by <1 dBc.
+     Keep the most stringent value per 1-dBc bin (min for upper limits, max for lower limits). */
   (filtered||DATA).forEach(function(r){
-    if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit)))
-      hiSpecs[Math.round(Number(r.Upper_Limit)*100)/100]=true;
-    if(r.Lower_Limit!==null&&r.Lower_Limit!==undefined&&r.Lower_Limit!==''&&!isNaN(Number(r.Lower_Limit)))
-      loSpecs[Math.round(Number(r.Lower_Limit)*100)/100]=true;
+    if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit))){
+      var k=Math.round(Number(r.Upper_Limit)),v=Number(r.Upper_Limit);
+      if(!(k in hiSpecs)||v<hiSpecs[k]) hiSpecs[k]=v;
+    }
+    if(r.Lower_Limit!==null&&r.Lower_Limit!==undefined&&r.Lower_Limit!==''&&!isNaN(Number(r.Lower_Limit))){
+      var k=Math.round(Number(r.Lower_Limit)),v=Number(r.Lower_Limit);
+      if(!(k in loSpecs)||v>loSpecs[k]) loSpecs[k]=v;
+    }
   });
-  if(!Object.keys(hiSpecs).length&&HI_SPEC!==null) hiSpecs[Math.round(HI_SPEC*100)/100]=true;
-  if(!Object.keys(loSpecs).length&&LO_SPEC!==null) loSpecs[Math.round(LO_SPEC*100)/100]=true;
-  Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
+  if(!Object.keys(hiSpecs).length&&HI_SPEC!==null){var _hk=Math.round(HI_SPEC);hiSpecs[_hk]=HI_SPEC;}
+  if(!Object.keys(loSpecs).length&&LO_SPEC!==null){var _lk=Math.round(LO_SPEC);loSpecs[_lk]=LO_SPEC;}
+  Object.values(hiSpecs).sort(function(a,b){return a-b;}).forEach(function(v){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
-    annotations.push({xref:'paper',yref:'y',x:0.99,y:v,text:'Spec '+v,showarrow:false,xanchor:'right',yanchor:'bottom',font:{color:'red',size:11}});
+    annotations.push({xref:'paper',yref:'y',x:0.99,y:v,text:'Spec '+v.toFixed(2),showarrow:false,xanchor:'right',yanchor:'bottom',font:{color:'red',size:11}});
   });
-  Object.keys(loSpecs).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
+  Object.values(loSpecs).sort(function(a,b){return b-a;}).forEach(function(v){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
-    annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec '+v,showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
+    annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec '+v.toFixed(2),showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
@@ -334,6 +342,7 @@ function buildLayout(filtered){
 }
 
 function resetFilters(){
+  _stClear();
   document.querySelectorAll('.env_chk').forEach(function(c){if(!c.disabled)c.checked=true;});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -354,6 +363,22 @@ function resetFilters(){
 
 /* ---------- global filter (localStorage) ---------- */
 var _gfExcluded=null;
+var _gfCoarseExcluded=null;
+var _gfParsed=null; /* Map<baseSer,[{condKvs,isManual,temp,freq}]> pre-indexed for O(1) serial lookup */
+/* Extract serial from a data row: prefer r.Serial column, fall back to serial-like _grp_ column */
+function _rowSerial(r){
+  if(r.Serial!=null&&r.Serial!=='') return String(r.Serial);
+  var serKws=['serial','unit id','dut id','s/n'];
+  var found=null;
+  GROUP_COLS.forEach(function(p){
+    if(!found&&p[0].indexOf('_grp_')===0){
+      var lo=p[1].toLowerCase();
+      if(serKws.some(function(kw){return lo.indexOf(kw)===0;}))
+        found=String(r[p[0]]!=null?r[p[0]]:'');
+    }
+  });
+  return found||'unknown';
+}
 function _buildPointKey(r){
   var condParts=[];
   GROUP_COLS.forEach(function(p){
@@ -362,44 +387,183 @@ function _buildPointKey(r){
     }
   });
   condParts.sort();
-  var ser=String(r.Serial===null||r.Serial===undefined?'unknown':r.Serial);
   var tmp=String(r.Test_Step===null||r.Test_Step===undefined?'Room':r.Test_Step);
   var frq=typeof r.Frequency_MHz==='number'?r.Frequency_MHz.toFixed(3):String(r.Frequency_MHz);
-  return ser+'||'+condParts.join('|')+'||'+tmp+'||'+frq;
+  return _rowSerial(r)+'||'+condParts.join('|')+'||'+tmp+'||'+frq;
+}
+/* Strip serial-number-like parts from a pipe-joined condition key string */
+function _coarseCondKey(condKey){
+  var serKws=['serial','unit id','dut id','s/n'];
+  return condKey.split('|').filter(function(p){
+    var lo=p.toLowerCase();
+    return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
+  }).join('|');
+}
+/* DUT+condition coarse key: serial + non-serial condition parts (no temp, no freq) */
+function _buildCoarseKey(r){
+  var condParts=[];
+  GROUP_COLS.forEach(function(p){
+    if(p[0].indexOf('_grp_')===0){
+      condParts.push(p[1]+'='+String(r[p[0]]===null||r[p[0]]===undefined?'':r[p[0]]));
+    }
+  });
+  condParts.sort();
+  return _rowSerial(r)+'||'+_coarseCondKey(condParts.join('|'));
+}
+/* GF membership check with dimension-intersection matching (coarse: serial+condition only).
+   Used for CSV export tagging and as a fast pre-check. */
+function _isInGfCoarse(fullKey){
+  if(!_gfCoarseExcluded||!_gfCoarseExcluded.size) return false;
+  if(_gfCoarseExcluded.has(fullKey)) return true;
+  var sep=fullKey.indexOf('||');if(sep<0) return false;
+  var ser=fullKey.slice(0,sep);
+  var rowCondMap={};
+  fullKey.slice(sep+2).split('|').filter(Boolean).forEach(function(kv){
+    var i=kv.indexOf('=');if(i<0) return;
+    rowCondMap[kv.slice(0,i)]=kv.slice(i+1);
+  });
+  var found=false;
+  _gfCoarseExcluded.forEach(function(gk){
+    if(found) return;
+    var gs=gk.indexOf('||');if(gs<0) return;
+    if(gk.slice(0,gs)!==ser) return;
+    var allMatch=true;
+    gk.slice(gs+2).split('|').filter(Boolean).forEach(function(kv){
+      if(!allMatch) return;
+      var i=kv.indexOf('=');if(i<0) return;
+      var dim=kv.slice(0,i);
+      if(rowCondMap.hasOwnProperty(dim)&&rowCondMap[dim]!==kv.slice(i+1)) allMatch=false;
+    });
+    if(allMatch) found=true;
+  });
+  return found;
+}
+/* Fine GF membership check using pre-indexed _gfParsed Map.
+   O(1) serial lookup: rows not in the GF serial index return immediately.
+   For outlier entries (real temp+freq): matches serial+condition+temp+freq.
+   For manual entries (||manual||0): matches serial+condition only (coarse). */
+function _isInGfFull(r){
+  if(!_gfParsed||!_gfParsed.size) return false;
+  var ser=_rowSerial(r);
+  var entries=_gfParsed.get(ser);
+  if(!entries||!entries.length) return false; /* fast path: serial not in GF */
+  var tmp=String(r.Test_Step===null||r.Test_Step===undefined?'Room':r.Test_Step);
+  var frq=typeof r.Frequency_MHz==='number'?r.Frequency_MHz.toFixed(3):String(r.Frequency_MHz);
+  var rowCondMap={};
+  GROUP_COLS.forEach(function(p){
+    if(p[0].indexOf('_grp_')===0)
+      rowCondMap[p[1]]=String(r[p[0]]===null||r[p[0]]===undefined?'':r[p[0]]);
+  });
+  for(var i=0;i<entries.length;i++){
+    var e=entries[i];
+    var condMatch=true;
+    for(var j=0;j<e.condKvs.length;j++){
+      var kv=e.condKvs[j];
+      if(rowCondMap.hasOwnProperty(kv.dim)&&rowCondMap[kv.dim]!==kv.val){condMatch=false;break;}
+    }
+    if(!condMatch) continue;
+    if(!e.isManual&&(e.temp!==tmp||e.freq!==frq)) continue;
+    return true;
+  }
+  return false;
 }
 function _loadGlobalFilter(){
   try{
     var raw=localStorage.getItem('padb_v2_excluded');
-    if(!raw){_gfExcluded=null;}else{var obj=JSON.parse(raw);_gfExcluded=new Set(obj.excluded||[]);}
-  }catch(e){_gfExcluded=null;}
+    if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;}
+    else{
+      var obj=JSON.parse(raw);
+      _gfExcluded=new Set(obj.excluded||[]);
+      _gfCoarseExcluded=new Set();
+      _gfParsed=new Map();
+      _gfExcluded.forEach(function(k){
+        var parts=k.split('||');
+        if(parts.length<2) return;
+        /* Coarse set (serial+condition, no temp/freq) for badge/CSV tagging */
+        _gfCoarseExcluded.add(parts[0]+'||'+_coarseCondKey(parts[1]));
+        /* Parsed index keyed by base serial (strip port suffix from old-format keys) */
+        var baseSer=parts[0].replace(/_[A-Z]+\d*$/,'');
+        var condKvs=[];
+        parts[1].split('|').filter(Boolean).forEach(function(kv){
+          var i=kv.indexOf('=');if(i>=0) condKvs.push({dim:kv.slice(0,i),val:kv.slice(i+1)});
+        });
+        var entry={condKvs:condKvs,isManual:parts.length>=3&&parts[2]==='manual',
+                   temp:parts.length>=3?parts[2]:'',freq:parts.length>=4?parts[3]:''};
+        if(!_gfParsed.has(baseSer)) _gfParsed.set(baseSer,[]);
+        _gfParsed.get(baseSer).push(entry);
+      });
+    }
+  }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;_gfParsed=null;}
   _updateGfIndicator();
 }
 function _updateGfIndicator(){
   var badge=document.getElementById('gf_badge');
   var lbl=document.getElementById('gf_label');
+  var focusLbl=document.getElementById('gf_focus_label');
   if(!badge||!lbl) return;
   var chk=document.getElementById('gf_chk');
-  var active=chk&&chk.checked&&_gfExcluded&&_gfExcluded.size>0;
-  lbl.style.display=(_gfExcluded&&_gfExcluded.size>0)?'':'none';
-  badge.textContent=_gfExcluded?_gfExcluded.size+' pts globally excluded':'';
-  badge.style.background=active?'#ffeaea':'#f0f0f0';
-  badge.style.color=active?'#900':'#666';
-  badge.style.borderColor=active?'#c88':'#ccc';
-  if(active) update();
+  var hasGf=_gfExcluded&&_gfExcluded.size>0;
+  var active=chk&&chk.checked&&_gfCoarseExcluded&&_gfCoarseExcluded.size>0;
+  lbl.style.display=hasGf?'':'none';
+  if(focusLbl) focusLbl.style.display=(hasGf&&active)?'':'none';
+  var dutSers=new Set();
+  if(_gfExcluded) _gfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
+  var mode=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
+  var isFocus=active&&mode==='focus';
+  /* Keep Focus checkbox in sync with padb_v2_gf_mode (set by any plot) */
+  var focusChk=document.getElementById('gf_focus_chk');
+  if(focusChk) focusChk.checked=mode==='focus';
+  var n=dutSers.size,pts=_gfExcluded?_gfExcluded.size:0;
+  badge.textContent=n>0?(isFocus?'Inspect: ':'')+pts+' pts in GF ('+n+' DUT'+(n!==1?'s':')')+(isFocus?' — INSPECT':''):'';
+  badge.style.background=active?(isFocus?'#e8f0ff':'#ffeaea'):'#f0f0f0';
+  badge.style.color=active?(isFocus?'#0044aa':'#900'):'#666';
+  badge.style.borderColor=active?(isFocus?'#6688cc':'#c88'):'#ccc';
 }
 window.addEventListener('storage',function(e){
   if(e.key==='padb_v2_excluded'){_loadGlobalFilter();update();}
+  else if(e.key==='padb_v2_gf_mode'){_updateGfIndicator();update();}
 });
 
 function update(){
   var filtered=applyFilters(DATA);
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
+  saveState();
+}
+
+/* ---- localStorage state persistence ---- */
+function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
+function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
+function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(STATE_KEY)===0)keys.push(k);}keys.forEach(function(k){localStorage.removeItem(k);});}catch(e){}}
+function saveState(){
+  _stSet('freq_lo',document.getElementById('freq_lo').value);
+  _stSet('freq_hi',document.getElementById('freq_hi').value);
+  document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  GROUP_COLS.forEach(function(pair){
+    var col=pair[0];
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){_stSet('cond_'+col+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
+  });
+}
+function loadState(){
+  var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
+  if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
+  if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  GROUP_COLS.forEach(function(pair){
+    var col=pair[0];
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){var s=_stGet('cond_'+col+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
+    var chks=Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]'));
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){var n=chks.filter(function(c){return c.checked;}).length;allChk.checked=(n===chks.length);allChk.indeterminate=(n>0&&n<chks.length);}
+    updateBadge(col);
+  });
 }
 
 _loadGlobalFilter();
-Plotly.newPlot('plot',buildTraces(DATA),buildLayout(DATA));
-document.getElementById('n_points').textContent=DATA.length.toLocaleString()+' pts';
+loadState();
+var _initData=applyFilters(DATA);
+Plotly.newPlot('plot',buildTraces(_initData),buildLayout(_initData));
+document.getElementById('n_points').textContent=_initData.length.toLocaleString()+' pts';
 """
 
 
@@ -709,6 +873,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
         f"var TEMPS={json.dumps(temps_present)};",
+        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
     ])
 
     env_chks_html = "\n  ".join(
@@ -778,13 +943,13 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '  <div class="sep"></div>\n'
         f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
         f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
         f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
@@ -801,6 +966,10 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '<input type="checkbox" id="gf_chk" checked onchange="_updateGfIndicator();update()">'
         '&nbsp;<span id="gf_badge" style="font-size:12px;border:1px solid #ccc;'
         'border-radius:3px;padding:1px 6px"></span></label>\n'
+        '  <label id="gf_focus_label" style="display:none;white-space:nowrap" '
+        'title="Inspect mode: show only GF-flagged data points">'
+        '<input type="checkbox" id="gf_focus_chk" onchange="try{localStorage.setItem(\'padb_v2_gf_mode\',this.checked?\'focus\':\'exclude\');}catch(e){}update()">'
+        '&nbsp;Inspect</label>\n'
         '  <span id="n_points"></span>\n'
         "</div>\n"
         + env_bar_html + "\n"
@@ -883,7 +1052,7 @@ def population_envelope(csv_path: Path, cfg: dict, output_html: Path) -> None:
     fig.add_trace(go.Scatter(
         x=freq_vals, y=p50, mode="lines",
         line=dict(color="royalblue", width=2), name="Median",
-        hovertemplate="Freq: %{x:.1f} MHz<br>Median: %{y:.4f}<extra></extra>",
+        hovertemplate="Freq: %{x:.4f} MHz<br>Median: %{y:.4f}<extra></extra>",
     ))
 
     mask = ~np.isnan(ti_hi)
@@ -963,6 +1132,7 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
+        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
     ])
 
     css = (
@@ -1138,6 +1308,7 @@ function update(){
   };
   Plotly.react('plot',[{type:'histogram',x:values,nbinsx:60,marker:{color:'steelblue',opacity:0.7},name:'Data'}],layout);
   updateDistStats(values);
+  saveState();
 }
 function mean(arr){var s=0;for(var i=0;i<arr.length;i++)s+=arr[i];return arr.length?s/arr.length:NaN;}
 function stddev(arr,mu){
@@ -1175,6 +1346,7 @@ function updateDistStats(values){
     +'<td style="color:'+color+';font-weight:bold">'+label+'</td></tr></table>';
 }
 function resetFilters(){
+  _stClear();
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
     document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=true;});
@@ -1189,6 +1361,22 @@ function resetFilters(){
   document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
   update();
 }
+/* ---- localStorage state persistence ---- */
+function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
+function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
+function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(STATE_KEY)===0)keys.push(k);}keys.forEach(function(k){localStorage.removeItem(k);});}catch(e){}}
+function saveState(){
+  _stSet('freq_lo',document.getElementById('freq_lo').value);
+  _stSet('freq_hi',document.getElementById('freq_hi').value);
+  document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+}
+function loadState(){
+  var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
+  if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
+  if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+}
+loadState();
 update();
 """
 
@@ -1233,12 +1421,13 @@ update();
 
 def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     """
-    Multi-temperature overlaid KDE distribution with ΔEnv analysis.
+    Pre-computed KDE distribution plot.
 
-    Detects suspected uncompensated DUTs via IQR on per-DUT mean ΔTemp.
-    Supports per-serial, per-port, and per-condition (harmonic) filtering in JS.
-    Option 2: apply derived correction (median δ of well-compensated DUTs).
-    Option 3: exclude flagged DUTs (settable radio button).
+    Computes KDE curves server-side per (SpurType, Temperature) and embeds compact
+    (x, y, n) arrays instead of raw measurement values, keeping HTML well under 10 MB
+    regardless of dataset size.
+
+    Supports SpurType / Serial / Port / Temperature filters and Abs / ΔTemp modes.
     """
     if df.empty or len(df) < 5:
         return (
@@ -1246,408 +1435,243 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
             f"<h3>{title}</h3><p><i>No data available.</i></p></body></html>"
         )
 
-    lo_spec, hi_spec = _get_spec(df, cfg)
-    y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
-    y_lim   = cfg.get("y_lim")
+    # -------------------------------------------------------------------------
+    # 0.  KDE helpers
+    # -------------------------------------------------------------------------
+    try:
+        from scipy.stats import gaussian_kde as _gkde
+        _has_scipy = True
+    except ImportError:
+        _has_scipy = False
+
+    def _hist_density(arr, xs):
+        nb = min(50, max(5, len(arr) // 4))
+        counts, edges = np.histogram(arr, bins=nb, density=True)
+        ctrs = (edges[:-1] + edges[1:]) / 2
+        return np.interp(xs, ctrs, counts, left=0.0, right=0.0)
+
+    def _kde_curve(vals_list, n_pts: int = 250):
+        """Return {x, y, n} KDE curve dict or None if insufficient data."""
+        arr = np.array([v for v in vals_list if v == v], dtype=float)
+        n = len(arr)
+        if n < 4:
+            return None
+        lo, hi = float(arr.min()), float(arr.max())
+        if hi <= lo:
+            hi = lo + 0.001
+        pad = max((hi - lo) * 0.25, 0.01)
+        xs = np.linspace(lo - pad, hi + pad, n_pts)
+        if _has_scipy:
+            try:
+                ys = _gkde(arr, bw_method="silverman")(xs)
+            except Exception:
+                ys = _hist_density(arr, xs)
+        else:
+            ys = _hist_density(arr, xs)
+        return {
+            "x": [round(float(v), 4) for v in xs],
+            "y": [round(float(v), 6) for v in ys],
+            "n": n,
+        }
 
     # -------------------------------------------------------------------------
-    # 1.  Temperatures, conditions, serials, ports
+    # 1.  Metadata
     # -------------------------------------------------------------------------
+    lo_spec, hi_spec = _get_spec(df, cfg)
+    y_label = cfg.get("y_label", "Value")
+    y_lim   = cfg.get("y_lim")
+
     temps_all = sorted(str(t) for t in df["Temperature"].dropna().unique())
     temps_present = (["Room"] if "Room" in temps_all else []) + [
         t for t in temps_all if t != "Room"
     ]
     non_room_temps = [t for t in temps_present if t != "Room"]
 
-    raw_groups = sorted(
-        str(g) for g in df["Group"].dropna().replace("", pd.NA).dropna().unique()
-    )
-    conds = raw_groups if raw_groups else ["(all)"]
-    if not raw_groups:
-        df = df.copy()
-        df["Group"] = "(all)"
-
     all_serials = sorted(str(s) for s in df["Serial"].dropna().unique())
-
     port_col = "_grp_Port" if "_grp_Port" in df.columns else None
-    all_ports: list = []
-    cond_port: list = []   # per-condition: port string or ""
-    if port_col:
-        all_ports = sorted(str(p) for p in df[port_col].dropna().unique())
-        for cond in conds:
-            sub_p = df[df["Group"] == cond][port_col].dropna().unique()
-            cond_port.append(str(sub_p[0]) if len(sub_p) == 1 else "")
+    all_ports = sorted(str(p) for p in df[port_col].dropna().unique()) if port_col else []
+
+    # SpurType — use pre-parsed column if available, else regex on Group string
+    df = df.copy()
+    if "_grp_SpurType" in df.columns:
+        df["_spur"] = df["_grp_SpurType"].fillna("").astype(str)
     else:
-        cond_port = [""] * len(conds)
+        _spur_re_dist = re.compile(r"SpurType:\s*(.+?)(?:\s{2,}|$)", re.IGNORECASE)
+        def _extr_spur(g):
+            m = _spur_re_dist.search(g)
+            return m.group(1).strip() if m else ""
+        df["_spur"] = df["Group"].fillna("").astype(str).apply(_extr_spur)
 
-    # Harmonic order extraction from "HarmonicNumber: X" in condition names
-    _harm_re = re.compile(r'HarmonicNumber:\s*(\S+)', re.IGNORECASE)
-    def _extract_harmonic(name: str) -> str:
-        m = _harm_re.search(name)
-        return m.group(1) if m else ""
-    cond_harmonic = [_extract_harmonic(c) for c in conds]
-    def _harm_sort_key(x: str) -> float:
-        try:
-            return float(x)
-        except ValueError:
-            return float("inf")
-    harmonic_orders = sorted(
-        set(h for h in cond_harmonic if h),
-        key=_harm_sort_key
-    )
+    spur_types = sorted(s for s in df["_spur"].unique() if s)
+    if not spur_types:
+        spur_types = ["(all)"]
+        df["_spur"] = "(all)"
 
-    # Serial extraction from "Serial Number: X" in condition names
-    _ser_re = re.compile(r'Serial Number:\s*(\S+)', re.IGNORECASE)
-    def _extract_cond_serial(name: str) -> str:
-        m = _ser_re.search(name)
-        return m.group(1) if m else ""
-    cond_serial = [_extract_cond_serial(c) for c in conds]
-    all_cond_serials = sorted(set(s for s in cond_serial if s))
-
-    # -------------------------------------------------------------------------
-    # 2.  Per-DUT ΔTemp: compute delta from Room per (Serial, Group, Freq)
-    # -------------------------------------------------------------------------
-    room_df = (
-        df[df["Temperature"] == "Room"][["Serial", "Group", "Frequency_MHz", "Value"]]
-        .copy()
-        .rename(columns={"Value": "Room_Value"})
-    )
-    non_room_df = df[df["Temperature"] != "Room"].copy()
-
-    merged = pd.DataFrame()
-    dut_temp_delta = pd.DataFrame()
-    flagged_serials: set = set()
-
-    if len(room_df) > 0 and len(non_room_df) > 0:
-        merged = non_room_df.merge(
-            room_df, on=["Serial", "Group", "Frequency_MHz"], how="inner"
-        )
-        merged["delta"] = merged["Value"] - merged["Room_Value"]
-        dut_temp_delta = (
-            merged.groupby(["Serial", "Temperature"])["delta"]
-            .mean()
-            .reset_index()
-        )
-        for temp in non_room_temps:
-            tdf = dut_temp_delta[dut_temp_delta["Temperature"] == temp].copy()
-            if len(tdf) < 4:
-                continue
-            q1 = float(tdf["delta"].quantile(0.25))
-            q3 = float(tdf["delta"].quantile(0.75))
-            iqr = q3 - q1
-            if iqr < 1e-9:
-                continue
-            mask = (tdf["delta"] < q1 - 1.5 * iqr) | (tdf["delta"] > q3 + 1.5 * iqr)
-            flagged_serials.update(tdf.loc[mask, "Serial"].tolist())
-
-    # -------------------------------------------------------------------------
-    # 3.  Derived corrections: median δ of non-flagged DUTs per (temp, group, freq)
-    # -------------------------------------------------------------------------
-    flagged_merged = pd.DataFrame()
-
-    if len(merged) > 0 and flagged_serials:
-        good_m = merged[~merged["Serial"].isin(flagged_serials)]
-        if len(good_m) > 0:
-            med_good = (
-                good_m.groupby(["Temperature", "Group", "Frequency_MHz"])["delta"]
-                .median()
-                .reset_index()
-                .rename(columns={"delta": "median_delta_good"})
-            )
-        else:
-            med_good = pd.DataFrame(
-                columns=["Temperature", "Group", "Frequency_MHz", "median_delta_good"]
-            )
-
-        flag_m = merged[merged["Serial"].isin(flagged_serials)].copy()
-        if len(flag_m) > 0:
-            if len(med_good) > 0:
-                flag_m = flag_m.merge(
-                    med_good, on=["Temperature", "Group", "Frequency_MHz"], how="left"
-                )
-                flag_m["median_delta_good"] = flag_m["median_delta_good"].fillna(0)
-            else:
-                flag_m["median_delta_good"] = 0.0
-            flag_m["corrected_value"] = flag_m["Room_Value"] + flag_m["median_delta_good"]
-            flag_m["corrected_delta"] = flag_m["median_delta_good"]
-            flagged_merged = flag_m
-
-    # -------------------------------------------------------------------------
-    # 4.  Pre-aggregate value arrays per (cond, temp, serial) in 3 modes
-    #     VALS[ci][ti] = {serial: {r:[], c:[], e:[]}, ...}
-    # -------------------------------------------------------------------------
-    def _rl(series):
-        return [round(float(v), 3) for v in series.dropna()]
-
-    ser_set = set(flagged_serials)
-    vals_js:  list = []   # VALS[ci][ti][serial]  = {r:[], c:[], e:[]}
-    delta_js: list = []   # DELTA[ci][ti][serial] = {r:[], c:[], e:[]}
-
-    for cond in conds:
-        c_vals: list = []
-        c_delta: list = []
-        sub_cond = df[df["Group"] == cond]
-        merged_cond = (
-            merged[merged["Group"] == cond] if len(merged) > 0 else pd.DataFrame()
-        )
-        flag_cond = (
-            flagged_merged[flagged_merged["Group"] == cond]
-            if len(flagged_merged) > 0 else pd.DataFrame()
-        )
-
-        for temp in temps_present:
-            ser_vals:  dict = {}
-            ser_delta: dict = {}
-            sub_ct = sub_cond[sub_cond["Temperature"] == temp]
-            merged_ct = (
-                merged_cond[merged_cond["Temperature"] == temp]
-                if len(merged_cond) > 0 else pd.DataFrame()
-            )
-            flag_ct = (
-                flag_cond[flag_cond["Temperature"] == temp]
-                if len(flag_cond) > 0 else pd.DataFrame()
-            )
-
-            for serial in all_serials:
-                raw_v = _rl(sub_ct[sub_ct["Serial"] == serial]["Value"])
-                is_fl = serial in ser_set
-
-                if temp == "Room":
-                    ser_vals[serial]  = {"r": raw_v, "c": raw_v, "e": [] if is_fl else raw_v}
-                    ser_delta[serial] = {"r": [], "c": [], "e": []}
-                else:
-                    # Delta for this serial
-                    raw_d: list = []
-                    if len(merged_ct) > 0:
-                        raw_d = _rl(merged_ct[merged_ct["Serial"] == serial]["delta"])
-
-                    if not is_fl:
-                        ser_vals[serial]  = {"r": raw_v, "c": raw_v, "e": raw_v}
-                        ser_delta[serial] = {"r": raw_d, "c": raw_d, "e": raw_d}
-                    else:
-                        # Flagged: corrected = Room_Value + median_delta_good
-                        corr_v: list = []
-                        corr_d: list = []
-                        if len(flag_ct) > 0:
-                            fc_s = flag_ct[flag_ct["Serial"] == serial]
-                            corr_v = _rl(fc_s["corrected_value"])
-                            corr_d = _rl(fc_s["corrected_delta"])
-                        ser_vals[serial]  = {"r": raw_v, "c": corr_v or raw_v, "e": []}
-                        ser_delta[serial] = {"r": raw_d, "c": corr_d or raw_d, "e": []}
-
-            c_vals.append(ser_vals)
-            c_delta.append(ser_delta)
-
-        vals_js.append(c_vals)
-        delta_js.append(c_delta)
-
-    # -------------------------------------------------------------------------
-    # 4b. Delta arrays for all non-Room reference temperatures (raw mode only)
-    # -------------------------------------------------------------------------
-    delta_alt_js: dict = {}   # {ref_temp: same shape as delta_js, only "r" key}
-
-    for ref_temp in temps_present:
-        if ref_temp == "Room":
-            continue
-        ref_rows = (
-            df[df["Temperature"] == ref_temp][["Serial", "Group", "Frequency_MHz", "Value"]]
-            .copy()
-            .rename(columns={"Value": "Ref_Value"})
-        )
-        ref_d_js: list = []
-        for cond in conds:
-            ref_c_delta: list = []
-            sub_cond_r = df[df["Group"] == cond]
-            ref_cond_r = ref_rows[ref_rows["Group"] == cond][
-                ["Serial", "Frequency_MHz", "Ref_Value"]
-            ]
-            for temp in temps_present:
-                ref_ser: dict = {}
-                if temp == ref_temp:
-                    for serial in all_serials:
-                        ref_ser[serial] = {"r": []}
-                else:
-                    sub_ct_r = sub_cond_r[sub_cond_r["Temperature"] == temp]
-                    if len(ref_cond_r) > 0 and len(sub_ct_r) > 0:
-                        mrgd = sub_ct_r.merge(
-                            ref_cond_r, on=["Serial", "Frequency_MHz"], how="inner"
-                        ).copy()
-                        mrgd["delta"] = mrgd["Value"] - mrgd["Ref_Value"]
-                    else:
-                        mrgd = pd.DataFrame()
-                    for serial in all_serials:
-                        raw_d = (
-                            _rl(mrgd[mrgd["Serial"] == serial]["delta"])
-                            if len(mrgd) else []
-                        )
-                        ref_ser[serial] = {"r": raw_d}
-                ref_c_delta.append(ref_ser)
-            ref_d_js.append(ref_c_delta)
-        delta_alt_js[ref_temp] = ref_d_js
-
-    # -------------------------------------------------------------------------
-    # 5.  ΔEnv stats per temperature (per-DUT mean δ across all conds/freqs)
-    # -------------------------------------------------------------------------
-    def _s4(lst: list) -> float:
-        return round(float(np.nanmean(lst)), 4) if lst else 0.0
-
-    delta_stats: dict = {}
-    if len(dut_temp_delta) > 0:
-        for temp in non_room_temps:
-            tdf    = dut_temp_delta[dut_temp_delta["Temperature"] == temp]
-            all_d  = tdf["delta"].dropna().tolist()
-            good_d = tdf[~tdf["Serial"].isin(flagged_serials)]["delta"].dropna().tolist()
-            flag_d = tdf[tdf["Serial"].isin(flagged_serials)]["delta"].dropna().tolist()
-
-            delta_stats[temp] = {
-                "n":            len(all_d),
-                "n_good":       len(good_d),
-                "n_flagged":    len(flag_d),
-                "mean":         _s4(all_d),
-                "median":       round(float(np.nanmedian(all_d)), 4) if all_d else 0.0,
-                "std":          round(float(np.nanstd(all_d, ddof=1)), 4) if len(all_d) > 1 else 0.0,
-                "good_mean":    _s4(good_d),
-                "good_median":  round(float(np.nanmedian(good_d)), 4) if good_d else 0.0,
-                "flagged_mean": _s4(flag_d) if flag_d else None,
-            }
-
-    # Stats for non-Room references: per-DUT mean delta from the alt arrays
-    delta_stats_alt: dict = {}
-    for ref_temp, ref_d_js in delta_alt_js.items():
-        ref_stats: dict = {}
-        for ti, temp in enumerate(temps_present):
-            if temp == ref_temp:
-                continue
-            per_dut: list = []
-            for serial in all_serials:
-                dut_vals: list = []
-                for ci in range(len(conds)):
-                    dut_vals.extend(
-                        (ref_d_js[ci][ti] if ref_d_js else {}).get(serial, {}).get("r", [])
-                    )
-                if dut_vals:
-                    per_dut.append(float(np.nanmean(dut_vals)))
-            if per_dut:
-                ref_stats[temp] = {
-                    "n":      len(per_dut),
-                    "mean":   _s4(per_dut),
-                    "median": round(float(np.nanmedian(per_dut)), 4),
-                    "std":    round(float(np.nanstd(per_dut, ddof=1)), 4) if len(per_dut) > 1 else 0.0,
-                }
-        delta_stats_alt[ref_temp] = ref_stats
-
-    # Per-DUT flagged detail
-    flagged_detail = []
-    for serial in sorted(flagged_serials):
-        by_temp: dict = {}
-        for temp in non_room_temps:
-            row = dut_temp_delta[
-                (dut_temp_delta["Serial"] == serial)
-                & (dut_temp_delta["Temperature"] == temp)
-            ]
-            if len(row):
-                by_temp[temp] = round(float(row["delta"].iloc[0]), 3)
-        flagged_detail.append({"serial": serial, "by_temp": by_temp})
-
-    # -------------------------------------------------------------------------
-    # 6.  Build JS constants
-    # -------------------------------------------------------------------------
-    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
-    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
+    # Port per serial (used in delta table)
+    dut_port_map: dict = {}
+    if port_col:
+        for serial in all_serials:
+            pts = df[df["Serial"] == serial][port_col].dropna().unique()
+            dut_port_map[serial] = str(pts[0]) if len(pts) == 1 else ""
+    else:
+        dut_port_map = {s: "" for s in all_serials}
 
     _pal = ["#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0",
             "#00BCD4", "#795548", "#E91E63", "#8BC34A", "#607D8B"]
     temp_colors = {t: _pal[i % len(_pal)] for i, t in enumerate(temps_present)}
+    spur_colors = {s: _pal[i % len(_pal)] for i, s in enumerate(spur_types)}
+
+    # -------------------------------------------------------------------------
+    # 2.  Abs mode KDE: aggregate per (SpurType, Temperature)
+    # -------------------------------------------------------------------------
+    print(
+        f"    Computing KDE curves ({len(spur_types)} spurs x {len(temps_present)} temps)...",
+        flush=True,
+    )
+    kde_abs: list = []
+    for spur in spur_types:
+        row: list = []
+        spur_df = df[df["_spur"] == spur]
+        for temp in temps_present:
+            vals = spur_df[spur_df["Temperature"] == temp]["Value"].dropna().tolist()
+            row.append(_kde_curve(vals))
+        kde_abs.append(row)
+
+    # -------------------------------------------------------------------------
+    # 3.  Delta from Room: merge non-room rows with room rows
+    # -------------------------------------------------------------------------
+    room_base = (
+        df[df["Temperature"] == "Room"][["Serial", "_spur", "Frequency_MHz", "Value"]]
+        .copy()
+        .rename(columns={"Value": "Room_Value"})
+    )
+    non_room_base = df[df["Temperature"] != "Room"].copy()
+
+    merged = pd.DataFrame()
+    if len(room_base) > 0 and len(non_room_base) > 0:
+        merged = non_room_base.merge(
+            room_base, on=["Serial", "_spur", "Frequency_MHz"], how="inner"
+        )
+        merged["delta"] = merged["Value"] - merged["Room_Value"]
+
+    # -------------------------------------------------------------------------
+    # 4.  Delta mode KDE + per-DUT delta stats
+    # -------------------------------------------------------------------------
+    print(
+        f"    Computing delta KDE ({len(spur_types)} spurs x {len(non_room_temps)} non-room temps)...",
+        flush=True,
+    )
+    kde_delta: list = []    # [si][di] = curve or None
+    dut_delta: list = []    # [si][di] = [{serial,port,mean,p10,p90,n}|None, ...]
+
+    for spur in spur_types:
+        row_kde: list = []
+        row_dut: list = []
+        spur_m = merged[merged["_spur"] == spur] if len(merged) > 0 else pd.DataFrame()
+        for temp in non_room_temps:
+            temp_m = spur_m[spur_m["Temperature"] == temp] if len(spur_m) > 0 else pd.DataFrame()
+            agg_vals = temp_m["delta"].dropna().tolist() if len(temp_m) > 0 else []
+            row_kde.append(_kde_curve(agg_vals))
+            dut_entries: list = []
+            for serial in all_serials:
+                s_m = temp_m[temp_m["Serial"] == serial] if len(temp_m) > 0 else pd.DataFrame()
+                dv = s_m["delta"].dropna().tolist() if len(s_m) > 0 else []
+                if dv:
+                    dut_entries.append({
+                        "serial": serial,
+                        "port": dut_port_map.get(serial, ""),
+                        "mean": round(float(np.mean(dv)), 4),
+                        "p10":  round(float(np.percentile(dv, 10)), 4),
+                        "p90":  round(float(np.percentile(dv, 90)), 4),
+                        "n":    len(dv),
+                    })
+                else:
+                    dut_entries.append(None)
+            row_dut.append(dut_entries)
+        kde_delta.append(row_kde)
+        dut_delta.append(row_dut)
+
+    # -------------------------------------------------------------------------
+    # 5.  Overall delta stats per non-room temperature
+    # -------------------------------------------------------------------------
+    delta_stats: dict = {}
+    for temp in non_room_temps:
+        temp_m = merged[merged["Temperature"] == temp] if len(merged) > 0 else pd.DataFrame()
+        if len(temp_m) > 0:
+            dv = temp_m["delta"].dropna().tolist()
+            delta_stats[temp] = {
+                "n":      len(dv),
+                "mean":   round(float(np.mean(dv)), 4) if dv else 0.0,
+                "std":    round(float(np.std(dv, ddof=1)), 4) if len(dv) > 1 else 0.0,
+                "median": round(float(np.median(dv)), 4) if dv else 0.0,
+            }
+
+    # -------------------------------------------------------------------------
+    # 5b.  Raw data for client-side freq-filtered KDE
+    # -------------------------------------------------------------------------
+    all_freqs_sorted = sorted(float(f) for f in df["Frequency_MHz"].dropna().unique())
+    dist_freq_min = round(all_freqs_sorted[0], 1) if all_freqs_sorted else 0.0
+    dist_freq_max = round(all_freqs_sorted[-1], 1) if all_freqs_sorted else 1000.0
+
+    raw_abs: list = []
+    for spur in spur_types:
+        spur_df = df[df["_spur"] == spur]
+        row: list = []
+        for temp in temps_present:
+            t_df = spur_df[spur_df["Temperature"] == temp][["Frequency_MHz", "Value"]].dropna()
+            row.append({
+                "f": [round(float(x), 1) for x in t_df["Frequency_MHz"]],
+                "v": [round(float(x), 2) for x in t_df["Value"]]
+            })
+        raw_abs.append(row)
+
+    raw_delta: list = []
+    for spur in spur_types:
+        spur_m = merged[merged["_spur"] == spur] if len(merged) > 0 else pd.DataFrame()
+        row = []
+        for temp in non_room_temps:
+            t_m = spur_m[spur_m["Temperature"] == temp] if len(spur_m) > 0 else pd.DataFrame()
+            if len(t_m) > 0:
+                row.append({
+                    "f": [round(float(x), 1) for x in t_m["Frequency_MHz"]],
+                    "d": [round(float(x), 3) for x in t_m["delta"]]
+                })
+            else:
+                row.append({"f": [], "d": []})
+        raw_delta.append(row)
+
+    # -------------------------------------------------------------------------
+    # 6.  JS constants (compact — no raw measurement values)
+    # -------------------------------------------------------------------------
+    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
+    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
 
     constants = "\n".join([
-        f"var CONDS={json.dumps(conds)};",
-        f"var COND_PORT={json.dumps(cond_port)};",
-        f"var COND_HARMONIC={json.dumps(cond_harmonic)};",
-        f"var HARM_ORDERS={json.dumps(harmonic_orders)};",
-        f"var COND_SERIAL={json.dumps(cond_serial)};",
-        f"var SERIALS_ALL={json.dumps(all_serials)};",
-        f"var PORTS_ALL={json.dumps(all_ports)};",
+        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var SPUR_TYPES={json.dumps(spur_types)};",
+        f"var SPUR_COLORS={json.dumps(spur_colors)};",
         f"var TEMPS={json.dumps(temps_present)};",
-        f"var FLAGGED_SERIALS={json.dumps(sorted(flagged_serials))};",
-        f"var FLAGGED_DETAIL={json.dumps(flagged_detail)};",
+        f"var NON_ROOM_TEMPS={json.dumps(non_room_temps)};",
+        f"var TEMP_COLORS={json.dumps(temp_colors)};",
+        f"var SERIALS={json.dumps(all_serials)};",
+        f"var PORTS={json.dumps(all_ports)};",
+        f"var KDE_ABS={json.dumps(kde_abs)};",
+        f"var KDE_DELTA={json.dumps(kde_delta)};",
+        f"var DUT_DELTA={json.dumps(dut_delta)};",
         f"var DELTA_STATS={json.dumps(delta_stats)};",
-        f"var DELTA_STATS_ALT={json.dumps(delta_stats_alt)};",
-        f"var VALS={json.dumps(vals_js)};",
-        f"var DELTA={json.dumps(delta_js)};",
-        f"var DELTA_ALT={json.dumps(delta_alt_js)};",
-        f"var ROOM_TEMP={json.dumps('Room')};",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var TITLE={json.dumps(title)};",
-        f"var TEMP_COLORS={json.dumps(temp_colors)};",
+        f"var RAW_ABS={json.dumps(raw_abs)};",
+        f"var RAW_DELTA={json.dumps(raw_delta)};",
+        f"var DIST_FREQ_MIN={dist_freq_min};",
+        f"var DIST_FREQ_MAX={dist_freq_max};",
     ])
 
     # -------------------------------------------------------------------------
-    # 7.  Env bar HTML
-    # -------------------------------------------------------------------------
-    env_chks = ""
-    for temp in temps_present:
-        env_chks += (
-            f'<label><input type="checkbox" class="env_chk" value="{temp}"'
-            f' checked onchange="update()">&nbsp;{temp}</label>\n'
-        )
-
-    # Reference temperature dropdown
-    ref_opts = "\n".join(
-        f'<option value="{t}">{t}</option>' for t in temps_present
-    )
-
-    # Condition checkboxes with harmonic-order grouping
-    all_cond_ports = sorted(set(p for p in cond_port if p))
-
-    cond_chk_rows = ""
-    for i, c in enumerate(conds):
-        harm = cond_harmonic[i]
-        ser = cond_serial[i]
-        port = cond_port[i]
-        cond_chk_rows += (
-            f'<div class="cond_chk_row" data-harm="{harm}" data-serial="{ser}" data-port="{port}"'
-            f' style="display:none">'
-            f'<label style="white-space:nowrap">'
-            f'<input type="checkbox" class="cond_chk" value="{i}" checked'
-            f' onchange="update()">&nbsp;{c}</label></div>\n'
-        )
-
-    def _dist_filter_panel(panel_id, label, opts_list, badge_id):
-        items = "".join(
-            f'<label class="dist-fitem"><input type="checkbox" class="dist_{panel_id}_chk"'
-            f' value="{v}" checked onchange="updateCondCheckboxes()">&nbsp;{v}</label>\n'
-            for v in opts_list
-        )
-        return (
-            f'<div class="dist-filter-wrap">'
-            f'<button class="dist-filter-btn" onclick="toggleDistPanel(\'{panel_id}\')">'
-            f'<span id="dist_badge_{badge_id}" class="dist-badge"></span>{label}&thinsp;&#9662;</button>'
-            f'<div class="dist-filter-panel" id="dist_panel_{panel_id}">'
-            f'<label class="dist-fitem dist-fall"><input type="checkbox" id="dist_all_{panel_id}"'
-            f' checked onchange="distToggleAll(\'{panel_id}\')">&nbsp;<b>All</b></label>'
-            f'<hr class="dist-fdiv">{items}</div></div>'
-        )
-
-    harm_panel_html = _dist_filter_panel('harm', 'Harmonic', harmonic_orders, 'harm')
-    ser_panel_html = _dist_filter_panel('ser', 'Serial', all_cond_serials, 'ser')
-    port_panel_html = _dist_filter_panel('port', 'Port', all_cond_ports, 'port') if all_cond_ports else ""
-
-    # Serial checkboxes (serial filter)
-    ser_chks = ""
-    for s in all_serials:
-        ser_chks += (
-            f'<label style="white-space:nowrap">'
-            f'<input type="checkbox" class="ser_chk" value="{s}" checked'
-            f' onchange="update()">&nbsp;{s}</label>\n'
-        )
-
-    n_flagged = len(flagged_serials)
-
-    # -------------------------------------------------------------------------
-    # 8.  CSS
+    # 7.  CSS
     # -------------------------------------------------------------------------
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
@@ -1658,24 +1682,16 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         "padding:5px 14px;background:#f5f5f5;border-radius:6px;margin-bottom:4px;"
         "font-size:13px;border:1px solid #e0e0e0;}"
         ".filter-lbl{font-weight:600;color:#444;margin-right:4px;white-space:nowrap;}"
-        ".filter-chk-panel{display:flex;flex-wrap:wrap;gap:6px;align-items:center;"
-        "padding:4px 14px;background:#fafafa;border-radius:6px;margin-bottom:4px;"
-        "font-size:12px;border:1px solid #e8e8e8;}"
-        ".filter-chk-panel .lbl{font-weight:600;color:#444;margin-right:4px;white-space:nowrap;}"
-        ".cond_chk_row{display:none;}"
         "button.sel-btn{font-size:11px;padding:1px 7px;border:1px solid #bbb;"
         "border-radius:3px;cursor:pointer;background:#fff;white-space:nowrap;}"
         "button.sel-btn:hover{background:#e8e8e8;}"
-        "button.port-btn{font-size:12px;padding:2px 10px;border:1px solid #90caf9;"
-        "border-radius:3px;cursor:pointer;background:#e3f2fd;color:#1565c0;white-space:nowrap;}"
-        "button.port-btn:hover{background:#bbdefb;}"
         ".dist-filter-wrap{position:relative;display:inline-block;}"
         ".dist-filter-btn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;"
         "cursor:pointer;background:#fff;white-space:nowrap;}"
         ".dist-filter-btn:hover{background:#e8e8e8;}"
         ".dist-filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
         "background:#fff;border:1px solid #ccc;border-radius:4px;"
-        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:130px;max-height:240px;"
+        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:140px;max-height:300px;"
         "overflow-y:auto;padding:5px 7px;}"
         ".dist-filter-panel.open{display:block;}"
         ".dist-fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:12px;}"
@@ -1693,543 +1709,413 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         "button.reset-btn:hover{background:#e8e8e8;}"
         "#n_pts{font-size:12px;color:#666;margin-left:auto;}"
         ".stbl{border-collapse:collapse;font-size:12px;margin:4px 0;}"
-        ".stbl th{background:#e8eaf6;padding:4px 10px;text-align:left;"
-        "border:1px solid #ccc;white-space:nowrap;}"
+        ".stbl th{background:#e8eaf6;padding:4px 10px;text-align:left;border:1px solid #ccc;white-space:nowrap;}"
         ".stbl td{padding:3px 10px;border:1px solid #ddd;white-space:nowrap;}"
         ".panel-section{padding:4px 14px 8px 14px;}"
         ".panel-title{font-size:13px;font-weight:600;margin-bottom:4px;color:#444;}"
-        "#corr_bar{display:none;flex-wrap:wrap;gap:8px;align-items:center;"
-        "font-size:13px;padding:5px 14px;background:#fff8e1;border-radius:5px;"
-        "margin-bottom:6px;border:1px solid #ffe082;}"
         "#multimodal_warn{background:#fff3e0;border:1px solid #ffcc02;border-radius:4px;"
         "padding:4px 10px;font-size:12px;color:#e65100;display:none;"
         "margin:0 14px 4px 14px;}"
-        ".flagged-hdr{cursor:pointer;font-size:13px;font-weight:600;"
-        "padding:5px 14px;color:#c62828;display:inline-block;user-select:none;}"
-        ".flagged-hdr:hover{text-decoration:underline;}"
-        "#flagged_panel{padding:0 14px 8px 14px;}"
+        "#kde_plot{margin:4px 0;height:450px;}"
     )
+
+    # -------------------------------------------------------------------------
+    # 8.  Filter panel HTML helper
+    # -------------------------------------------------------------------------
+    def _filter_panel(panel_id, label, opts_list, trigger_fn="update"):
+        items = "".join(
+            f'<label class="dist-fitem">'
+            f'<input type="checkbox" class="dist_{panel_id}_chk"'
+            f' value="{v}" checked onchange="{trigger_fn}()">&nbsp;{v}</label>\n'
+            for v in opts_list
+        )
+        return (
+            f'<div class="dist-filter-wrap">'
+            f'<button class="dist-filter-btn" onclick="toggleDistPanel(\'{panel_id}\')">'
+            f'<span id="dist_badge_{panel_id}" class="dist-badge"></span>{label}&thinsp;&#9662;</button>'
+            f'<div class="dist-filter-panel" id="dist_panel_{panel_id}">'
+            f'<label class="dist-fitem dist-fall">'
+            f'<input type="checkbox" id="dist_all_{panel_id}"'
+            f' checked onchange="distToggleAll(\'{panel_id}\')">&nbsp;<b>All</b></label>'
+            f'<hr class="dist-fdiv">{items}</div></div>'
+        )
+
+    env_chks = "".join(
+        f'<label><input type="checkbox" class="env_chk" value="{t}"'
+        f' checked onchange="update()">&nbsp;{t}</label>\n'
+        for t in temps_present
+    )
+    spur_panel_html  = _filter_panel("spur", "Spur Type", spur_types) if len(spur_types) > 1 else ""
+    ser_panel_html   = _filter_panel("ser", "Serial", all_serials, "updateDeltaTable")
+    port_panel_html  = _filter_panel("port", "Port", all_ports, "updateDeltaTable") if all_ports else ""
 
     # -------------------------------------------------------------------------
     # 9.  JavaScript (raw string — no f-string interpolation)
     # -------------------------------------------------------------------------
-    dist_env_js = r"""
-/* ---------- KDE / math helpers ---------- */
-function _mean(a){var s=0,n=a.length;for(var i=0;i<n;i++)s+=a[i];return n?s/n:NaN;}
-function _sd(a,mu){
-  if(a.length<2) return 0.01;
-  var s=0;for(var i=0;i<a.length;i++)s+=Math.pow(a[i]-mu,2);
-  var v=Math.sqrt(s/(a.length-1));
-  return v>1e-12?v:0.01;
-}
-function _bw(a){var mu=_mean(a);return 1.06*_sd(a,mu)*Math.pow(a.length,-0.2);}
-function _linspace(lo,hi,n){
-  var s=(hi-lo)/(n-1||1),out=[];
-  for(var i=0;i<n;i++) out.push(lo+i*s);
-  return out;
-}
-function _kde(vals,xs,h){
-  var n=vals.length,c=1/(h*Math.sqrt(2*Math.PI)*n);
-  return xs.map(function(x){
-    var s=0;for(var i=0;i<n;i++){var z=(x-vals[i])/h;s+=Math.exp(-0.5*z*z);}
-    return s*c;
-  });
-}
-function _h2r(hex,a){
-  var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
-  return 'rgba('+r+','+g+','+b+','+a+')';
-}
-function _fd(v,d){return (v===null||v===undefined)?'—':Number(v).toFixed(d||3);}
+    dist_js = r"""
+function _fd(v,d){return(v===null||v===undefined||isNaN(+v))?'--':Number(v).toFixed(d!==undefined?d:3);}
 
-/* ---------- State readers ---------- */
-function getMode(){var e=document.querySelector('input[name="view_mode"]:checked');return e?e.value:'delta';}
-function getCM(){var e=document.querySelector('input[name="corr_mode"]:checked');return e?e.value:'r';}
-function getRefTemp(){var e=document.getElementById('ref_temp_sel');return e?e.value:ROOM_TEMP;}
-function getSelTemps(){
-  return Array.from(document.querySelectorAll('.env_chk:checked')).map(function(c){return c.value;});
+/* ---- localStorage helpers ---- */
+function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
+function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
+function saveState(){
+  var vm=document.querySelector('input[name="view_mode"]:checked');
+  if(vm)_stSet('dist_view',vm.value);
+  var lo=document.getElementById('dist_freq_lo'),hi=document.getElementById('dist_freq_hi');
+  if(lo)_stSet('dist_freq_lo',lo.value);if(hi)_stSet('dist_freq_hi',hi.value);
+  document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.dist_spur_chk').forEach(function(c){_stSet('dist_spur_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.dist_port_chk').forEach(function(c){_stSet('dist_port_'+c.value,c.checked?'1':'0');});
 }
-function getSelCondIdxs(){
-  var chks=document.querySelectorAll('.cond_chk:checked');
-  if(!chks.length) return CONDS.map(function(_,i){return i;});
-  return Array.from(chks).map(function(c){return parseInt(c.value);});
-}
-function getSelSers(){
-  var chks=document.querySelectorAll('.ser_chk:checked');
-  if(!chks.length) return SERIALS_ALL;
-  return Array.from(chks).map(function(c){return c.value;});
+function loadState(){
+  var vm=_stGet('dist_view');
+  if(vm){var el=document.querySelector('input[name="view_mode"][value="'+vm+'"]');if(el)el.checked=true;}
+  var lo=_stGet('dist_freq_lo');
+  if(lo!=null){var sl=document.getElementById('dist_freq_lo');if(sl){sl.value=lo;var lt=document.getElementById('dist_freq_lo_txt');if(lt)lt.value=parseFloat(lo).toFixed(1);}}
+  var hi=_stGet('dist_freq_hi');
+  if(hi!=null){var sh=document.getElementById('dist_freq_hi');if(sh){sh.value=hi;var ht=document.getElementById('dist_freq_hi_txt');if(ht)ht.value=parseFloat(hi).toFixed(1);}}
+  document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  document.querySelectorAll('.dist_spur_chk').forEach(function(c){var s=_stGet('dist_spur_'+c.value);if(s!==null)c.checked=(s==='1');});
+  /* If all spur checkboxes ended up deselected (stale saved state), restore all */
+  var spurChks=Array.from(document.querySelectorAll('.dist_spur_chk'));
+  if(spurChks.length&&!spurChks.some(function(c){return c.checked;}))
+    spurChks.forEach(function(c){c.checked=true;});
+  document.querySelectorAll('.dist_port_chk').forEach(function(c){var s=_stGet('dist_port_'+c.value);if(s!==null)c.checked=(s==='1');});
+  ['spur','ser','port'].forEach(_distUpdateBadge);
 }
 
-/* ---------- Value aggregation — per (cond, temp, serial) ---------- */
-function gv(selConds,selSers,ti,isAbs,cm){
-  var src,effectiveCm;
-  if(isAbs){
-    src=VALS; effectiveCm=cm;
-  } else {
-    var ref=getRefTemp();
-    if(ref===ROOM_TEMP){src=DELTA;effectiveCm=cm;}
-    else{src=DELTA_ALT[ref]||[];effectiveCm='r';}
-  }
-  var out=[];
-  selConds.forEach(function(ci){
-    var td=(src[ci]||[])[ti]||{};
-    selSers.forEach(function(ser){
-      var d=td[ser]||{};
-      out=out.concat(d[effectiveCm]||d['r']||[]);
-    });
-  });
-  return out;
-}
-
-/* ---------- Harmonic + serial + port filter ---------- */
+/* ---- dropdown filter panels ---- */
 function toggleDistPanel(id){
   var p=document.getElementById('dist_panel_'+id);
   if(!p) return;
-  var isOpen=p.classList.contains('open');
-  document.querySelectorAll('.dist-filter-panel').forEach(function(x){x.classList.remove('open');});
-  if(!isOpen) p.classList.add('open');
+  document.querySelectorAll('.dist-filter-panel').forEach(function(el){
+    if(el!==p) el.classList.remove('open');
+  });
+  p.classList.toggle('open');
 }
 document.addEventListener('click',function(e){
   if(!e.target.closest('.dist-filter-wrap'))
     document.querySelectorAll('.dist-filter-panel').forEach(function(p){p.classList.remove('open');});
 });
 function distToggleAll(id){
-  var allEl=document.getElementById('dist_all_'+id);
-  document.querySelectorAll('.dist_'+id+'_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  var allChk=document.getElementById('dist_all_'+id);
+  var v=allChk?allChk.checked:true;
+  document.querySelectorAll('.dist_'+id+'_chk').forEach(function(c){c.checked=v;});
   _distUpdateBadge(id);
-  updateCondCheckboxes();
+  if(id==='spur') update(); else updateDeltaTable();
 }
 function _distUpdateBadge(id){
-  var all=document.querySelectorAll('.dist_'+id+'_chk');
-  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var chks=Array.from(document.querySelectorAll('.dist_'+id+'_chk'));
+  var total=chks.length,checked=chks.filter(function(c){return c.checked;}).length;
+  var badge=document.getElementById('dist_badge_'+id);
   var allEl=document.getElementById('dist_all_'+id);
-  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
-  var b=document.getElementById('dist_badge_'+id);
-  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
-}
-function _distGetChecked(id){
-  return Array.from(document.querySelectorAll('.dist_'+id+'_chk:checked')).map(function(c){return c.value;});
-}
-function updateCondCheckboxes(){
-  var harms=_distGetChecked('harm');
-  var sers=_distGetChecked('ser');
-  var ports=_distGetChecked('port');
-  _distUpdateBadge('harm'); _distUpdateBadge('ser'); _distUpdateBadge('port');
-  document.querySelectorAll('.cond_chk_row').forEach(function(row){
-    var show=(!harms.length||harms.indexOf(row.dataset.harm)>=0)&&
-             (!sers.length||sers.indexOf(row.dataset.serial)>=0)&&
-             (!ports.length||ports.indexOf(row.dataset.port)>=0);
-    row.style.display=show?'':'none';
-    row.querySelector('.cond_chk').checked=show;
-  });
-  update();
+  if(allEl) allEl.checked=(checked===total);
+  if(!badge) return;
+  if(checked<total){badge.textContent=checked+'/'+total;badge.classList.add('active');}
+  else{badge.textContent='';badge.classList.remove('active');}
 }
 
-/* ---------- Selection helpers ---------- */
-function selAllConds(on){
-  document.querySelectorAll('.cond_chk').forEach(function(c){c.checked=on;});
-  update();
+/* ---- selection helpers ---- */
+function _getChecked(cls){
+  return Array.from(document.querySelectorAll('.'+cls+':checked')).map(function(c){return c.value;});
 }
-function selAllVisibleConds(on){
-  document.querySelectorAll('.cond_chk_row').forEach(function(row){
-    if(row.style.display!=='none') row.querySelector('.cond_chk').checked=on;
-  });
-  update();
+function getSelSpurIdxs(){
+  var chks=document.querySelectorAll('.dist_spur_chk');
+  if(!chks.length) return SPUR_TYPES.map(function(_,i){return i;});
+  var sel=new Set(_getChecked('dist_spur_chk'));
+  return SPUR_TYPES.map(function(_,i){return i;}).filter(function(i){return sel.has(SPUR_TYPES[i]);});
 }
-function selAllSers(on){
-  document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=on;});
-  update();
+function getSelTempIdxs(){
+  var sel=new Set(_getChecked('env_chk'));
+  return TEMPS.map(function(_,i){return i;}).filter(function(i){return sel.has(TEMPS[i]);});
+}
+function getSelNonRoomIdxs(){
+  var sel=new Set(_getChecked('env_chk'));
+  return NON_ROOM_TEMPS.map(function(_,i){return i;}).filter(function(i){return sel.has(NON_ROOM_TEMPS[i]);});
+}
+function getSelSerials(){
+  var chks=document.querySelectorAll('.dist_ser_chk');
+  if(!chks.length) return new Set(SERIALS);
+  return new Set(_getChecked('dist_ser_chk'));
+}
+function getSelPorts(){
+  var chks=document.querySelectorAll('.dist_port_chk');
+  if(!chks.length) return new Set(PORTS.length?PORTS:['']);
+  var sel=new Set(_getChecked('dist_port_chk'));
+  return sel.size?sel:new Set(PORTS.length?PORTS:['']);
 }
 
-/* ---------- Main update ---------- */
+/* ---- freq range helpers ---- */
+function getFreqRange(){
+  var lo=parseFloat(document.getElementById('dist_freq_lo').value);
+  var hi=parseFloat(document.getElementById('dist_freq_hi').value);
+  return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};
+}
+function syncFreqDist(){
+  var lo=document.getElementById('dist_freq_lo');
+  var hi=document.getElementById('dist_freq_hi');
+  if(!lo||!hi) return;
+  var loV=parseFloat(lo.value),hiV=parseFloat(hi.value);
+  if(loV>hiV){lo.value=hiV;loV=hiV;}
+  document.getElementById('dist_freq_lo_txt').value=loV.toFixed(1);
+  document.getElementById('dist_freq_hi_txt').value=parseFloat(hi.value).toFixed(1);
+}
+function freqDistTxtChange(which){
+  var txt=document.getElementById('dist_freq_'+which+'_txt');
+  var slider=document.getElementById('dist_freq_'+which);
+  if(!txt||!slider) return;
+  var v=parseFloat(txt.value);
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(1);return;}
+  v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
+  if(which==='lo'){var h=parseFloat(document.getElementById('dist_freq_hi').value);if(v>h)v=h;}
+  else{var l=parseFloat(document.getElementById('dist_freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(1);slider.value=v;update();
+}
+function freqDistKeyDown(e,which){if(e.key==='Enter')freqDistTxtChange(which);}
+
+/* ---- client-side Gaussian KDE (Silverman bandwidth) ---- */
+function jsKde(vals,nPts){
+  nPts=nPts||200;
+  var n=vals.length;
+  if(n<4) return null;
+  var sorted=vals.slice().sort(function(a,b){return a-b;});
+  var lo=sorted[0],hi=sorted[n-1];
+  if(hi<=lo) hi=lo+0.001;
+  var mn=vals.reduce(function(a,b){return a+b;},0)/n;
+  var vr=vals.reduce(function(a,b){return a+(b-mn)*(b-mn);},0)/(n>1?n-1:1);
+  var std=Math.sqrt(vr);
+  var q1=sorted[Math.floor(0.25*n)],q3=sorted[Math.min(n-1,Math.ceil(0.75*n))];
+  var iqr=q3-q1;
+  var bw=0.9*Math.min(std,(iqr>0?iqr/1.34:std))*Math.pow(n,-0.2);
+  if(bw<=0||!isFinite(bw)) bw=(hi-lo)/10;
+  var pad=Math.max((hi-lo)*0.25,0.01);
+  var x0=lo-pad,x1=hi+pad,dx=(x1-x0)/(nPts-1);
+  var xs=[],ys=[],c1=1/(n*bw*Math.sqrt(2*Math.PI)),c2=-0.5/(bw*bw);
+  for(var j=0;j<nPts;j++){
+    var x=x0+j*dx;
+    xs.push(Math.round(x*1e4)/1e4);
+    var y=0;
+    for(var i=0;i<n;i++){var z=x-vals[i];y+=Math.exp(c2*z*z);}
+    ys.push(Math.round(y*c1*1e6)/1e6);
+  }
+  return {x:xs,y:ys,n:n};
+}
+
+/* ---- main KDE plot update ---- */
 function update(){
-  var isAbs=getMode()==='abs',cm=getCM(),refTemp=getRefTemp();
-  var selConds=getSelCondIdxs(),selSers=getSelSers(),selTemps=getSelTemps();
-  var traces=[],allN=0,tData=[];
-  var xlo=Infinity,xhi=-Infinity;
+  _distUpdateBadge('spur');
+  var modeEl=document.querySelector('input[name="view_mode"]:checked');
+  var isAbs=modeEl?modeEl.value==='abs':false;
+  var spurs=getSelSpurIdxs();
+  var traces=[];
+  var multiSpur=spurs.length>1;
+  var fr=getFreqRange();
+  var freqFlt=(typeof DIST_FREQ_MIN!=='undefined')&&
+    (fr.lo>DIST_FREQ_MIN+0.09||fr.hi<DIST_FREQ_MAX-0.09);
 
-  var wEl=document.getElementById('multimodal_warn');
-  if(wEl) wEl.style.display=(isAbs&&selConds.length>1)?'block':'none';
-
-  for(var ti=0;ti<TEMPS.length;ti++){
-    var temp=TEMPS[ti];
-    if(selTemps.indexOf(temp)<0) continue;
-    if(!isAbs&&temp===refTemp) continue;
-    var vals=gv(selConds,selSers,ti,isAbs,cm);
-    if(vals.length<3) continue;
-    allN+=vals.length;
-    var mn=Math.min.apply(null,vals),mx=Math.max.apply(null,vals);
-    if(mn<xlo) xlo=mn;
-    if(mx>xhi) xhi=mx;
-    tData.push({temp:temp,vals:vals});
-  }
-
-  if(!tData.length){
-    Plotly.react('kde_plot',[],{title:{text:TITLE,x:0.5},height:300,margin:{l:60,r:30,t:55,b:40}});
-    document.getElementById('n_pts').textContent='0 pts';
-    updateDeltaTable(); updateFlaggedPanel(); updateCorrBar();
-    return;
-  }
-
-  // Collect excluded condition data when "Show excluded" is on
-  var showExcl=document.getElementById('show_excl_chk');
-  showExcl=showExcl?showExcl.checked:false;
-  var exclTData=[];
-  if(showExcl){
-    var allCIs=CONDS.map(function(_,i){return i;});
-    var exclCIs=allCIs.filter(function(ci){return selConds.indexOf(ci)<0;});
-    if(exclCIs.length){
-      for(var ti2=0;ti2<TEMPS.length;ti2++){
-        var temp2=TEMPS[ti2];
-        if(selTemps.indexOf(temp2)<0) continue;
-        if(!isAbs&&temp2===refTemp) continue;
-        var ev=gv(exclCIs,selSers,ti2,isAbs,cm);
-        if(ev.length<3) continue;
-        var emn=Math.min.apply(null,ev),emx=Math.max.apply(null,ev);
-        if(emn<xlo) xlo=emn;
-        if(emx>xhi) xhi=emx;
-        exclTData.push({temp:temp2,vals:ev});
-      }
-    }
-  }
-
-  var pad=(xhi-xlo)*0.12||1;
-  var xs=_linspace(xlo-pad,xhi+pad,300);
-
-  // Excluded conditions KDE — dim dotted gray, rendered behind selected
-  for(var ke=0;ke<exclTData.length;ke++){
-    var dte=exclTData[ke],he=_bw(dte.vals),yse=_kde(dte.vals,xs,he);
-    traces.push({
-      type:'scatter',x:xs,y:yse,mode:'lines',
-      name:'excl '+dte.temp+' (n='+dte.vals.length+')',
-      line:{color:'rgba(160,160,160,0.6)',width:1.2,dash:'dot'},
-      fill:'tozeroy',fillcolor:'rgba(190,190,190,0.07)',
-      showlegend:false,hoverinfo:'skip'
-    });
-  }
-
-  for(var k=0;k<tData.length;k++){
-    var td=tData[k],h=_bw(td.vals),ys=_kde(td.vals,xs,h);
-    var color=TEMP_COLORS[td.temp]||'#888',isRoom=td.temp==='Room';
-    traces.push({
-      type:'scatter',x:xs,y:ys,mode:'lines',
-      name:td.temp+' (n='+td.vals.length+')',
-      line:{color:color,width:isRoom?2.5:2},
-      fill:'tozeroy',fillcolor:_h2r(color,isRoom?0.25:0.15),
-      hoverinfo:'skip'
-    });
-  }
-
-  var shapes=[],anns=[];
   if(isAbs){
-    if(HI_SPEC!==null){
-      shapes.push({type:'line',xref:'x',x0:HI_SPEC,x1:HI_SPEC,y0:0,y1:1,yref:'paper',
-        line:{color:'red',dash:'dash',width:1.5}});
-      anns.push({xref:'x',yref:'paper',x:HI_SPEC,y:0.97,text:'Spec '+HI_SPEC,
-        showarrow:false,xanchor:'left',yanchor:'top',font:{color:'red',size:11}});
-    }
-    if(LO_SPEC!==null){
-      shapes.push({type:'line',xref:'x',x0:LO_SPEC,x1:LO_SPEC,y0:0,y1:1,yref:'paper',
-        line:{color:'red',dash:'dash',width:1.5}});
-      anns.push({xref:'x',yref:'paper',x:LO_SPEC,y:0.97,text:'Spec '+LO_SPEC,
-        showarrow:false,xanchor:'right',yanchor:'top',font:{color:'red',size:11}});
-    }
+    var tempIdxs=getSelTempIdxs();
+    spurs.forEach(function(si){
+      tempIdxs.forEach(function(ti){
+        var kde;
+        if(freqFlt&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
+          var raw=RAW_ABS[si][ti],vals=[];
+          for(var i=0;i<raw.f.length;i++){if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi)vals.push(raw.v[i]);}
+          kde=jsKde(vals);
+        } else {
+          kde=KDE_ABS[si]&&KDE_ABS[si][ti];
+        }
+        if(!kde) return;
+        var col=TEMP_COLORS[TEMPS[ti]]||'#999';
+        var spurLabel=SPUR_TYPES[si],tempLabel=TEMPS[ti];
+        var name=multiSpur?(spurLabel+' — '+tempLabel):tempLabel;
+        traces.push({x:kde.x,y:kde.y,type:'scatter',mode:'lines',name:name,
+          line:{color:col,width:multiSpur?1:2},opacity:multiSpur?0.65:1.0,
+          hovertemplate:'<b>'+spurLabel+'</b><br>'+tempLabel+'<br>'+Y_LABEL+': %{x:.3f}<br>density: %{y:.5f}<extra></extra>'});
+      });
+    });
+    var warn=document.getElementById('multimodal_warn');
+    if(warn) warn.style.display=multiSpur?'block':'none';
   } else {
-    shapes.push({type:'line',xref:'x',x0:0,x1:0,y0:0,y1:1,yref:'paper',
-      line:{color:'#888',dash:'dot',width:1.2}});
-    anns.push({xref:'x',yref:'paper',x:0,y:0.97,text:refTemp+' ref (0)',
-      showarrow:false,xanchor:'left',yanchor:'top',font:{color:'#888',size:10}});
+    var nrIdxs=getSelNonRoomIdxs();
+    spurs.forEach(function(si){
+      nrIdxs.forEach(function(di){
+        var kde;
+        if(freqFlt&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
+          var raw=RAW_DELTA[si][di],vals=[];
+          for(var i=0;i<raw.f.length;i++){if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi)vals.push(raw.d[i]);}
+          kde=jsKde(vals);
+        } else {
+          kde=KDE_DELTA[si]&&KDE_DELTA[si][di];
+        }
+        if(!kde) return;
+        var temp=NON_ROOM_TEMPS[di],col=TEMP_COLORS[temp]||'#999';
+        var spurLabel=SPUR_TYPES[si];
+        var name=multiSpur?(spurLabel+' — Δ'+temp):('Δ'+temp);
+        traces.push({x:kde.x,y:kde.y,type:'scatter',mode:'lines',name:name,
+          line:{color:col,width:multiSpur?1:2},opacity:multiSpur?0.65:1.0,
+          hovertemplate:'<b>'+spurLabel+'</b><br>Δ'+temp+'<br>Δ: %{x:.3f} dB<br>density: %{y:.5f}<extra></extra>'});
+      });
+    });
+    var warn=document.getElementById('multimodal_warn');
+    if(warn) warn.style.display='none';
   }
 
-  var xLbl=isAbs?Y_LABEL:('ΔTemp from '+refTemp+' ('+(Y_LABEL||'Value')+')');
-  var xrange=(isAbs&&Y_LIM)?Y_LIM:null;
-  Plotly.react('kde_plot',traces,{
-    title:{text:TITLE+(isAbs?'':(' — ΔTemp from '+refTemp)),x:0.5,font:{size:14}},
-    template:'plotly_white',
-    xaxis:{title:xLbl,range:xrange},
-    yaxis:{title:'Density'},
-    shapes:shapes,annotations:anns,
-    height:400,margin:{l:60,r:30,t:55,b:60},
-    legend:{orientation:'h',y:-0.26}
-  });
+  /* Spec limit lines */
+  var shapes=[];
+  if(!isAbs){
+    shapes.push({type:'line',xref:'x',yref:'paper',x0:0,x1:0,y0:0,y1:1,
+      line:{color:'#888',width:1,dash:'dot'}});
+  } else {
+    if(HI_SPEC!==null) shapes.push({type:'line',xref:'x',yref:'paper',
+      x0:HI_SPEC,x1:HI_SPEC,y0:0,y1:1,line:{color:'#F44336',width:1.5,dash:'dash'}});
+    if(LO_SPEC!==null) shapes.push({type:'line',xref:'x',yref:'paper',
+      x0:LO_SPEC,x1:LO_SPEC,y0:0,y1:1,line:{color:'#2196F3',width:1.5,dash:'dash'}});
+  }
 
+  var layout={
+    title:{text:TITLE+(freqFlt?' ['+fr.lo.toFixed(1)+'–'+fr.hi.toFixed(1)+' MHz]':''),font:{size:14}},
+    xaxis:{title:{text:isAbs?Y_LABEL:('ΔTemp ('+Y_LABEL+')')},zeroline:false},
+    yaxis:{title:{text:'Density'},zeroline:false},
+    legend:{orientation:'v',x:1.01,y:1,xanchor:'left',font:{size:11}},
+    margin:{l:60,r:200,t:50,b:50},
+    hovermode:'closest',
+    shapes:shapes,
+    height:450,
+  };
+  if(Y_LIM&&isAbs) layout.xaxis.range=Y_LIM;
+
+  var nEl=document.getElementById('n_pts');
+  if(nEl) nEl.textContent='Curves: '+traces.length+(freqFlt?' (freq filtered)':'');
+
+  Plotly.react('kde_plot',traces,layout,{responsive:true});
   updateDeltaTable();
-  updateFlaggedPanel();
-  updateCorrBar();
-  document.getElementById('n_pts').textContent=allN.toLocaleString()+' pts';
+  saveState();
 }
 
-function updateCorrBar(){
-  var ref=getRefTemp();
-  var el=document.getElementById('corr_bar');
-  /* corrections only meaningful when Room is the reference */
-  if(el) el.style.display=(ref===ROOM_TEMP&&FLAGGED_SERIALS.length)?'flex':'none';
-}
-
+/* ---- delta summary table ---- */
 function updateDeltaTable(){
+  _distUpdateBadge('ser');_distUpdateBadge('port');
   var el=document.getElementById('delta_tbl');
   if(!el) return;
-  var isAbs=getMode()==='abs';
-  var ref=getRefTemp();
-  var isRoomRef=(ref===ROOM_TEMP);
-  var cm=getCM();
-  var selConds=getSelCondIdxs();
-  var selTemps=getSelTemps();
-
-  var src=isRoomRef?DELTA:(DELTA_ALT[ref]||[]);
-  if(!src.length){
-    el.innerHTML='<i style="font-size:12px;color:#888">No delta data for selected reference.</i>';
+  if(!NON_ROOM_TEMPS.length){
+    el.innerHTML='<p style="color:#999;font-size:12px">No non-room temperatures.</p>';
     return;
   }
+  var selSer=getSelSerials();
+  var selPor=getSelPorts();
+  var selSpurIdxs=getSelSpurIdxs();
+  var selNrIdxs=getSelNonRoomIdxs();
+  if(!selNrIdxs.length) selNrIdxs=NON_ROOM_TEMPS.map(function(_,i){return i;});
+  var nrTemps=selNrIdxs.map(function(i){return NON_ROOM_TEMPS[i];});
 
-  var dutSet={};
-  selConds.forEach(function(ci){var s=COND_SERIAL[ci];if(s)dutSet[s]=1;});
-  var dutSers=Object.keys(dutSet).sort();
-  if(!dutSers.length){
-    el.innerHTML='<i style="font-size:12px;color:#888">No conditions selected.</i>';
-    return;
-  }
-
-  function _med(a){
-    var s=a.slice().sort(function(x,y){return x-y;});
-    var m=Math.floor(s.length/2);
-    return s.length%2?s[m]:(s[m-1]+s[m])/2;
-  }
-  function _std2(a,mu){
-    if(a.length<2) return 0;
-    var s=0;for(var i=0;i<a.length;i++)s+=Math.pow(a[i]-mu,2);
-    return Math.sqrt(s/(a.length-1));
-  }
-
-  /* Per-DUT means from the delta source at temperature index ti */
-  function dutMeansAt(ti){
-    return dutSers.map(function(ser){
-      var vals=[];
-      selConds.forEach(function(ci){
-        if(COND_SERIAL[ci]!==ser) return;
-        var td=(src[ci]||[])[ti]||{};
-        Object.keys(td).forEach(function(dfSer){
-          var d=td[dfSer]||{};
-          var v=isRoomRef?(d[cm]||d['r']||[]):(d['r']||[]);
-          vals=vals.concat(v);
-        });
+  /* Accumulate per-DUT means across selected spur types */
+  var dutAcc={};  /* serial -> {port, by_temp: {temp: [mean, ...]}} */
+  selSpurIdxs.forEach(function(si){
+    selNrIdxs.forEach(function(di){
+      var temp=NON_ROOM_TEMPS[di];
+      var entries=DUT_DELTA[si]&&DUT_DELTA[si][di];
+      if(!entries) return;
+      entries.forEach(function(d){
+        if(!d) return;
+        if(!selSer.has(d.serial)) return;
+        if(selPor.size&&d.port&&!selPor.has(d.port)) return;
+        if(!dutAcc[d.serial]) dutAcc[d.serial]={serial:d.serial,port:d.port,by_temp:{}};
+        if(!dutAcc[d.serial].by_temp[temp]) dutAcc[d.serial].by_temp[temp]=[];
+        dutAcc[d.serial].by_temp[temp].push(d.mean);
       });
-      return vals.length?_mean(vals):null;
-    }).filter(function(v){return v!==null;});
-  }
+    });
+  });
 
-  /* Per-DUT means from VALS (absolute) at temperature index ti */
-  function dutMeansAbsAt(ti){
-    return dutSers.map(function(ser){
-      var vals=[];
-      selConds.forEach(function(ci){
-        if(COND_SERIAL[ci]!==ser) return;
-        var td=(VALS[ci]||[])[ti]||{};
-        Object.keys(td).forEach(function(dfSer){
-          var d=td[dfSer]||{};
-          var v=d[cm]||d['r']||[];
-          vals=vals.concat(v);
-        });
-      });
-      return vals.length?_mean(vals):null;
-    }).filter(function(v){return v!==null;});
-  }
+  var rows=Object.values(dutAcc).sort(function(a,b){
+    return a.serial<b.serial?-1:a.serial>b.serial?1:0;
+  });
 
-  /* Room row — always first */
-  var tiRoom=TEMPS.indexOf(ROOM_TEMP);
-  var roomRow=null;
-  if(tiRoom>=0&&selTemps.indexOf(ROOM_TEMP)>=0){
-    if(isAbs){
-      /* Absolute mode: show actual Room measurement stats */
-      var rdms=dutMeansAbsAt(tiRoom);
-      if(rdms.length){
-        var mn=_mean(rdms);
-        roomRow={temp:ROOM_TEMP,n:rdms.length,mean:mn,median:_med(rdms),std:_std2(rdms,mn),isRef:false};
-      }
-    } else if(isRoomRef){
-      /* Delta mode, Room is reference: delta = 0 by definition */
-      var rdms=dutMeansAbsAt(tiRoom);
-      roomRow={temp:ROOM_TEMP,n:rdms.length,mean:0,median:0,std:0,isRef:true};
-    }
-    /* Delta mode, non-Room reference: Room appears as a regular row in the loop */
-  }
-
-  /* Rows for all other temperatures */
-  var rows=[];
-  for(var ti=0;ti<TEMPS.length;ti++){
-    var temp=TEMPS[ti];
-    if(temp===ref) continue;
-    if(temp===ROOM_TEMP&&(isAbs||isRoomRef)) continue; /* Room handled separately */
-    if(selTemps.indexOf(temp)<0) continue;
-    var dms=isAbs?dutMeansAt(ti):dutMeansAt(ti);
-    if(!dms.length) continue;
-    var mn=_mean(dms),med=_med(dms),std=_std2(dms,mn);
-    rows.push({temp:temp,n:dms.length,mean:mn,median:med,std:std,isRef:false});
-  }
-
-  if(!roomRow&&!rows.length){
-    el.innerHTML='<i style="font-size:12px;color:#888">No delta data for the active selection.</i>';
-    return;
-  }
-
-  var colHdr=isAbs?'Mean (dB)':'Mean &#916; (dB)';
-  var html='<table class="stbl"><thead><tr>'
-    +'<th>Temperature</th><th>n DUTs</th><th>'+colHdr+'</th>'
-    +'<th>'+(isAbs?'Median (dB)':'Median &#916; (dB)')+'</th>'
-    +'<th>'+(isAbs?'Std (dB)':'Std &#916; (dB)')+'</th>'
-    +'</tr></thead><tbody>';
-
-  function rowHtml(r){
-    var col=TEMP_COLORS[r.temp]||'#888';
-    var refStyle=r.isRef?'background:#f5f5f5;color:#999;font-style:italic':'';
-    var mc=r.isRef?'':(Math.abs(r.mean)>0.5?'color:#d62728':Math.abs(r.mean)>0.1?'color:#e65100':'color:#2ca02c');
-    var label=r.isRef?(r.temp+' (ref)'):r.temp;
-    return '<tr style="'+refStyle+'"><td><b style="color:'+col+'">&#9632;</b>&nbsp;'+label+'</td>'
-      +'<td>'+r.n+'</td><td style="'+mc+'">'+_fd(r.mean)+'</td>'
-      +'<td>'+_fd(r.median)+'</td><td>'+_fd(r.std)+'</td>'
-      +'</tr>';
-  }
-
-  if(roomRow) html+=rowHtml(roomRow);
-  rows.forEach(function(r){html+=rowHtml(r);});
-  html+='</tbody></table>';
-  el.innerHTML=html;
-}
-
-function updateFlaggedPanel(){
-  var el=document.getElementById('flagged_panel');
-  if(!el) return;
-  if(!FLAGGED_DETAIL.length){
-    el.innerHTML='<p style="font-size:12px;color:#2ca02c;margin:4px 0">'
-      +'✓ No suspected uncompensated DUTs detected (IQR×1.5 criterion across all temperatures).</p>';
-    return;
-  }
-  var nr=TEMPS.filter(function(t){return t!=='Room';});
-  var html='<p style="font-size:12px;color:#888;margin:2px 0 4px 0">'
-    +'Flagged via IQR×1.5 on per-DUT mean ΔTemp (all conditions combined). '
-    +'Derived correction = median Δ of well-compensated DUTs.</p>'
-    +'<table class="stbl"><thead><tr><th>Serial</th>';
-  nr.forEach(function(t){html+='<th>'+t+' mean Δ (dB)</th>';});
+  var html='<table class="stbl"><thead><tr><th>Serial</th><th>Port</th>';
+  nrTemps.forEach(function(t){html+='<th>'+t+' mean Δ (dB)</th>';});
   html+='</tr></thead><tbody>';
-  FLAGGED_DETAIL.forEach(function(d){
-    html+='<tr><td><b>'+d.serial+'</b></td>';
-    nr.forEach(function(t){
-      var v=d.by_temp[t];
-      var st=(v!==undefined)?'color:'+(Math.abs(v)>0.5?'#d62728':'#e65100'):'';
-      html+='<td style="'+st+'">'+(v!==undefined?Number(v).toFixed(3):'—')+'</td>';
+
+  rows.forEach(function(row){
+    html+='<tr><td><b>'+row.serial+'</b></td><td>'+row.port+'</td>';
+    nrTemps.forEach(function(t){
+      var arr=row.by_temp[t]||[];
+      var v=arr.length?arr.reduce(function(a,b){return a+b;},0)/arr.length:null;
+      var style=(v!==null&&Math.abs(v)>0.5)?'color:#d62728':'';
+      html+='<td style="'+style+'">'+_fd(v,3)+'</td>';
     });
     html+='</tr>';
   });
+
+  if(!rows.length){
+    var nc=2+nrTemps.length;
+    html+='<tr><td colspan="'+nc+'" style="text-align:center;color:#999;padding:8px">'
+         +'No data for current selection</td></tr>';
+  }
   html+='</tbody></table>';
+
+  /* Overall aggregate stats */
+  if(Object.keys(DELTA_STATS).length){
+    html+='<table class="stbl" style="margin-top:8px"><thead><tr>'
+         +'<th>Overall stat (all DUTs, selected SpurTypes)</th>';
+    nrTemps.forEach(function(t){html+='<th>'+t+'</th>';});
+    html+='</tr></thead><tbody>';
+    ['mean','median','std'].forEach(function(stat){
+      html+='<tr><td>'+stat+'</td>';
+      nrTemps.forEach(function(t){
+        var s=DELTA_STATS[t];
+        html+='<td>'+_fd(s?s[stat]:null,4)+'</td>';
+      });
+      html+='</tr>';
+    });
+    html+='</tbody></table>';
+  }
+
   el.innerHTML=html;
+  saveState();
 }
 
-function toggleFlagged(){
-  var p=document.getElementById('flagged_panel'),b=document.getElementById('flagged_btn');
-  if(!p||!b) return;
-  var open=p.style.display!=='none';
-  p.style.display=open?'none':'block';
-  b.textContent=(open?'▶':'▼')+' Suspected uncompensated DUTs ('+FLAGGED_DETAIL.length+')';
-}
-
+/* ---- reset ---- */
 function resetView(){
-  document.querySelectorAll('.env_chk:not([disabled])').forEach(function(c){c.checked=true;});
-  document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=true;});
+  document.querySelectorAll('.env_chk').forEach(function(c){c.checked=true;});
   var dm=document.querySelector('input[name="view_mode"][value="delta"]');
   if(dm) dm.checked=true;
-  var rm=document.querySelector('input[name="corr_mode"][value="r"]');
-  if(rm) rm.checked=true;
-  var rs=document.getElementById('ref_temp_sel');
-  if(rs) rs.value=ROOM_TEMP;
-  /* Reset dist filter panels */
-  ['harm','ser','port'].forEach(function(id){
-    document.querySelectorAll('.dist_'+id+'_chk').forEach(function(c){c.checked=true;});
-    _distUpdateBadge(id);
-  });
-  var ec=document.getElementById('show_excl_chk');
-  if(ec) ec.checked=false;
-  updateCondCheckboxes();
+  document.querySelectorAll('.dist_spur_chk,.dist_ser_chk,.dist_port_chk')
+    .forEach(function(c){c.checked=true;});
+  ['spur','ser','port'].forEach(_distUpdateBadge);
+  var fl=document.getElementById('dist_freq_lo'),fh=document.getElementById('dist_freq_hi');
+  if(fl&&typeof DIST_FREQ_MIN!=='undefined'){
+    fl.value=DIST_FREQ_MIN;
+    var flt=document.getElementById('dist_freq_lo_txt');if(flt)flt.value=DIST_FREQ_MIN.toFixed(1);
+  }
+  if(fh&&typeof DIST_FREQ_MAX!=='undefined'){
+    fh.value=DIST_FREQ_MAX;
+    var fht=document.getElementById('dist_freq_hi_txt');if(fht)fht.value=DIST_FREQ_MAX.toFixed(1);
+  }
+  update();
 }
 
-/* ---- global filter (localStorage) ---- */
-var _distGfExcluded=null;
-function _loadDistGlobalFilter(){
-  try{
-    var raw=localStorage.getItem('padb_v2_excluded');
-    _distGfExcluded=raw?new Set(JSON.parse(raw).excluded||[]):null;
-  }catch(e){_distGfExcluded=null;}
-  _updateDistGfBadge();
-}
-function _updateDistGfBadge(){
-  var el=document.getElementById('dist_gf_badge');
-  if(!el) return;
-  var n=_distGfExcluded?_distGfExcluded.size:0;
-  el.textContent=n>0?n+' globally excl.':'';
-  el.style.display=n>0?'':'none';
-}
-window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'){_loadDistGlobalFilter();update();}
-});
-/* Extract serials mentioned in any excluded key; use as coarse serial exclusion */
-function _distGfExclSers(){
-  if(!_distGfExcluded||!_distGfExcluded.size) return null;
-  var sers=new Set();
-  _distGfExcluded.forEach(function(k){sers.add(k.split('||')[0]);});
-  return sers;
-}
-/* Override getSelSers to subtract GF-excluded serials */
-var _getSelSersOrig=getSelSers;
-getSelSers=function(){
-  var base=_getSelSersOrig();
-  var gfSers=_distGfExclSers();
-  if(!gfSers) return base;
-  return base.filter(function(s){return !gfSers.has(s);});
-};
-
-_loadDistGlobalFilter();
-updateCorrBar();
-updateCondCheckboxes();
+window.addEventListener('DOMContentLoaded',function(){loadState();update();});
 """
 
-    flagged_hdr = (
-        f'<span class="flagged-hdr" id="flagged_btn" onclick="toggleFlagged()">'
-        f"&#9654; Suspected uncompensated DUTs ({n_flagged})</span>\n"
-    )
-
-    # Multiple conditions warning shown when >1 condition active in Absolute mode
-    multimodal_warn = (
-        '<div id="multimodal_warn">&#9888; Multiple conditions selected in Absolute mode '
-        "combine different harmonic levels &mdash; the distribution will be multimodal. "
-        "Select a single condition or use ΔTemp view for a meaningful distribution.</div>\n"
-    )
-
+    # -------------------------------------------------------------------------
+    # 10.  Assemble HTML
+    # -------------------------------------------------------------------------
     html = (
         "<!DOCTYPE html>\n<html>\n<head>\n"
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
-        # Temperature env bar
         '<div class="env-bar">\n'
         '<span style="font-size:12px;font-weight:600;color:#2e7d32;margin-right:8px">'
         "Temperatures:</span>\n"
         + env_chks
-        + '<div class="sep" style="margin-left:8px"></div>\n'
-        + '<span style="font-size:12px;font-weight:600;color:#1565c0;margin-left:4px">Ref:</span>\n'
-        + f'<select id="ref_temp_sel" style="font-size:12px;padding:1px 4px;border:1px solid #90caf9;'
-          f'border-radius:3px;background:#e3f2fd;color:#1565c0" onchange="update()">\n'
-        + ref_opts + "\n</select>\n"
         + "</div>\n"
-        # Harmonic + serial + port collapsible dropdown panels, then per-condition checkbox panel
         + '<div class="filter-bar" style="gap:6px;align-items:center">\n'
-        + harm_panel_html + '\n'
-        + ser_panel_html + '\n'
-        + (port_panel_html + '\n' if port_panel_html else '')
-        + '<button class="sel-btn" style="margin-left:4px" onclick="selAllVisibleConds(true)">All conds</button>\n'
-        + '<button class="sel-btn" onclick="selAllVisibleConds(false)">None</button>\n'
+        + (spur_panel_html + "\n" if spur_panel_html else "")
+        + ser_panel_html + "\n"
+        + (port_panel_html + "\n" if port_panel_html else "")
+        + '<button class="sel-btn" style="margin-left:6px" onclick="resetView()">Reset</button>\n'
         + "</div>\n"
-        + '<div class="filter-chk-panel" id="harm_chk_panel">\n'
-        + cond_chk_rows
-        + "</div>\n"
-        # View / mode ctrl bar
         + '<div class="ctrl-bar">\n'
         '  <span>View:</span>\n'
         '  <label><input type="radio" name="view_mode" value="abs"'
@@ -2237,40 +2123,36 @@ updateCondCheckboxes();
         '  <label><input type="radio" name="view_mode" value="delta"'
         ' checked onchange="update()">&nbsp;ΔTemp</label>\n'
         '  <div class="sep"></div>\n'
-        '  <label title="Show deselected conditions as dim background KDE">'
-        '<input type="checkbox" id="show_excl_chk" onchange="update()">'
-        '&nbsp;Show&nbsp;excluded</label>\n'
+        + f'  <label>Freq&nbsp;min:<input type="range" id="dist_freq_lo"'
+        f' min="{dist_freq_min:.1f}" max="{dist_freq_max:.1f}" value="{dist_freq_min:.1f}"'
+        f' step="0.1" style="width:100px" oninput="syncFreqDist()" onchange="update()">'
+        f'<input type="text" id="dist_freq_lo_txt" value="{dist_freq_min:.1f}"'
+        f' style="width:55px;font-size:12px;border:1px solid #bbb;border-radius:3px;padding:1px 3px"'
+        f' onchange="freqDistTxtChange(\'lo\')" onkeydown="freqDistKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
+        f'  <label>Freq&nbsp;max:<input type="range" id="dist_freq_hi"'
+        f' min="{dist_freq_min:.1f}" max="{dist_freq_max:.1f}" value="{dist_freq_max:.1f}"'
+        f' step="0.1" style="width:100px" oninput="syncFreqDist()" onchange="update()">'
+        f'<input type="text" id="dist_freq_hi_txt" value="{dist_freq_max:.1f}"'
+        f' style="width:55px;font-size:12px;border:1px solid #bbb;border-radius:3px;padding:1px 3px"'
+        f' onchange="freqDistTxtChange(\'hi\')" onkeydown="freqDistKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
         '  <div class="sep"></div>\n'
-        '  <button class="reset-btn" onclick="resetView()">Reset</button>\n'
-        '  <span id="dist_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
-        'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
-        'margin-left:4px"></span>\n'
         '  <span id="n_pts"></span>\n'
         "</div>\n"
-        '<div id="corr_bar">\n'
-        '  <span style="font-weight:600;color:#795548">Correction:</span>\n'
-        '  <label><input type="radio" name="corr_mode" value="r"'
-        ' checked onchange="update()">&nbsp;Raw</label>\n'
-        '  <label><input type="radio" name="corr_mode" value="c"'
-        ' onchange="update()">&nbsp;Apply&nbsp;derived&nbsp;correction</label>\n'
-        '  <label><input type="radio" name="corr_mode" value="e"'
-        ' onchange="update()">&nbsp;Exclude&nbsp;flagged&nbsp;DUTs</label>\n'
-        "</div>\n"
-        + multimodal_warn
-        + '<div id="kde_plot"></div>\n'
+        '<div id="multimodal_warn">'
+        '&#9888; Multiple Spur Types selected in Absolute mode '
+        '&#8212; distributions span different spur levels and will appear multimodal. '
+        'Select a single Spur Type, or switch to ΔTemp view.'
+        '</div>\n'
+        '<div id="kde_plot"></div>\n'
         '<div class="panel-section">\n'
-        '  <div class="panel-title">ΔEnv Summary &mdash; mean shift from reference'
-        " per DUT (aggregated across all conditions &amp; frequencies)</div>\n"
+        '  <div class="panel-title">'
+        'ΔEnv Summary &#8212; mean shift from Room per DUT '
+        '(averaged across selected Spur Types)</div>\n'
         '  <div id="delta_tbl"></div>\n'
         "</div>\n"
-        + flagged_hdr
-        + '<div id="flagged_panel" style="display:none"></div>\n'
         f"<script>{_get_plotlyjs()}</script>\n"
-        "<script>\n"
-        + constants
-        + "\n"
-        + dist_env_js
-        + "</script>\n</body>\n</html>"
+        f"<script>\n{constants}\n{dist_js}</script>\n"
+        "</body>\n</html>"
     )
     return html
 
@@ -2419,7 +2301,7 @@ def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
             name=grp if len(grp) <= 40 else grp[:37] + "...",
             hovertemplate=(
                 f"<b>{grp}</b><br>"
-                "Freq: %{x:.1f} MHz<br>"
+                "Freq: %{x:.4f} MHz<br>"
                 f"{y_label}: %{{y:.4f}}<extra></extra>"
             ),
         ))
@@ -2500,7 +2382,7 @@ def _build_k_table() -> dict:
     except ImportError:
         return {}
 
-    P_vals = [0.80, 0.85, 0.90, 0.95, 0.99, 0.999]
+    P_vals = [0.80, 0.85, 0.90, 0.95, 0.99, 0.9973, 0.999]
     C_vals = [0.75, 0.80, 0.85, 0.90, 0.95]
     n_vals = list(range(2, 51))
 
@@ -2582,7 +2464,7 @@ def _load_scatter_for_stats(csv_path: Path) -> pd.DataFrame:
         return series.map(_pl)
 
     out = pd.DataFrame()
-    out["Frequency_MHz"] = df_raw[freq_col].map(_sfloat) if freq_col else np.nan
+    out["Frequency_MHz"] = pd.to_numeric(df_raw[freq_col], errors='coerce') if freq_col else np.nan
     out["Value"]         = df_raw[val_col].map(_sfloat)  if val_col  else np.nan
     out["Serial"]        = df_raw[serial_col].str.strip()  if serial_col  else ""
     out["Station"]       = df_raw[station_col].str.strip() if station_col else ""
@@ -2619,17 +2501,17 @@ def _load_scatter_for_stats(csv_path: Path) -> pd.DataFrame:
 
 def _parse_group_kv(group_str: str) -> dict:
     """
-    Parse Group strings with multi-word keys separated by 2+ spaces.
-    E.g. "AlcState: TRUE  OA State: 0  Mode: 0  Serial Number: US65080401"
-    → {"AlcState": "TRUE", "OA State": "0", "Mode": "0", "Serial Number": "US65080401"}
+    Parse Group strings with multi-word keys/values separated by 2+ spaces.
+    E.g. "AlcState: TRUE  OA State: 0  SpurType: Close-in 10KHz high"
+    → {"AlcState": "TRUE", "OA State": "0", "SpurType": "Close-in 10KHz high"}
     Falls back to single-word key regex for strings without double-space separators.
     """
     s = str(group_str).strip()
-    # Try double-space splitting first (preserves multi-word keys)
+    # Try double-space splitting first (preserves multi-word keys and values)
     parts = re.split(r'  +', s)
     result: dict = {}
     for part in parts:
-        m = re.match(r'(.+?):\s*(\S+)\s*$', part.strip())
+        m = re.match(r'(.+?):\s*(.+?)\s*$', part.strip())
         if m:
             result[m.group(1).strip()] = m.group(2).strip()
     # Fallback: single-word keys if nothing was parsed
@@ -2692,6 +2574,7 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
 
     _serial_val_pat = re.compile(r'^[A-Z]{2,3}\d{5,}$')
     _serial_key_kws = ("serial", "unit id", "dut id", "s/n")
+    _port_key_kws   = ("port",)
 
     # Parse all unique Group strings → kv dicts
     unique_groups = df["Group"].dropna().unique()
@@ -2702,8 +2585,9 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
     for kv in group_kv.values():
         all_keys.update(kv.keys())
 
-    # Classify keys: serial vs condition vs constant
+    # Classify keys: serial vs port (pooled) vs condition vs constant
     serial_keys: set[str] = set()
+    port_keys: set[str] = set()
     cond_keys: list[str] = []
 
     for key in sorted(all_keys):
@@ -2717,17 +2601,33 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         if vals and sum(_serial_val_pat.match(v) is not None for v in vals) / len(vals) > 0.5:
             serial_keys.add(key)
             continue
+        # Port key: pool into same population (not a condition grouping dim)
+        if any(kw in key.lower() for kw in _port_key_kws):
+            port_keys.add(key)
+            continue
         # Include as condition only if it varies (cardinality 2-20)
-        if 1 < len(vals) <= 20:
+        if 1 < len(vals) <= 50:
             cond_keys.append(key)
 
-    # Build serial ID and condition label per row
+    def _port_val(group_str: str) -> str:
+        kv = group_kv.get(group_str, {})
+        for k in port_keys:
+            if k in kv:
+                return str(kv[k])
+        return ""
+
+    # Build serial ID (includes port so RF1/RF2 are separate data points) and condition label
     def _serial_id(group_str: str) -> str:
         kv = group_kv.get(group_str, {})
+        base = None
         for k in serial_keys:
             if k in kv:
-                return kv[k]
-        return group_str  # entire group as fallback
+                base = kv[k]
+                break
+        if base is None:
+            base = group_str
+        pv = _port_val(group_str)
+        return f"{base}_{pv}" if pv else base
 
     def _cond_label(group_str: str) -> str:
         kv = group_kv.get(group_str, {})
@@ -2738,9 +2638,11 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
     if "Group" in df.columns and not df["Group"].isna().all():
         df["_serial_id"] = df["Group"].map(_serial_id).fillna("unknown")
         df["_cond"]      = df["Group"].map(_cond_label).fillna("All")
+        df["_port"]      = df["Group"].map(_port_val).fillna("")
     else:
         df["_serial_id"] = "unknown"
         df["_cond"]      = "All"
+        df["_port"]      = ""
 
     # When serial is not embedded in the Group string (e.g. phase noise where Serial Number
     # is a separate TData column), the fallback serial_id is the whole group string — every
@@ -2758,8 +2660,9 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         all_freqs = sorted(cdf["Frequency_MHz"].dropna().unique())
 
         # Per-DUT means at Room for each frequency (n = DUT count, not measurement count)
-        room_dut = (room_df.groupby(["_serial_id", "Frequency_MHz"])["Value"]
-                    .mean().reset_index())
+        room_dut = (room_df.groupby(["_serial_id", "Frequency_MHz"])
+                    .agg(Value=("Value", "mean"), _port=("_port", "first"))
+                    .reset_index())
         # Per-DUT means at each temp for DEnv
         temp_dut: dict[str, pd.DataFrame] = {}
         for temp_name in temps_present:
@@ -2788,8 +2691,9 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         freq_stats = []
         for freq in all_freqs:
             _fdf = room_dut[room_dut["Frequency_MHz"] == freq].dropna(subset=["Value"])
-            dut_vals = _fdf["Value"].values
-            dut_sers = _fdf["_serial_id"].values if "_serial_id" in _fdf.columns else ["unknown"] * len(_fdf)
+            dut_vals  = _fdf["Value"].values
+            dut_sers  = _fdf["_serial_id"].values if "_serial_id" in _fdf.columns else ["unknown"] * len(_fdf)
+            dut_ports = _fdf["_port"].values if "_port" in _fdf.columns else [""] * len(_fdf)
             n = len(dut_vals)
             if n == 0:
                 continue
@@ -2834,12 +2738,12 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
                 denv_lo = max(denv_lo, this_lo)
 
             outlier_det = sorted(
-                [{"s": str(ser), "v": round(float(v), 6)}
-                 for v, ser in zip(dut_vals, dut_sers) if v < lo_w or v > hi_w],
+                [{"s": str(ser), "p": str(prt), "v": round(float(v), 6)}
+                 for v, ser, prt in zip(dut_vals, dut_sers, dut_ports) if v < lo_w or v > hi_w],
                 key=lambda x: x["v"])
             outliers = [d["v"] for d in outlier_det]
-            dut_detail = [{"s": str(ser), "v": round(float(v), 6)}
-                          for ser, v in zip(dut_sers, dut_vals)]
+            dut_detail = [{"s": str(ser), "p": str(prt), "v": round(float(v), 6)}
+                          for ser, prt, v in zip(dut_sers, dut_ports, dut_vals)]
             spec_lo, spec_up = spec_by_freq[freq]
             _P = cfg.get("proportion", 0.90)
             _C = cfg.get("confidence", 0.90)
@@ -2961,7 +2865,9 @@ function getParams(){
     gb:  parseFloat(document.getElementById('stat_gb').value)||0,
     drift: parseFloat(document.getElementById('stat_drift').value)||0,
     spec_lo_override: numOrNull('stat_spec_lo'),
-    spec_hi_override: numOrNull('stat_spec_hi')
+    spec_hi_override: numOrNull('stat_spec_hi'),
+    tll_hi_override: numOrNull('stat_tll_hi'),
+    tll_lo_override: numOrNull('stat_tll_lo')
   };
 }
 
@@ -2970,10 +2876,13 @@ function getActiveConditions(){
   if(!COND_DIMS||!COND_DIMS.length) return STAT_DATA;
   return STAT_DATA.filter(function(cd){
     return COND_DIMS.every(function(dim){
-      var allowed=getSelected('cond_'+dim.col_id);
+      var all=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
+      if(!all.length) return true;
+      var allowed=Array.from(all).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+      if(!allowed.length) return false;
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
-      var m=cd.condition.match(new RegExp(safe+':?\\s*(\\S+)'));
-      return m&&allowed.indexOf(m[1])>=0;
+      var m=cd.condition.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
+      return m&&allowed.indexOf(m[1].trim())>=0;
     });
   });
 }
@@ -3018,8 +2927,8 @@ function computeFreqResult(fs,params){
   var spec_lo_mag=(spec_lo_raw!=null)?Math.abs(spec_lo_raw):null;
   var g_up=params.mu+dev_up+params.gb+params.drift;
   var g_lo=params.mu+dev_lo+params.gb+params.drift;
-  var tll_up=(spec_up!=null)?spec_up-g_up:null;
-  var tll_lo=(spec_lo_mag!=null)?-spec_lo_mag+g_lo:null;
+  var tll_up=(params.tll_hi_override!==null)?params.tll_hi_override:((spec_up!=null)?spec_up-g_up:null);
+  var tll_lo=(params.tll_lo_override!==null)?params.tll_lo_override:((spec_lo_mag!=null)?-spec_lo_mag+g_lo:null);
   var ssu_up=ti_up+g_up;   // spec supportable from data (upper): TI_up + full budget
   var ssu_lo=ti_lo-g_lo;   // spec supportable (lower): TI_lo - full budget
   var margin_up=(spec_up!==null)?spec_up-ssu_up:null;   // positive = passing with margin
@@ -3162,7 +3071,7 @@ function buildTraces(conds,params){
       }
       var tiLabel=r.np_active?'TI (NP): ':'TI: ';
       hover.push(
-        'Freq: '+fs.freq.toFixed(3)+' MHz<br>'+
+        'Freq: '+fs.freq.toFixed(4)+' MHz<br>'+
         'Mean: '+fs.mean.toFixed(4)+'  Std: '+fs.s.toFixed(4)+'<br>'+
         'n='+r.n_use+(r.np_active?'  (NP TI)':'  k='+r.k.toFixed(3))+'<br>'+
         tiLabel+'['+r.ti_lo.toFixed(4)+', '+r.ti_up.toFixed(4)+']<br>'+
@@ -3178,19 +3087,24 @@ function buildTraces(conds,params){
 
     var fillColor=any_fail?'rgba(220,50,50,0.12)':'rgba(0,160,0,0.12)';
 
-    // Trace 1: TI upper bound — use 'scatter' (not scattergl) so fill works
+    // Trace 1: TI band polygon — fill:'toself' re-renders correctly with Plotly.react when
+    //   only y-values change. fill:'tonexty' only updates line positions, not the fill area.
+    var band_x=freqs.concat(freqs.slice().reverse());
+    var band_y=ti_ups.concat(ti_los.slice().reverse());
     traces.push({
-      type:'scatter',x:freqs,y:ti_ups,mode:'lines',
-      line:{color:color,dash:'dash',width:1},
-      name:cd.condition+' TI↑',legendgroup:cd.condition,showlegend:false,
+      type:'scatter',x:band_x,y:band_y,mode:'lines',
+      fill:'toself',fillcolor:fillColor,
+      line:{width:0},
+      name:cd.condition+' band',legendgroup:cd.condition,showlegend:false,
       hoverinfo:'skip'
     });
-    // Trace 2: TI lower bound + fill to trace above
+    // Trace 2: dashed TI bound lines (upper then lower, NaN-separated)
+    var ti_line_x=freqs.concat([null]).concat(freqs.slice());
+    var ti_line_y=ti_ups.concat([null]).concat(ti_los.slice());
     traces.push({
-      type:'scatter',x:freqs,y:ti_los,mode:'lines',
-      fill:'tonexty',fillcolor:fillColor,
+      type:'scatter',x:ti_line_x,y:ti_line_y,mode:'lines',
       line:{color:color,dash:'dash',width:1},
-      name:cd.condition+' band',legendgroup:cd.condition,showlegend:false,
+      name:cd.condition+' TI↑↓',legendgroup:cd.condition,showlegend:false,
       hoverinfo:'skip'
     });
     // Trace 3: Mean line + markers colored by normality; diamond = NP TI active
@@ -3241,17 +3155,20 @@ function buildTraces(conds,params){
     showPts=showPts?showPts.checked:false;
     var selSers2=getAllSerials().length>1?getSelectedSerials():[];
     var useSerFlt=selSers2.length>0&&selSers2.length<getAllSerials().length;
+    var selPorts2=getSsPorts().length>1?getSelSsPorts():[];
+    var usePortFlt=selPorts2.length>0&&selPorts2.length<getSsPorts().length;
     var hasGfForPts=_gfExcluded&&_gfExcluded.size>0;
     var pt_x=[],pt_y=[],pt_cols=[],pt_txt=[];
     if(showPts){
       sorted.forEach(function(fs){
         (fs.dut_vals||[]).forEach(function(dv){
           var serExcl=useSerFlt&&selSers2.indexOf(dv.s)<0;
+          var portExcl=usePortFlt&&selPorts2.indexOf(dv.p||'')<0;
           var gfExcl=hasGfForPts&&_isStatGfExcl(dv.s,cd.condition,fs.freq);
           pt_x.push(fs.freq);
           pt_y.push(dv.v);
-          pt_cols.push(gfExcl?'rgba(220,80,40,0.5)':serExcl?'rgba(160,160,160,0.4)':color);
-          pt_txt.push(dv.s||'');
+          pt_cols.push(gfExcl?'rgba(220,80,40,0.5)':(serExcl||portExcl)?'rgba(160,160,160,0.4)':color);
+          pt_txt.push((dv.p?'['+dv.p+'] ':'')+dv.s);
         });
       });
     }
@@ -3264,55 +3181,8 @@ function buildTraces(conds,params){
     }:{type:'scatter',x:[],y:[],mode:'markers',showlegend:false,hoverinfo:'skip'});
   });
 
-  // Spec + TLL reference lines
+  // TLL reference lines (spec lines are now layout shapes — see buildLayout)
   if(!all_freqs.length) return traces;
-  var fMin=Math.min.apply(null,all_freqs),fMax=Math.max.apply(null,all_freqs);
-  /* Build per-frequency spec segments from ACTIVE conditions' freq_stats values.
-     This makes the spec line update dynamically when condition filters change. */
-  function buildStatSpecRanges(specKey){
-    var ranges={};
-    conds.forEach(function(cd){
-      (cd.freq_stats||[]).forEach(function(fs){
-        var sv=fs[specKey];
-        if(sv===null||sv===undefined) return;
-        var k=Math.round(sv*100)/100;
-        if(!ranges[k]) ranges[k]={fMin:fs.freq,fMax:fs.freq};
-        else{ranges[k].fMin=Math.min(ranges[k].fMin,fs.freq);ranges[k].fMax=Math.max(ranges[k].fMax,fs.freq);}
-      });
-    });
-    return ranges;
-  }
-  /* priority: user spec override > per-condition data > global constant */
-  var hiRanges={},loRanges={};
-  if(params.spec_hi_override!==null){
-    hiRanges[Math.round(params.spec_hi_override*100)/100]={fMin:fMin,fMax:fMax};
-  } else {
-    hiRanges=buildStatSpecRanges('spec_up');
-    if(!Object.keys(hiRanges).length&&HI_SPEC!==null)
-      hiRanges[Math.round(HI_SPEC*100)/100]={fMin:fMin,fMax:fMax};
-  }
-  if(params.spec_lo_override!==null){
-    var oLo=-Math.abs(params.spec_lo_override);
-    loRanges[Math.round(oLo*100)/100]={fMin:fMin,fMax:fMax};
-  } else {
-    loRanges=buildStatSpecRanges('spec_lo');
-    if(!Object.keys(loRanges).length&&LO_SPEC!==null){
-      var gLo=-Math.abs(LO_SPEC);
-      loRanges[Math.round(gLo*100)/100]={fMin:fMin,fMax:fMax};
-    }
-  }
-  Object.keys(hiRanges).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
-    var r=hiRanges[v];
-    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
-      line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi '+v,
-      hovertemplate:'Spec Hi: '+v.toFixed(4)+'<extra></extra>'});
-  });
-  Object.keys(loRanges).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
-    var r=loRanges[v];
-    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
-      line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
-      hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
-  });
 
   // TLL: per-frequency worst-case across all visible conditions
   // Collecting worst-case (min tll_up, max tll_lo) per frequency avoids a single
@@ -3368,24 +3238,75 @@ function toggleAllSer(){
   document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
   serChkChanged();
 }
+/* ---- port filter (display-only: dots dimmed, TI bounds unchanged) ---- */
+function getSsPorts(){return Array.from(document.querySelectorAll('.ss_port_chk')).map(function(c){return c.value;});}
+function getSelSsPorts(){return Array.from(document.querySelectorAll('.ss_port_chk:checked')).map(function(c){return c.value;});}
+function ssPortChkChanged(){
+  var all=document.querySelectorAll('.ss_port_chk');
+  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var allEl=document.getElementById('all_ss_port_panel');
+  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
+  var b=document.getElementById('badge_ss_port_panel');
+  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
+  update();
+}
+function toggleAllSsPort(){
+  var allEl=document.getElementById('all_ss_port_panel');
+  document.querySelectorAll('.ss_port_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  ssPortChkChanged();
+}
 /* ---- global filter (localStorage) ---- */
 var _gfExcluded=null;
+var _gfCoarseExcluded=null;
+var _statGfFocusMode=false;
+var _plotRev=0;
 function _loadStatGlobalFilter(){
   try{
     var raw=localStorage.getItem('padb_v2_excluded');
-    _gfExcluded=raw?new Set(JSON.parse(raw).excluded||[]):null;
-  }catch(e){_gfExcluded=null;}
+    if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;}
+    else{
+      var obj=JSON.parse(raw);
+      _gfExcluded=new Set(obj.excluded||[]);
+      _gfCoarseExcluded=new Set();
+      var serKws=['serial','unit id','dut id','s/n'];
+      _gfExcluded.forEach(function(k){
+        var parts=k.split('||');
+        if(parts.length>=2){
+          var coarseCond=parts[1].split('|').filter(function(p){
+            var lo=p.toLowerCase();
+            return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
+          }).join('|');
+          _gfCoarseExcluded.add(parts[0]+'||'+coarseCond);
+        }
+      });
+    }
+  }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;}
+  _statGfFocusMode=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
   _updateStatGfBadge();
 }
 function _updateStatGfBadge(){
   var el=document.getElementById('stat_gf_badge');
+  var lbl=document.getElementById('stat_gf_label');
   if(!el) return;
-  var n=_gfExcluded?_gfExcluded.size:0;
-  el.textContent=n>0?n+' globally excl.':'';
-  el.style.display=n>0?'':'none';
+  var dutSers=new Set();
+  if(_gfExcluded) _gfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
+  var n=dutSers.size,pts=_gfExcluded?_gfExcluded.size:0;
+  var isFocus=_statGfFocusMode;
+  var chk=document.getElementById('stat_gf_chk');
+  var active=chk?chk.checked:true;
+  if(n>0){
+    if(lbl) lbl.style.display='';
+    el.textContent=(active?(isFocus?'GF Inspect ON':'GF ON'):'GF OFF')+': '+pts+' pts ('+n+' DUT'+(n!==1?'s':')')+''+(isFocus&&active?' [inspect]':'');
+    el.style.background=!active?'#f0f0f0':isFocus?'#e8f0ff':'#ffeaea';
+    el.style.color=!active?'#888':isFocus?'#0044aa':'#900';
+    el.style.borderColor=!active?'#ccc':isFocus?'#6688cc':'#c88';
+  } else {
+    if(lbl) lbl.style.display='none';
+    el.textContent='';
+  }
 }
 window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'){_loadStatGlobalFilter();update();}
+  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadStatGlobalFilter();update();}
 });
 /* Build a condition key without serial parts (matches boxplot key format) */
 function _condKeyForStat(cond){
@@ -3398,15 +3319,18 @@ function _condKeyForStat(cond){
   }).sort().join('|');
 }
 function _isStatGfExcl(serial,cond,freq){
-  if(!_gfExcluded||!_gfExcluded.size) return false;
-  var key=(serial||'unknown')+'||'+_condKeyForStat(cond)+'||Room||'+freq.toFixed(3);
-  return _gfExcluded.has(key);
+  if(!_gfCoarseExcluded||!_gfCoarseExcluded.size) return false;
+  /* Coarse match: DUT serial + condition WITHOUT temperature or frequency */
+  return _gfCoarseExcluded.has((serial||'unknown')+'||'+_condKeyForStat(cond));
 }
-function recomputeFreqStat(fs,selSers,cond,freq){
+function recomputeFreqStat(fs,selSers,cond,freq,applyGf){
   var f=freq!==undefined?freq:(fs.freq||0);
   var c=cond||'';
   var dv=(fs.dut_vals||[]).filter(function(d){
-    return selSers.indexOf(d.s)>=0&&!_isStatGfExcl(d.s,c,f);
+    if(selSers.indexOf(d.s)<0) return false;
+    if(applyGf===false) return true;
+    var _excl=_isStatGfExcl(d.s,c,f);
+    return _statGfFocusMode?_excl:!_excl;
   });
   if(!dv.length) return null;
   var n=dv.length,vals=dv.map(function(d){return d.v;});
@@ -3423,14 +3347,31 @@ function recomputeFreqStat(fs,selSers,cond,freq){
     outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),
     np_ti_lo:null,np_ti_up:null});
 }
-function buildLayout(){
-  var flt=getDataFilter();
+function buildLayout(conds,params){
   var yRange=Y_LIM;
-  if(flt.mode==='range'){
-    var ylo=isFinite(flt.ylo)?flt.ylo:(Y_LIM?Y_LIM[0]:null);
-    var yhi=isFinite(flt.yhi)?flt.yhi:(Y_LIM?Y_LIM[1]:null);
-    if(ylo!==null&&yhi!==null) yRange=[ylo,yhi];
+  /* Spec lines as layout shapes — always replaced by Plotly.react, never stale */
+  var shapes=[],annotations=[];
+  var hiSpecs={},loSpecs={};
+  (conds||[]).forEach(function(cd){
+    (cd.freq_stats||[]).forEach(function(fs){
+      if(fs.spec_up!==null&&fs.spec_up!==undefined) hiSpecs[Math.round(fs.spec_up*100)/100]=true;
+      if(fs.spec_lo!==null&&fs.spec_lo!==undefined) loSpecs[Math.round(fs.spec_lo*100)/100]=true;
+    });
+  });
+  if(params&&params.spec_hi_override!==null&&params.spec_hi_override!==undefined){
+    hiSpecs={};hiSpecs[Math.round(params.spec_hi_override*100)/100]=true;
   }
+  if(params&&params.spec_lo_override!==null&&params.spec_lo_override!==undefined){
+    loSpecs={};loSpecs[Math.round(-Math.abs(params.spec_lo_override)*100)/100]=true;
+  }
+  Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
+    shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
+    annotations.push({xref:'paper',yref:'y',x:0.99,y:v,text:'Spec Hi '+v,showarrow:false,xanchor:'right',yanchor:'bottom',font:{color:'red',size:11}});
+  });
+  Object.keys(loSpecs).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
+    shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
+    annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec Lo '+v,showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
+  });
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
@@ -3438,7 +3379,8 @@ function buildLayout(){
     yaxis:{title:Y_LABEL,range:yRange},
     height:450,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
-    margin:{l:60,r:30,t:55,b:60}
+    margin:{l:60,r:30,t:55,b:60},
+    shapes:shapes,annotations:annotations
   };
 }
 
@@ -3517,7 +3459,7 @@ function updateStatPanel(conds,params){
       }
       rows.push('<tr style="'+bg+'">'+
         '<td>'+cd.condition+'</td>'+
-        '<td>'+fs.freq.toFixed(2)+'</td>'+
+        '<td>'+fs.freq.toFixed(4)+'</td>'+
         '<td>'+r.n_use+'</td>'+
         '<td>'+fs.mean.toFixed(4)+'</td>'+
         '<td>'+fs.s.toFixed(4)+'</td>'+
@@ -3553,8 +3495,9 @@ function updateStatPanel(conds,params){
 function getDataFilter(){
   var mode='all';
   document.querySelectorAll('input[name="data_flt"]').forEach(function(r){if(r.checked)mode=r.value;});
-  var ylo=parseFloat(document.getElementById('flt_ylo').value);
-  var yhi=parseFloat(document.getElementById('flt_yhi').value);
+  var yloEl=document.getElementById('flt_ylo'),yhiEl=document.getElementById('flt_yhi');
+  var ylo=parseFloat(yloEl?yloEl.value:'');
+  var yhi=parseFloat(yhiEl?yhiEl.value:'');
   return {mode:mode, ylo:isNaN(ylo)?-Infinity:ylo, yhi:isNaN(yhi)?Infinity:yhi};
 }
 function toggleRangeInputs(){
@@ -3570,7 +3513,7 @@ function applyDataFilter(conds,params,flt){
     var fs2=(cd.freq_stats||[]).filter(function(fs){
       var r=computeFreqResult(fs,params);
       if(flt.mode==='passing') return r.pass_up&&r.pass_lo;
-      if(flt.mode==='range') return r.ti_up>=flt.ylo&&r.ti_lo<=flt.yhi;
+      if(flt.mode==='range') return r.ti_up<=flt.yhi;
       return true;
     });
     return Object.assign({},cd,{freq_stats:fs2});
@@ -3614,8 +3557,11 @@ function freqKeyDown(e,which){
 /* ---- main update ---- */
 function update(){
   var conds=getActiveConditions();
-  var fLo=parseFloat(document.getElementById('freq_lo').value);
-  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var fLoTxt=document.getElementById('freq_lo_txt'),fHiTxt=document.getElementById('freq_hi_txt');
+  var fLo=fLoTxt&&fLoTxt.value!==''?parseFloat(fLoTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  var fHi=fHiTxt&&fHiTxt.value!==''?parseFloat(fHiTxt.value):parseFloat(document.getElementById('freq_hi').value);
+  if(isNaN(fLo)){var _sl=document.getElementById('freq_lo');fLo=_sl?parseFloat(_sl.value):-Infinity;}
+  if(isNaN(fHi)){var _sh=document.getElementById('freq_hi');fHi=_sh?parseFloat(_sh.value):Infinity;}
   conds=conds.map(function(cd){
     return Object.assign({},cd,{
       freq_stats:(cd.freq_stats||[]).filter(function(fs){return fs.freq>=fLo&&fs.freq<=fHi;})
@@ -3624,20 +3570,30 @@ function update(){
   var params=getParams();
   var selSers=getSelectedSerials();var allSers=getAllSerials();
   var serFlt=allSers.length>1&&selSers.length<allSers.length;
-  var hasGf=_gfExcluded&&_gfExcluded.size>0;
+  var gfToggle=document.getElementById('stat_gf_chk');
+  var gfEnabled=gfToggle?gfToggle.checked:true;
+  var hasGf=gfEnabled&&_gfExcluded&&_gfExcluded.size>0;
   if(serFlt||hasGf){
-    var activeSers=serFlt?selSers:allSers;
+    var activeSers;
+    if(serFlt){
+      activeSers=selSers;
+    } else {
+      /* GF-only: DOM may have no .ser_chk when dataset has ≤1 serial — collect from data */
+      var _ads=new Set();
+      conds.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){(fs.dut_vals||[]).forEach(function(d){if(d.s!=null)_ads.add(d.s);});});});
+      activeSers=_ads.size?Array.from(_ads):allSers;
+    }
     conds=conds.map(function(cd){
       var nfs=[];
       (cd.freq_stats||[]).forEach(function(fs){
-        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq);if(r) nfs.push(r);
+        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq,hasGf);if(r) nfs.push(r);
       });
       return Object.assign({},cd,{freq_stats:nfs});
     });
   }
   var flt=getDataFilter();
   conds=applyDataFilter(conds,params,flt);
-  Plotly.react('plot',buildTraces(conds,params),buildLayout());
+  Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params),{responsive:true});
   updateTLLDisplay(conds,params);
   updateStatPanel(conds,params);
   var nEl=document.getElementById('n_footnote');
@@ -3654,12 +3610,59 @@ function update(){
       }
     }
   }
+  saveState();
+}
+
+/* ---- localStorage state persistence ---- */
+function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
+function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
+function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(STATE_KEY)===0)keys.push(k);}keys.forEach(function(k){localStorage.removeItem(k);});}catch(e){}}
+function saveState(){
+  _stSet('freq_lo',document.getElementById('freq_lo').value);
+  _stSet('freq_hi',document.getElementById('freq_hi').value);
+  document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){_stSet('cond_'+col+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
+  });
+  var fltEl=document.querySelector('input[name="data_flt"]:checked');if(fltEl)_stSet('stat_filter_mode',fltEl.value);
+  var yhiEl=document.getElementById('flt_yhi');if(yhiEl)_stSet('stat_filter_yhi',yhiEl.value);
+  var tllEl=document.getElementById('stat_tll_hi');if(tllEl)_stSet('stat_tll_hi',tllEl.value);
+  var tllLoEl=document.getElementById('stat_tll_lo');if(tllLoEl)_stSet('stat_tll_lo',tllLoEl.value);
+  var pEl=document.getElementById('stat_P');if(pEl)_stSet('stat_P',pEl.value);
+  var cEl=document.getElementById('stat_C');if(cEl)_stSet('stat_C',cEl.value);
+  var muEl=document.getElementById('stat_mu');if(muEl)_stSet('stat_mu',muEl.value);
+  var gbEl=document.getElementById('stat_gb');if(gbEl)_stSet('stat_gb',gbEl.value);
+  var drEl=document.getElementById('stat_drift');if(drEl)_stSet('stat_drift',drEl.value);
+}
+function loadState(){
+  var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
+  if(lo!==null){var sl=document.getElementById('freq_lo');if(sl)sl.value=lo;var txlo=document.getElementById('freq_lo_txt');if(txlo)txlo.value=parseFloat(lo).toFixed(3);}
+  if(hi!==null){var sh=document.getElementById('freq_hi');if(sh)sh.value=hi;var txhi=document.getElementById('freq_hi_txt');if(txhi)txhi.value=parseFloat(hi).toFixed(3);}
+  document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){var s=_stGet('cond_'+col+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
+    var chks=Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]'));
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){var n=chks.filter(function(c){return c.checked;}).length;allChk.checked=(n===chks.length);allChk.indeterminate=(n>0&&n<chks.length);}
+    updateBadge(col);
+  });
+  var fm=_stGet('stat_filter_mode');
+  if(fm){var fr=document.querySelector('input[name="data_flt"][value="'+fm+'"]');if(fr){fr.checked=true;toggleRangeInputs();}}
+  var fyhi=_stGet('stat_filter_yhi');var fyhiEl=document.getElementById('flt_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
+  var tll=_stGet('stat_tll_hi');var tllEl=document.getElementById('stat_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
+  var tllLo=_stGet('stat_tll_lo');var tllLoEl=document.getElementById('stat_tll_lo');if(tllLo!==null&&tllLoEl)tllLoEl.value=tllLo;
+  var sp=_stGet('stat_P');if(sp!==null){var pEl=document.getElementById('stat_P');if(pEl)pEl.value=sp;var lpEl=document.getElementById('lbl_P');if(lpEl)lpEl.value=sp;}
+  var sc=_stGet('stat_C');if(sc!==null){var cEl=document.getElementById('stat_C');if(cEl)cEl.value=sc;var lcEl=document.getElementById('lbl_C');if(lcEl)lcEl.value=sc;}
+  var smu=_stGet('stat_mu');if(smu!==null){var muEl=document.getElementById('stat_mu');if(muEl)muEl.value=smu;}
+  var sgb=_stGet('stat_gb');if(sgb!==null){var gbEl=document.getElementById('stat_gb');if(gbEl)gbEl.value=sgb;}
+  var sdr=_stGet('stat_drift');if(sdr!==null){var drEl=document.getElementById('stat_drift');if(drEl)drEl.value=sdr;}
 }
 
 _loadStatGlobalFilter();
-Plotly.newPlot('plot',buildTraces(STAT_DATA,getParams()),buildLayout(),{responsive:true});
-updateTLLDisplay(STAT_DATA,getParams());
-updateStatPanel(STAT_DATA,getParams());
+loadState();
+Plotly.newPlot('plot',buildTraces(getActiveConditions(),getParams()),buildLayout(getActiveConditions(),getParams()),{responsive:true});
 /* END */
 
 """
@@ -3678,8 +3681,6 @@ def _build_stat_summary_html(
     y_lim = cfg.get("y_lim")
     log_x_cfg = cfg.get("log_x", None)
 
-    lo_spec, hi_spec = _get_spec(df, cfg)
-
     freq_min = float(df["Frequency_MHz"].min()) if len(df) else 0.0
     freq_max = float(df["Frequency_MHz"].max()) if len(df) else 1.0
     freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
@@ -3693,18 +3694,21 @@ def _build_stat_summary_html(
     default_C  = float(cfg.get("confidence", 0.90))
     default_mu = float(cfg.get("meas_unc", 0.0))
     default_gb = float(cfg.get("guard_band", 0.0))
-    spec_lo_val = "" if np.isnan(lo_spec) else str(float(lo_spec))
-    spec_hi_val = "" if np.isnan(hi_spec) else str(float(hi_spec))
+    # Spec inputs are intentionally left empty so each condition's per-frequency
+    # spec_up/spec_lo drives the display. A global first-row spec would be wrong
+    # for datasets with different specs per condition (e.g. harmonics vs sub-harmonics).
+    spec_lo_val = ""
+    spec_hi_val = ""
 
-    lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
-    hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
+    lo_js = "null"
+    hi_js = "null"
 
     # Build COND_DIMS from condition strings in stat_data
-    # Each condition is e.g. "OA State: 0  Mode: 1"; parse key→set of values
+    # Each condition is e.g. "OA State: 0  Mode: 1  SpurType: Close-in 10KHz high"
     dim_vals: dict[str, set] = {}
     for cd in stat_data:
         for part in re.split(r'  +', cd["condition"]):
-            m = re.match(r'(.+?):\s*(\S+)', part.strip())
+            m = re.match(r'(.+?):\s*(.+?)\s*$', part.strip())
             if m:
                 key = m.group(1).strip()
                 val = m.group(2).strip()
@@ -3750,6 +3754,14 @@ def _build_stat_summary_html(
             all_temps.add(t)
     non_room_temps = sorted(t for t in all_temps if t != "Room")
 
+    # Derive ports from stat_data dut_vals — used in both constants block and port panel HTML
+    all_ports_ss = sorted({
+        d["p"] for cd in stat_data
+        for fs in cd.get("freq_stats", [])
+        for d in fs.get("dut_vals", [])
+        if d.get("p")
+    })
+
     constants = "\n".join([
         f"var STAT_DATA={json.dumps(stat_data)};",
         f"var KT={json.dumps(k_table)};",
@@ -3768,6 +3780,8 @@ def _build_stat_summary_html(
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var TEMPS_PRESENT={json.dumps(['Room'] + non_room_temps)};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
+        f"var SS_ALL_PORTS={json.dumps(all_ports_ss)};",
+        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
     ])
 
     css = (
@@ -3835,14 +3849,14 @@ def _build_stat_summary_html(
     freq_lo_html = (
         f'<label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>'
     )
     freq_hi_html = (
         f'<label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
         f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>'
     )
@@ -3869,26 +3883,48 @@ def _build_stat_summary_html(
             f'<hr class="fdiv">{ser_items}</div></div>'
         )
 
+    port_panel_html_ss = ""
+    if len(all_ports_ss) > 1:
+        port_items_ss = "".join(
+            f'<label class="fitem"><input type="checkbox" class="ss_port_chk" value="{p}"'
+            f' checked onchange="ssPortChkChanged()">&nbsp;{p}</label>'
+            for p in all_ports_ss
+        )
+        port_panel_html_ss = (
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'ss_port_panel\')">'
+            f'Port&thinsp;<span id="badge_ss_port_panel" class="badge"></span>&#9662;</button>'
+            f'<div class="filter-panel" id="panel_ss_port_panel">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_ss_port_panel"'
+            f' checked onchange="toggleAllSsPort()"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{port_items_ss}</div></div>'
+        )
+
     ctrl_bar = (
         '<div class="ctrl-bar">\n'
         + (f'  {panels_html}\n  {sep}\n' if panels_html else '')
-        + (f'  {serial_panel_html}\n  {sep}\n' if serial_panel_html else '')
+        + (f'  {serial_panel_html}\n' if serial_panel_html else '')
+        + (f'  {port_panel_html_ss}\n  {sep}\n' if port_panel_html_ss else
+           (f'  {sep}\n' if serial_panel_html else ''))
         + f'  {freq_lo_html}\n'
         + f'  {freq_hi_html}\n'
         + f'  {log_x_html}\n'
         + '</div>\n'
     )
 
+    _snap_P = min([0.80, 0.95, 0.9973], key=lambda x: abs(x - default_P))
+    _snap_C = min([0.90, 0.95], key=lambda x: abs(x - default_C))
     stat_bar = (
         '<div class="stat-bar" onclick="event.stopPropagation()">\n'
-        f'  <b style="margin-right:4px">P:</b>'
-        f'<input type="range" id="stat_P" min="0.80" max="0.999" value="{default_P:.3f}" step="0.005"'
-        f' oninput="document.getElementById(\'lbl_P\').textContent=parseFloat(this.value).toFixed(3);update()">'
-        f'<span id="lbl_P">{default_P:.3f}</span>\n'
-        f'  <b style="margin-right:4px">C:</b>'
-        f'<input type="range" id="stat_C" min="0.75" max="0.95" value="{default_C:.2f}" step="0.01"'
-        f' oninput="document.getElementById(\'lbl_C\').textContent=parseFloat(this.value).toFixed(2);update()">'
-        f'<span id="lbl_C">{default_C:.2f}</span>\n'
+        f'  <label><b>P:</b>&nbsp;<select id="stat_P" onchange="update()">'
+        f'<option value="0.80"{"  selected" if abs(_snap_P-0.80)<0.001 else ""}>80%</option>'
+        f'<option value="0.95"{"  selected" if abs(_snap_P-0.95)<0.001 else ""}>95%</option>'
+        f'<option value="0.9973"{"  selected" if abs(_snap_P-0.9973)<0.001 else ""}>99.73%</option>'
+        f'</select></label>\n'
+        f'  <label><b>C:</b>&nbsp;<select id="stat_C" onchange="update()">'
+        f'<option value="0.90"{"  selected" if abs(_snap_C-0.90)<0.001 else ""}>90%</option>'
+        f'<option value="0.95"{"  selected" if abs(_snap_C-0.95)<0.001 else ""}>95%</option>'
+        f'</select></label>\n'
         f'  <label title="Override sample size (0=auto from data)">n&nbsp;override:'
         f'<input type="number" id="stat_n" min="0" max="50" value="0" oninput="update()"></label>\n'
         f'  {sep}\n'
@@ -3910,6 +3946,13 @@ def _build_stat_summary_html(
         f' style="width:74px" placeholder="0.15" oninput="update()"></label>\n'
         f'  {sep}\n'
         f'  <span class="tll-display" id="tll_display">TLL&#8593;: —&nbsp;&nbsp;TLL&#8595;: —</span>\n'
+        f'  {sep}\n'
+        f'  <label title="Override computed TLL upper limit directly (bypasses Spec - guard band)">'
+        f'TLL&#8593;&nbsp;override:<input type="number" id="stat_tll_hi" step="0.001" placeholder="auto"'
+        f' style="width:74px" oninput="update()"></label>\n'
+        f'  <label title="Override computed TLL lower limit directly (bypasses Spec - guard band)">'
+        f'TLL&#8595;&nbsp;override:<input type="number" id="stat_tll_lo" step="0.001" placeholder="auto"'
+        f' style="width:74px" oninput="update()"></label>\n'
         f'  <span class="norm-legend">'
         f'&nbsp;<span class="nl-dot" style="background:green"></span>Normal'
         f'&nbsp;<span class="nl-dot" style="background:orange"></span>Marginal'
@@ -3947,14 +3990,11 @@ def _build_stat_summary_html(
         '  <label><input type="radio" name="data_flt" value="passing"'
         ' onchange="toggleRangeInputs();update()"> Passing&nbsp;only&nbsp;(TI&#8838;TLL)</label>\n'
         '  <label><input type="radio" name="data_flt" value="range"'
-        ' onchange="toggleRangeInputs();update()"> Y&nbsp;range</label>\n'
+        ' onchange="toggleRangeInputs();update()"> Upper&nbsp;limit</label>\n'
         '  <span id="flt_range_inputs" style="display:none;align-items:center;gap:4px">\n'
-        f'    <input type="number" id="flt_ylo" placeholder="Y min" step="0.001" value="{y_lim_lo}"'
+        f'    <input type="number" id="flt_yhi" placeholder="dBc limit" step="0.001" value="{y_lim_hi}"'
         ' oninput="update()">\n'
-        '    &ndash;\n'
-        f'    <input type="number" id="flt_yhi" placeholder="Y max" step="0.001" value="{y_lim_hi}"'
-        ' oninput="update()">\n'
-        '    <small style="color:#666">(hides freqs where TI band is entirely outside range)</small>\n'
+        '    <small style="color:#666">(hides freqs where TI upper bound exceeds this limit; Y scale unchanged)</small>\n'
         '  </span>\n'
         '  <span class="sep"></span>\n'
         '  <label title="Use non-parametric (distribution-free) order-statistic TI'
@@ -3965,9 +4005,12 @@ def _build_stat_summary_html(
         '  <label title="Overlay individual measurement points on the plot">'
         '<input type="checkbox" id="show_pts_chk" onchange="update()">'
         '&nbsp;Show&nbsp;points</label>\n'
-        '  <span id="stat_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
-        'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
-        'margin-left:4px"></span>\n'
+        '  <label id="stat_gf_label" style="display:none;white-space:nowrap;margin-left:4px">'
+        '<input type="checkbox" id="stat_gf_chk" checked '
+        'onchange="_updateStatGfBadge();update()">'
+        '&nbsp;<span id="stat_gf_badge" style="font-size:11px;background:#fff0e8;'
+        'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000"></span>'
+        '</label>\n'
         f'  {_csv_btn("saveCSV")}\n'
         '</div>\n'
     )
@@ -4004,11 +4047,13 @@ function isLogX(){return document.getElementById('env_log_x_chk').checked;}
 function getSelectedConds(){
   return ENV_DATA.filter(function(cd){
     return COND_DIMS.every(function(dim){
-      var chks=Array.from(document.querySelectorAll('.'+dim.col_id+':checked')).map(function(c){return c.value;});
-      if(!chks.length) return true;
+      var all=document.querySelectorAll('.'+dim.col_id);
+      if(!all.length) return true;
+      var chks=Array.from(all).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+      if(!chks.length) return false;
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
-      var m=cd.condition.match(new RegExp(safe+':?\\s*(\\S+)'));
-      return !m||chks.indexOf(m[1])>=0;
+      var m=cd.condition.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
+      return !m||chks.indexOf(m[1].trim())>=0;
     });
   });
 }
@@ -4020,9 +4065,11 @@ function getFreqRange(){
 function getEnvDataFilter(){
   var r=document.querySelector('input[name="env_dfilt"]:checked');
   var mode=r?r.value:'all';
-  var yLo=parseFloat(document.getElementById('env_y_lo').value);
   var yHi=parseFloat(document.getElementById('env_y_hi').value);
-  return {mode:mode,yLo:isNaN(yLo)?-Infinity:yLo,yHi:isNaN(yHi)?Infinity:yHi};
+  var tll_el=document.getElementById('env_tll_hi');
+  var tll_hi=(tll_el&&tll_el.value!=='')?parseFloat(tll_el.value):null;
+  if(tll_hi!==null&&isNaN(tll_hi)) tll_hi=null;
+  return {mode:mode,yHi:isNaN(yHi)?Infinity:yHi,tll_hi:tll_hi};
 }
 function toggleEnvYRange(){
   var r=document.querySelector('input[name="env_dfilt"]:checked');
@@ -4035,11 +4082,12 @@ function getFilteredIdxs(cd,fr,flt){
   cd.freqs.forEach(function(f,j){
     if(f<fr.lo||f>fr.hi||cd.ude[j]===null||cd.lde[j]===null) return;
     if(flt.mode==='passing'){
-      var ok=(cd.spec_hi===null||cd.ttu[j]===null||cd.ttu[j]<=cd.spec_hi)&&
+      var effHi=(flt.tll_hi!==null&&flt.tll_hi!==undefined)?flt.tll_hi:cd.spec_hi;
+      var ok=(effHi===null||cd.ttu[j]===null||cd.ttu[j]<=effHi)&&
              (cd.spec_lo===null||cd.ttl[j]===null||cd.ttl[j]>=cd.spec_lo);
       if(!ok) return;
     } else if(flt.mode==='yrange'){
-      if(cd.ude[j]>flt.yHi||-cd.lde[j]<flt.yLo) return;
+      if(cd.ude[j]>flt.yHi) return;
     }
     idxs.push(j);
   });
@@ -4080,7 +4128,7 @@ function buildTraces(selConds,exclConds){
     var ttl=idxs.map(function(j){return cd.ttl[j];});
     var hov=idxs.map(function(j,k){
       var f=cd.freqs[j];
-      var lines=[cd.condition,'Freq: '+f.toFixed(3)+' MHz'];
+      var lines=[cd.condition,'Freq: '+f.toFixed(4)+' MHz'];
       if(cd.ude[j]!==null) lines.push('UDE: +'+cd.ude[j].toFixed(4));
       if(cd.lde[j]!==null) lines.push('LDE: −'+cd.lde[j].toFixed(4));
       if(cd.mean_env[j]!==null) lines.push('Mean(ΔEnv): '+cd.mean_env[j].toFixed(4));
@@ -4131,6 +4179,11 @@ function buildTraces(selConds,exclConds){
   if(spec_hi!==null) traces.push({type:'scatter',x:[xMin,xMax],y:[spec_hi,spec_hi],mode:'lines',
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: '+spec_hi.toFixed(4)+'<extra></extra>'});
+  /* Manual TLL override line */
+  var envFlt=getEnvDataFilter();
+  if(envFlt.tll_hi!==null&&envFlt.tll_hi!==undefined) traces.push({type:'scatter',x:[xMin,xMax],y:[envFlt.tll_hi,envFlt.tll_hi],
+    mode:'lines',line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
+    hovertemplate:'TLL↑ (manual): '+envFlt.tll_hi.toFixed(4)+'<extra></extra>'});
   return traces;
 }
 function buildLayout(){
@@ -4285,7 +4338,7 @@ function updateEnvStatsTable(selConds){
         var cls=fail?'ttl-fail':'';
         rows.push('<tr class="'+cls+'">'
           +'<td class="lbl">'+cd.condition+'</td>'
-          +'<td>'+f.toFixed(3)+'</td>'
+          +'<td>'+f.toFixed(4)+'</td>'
           +'<td>'+fmt(cd.ude[j])+'</td>'
           +'<td>'+fmt(cd.lde[j])+'</td>'
           +'<td>'+fmt(cd.min_env[j])+'</td>'
@@ -4313,6 +4366,1034 @@ function update(){
 }
 Plotly.newPlot('plot',buildTraces(getSelectedConds(),[]),buildLayout(),{responsive:true,scrollZoom:true});
 """
+
+
+# ---------------------------------------------------------------------------
+# env_coverage — interactive env-delta TI plot built from raw scatter data
+# ---------------------------------------------------------------------------
+
+_ENV_COVERAGE_JS = r"""
+function isLogX(){return document.getElementById('ec_log_x_chk').checked;}
+function getSelectedConds(){
+  return ENV_DATA.filter(function(cd){
+    return COND_DIMS.every(function(dim){
+      var all=document.querySelectorAll('.'+dim.col_id);
+      if(!all.length) return true;
+      var chks=Array.from(all).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+      if(!chks.length) return false;
+      var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+      var m=cd.condition.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
+      return !m||chks.indexOf(m[1].trim())>=0;
+    });
+  });
+}
+function getFreqRange(){
+  var loTxt=document.getElementById('ec_freq_lo_txt'),hiTxt=document.getElementById('ec_freq_hi_txt');
+  var lo=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('ec_freq_lo').value);
+  var hi=hiTxt&&hiTxt.value!==''?parseFloat(hiTxt.value):parseFloat(document.getElementById('ec_freq_hi').value);
+  return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};
+}
+function _getNovr(id){var el=document.getElementById(id);if(!el||el.value==='') return 0;var v=parseInt(el.value)||0;return v>1?v:0;}
+function nOvrStep(id,dir){
+  var el=document.getElementById(id);if(!el) return;
+  var v=parseInt(el.value)||0;v=Math.max(0,v+dir);
+  el.value=v>1?String(v):'';update();
+}
+function getParams(){
+  function _numOrNull(id){var el=document.getElementById(id);if(!el||el.value==='') return null;var v=parseFloat(el.value);return isNaN(v)?null:v;}
+  return {
+    P_room:parseFloat(document.getElementById('ec_P_room').value)||0.90,
+    C_room:parseFloat(document.getElementById('ec_C_room').value)||0.90,
+    P_env:parseFloat(document.getElementById('ec_P_env').value)||0.90,
+    C_env:parseFloat(document.getElementById('ec_C_env').value)||0.90,
+    n_room_ovr:_getNovr('ec_n_room'),
+    n_env_ovr:_getNovr('ec_n_env'),
+    mu:parseFloat(document.getElementById('ec_mu').value)||0,
+    spec_hi_ovr:_numOrNull('ec_spec_hi'),
+    spec_lo_ovr:_numOrNull('ec_spec_lo'),
+  };
+}
+function kLookup(n,P,C){
+  if(!KT||!KT.P) return 2.0;
+  var Pv=KT.P,Cv=KT.C,nv=KT.n;
+  var pi=0;for(var i=1;i<Pv.length;i++){if(Math.abs(Pv[i]-P)<Math.abs(Pv[pi]-P))pi=i;}
+  var ci=0;for(var i=1;i<Cv.length;i++){if(Math.abs(Cv[i]-C)<Math.abs(Cv[ci]-C))ci=i;}
+  var key=KT.P[pi]+'_'+KT.C[ci],arr=KT.k[key];
+  if(!arr||!arr.length) return 2.0;
+  if(n<=nv[0]) return arr[0];
+  if(n>=nv[nv.length-1]) return arr[arr.length-1];
+  for(var i=0;i<nv.length-1;i++){
+    if(n>=nv[i]&&n<=nv[i+1]){var t=(n-nv[i])/(nv[i+1]-nv[i]);return arr[i]+t*(arr[i+1]-arr[i]);}
+  }
+  return arr[arr.length-1];
+}
+function getSelectedTemps(){
+  var chks=document.querySelectorAll('.ec_temp_chk');
+  if(!chks.length) return ALL_TEMPS.slice();
+  return Array.from(chks).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+}
+/* ---- serial filter ---- */
+function getAllSerials(){return Array.from(document.querySelectorAll('.ec_ser_chk')).map(function(c){return c.value;});}
+function getSelectedSerials(){return Array.from(document.querySelectorAll('.ec_ser_chk:checked')).map(function(c){return c.value;});}
+function serChkChanged(){
+  var all=document.querySelectorAll('.ec_ser_chk');
+  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var allEl=document.getElementById('all_ec_ser_panel');
+  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
+  var b=document.getElementById('badge_ec_ser_panel');
+  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
+  update();
+}
+function toggleAllSer(){
+  var allEl=document.getElementById('all_ec_ser_panel');
+  document.querySelectorAll('.ec_ser_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  serChkChanged();
+}
+/* ---- port filter ---- */
+function getAllPorts(){return Array.from(document.querySelectorAll('.ec_port_chk')).map(function(c){return c.value;});}
+function getSelectedPorts(){return Array.from(document.querySelectorAll('.ec_port_chk:checked')).map(function(c){return c.value;});}
+function portChkChanged(){
+  var all=document.querySelectorAll('.ec_port_chk');
+  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var allEl=document.getElementById('all_ec_port_panel');
+  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
+  var b=document.getElementById('badge_ec_port_panel');
+  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
+  update();
+}
+function toggleAllPort(){
+  var allEl=document.getElementById('all_ec_port_panel');
+  document.querySelectorAll('.ec_port_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  portChkChanged();
+}
+/* ---- global filter (localStorage) ---- */
+var _gfExcluded=null;
+var _gfCoarseExcluded=null;
+var _gfFocusMode=false;
+var _ecGfEnabled=true;
+function toggleEcGf(){_ecGfEnabled=!_ecGfEnabled;_updateEcGfBadge();update();}
+function _loadEcGlobalFilter(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;}
+    else{
+      var obj=JSON.parse(raw);
+      _gfExcluded=new Set(obj.excluded||[]);
+      _gfCoarseExcluded=new Set();
+      _gfExcluded.forEach(function(k){
+        var parts=k.split('||');
+        if(parts.length>=2) _gfCoarseExcluded.add(parts[0]+'||'+parts[1]);
+      });
+    }
+  }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;}
+  _gfFocusMode=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  _updateEcGfBadge();
+}
+function _updateEcGfBadge(){
+  var el=document.getElementById('ec_gf_badge');
+  var btn=document.getElementById('ec_gf_toggle_btn');
+  if(!el) return;
+  var dutSers=new Set();
+  if(_gfExcluded) _gfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
+  var n=dutSers.size,pts=_gfExcluded?_gfExcluded.size:0;
+  if(n>0){
+    var suffix=_ecGfEnabled?'':' [OFF]';
+    el.textContent=(_gfFocusMode?'Inspect: ':'')+pts+' pts in GF ('+n+' DUT'+(n!==1?'s':')')+(_gfFocusMode?' — INSPECT':'')+suffix;
+    el.style.background=_ecGfEnabled?(_gfFocusMode?'#e8f0ff':'#ffeaea'):'#f5f5f5';
+    el.style.color=_ecGfEnabled?(_gfFocusMode?'#0044aa':'#900'):'#888';
+    el.style.borderColor=_ecGfEnabled?(_gfFocusMode?'#6688cc':'#c88'):'#ccc';
+    el.style.display='';
+  }else{el.textContent='';el.style.display='none';}
+  if(btn){
+    btn.textContent='GF: '+(_ecGfEnabled?'ON':'OFF');
+    btn.style.background=_ecGfEnabled?'#ffe8e8':'#f5f5f5';
+    btn.style.borderColor=_ecGfEnabled?'#c88':'#ccc';
+    btn.style.color=_ecGfEnabled?'#900':'#666';
+  }
+}
+window.addEventListener('storage',function(e){
+  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadEcGlobalFilter();update();}
+});
+function _isEcGfExcl(serial,gfKey){
+  if(!_gfCoarseExcluded||!_gfCoarseExcluded.size) return false;
+  /* Exact match: serial||gfKey must be in the set.
+     Both _make_ec_gf_key (Python) and _boxFullCondKey (JS) produce sorted keys,
+     so exact matching is safe and avoids false positives from old/partial GF entries. */
+  return _gfCoarseExcluded.has((serial||'unknown')+'||'+gfKey);
+}
+/* ---- aggregate per-DUT stats for one condition ---- */
+function _vecMean(vals){if(!vals.length) return 0;var s=0;vals.forEach(function(v){s+=v;});return s/vals.length;}
+function _vecStd(vals){
+  if(vals.length<2) return 0;
+  var m=_vecMean(vals),ss=0;vals.forEach(function(v){ss+=(v-m)*(v-m);});
+  return Math.sqrt(ss/(vals.length-1));
+}
+function getActiveDuts(cd){
+  var selSers=getSelectedSerials();var allSers=getAllSerials();
+  var selPorts=getSelectedPorts();var allPorts=getAllPorts();
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
+  var hasGf=_ecGfEnabled&&_gfCoarseExcluded&&_gfCoarseExcluded.size>0;
+  var result=[];
+  Object.keys(cd.duts).forEach(function(dutKey){
+    var dut=cd.duts[dutKey];
+    var baseSer=dut.serial||dutKey;
+    if(serFlt&&selSers.indexOf(baseSer)<0) return;
+    if(portFlt&&selPorts.indexOf(dut.port||'')<0) return;
+    if(hasGf){
+      var excl=_isEcGfExcl(baseSer,dut.gf_key);
+      if(_gfFocusMode?!excl:excl) return;
+    }
+    result.push([dutKey,dut]);
+  });
+  return result;
+}
+/* Delta DUTs: serial+GF filter only — port filter excluded so delta TI uses the full
+   port population, matching the room TI policy (allDuts ignores port filter too). */
+function getDeltaDuts(cd){
+  var selSers=getSelectedSerials();var allSers=getAllSerials();
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var hasGf=_ecGfEnabled&&_gfCoarseExcluded&&_gfCoarseExcluded.size>0;
+  var result=[];
+  Object.keys(cd.duts).forEach(function(dutKey){
+    var dut=cd.duts[dutKey];
+    var baseSer=dut.serial||dutKey;
+    if(serFlt&&selSers.indexOf(baseSer)<0) return;
+    if(hasGf){
+      var excl=_isEcGfExcl(baseSer,dut.gf_key);
+      if(_gfFocusMode?!excl:excl) return;
+    }
+    result.push([dutKey,dut]);
+  });
+  return result;
+}
+function hexAlpha(hex,a){
+  var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
+  return 'rgba('+r+','+g+','+b+','+a+')';
+}
+function computeStats(cd,params,fr,selTemps){
+  var activeDuts=getActiveDuts(cd);
+  /* Room TI and delta TI both use port-filter-agnostic DUT lists so that selecting a
+     single port does not collapse n below the TI threshold. Room uses allDuts; delta uses
+     getDeltaDuts (serial+GF only, no port filter). activeDuts (full filter) is reserved for
+     future per-port display. */
+  var deltaDuts=getDeltaDuts(cd);
+  var allDuts=Object.keys(cd.duts).map(function(k){return [k,cd.duts[k]];});
+  var freqs=[],room_lo=[],room_hi=[],ude=[],lde=[],room_means=[],room_ns=[],delta_ns=[];
+  for(var j=0;j<cd.freqs.length;j++){
+    var f=cd.freqs[j];
+    if(f<fr.lo||f>fr.hi) continue;
+    freqs.push(f);
+    var roomVals=[];
+    allDuts.forEach(function(sd){var v=sd[1].room[j];if(v!==null&&v!==undefined)roomVals.push(v);});
+    var n_r=roomVals.length;
+    room_means.push(n_r?_vecMean(roomVals):null);
+    room_ns.push(n_r);
+    if(n_r>=2){
+      var sig_r=_vecStd(roomVals);
+      var n_r_eff=params.n_room_ovr>0?params.n_room_ovr:n_r;
+      var k_r=kLookup(n_r_eff,params.P_room,params.C_room);
+      room_lo.push(-(k_r*sig_r));room_hi.push(k_r*sig_r);
+    }else{room_lo.push(null);room_hi.push(null);}
+    var u_j=null,l_j=null,max_ne=0;
+    selTemps.forEach(function(temp){
+      var dVals=[];
+      deltaDuts.forEach(function(sd){
+        var dt=sd[1].deltas[temp];
+        if(!dt) return;
+        var v=dt[j];if(v!==null&&v!==undefined)dVals.push(v);
+      });
+      var n_e=dVals.length;if(n_e>max_ne) max_ne=n_e;if(n_e<2) return;
+      var mu_e=_vecMean(dVals),sig_e=_vecStd(dVals);
+      var n_e_eff=params.n_env_ovr>0?params.n_env_ovr:n_e;
+      var k_e=kLookup(n_e_eff,params.P_env,params.C_env);
+      var u=mu_e+k_e*sig_e,l=mu_e-k_e*sig_e;
+      if(u_j===null||u>u_j) u_j=u;
+      var ld=Math.max(0,-l);if(l_j===null||ld>l_j) l_j=ld;
+    });
+    ude.push(u_j);lde.push(l_j);delta_ns.push(max_ne);
+  }
+  var eff_hi=(params.spec_hi_ovr!==null&&params.spec_hi_ovr!==undefined)?params.spec_hi_ovr:cd.spec_hi;
+  var eff_lo=(params.spec_lo_ovr!==null&&params.spec_lo_ovr!==undefined)?params.spec_lo_ovr:cd.spec_lo;
+  var ttu=ude.map(function(u){return (u!==null&&eff_hi!==null)?eff_hi-u-params.mu:null;});
+  var ttl=lde.map(function(l){return (l!==null&&eff_lo!==null)?eff_lo+l+params.mu:null;});
+  return {freqs:freqs,room_lo:room_lo,room_hi:room_hi,ude:ude,lde:lde,ttu:ttu,ttl:ttl,
+          room_means:room_means,room_ns:room_ns,delta_ns:delta_ns};
+}
+function buildTraces(selConds,exclConds){
+  exclConds=exclConds||[];
+  var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
+  var traces=[];
+  /* Collect y values from UDE/LDE/room data only (not TTU/TTL) to compute axis range.
+     TTU/TTL may be in absolute spec units (e.g. dBm) while the data is in delta (dB),
+     so excluding them prevents the axis from being dominated by distant spec values. */
+  var yVals=[];
+  exclConds.forEach(function(cd){
+    var st=computeStats(cd,params,fr,selTemps);
+    if(!st.ude.some(function(v){return v!==null;})) return;
+    var neg_lde=st.lde.map(function(v){return v!==null?-v:null;});
+    traces.push({type:'scatter',x:st.freqs,y:st.ude,mode:'lines',
+      line:{color:'rgba(190,190,190,0.5)',width:0.8},showlegend:false,hoverinfo:'skip'});
+    traces.push({type:'scatter',x:st.freqs,y:neg_lde,mode:'lines',
+      fill:'tonexty',fillcolor:'rgba(200,200,200,0.07)',
+      line:{color:'rgba(190,190,190,0.5)',width:0.8},
+      name:cd.condition,showlegend:false,hoverinfo:'skip'});
+  });
+  selConds.forEach(function(cd,ci){
+    var color=PALETTE[ci%PALETTE.length];
+    var st=computeStats(cd,params,fr,selTemps);
+    if(!st.freqs.length) return;
+    /* Accumulate range-relevant y values */
+    st.ude.forEach(function(v){if(v!==null)yVals.push(v);});
+    st.lde.forEach(function(v){if(v!==null)yVals.push(-v);});
+    st.room_hi.forEach(function(v){if(v!==null)yVals.push(v);});
+    st.room_lo.forEach(function(v){if(v!==null)yVals.push(v);});
+    var hov=st.freqs.map(function(f,k){
+      var lines=[cd.condition,'Freq: '+f.toFixed(4)+' MHz'];
+      if(st.ude[k]!==null) lines.push('UDE: '+st.ude[k].toFixed(4));
+      if(st.lde[k]!==null) lines.push('LDE: '+st.lde[k].toFixed(4));
+      if(st.ttu[k]!==null) lines.push('TTU: '+st.ttu[k].toFixed(4));
+      if(st.ttl[k]!==null) lines.push('TTL: '+st.ttl[k].toFixed(4));
+      if(st.room_means[k]!==null) lines.push('Roomμ: '+st.room_means[k].toFixed(4)+' (n='+st.room_ns[k]+')');
+      return lines.join('<br>');
+    });
+    if(st.room_hi.some(function(v){return v!==null;})){
+      traces.push({type:'scatter',x:st.freqs,y:st.room_hi,mode:'lines',
+        line:{color:color,width:0.8,dash:'dash'},
+        name:cd.condition+' Room↑',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
+      traces.push({type:'scatter',x:st.freqs,y:st.room_lo,mode:'lines',
+        fill:'tonexty',fillcolor:hexAlpha(color,0.12),
+        line:{color:color,width:0.8,dash:'dash'},
+        name:cd.condition+' Room TI',legendgroup:cd.condition,showlegend:true,hoverinfo:'skip'});
+    }
+    var neg_lde=st.lde.map(function(v){return v!==null?-v:null;});
+    if(st.ude.some(function(v){return v!==null;})){
+      traces.push({type:'scatter',x:st.freqs,y:st.ude,mode:'lines',
+        line:{color:color,width:2},
+        name:cd.condition+' UDE',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
+      traces.push({type:'scatter',x:st.freqs,y:neg_lde,mode:'lines',
+        fill:'tonexty',fillcolor:hexAlpha(color,0.22),
+        line:{color:color,width:2},
+        name:cd.condition,legendgroup:cd.condition,showlegend:true,
+        text:hov,hovertemplate:'%{text}<extra></extra>'});
+    }
+    if(st.ttu.some(function(v){return v!==null;})){
+      traces.push({type:'scatter',x:st.freqs,y:st.ttu,mode:'lines',
+        line:{color:color,dash:'dot',width:1.5},
+        name:cd.condition+' TTU',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
+    }
+    if(st.ttl.some(function(v){return v!==null;})){
+      traces.push({type:'scatter',x:st.freqs,y:st.ttl,mode:'lines',
+        line:{color:color,dash:'dot',width:1.5},
+        name:cd.condition+' TTL',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
+    }
+  });
+  var yRange=null;
+  if(EC_Y_LIM){yRange=EC_Y_LIM;}
+  else if(yVals.length){
+    var yMin=Math.min.apply(null,yVals),yMax=Math.max.apply(null,yVals);
+    var pad=Math.max(Math.abs(yMax-yMin)*0.15,0.1);
+    yRange=[yMin-pad,yMax+pad];
+  }
+  return {traces:traces,yRange:yRange};
+}
+function buildLayout(yRange){
+  return {
+    title:{text:EC_TITLE,x:0.5,font:{size:15}},
+    template:'plotly_white',
+    xaxis:{title:'Frequency (MHz)',type:isLogX()?'log':'linear'},
+    yaxis:{title:EC_Y_LABEL,range:yRange||null},
+    height:480,
+    legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
+    margin:{l:60,r:30,t:55,b:60},
+    shapes:[{type:'line',x0:0,x1:1,xref:'paper',y0:0,y1:0,
+      line:{color:'#bbb',width:1,dash:'dot'}}]
+  };
+}
+function closeAllFilterPanels(){
+  document.querySelectorAll('.filter-panel').forEach(function(p){p.style.display='none';});
+  var bd=document.getElementById('filter-backdrop');
+  if(bd) bd.style.display='none';
+}
+function togglePanel(col){
+  var el=document.getElementById('panel_'+col);
+  if(!el) return;
+  var open=el.style.display==='block';
+  closeAllFilterPanels();
+  if(!open){el.style.display='block';var bd=document.getElementById('filter-backdrop');if(bd)bd.style.display='block';}
+}
+function toggleAll(col){
+  var allEl=document.getElementById('all_'+col);
+  document.querySelectorAll('.'+col).forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  updateBadge(col);update();
+}
+function chkChanged(col){updateBadge(col);update();}
+function updateBadge(col){
+  var all=document.querySelectorAll('.'+col);
+  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var allEl=document.getElementById('all_'+col);
+  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
+  var b=document.getElementById('badge_'+col);
+  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
+}
+function syncFreq(){
+  var lo=parseFloat(document.getElementById('ec_freq_lo').value);
+  var hi=parseFloat(document.getElementById('ec_freq_hi').value);
+  var lv=document.getElementById('ec_freq_lo_txt');var hv=document.getElementById('ec_freq_hi_txt');
+  if(lv) lv.value=lo.toFixed(3);if(hv) hv.value=hi.toFixed(3);
+  update();
+}
+function freqTxtChange(which){
+  var txt=document.getElementById('ec_freq_'+which+'_txt');
+  var slider=document.getElementById('ec_freq_'+which);
+  var v=parseFloat(txt.value);
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
+  v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
+  if(which==='lo'){var h=parseFloat(document.getElementById('ec_freq_hi').value);if(v>h)v=h;}
+  else{var l=parseFloat(document.getElementById('ec_freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(3);slider.value=v;update();
+}
+function freqStep(which,dir){
+  var fv=EC_FREQ_VALS,txt=document.getElementById('ec_freq_'+which+'_txt'),slider=document.getElementById('ec_freq_'+which);
+  var cur=parseFloat(txt.value),idx=-1;
+  for(var i=0;i<fv.length;i++){if(Math.abs(fv[i]-cur)<0.0001){idx=i;break;}}
+  if(idx<0){var best=0;for(var i=1;i<fv.length;i++){if(Math.abs(fv[i]-cur)<Math.abs(fv[best]-cur))best=i;}idx=best;}
+  var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
+  if(which==='lo'&&nv>parseFloat(document.getElementById('ec_freq_hi').value))return;
+  if(which==='hi'&&nv<parseFloat(document.getElementById('ec_freq_lo').value))return;
+  txt.value=nv.toFixed(3);slider.value=nv;update();
+}
+function freqKeyDown(e,which){
+  if(e.key==='Enter')freqTxtChange(which);
+  else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
+  else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
+}
+function fmt(v,d){return v===null||v===undefined?'—':v.toFixed(d!==undefined?d:4);}
+function updateStatsTable(selConds){
+  var el=document.getElementById('ec_stat_panel');
+  if(!el||el.style.display==='none') return;
+  var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
+  var hdrs=['Condition','Freq (MHz)','UDE','LDE','TTU','TTL','Room μ','Room n','ΔEnv n'];
+  var hrow='<tr>'+hdrs.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
+  var rows=[];
+  selConds.forEach(function(cd){
+    var st=computeStats(cd,params,fr,selTemps);
+    st.freqs.forEach(function(f,k){
+      var fail=(cd.spec_hi!==null&&st.ttu[k]!==null&&st.ttu[k]>cd.spec_hi)||
+               (cd.spec_lo!==null&&st.ttl[k]!==null&&st.ttl[k]<cd.spec_lo);
+      var cls=fail?' class="ec-fail"':'';
+      var dn=st.delta_ns[k];
+      var dnCell=dn<2?'<td style="color:#c00;font-weight:bold">'+dn+'</td>':'<td>'+dn+'</td>';
+      rows.push('<tr'+cls+'>'
+        +'<td class="lbl">'+cd.condition+'</td>'
+        +'<td>'+f.toFixed(4)+'</td>'
+        +'<td>'+fmt(st.ude[k])+'</td>'
+        +'<td>'+fmt(st.lde[k])+'</td>'
+        +'<td>'+fmt(st.ttu[k])+'</td>'
+        +'<td>'+fmt(st.ttl[k])+'</td>'
+        +'<td>'+fmt(st.room_means[k])+'</td>'
+        +'<td>'+st.room_ns[k]+'</td>'
+        +dnCell
+        +'</tr>');
+    });
+  });
+  el.innerHTML='<table class="ec-tbl"><thead>'+hrow+'</thead><tbody>'+rows.join('')+'</tbody></table>';
+}
+function toggleStatsPanel(){
+  var el=document.getElementById('ec_stat_panel');
+  var btn=document.getElementById('ec_stat_btn');
+  if(!el||!btn) return;
+  if(el.style.display==='none'||el.style.display===''){
+    el.style.display='block';btn.textContent='▼ Statistics';
+    updateStatsTable(getSelectedConds());
+    el.scrollIntoView({behavior:'smooth',block:'nearest'});
+  }else{el.style.display='none';btn.textContent='▶ Statistics';}
+}
+function saveCSV(){
+  var selConds=getSelectedConds();
+  var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
+  var hdrs=['Condition','Freq_MHz','UDE','LDE','TTU','TTL','Room_mean','Room_n','DeltaEnv_n','Spec_hi','Spec_lo'];
+  var rows=[hdrs.join(',')];
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  selConds.forEach(function(cd){
+    var st=computeStats(cd,params,fr,selTemps);
+    st.freqs.forEach(function(f,k){
+      rows.push([esc(cd.condition),f,st.ude[k],st.lde[k],st.ttu[k],st.ttl[k],
+        st.room_means[k],st.room_ns[k],st.delta_ns[k],cd.spec_hi,cd.spec_lo].map(esc).join(','));
+    });
+  });
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var selSers=getSelectedSerials(),allSers=getAllSerials();
+  var meta=['# PADB Export','# Plot: '+EC_TITLE,'# Generated: '+ts,
+    '# P_room: '+params.P_room+' C_room: '+params.C_room,
+    '# P_env: '+params.P_env+' C_env: '+params.C_env,
+    '# Temps: '+selTemps.join(', '),
+    '# Serials ('+selSers.length+'/'+allSers.length+'): '+selSers.join(', '),'#'].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);a.download=EC_TITLE.replace(/[^a-z0-9_\-]/gi,'_')+'.csv';a.click();
+}
+function update(){
+  var selConds=getSelectedConds();
+  var showExcl=document.getElementById('ec_show_excl');
+  showExcl=showExcl?showExcl.checked:false;
+  var exclConds=showExcl?ENV_DATA.filter(function(cd){return selConds.indexOf(cd)<0;}):[];
+  var _r=buildTraces(selConds,exclConds);
+  Plotly.react('plot',_r.traces,buildLayout(_r.yRange));
+  updateStatsTable(selConds);
+  saveState();
+}
+
+/* ---- localStorage state persistence ---- */
+function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
+function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
+function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(STATE_KEY)===0)keys.push(k);}keys.forEach(function(k){localStorage.removeItem(k);});}catch(e){}}
+function saveState(){
+  _stSet('freq_lo',document.getElementById('ec_freq_lo')?document.getElementById('ec_freq_lo').value:'');
+  _stSet('freq_hi',document.getElementById('ec_freq_hi')?document.getElementById('ec_freq_hi').value:'');
+  document.querySelectorAll('.ec_temp_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    document.querySelectorAll('.'+dim.col_id).forEach(function(c){_stSet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
+  });
+  var fltEl=document.querySelector('input[name="env_dfilt"]:checked');if(fltEl)_stSet('env_filter_mode',fltEl.value);
+  var yhiEl=document.getElementById('env_y_hi');if(yhiEl)_stSet('env_filter_yhi',yhiEl.value);
+  var tllEl=document.getElementById('env_tll_hi');if(tllEl)_stSet('env_tll_hi',tllEl.value);
+  var pREl=document.getElementById('ec_P_room');if(pREl)_stSet('ec_P_room',pREl.value);
+  var cREl=document.getElementById('ec_C_room');if(cREl)_stSet('ec_C_room',cREl.value);
+  var pEEl=document.getElementById('ec_P_env');if(pEEl)_stSet('ec_P_env',pEEl.value);
+  var cEEl=document.getElementById('ec_C_env');if(cEEl)_stSet('ec_C_env',cEEl.value);
+  var muEl=document.getElementById('ec_mu');if(muEl)_stSet('ec_mu',muEl.value);
+  var shEl=document.getElementById('ec_spec_hi');if(shEl)_stSet('ec_spec_hi',shEl.value);
+  var slEl=document.getElementById('ec_spec_lo');if(slEl)_stSet('ec_spec_lo',slEl.value);
+}
+function loadState(){
+  var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
+  if(lo!==null){var sl=document.getElementById('ec_freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('ec_freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
+  if(hi!==null){var sh=document.getElementById('ec_freq_hi');if(sh){sh.value=hi;var th=document.getElementById('ec_freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  document.querySelectorAll('.ec_temp_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    document.querySelectorAll('.'+dim.col_id).forEach(function(c){var s=_stGet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
+    var chks=Array.from(document.querySelectorAll('.'+dim.col_id));
+    var allChk=document.getElementById('all_'+dim.col_id);
+    if(allChk){var n=chks.filter(function(c){return c.checked;}).length;allChk.checked=(n===chks.length);allChk.indeterminate=(n>0&&n<chks.length);}
+  });
+  var fm=_stGet('env_filter_mode');
+  if(fm){var fr=document.querySelector('input[name="env_dfilt"][value="'+fm+'"]');if(fr)fr.checked=true;}
+  var fyhi=_stGet('env_filter_yhi');var fyhiEl=document.getElementById('env_y_hi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
+  var tll=_stGet('env_tll_hi');var tllEl=document.getElementById('env_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
+  var pR=_stGet('ec_P_room');if(pR!==null){var pREl=document.getElementById('ec_P_room');if(pREl)pREl.value=pR;var lpREl=document.getElementById('lbl_ec_P_room');if(lpREl)lpREl.value=pR;}
+  var cR=_stGet('ec_C_room');if(cR!==null){var cREl=document.getElementById('ec_C_room');if(cREl)cREl.value=cR;var lcREl=document.getElementById('lbl_ec_C_room');if(lcREl)lcREl.value=cR;}
+  var pE=_stGet('ec_P_env');if(pE!==null){var pEEl=document.getElementById('ec_P_env');if(pEEl)pEEl.value=pE;var lpEEl=document.getElementById('lbl_ec_P_env');if(lpEEl)lpEEl.value=pE;}
+  var cE=_stGet('ec_C_env');if(cE!==null){var cEEl=document.getElementById('ec_C_env');if(cEEl)cEEl.value=cE;var lcEEl=document.getElementById('lbl_ec_C_env');if(lcEEl)lcEEl.value=cE;}
+  var mu=_stGet('ec_mu');if(mu!==null){var muEl=document.getElementById('ec_mu');if(muEl)muEl.value=mu;}
+  var sh=_stGet('ec_spec_hi');if(sh!==null){var shEl=document.getElementById('ec_spec_hi');if(shEl)shEl.value=sh;}
+  var sl=_stGet('ec_spec_lo');if(sl!==null){var slEl=document.getElementById('ec_spec_lo');if(slEl)slEl.value=sl;}
+}
+
+_loadEcGlobalFilter();
+loadState();
+var _ir=buildTraces(getSelectedConds(),[]);
+Plotly.newPlot('plot',_ir.traces,buildLayout(_ir.yRange),{responsive:true,scrollZoom:true});
+"""
+
+
+def _make_ec_gf_key(group_str: str) -> str:
+    """Convert a full Group label to a GF condition key (matches _condKeyForStat format)."""
+    _serial_kws = ("serial", "unit id", "dut id", "s/n")
+    parts = re.split(r"  +", group_str.strip())
+    filtered = []
+    for p in parts:
+        key_part = p.split(":")[0].strip().lower()
+        if any(kw in key_part for kw in _serial_kws):
+            continue
+        kv = re.sub(r"\s*:\s*", "=", p.strip())
+        filtered.append(kv)
+    return "|".join(sorted(filtered))
+
+
+def _aggregate_env_coverage_data(df: pd.DataFrame, cfg: dict) -> tuple:
+    """
+    Build ENV_DATA for the interactive env_coverage plot from raw scatter data.
+
+    Stores per-DUT raw values (room measurements and paired deltas) so JS can
+    recompute UDE/LDE interactively when P/C sliders, serial filter, or GF change.
+
+    Returns (env_data, cond_dims, non_room_temps, all_serials).
+    """
+    import numpy as _np
+
+    room_values = cfg.get("room_values", ["Room"])
+
+    _serial_kws  = ("serial", "unit id", "dut id", "s/n")
+    _port_kws    = ("port",)
+    grp_cols = [c for c in df.columns if c.startswith("_grp_")]
+    serial_cols = {
+        c for c in grp_cols
+        if any(kw in c.removeprefix("_grp_").lower() for kw in _serial_kws)
+    }
+    # Port-like columns are pooled across (not split into separate conditions)
+    port_cols = {
+        c for c in grp_cols
+        if c not in serial_cols
+        and any(kw in c.removeprefix("_grp_").lower() for kw in _port_kws)
+    }
+    cond_cols = [
+        c for c in grp_cols
+        if c not in serial_cols and c not in port_cols
+        and 1 < df[c].nunique(dropna=True) <= 50
+    ]
+
+    # Find the serial column (for DUT labels)
+    ser_col = next(
+        (c for c in serial_cols if "serial" in c.removeprefix("_grp_").lower()),
+        None
+    )
+    # Find the port column (for DUT sub-keying so RF1/RF2 are separate data points)
+    port_col = next(
+        (c for c in port_cols if "port" in c.removeprefix("_grp_").lower()),
+        None
+    )
+
+    def _super_label(row):
+        parts = [
+            f"{c.removeprefix('_grp_')}: {row[c]}"
+            for c in cond_cols if pd.notna(row[c])
+        ]
+        return "  ".join(parts) if parts else "All"
+
+    df = df.copy()
+    df["_super_cond"] = df.apply(_super_label, axis=1)
+
+    cond_dims: list = []
+    for col in cond_cols:
+        label = col.removeprefix("_grp_")
+        col_id = re.sub(r"\W+", "_", label)
+        vals = sorted(str(v) for v in df[col].dropna().unique() if str(v).strip())
+        if len(vals) > 1:
+            cond_dims.append({"col": label, "col_id": col_id, "label": label, "vals": vals})
+
+    all_temps = sorted(str(t) for t in df["Temperature"].dropna().unique())
+    non_room_temps = [t for t in all_temps if t not in room_values]
+
+    def _safe(v):
+        return None if (v is None or (isinstance(v, float) and _np.isnan(v))) else round(float(v), 6)
+
+    all_serials_set: set = set()
+    all_ports_set: set = set()
+    results: list = []
+
+    for sc, sc_df in df.groupby("_super_cond", sort=True):
+        all_freqs = sorted(float(f) for f in sc_df["Frequency_MHz"].dropna().unique())
+        n_f = len(all_freqs)
+        freq_idx = {f: i for i, f in enumerate(all_freqs)}
+
+        # Room data pivot: Group → Frequency → Value
+        room_df = sc_df[sc_df["Temperature"].isin(room_values)]
+        if len(room_df):
+            room_pivot = room_df.pivot_table(
+                index="Group", columns="Frequency_MHz", values="Value", aggfunc="first"
+            )
+        else:
+            room_pivot = pd.DataFrame()
+
+        # Temp data pivots
+        temp_pivots: dict = {}
+        for temp in non_room_temps:
+            tdf = sc_df[sc_df["Temperature"] == temp]
+            if len(tdf):
+                temp_pivots[temp] = tdf.pivot_table(
+                    index="Group", columns="Frequency_MHz", values="Value", aggfunc="first"
+                )
+
+        # Build per-DUT data
+        duts: dict = {}
+        groups_in_sc = sc_df["Group"].dropna().unique()
+
+        for grp in groups_in_sc:
+            # Extract serial label (from _grp_Serial Number column or Group string)
+            grp_rows = sc_df[sc_df["Group"] == grp]
+            if ser_col and ser_col in grp_rows.columns:
+                ser_vals = grp_rows[ser_col].dropna().unique()
+                serial = str(ser_vals[0]) if len(ser_vals) else str(grp)
+            else:
+                # Parse from Group string
+                m = re.search(r'Serial Number:\s*(\S+)', str(grp), re.IGNORECASE)
+                serial = m.group(1) if m else str(grp)
+
+            all_serials_set.add(serial)
+            gf_key = _make_ec_gf_key(str(grp))
+
+            # Extract port value so RF1/RF2 are separate data points in same population
+            port_val = None
+            if port_col and port_col in grp_rows.columns:
+                pvals = grp_rows[port_col].dropna().unique()
+                if len(pvals):
+                    port_val = str(pvals[0])
+            dut_key = f"{serial}_{port_val}" if port_val else serial
+            if port_val:
+                all_ports_set.add(port_val)
+
+            # Room values per freq
+            room_vals = [None] * n_f
+            if len(room_pivot) and grp in room_pivot.index:
+                for f, idx in freq_idx.items():
+                    if f in room_pivot.columns:
+                        v = room_pivot.at[grp, f]
+                        room_vals[idx] = _safe(v)
+
+            # Delta values per temp per freq
+            dut_deltas: dict = {}
+            for temp, tp in temp_pivots.items():
+                if grp not in tp.index or grp not in room_pivot.index:
+                    continue
+                d_vals = [None] * n_f
+                for f, idx in freq_idx.items():
+                    if f in tp.columns and f in room_pivot.columns:
+                        rv = room_pivot.at[grp, f] if grp in room_pivot.index else None
+                        tv = tp.at[grp, f]
+                        if (rv is not None and not (isinstance(rv, float) and _np.isnan(rv)) and
+                                tv is not None and not (isinstance(tv, float) and _np.isnan(tv))):
+                            d_vals[idx] = _safe(float(tv) - float(rv))
+                if any(v is not None for v in d_vals):
+                    dut_deltas[temp] = d_vals
+
+            duts[dut_key] = {"serial": serial, "port": port_val, "gf_key": gf_key, "room": room_vals, "deltas": dut_deltas}
+
+        hi_vals = sc_df["Upper_Limit"].dropna()
+        lo_vals = sc_df["Lower_Limit"].dropna()
+        spec_hi = _safe(float(hi_vals.mode().iloc[0])) if len(hi_vals) else None
+        spec_lo = _safe(float(lo_vals.mode().iloc[0])) if len(lo_vals) else None
+
+        cond_keys_dict: dict = {}
+        for col in cond_cols:
+            label = col.removeprefix("_grp_")
+            uv = sc_df[col].dropna().unique()
+            cond_keys_dict[label] = str(uv[0]) if len(uv) == 1 else ""
+
+        results.append({
+            "condition":  sc,
+            "cond_keys":  cond_keys_dict,
+            "freqs":      [round(f, 6) for f in all_freqs],
+            "spec_hi":    spec_hi,
+            "spec_lo":    spec_lo,
+            "duts":       duts,
+        })
+
+    all_serials = sorted(all_serials_set)
+    all_ports = sorted(all_ports_set)
+    return results, cond_dims, non_room_temps, all_serials, all_ports
+
+
+def _build_env_coverage_html(
+    env_data: list,
+    cond_dims: list,
+    title: str,
+    y_label: str,
+    y_lim,
+    log_x: bool,
+    freq_min: float,
+    freq_max: float,
+    palette: list,
+    freq_vals: list,
+    k_table: dict,
+    non_room_temps: list,
+    all_serials: list = None,
+    all_ports: list = None,
+    default_P: float = 0.90,
+    default_C: float = 0.90,
+    results_dir: str = '',
+) -> str:
+    css = (
+        "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
+        ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".ctrl-bar label{white-space:nowrap;}"
+        ".ctrl-bar input[type=range]{vertical-align:middle;width:90px;}"
+        ".pc-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:5px 14px;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".pc-bar.room-bar{background:#edf5ff;}"
+        ".pc-bar.env-bar{background:#edf7ee;}"
+        ".pc-bar label{white-space:nowrap;}"
+        ".pc-bar input[type=range]{vertical-align:middle;width:90px;}"
+        ".temp-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
+        "padding:5px 14px;background:#f5f5e8;border-radius:6px;margin-bottom:4px;font-size:13px;}"
+        ".temp-bar label{white-space:nowrap;cursor:pointer;}"
+        ".sep{border-left:2px solid #ccc;height:22px;margin:0 2px;}"
+        ".filter-wrap{position:relative;display:inline-block;}"
+        ".filter-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;"
+        "cursor:pointer;background:#fff;white-space:nowrap;}"
+        ".filter-btn:hover{background:#e8e8e8;}"
+        ".filter-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;"
+        "background:#fff;border:1px solid #ccc;border-radius:4px;"
+        "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:140px;max-height:280px;"
+        "overflow-y:auto;padding:6px 8px;}"
+        ".filter-panel.open{display:block;}"
+        "#filter-backdrop{position:fixed;inset:0;z-index:150;display:none;}"
+        ".fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px;}"
+        ".fall{padding-bottom:2px;}"
+        ".fdiv{margin:4px 0;border:none;border-top:1px solid #eee;}"
+        ".badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;"
+        "padding:1px 6px;margin-right:2px;display:none;}"
+        ".badge.active{display:inline;}"
+        ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
+        "cursor:pointer;background:#e8f4ff;color:#0066cc;margin-left:6px;}"
+        ".csv-btn:hover{background:#cce4ff;}"
+        ".gf-toggle-btn{font-size:13px;padding:3px 10px;border:1px solid #c88;border-radius:3px;"
+        "cursor:pointer;background:#ffe8e8;color:#900;margin-left:4px;}"
+        ".gf-toggle-btn:hover{filter:brightness(0.94);}"
+        ".stat-btn{font-size:13px;padding:3px 12px;border:1px solid #666;border-radius:3px;"
+        "cursor:pointer;background:#f5f5f5;}"
+        ".stat-btn:hover{background:#e0e0e0;}"
+        "#ec_stat_panel{margin-top:6px;overflow:auto;max-height:400px;padding:0 4px;}"
+        ".ec-tbl{border-collapse:collapse;font-size:12px;width:100%;}"
+        ".ec-tbl th{background:#e8ecf0;text-align:center;padding:4px 8px;"
+        "border:1px solid #ccc;white-space:nowrap;position:sticky;top:0;z-index:1;}"
+        ".ec-tbl td{padding:3px 8px;border:1px solid #e0e0e0;text-align:right;white-space:nowrap;}"
+        ".ec-tbl td.lbl{text-align:left;font-weight:bold;max-width:260px;"
+        "overflow:hidden;text-overflow:ellipsis;}"
+        ".ec-tbl tr:nth-child(even) td{background:#f7f9fc;}"
+        ".ec-tbl tr.ec-fail td{background:#ffd0d0 !important;}"
+        "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
+        "border-radius:3px;text-align:right;margin-left:2px;}"
+        ".footnote{font-size:11px;color:#888;padding:2px 14px;}"
+    )
+
+    panels: list = []
+    for dim in cond_dims:
+        col_id = dim["col_id"]
+        items = "".join(
+            f'<label class="fitem"><input type="checkbox" class="{col_id}"'
+            f' value="{v}" checked onchange="chkChanged(\'{col_id}\')">&nbsp;{v}</label>'
+            for v in dim["vals"]
+        )
+        panels.append(
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'{col_id}\')">'
+            f'<span id="badge_{col_id}" class="badge"></span>{dim["label"]}&thinsp;&#9662;</button>'
+            f'<div class="filter-panel" id="panel_{col_id}">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_{col_id}"'
+            f' checked onchange="toggleAll(\'{col_id}\')"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{items}</div></div>'
+        )
+    panels_html = "\n  ".join(panels)
+
+    if all_serials and len(all_serials) > 1:
+        ser_items = "".join(
+            f'<label class="fitem"><input type="checkbox" class="ec_ser_chk" value="{s}"'
+            f' checked onchange="serChkChanged()">&nbsp;{s}</label>'
+            for s in all_serials
+        )
+        serial_panel_html = (
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'ec_ser_panel\')">'
+            f'Serial&thinsp;<span id="badge_ec_ser_panel" class="badge"></span>&#9662;</button>'
+            f'<div class="filter-panel" id="panel_ec_ser_panel">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_ec_ser_panel"'
+            f' checked onchange="toggleAllSer()"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{ser_items}</div></div>'
+        )
+    else:
+        serial_panel_html = ""
+
+    if all_ports and len(all_ports) > 1:
+        port_items = "".join(
+            f'<label class="fitem"><input type="checkbox" class="ec_port_chk" value="{p}"'
+            f' checked onchange="portChkChanged()">&nbsp;{p}</label>'
+            for p in all_ports
+        )
+        port_panel_html = (
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'ec_port_panel\')">'
+            f'Port&thinsp;<span id="badge_ec_port_panel" class="badge"></span>&#9662;</button>'
+            f'<div class="filter-panel" id="panel_ec_port_panel">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_ec_port_panel"'
+            f' checked onchange="toggleAllPort()"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{port_items}</div></div>'
+        )
+    else:
+        port_panel_html = ""
+
+    gf_badge_html = (
+        '<span id="ec_gf_badge" style="display:none;font-size:11px;background:#ffeaea;'
+        'border:1px solid #c88;border-radius:3px;padding:1px 7px;color:#900;'
+        'margin-left:4px"></span>'
+    )
+
+    freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
+    sep = '<div class="sep"></div>'
+
+    freq_lo_html = (
+        f'<label>Freq&nbsp;min:<input type="range" id="ec_freq_lo"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="ec_freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>'
+    )
+    freq_hi_html = (
+        f'<label>Freq&nbsp;max:<input type="range" id="ec_freq_hi"'
+        f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
+        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f'<input class="freq-txt" id="ec_freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>'
+    )
+    log_x_html = (
+        f'<label><input type="checkbox" id="ec_log_x_chk"'
+        + (' checked' if log_x else '')
+        + ' onchange="update()"> Log&nbsp;X</label>'
+    )
+
+    _all_panels = []
+    if serial_panel_html:
+        _all_panels.append(serial_panel_html)
+    if port_panel_html:
+        _all_panels.append(port_panel_html)
+    if panels_html:
+        _all_panels.append(panels_html)
+    _combined_panels_html = "\n  ".join(_all_panels)
+
+    ctrl_bar = (
+        '<div class="ctrl-bar">\n'
+        + (f'  {_combined_panels_html}\n  {sep}\n' if _combined_panels_html else '')
+        + f'  {freq_lo_html}\n'
+        + f'  {freq_hi_html}\n'
+        + f'  {sep}\n'
+        + f'  {log_x_html}\n'
+        + f'  {sep}\n'
+        + f'  <label title="Show non-selected conditions as dim gray bands">'
+        + f'<input type="checkbox" id="ec_show_excl" onchange="update()">'
+        + f'&nbsp;Show&nbsp;excluded</label>\n'
+        + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
+        + f'  <button class="stat-btn" id="ec_stat_btn" onclick="toggleStatsPanel()">&#9658;&nbsp;Statistics</button>\n'
+        + f'  <button class="gf-toggle-btn" id="ec_gf_toggle_btn" onclick="toggleEcGf()">GF:&nbsp;ON</button>\n'
+        + f'  {gf_badge_html}\n'
+        + '</div>\n'
+    )
+
+    def _slider(el_id, label, default_val, on_change, title=""):
+        t = f' title="{title}"' if title else ""
+        sn = min([0.80, 0.95, 0.9973], key=lambda x: abs(x - default_val))
+        return (
+            f'<label{t}>{label}&nbsp;'
+            f'<select id="{el_id}" onchange="update()">'
+            f'<option value="0.80"{"  selected" if abs(sn-0.80)<0.001 else ""}>80%</option>'
+            f'<option value="0.95"{"  selected" if abs(sn-0.95)<0.001 else ""}>95%</option>'
+            f'<option value="0.9973"{"  selected" if abs(sn-0.9973)<0.001 else ""}>99.73%</option>'
+            f'</select></label>'
+        )
+
+    def _c_slider(el_id, label, default_val, on_change, title=""):
+        t = f' title="{title}"' if title else ""
+        sn = min([0.90, 0.95], key=lambda x: abs(x - default_val))
+        return (
+            f'<label{t}>{label}&nbsp;'
+            f'<select id="{el_id}" onchange="update()">'
+            f'<option value="0.90"{"  selected" if abs(sn-0.90)<0.001 else ""}>90%</option>'
+            f'<option value="0.95"{"  selected" if abs(sn-0.95)<0.001 else ""}>95%</option>'
+            f'</select></label>'
+        )
+
+    def _update_lbl(el_id, digits):
+        return f"document.getElementById('lbl_{el_id}').value=parseFloat(this.value).toFixed({digits});update()"
+
+    def _n_ovr(el_id, title=""):
+        t = f' title="{title}"' if title else ""
+        _step_style = "font-size:11px;padding:0 4px;border:1px solid #bbb;border-radius:3px;margin-left:1px;cursor:pointer;line-height:1.4"
+        return (
+            f'<span{t} style="white-space:nowrap">n&nbsp;ovr:&nbsp;'
+            f'<input type="text" id="{el_id}" value="" placeholder="auto"'
+            f' style="width:44px;text-align:right;font-size:12px;border:1px solid #bbb;'
+            f'border-radius:3px;padding:1px 3px" oninput="update()">'
+            f'<button style="{_step_style}" onclick="nOvrStep(\'{el_id}\',1)">&#9650;</button>'
+            f'<button style="{_step_style}" onclick="nOvrStep(\'{el_id}\',-1)">&#9660;</button>'
+            f'</span>'
+        )
+
+    room_bar = (
+        '<div class="pc-bar room-bar">\n'
+        f'  <b>Room:</b>\n'
+        f'  {_slider("ec_P_room", "P", default_P, _update_lbl("ec_P_room", 4), "Proportion for Room TI")}\n'
+        f'  {_c_slider("ec_C_room", "C", default_C, _update_lbl("ec_C_room", 2), "Confidence for Room TI")}\n'
+        f'  {_n_ovr("ec_n_room", "Override n used for k-factor lookup (extrapolation to larger population)")}\n'
+        '</div>\n'
+    )
+
+    env_bar = (
+        '<div class="pc-bar env-bar">\n'
+        f'  <b>&#916;Env:</b>\n'
+        f'  {_slider("ec_P_env", "P", default_P, _update_lbl("ec_P_env", 4), "Proportion for ΔEnv TI")}\n'
+        f'  {_c_slider("ec_C_env", "C", default_C, _update_lbl("ec_C_env", 2), "Confidence for ΔEnv TI")}\n'
+        f'  {_n_ovr("ec_n_env", "Override n used for k-factor lookup (extrapolation to larger population)")}\n'
+        f'  <label title="Measurement Uncertainty (dB) — subtracted from spec limits to give TTU/TTL">'
+        f'M.U.:&nbsp;<input type="number" id="ec_mu" value="0" min="0" step="0.001"'
+        f' style="width:58px" oninput="update()"></label>\n'
+        f'  <label title="Upper spec limit override — required when CSV has no spec limits (enables TTU line)">'
+        f'Spec&nbsp;hi:&nbsp;<input type="number" id="ec_spec_hi" placeholder="auto"'
+        f' step="0.001" style="width:70px" oninput="update()"></label>\n'
+        f'  <label title="Lower spec limit override — required when CSV has no spec limits (enables TTL line)">'
+        f'Spec&nbsp;lo:&nbsp;<input type="number" id="ec_spec_lo" placeholder="auto"'
+        f' step="0.001" style="width:70px" oninput="update()"></label>\n'
+        '</div>\n'
+    )
+
+    if non_room_temps:
+        temp_items = "".join(
+            f'<label><input type="checkbox" class="ec_temp_chk" value="{t}"'
+            f' checked onchange="update()">&nbsp;{t}</label>\n'
+            for t in non_room_temps
+        )
+        temp_bar = (
+            '<div class="temp-bar">\n'
+            '  <b>&#916;Env&nbsp;temps:</b>\n  '
+            + temp_items
+            + '  <small style="color:#666">(uncheck to exclude a temp from UDE/LDE computation)</small>\n'
+            '</div>\n'
+        )
+    else:
+        temp_bar = ""
+
+    footnote = (
+        '<div class="footnote">'
+        'Dashed filled band: Room TI &nbsp;|&nbsp; '
+        'Solid filled band: &#916;Env combined [&minus;LDE,&nbsp;+UDE] &nbsp;|&nbsp; '
+        'Dotted line: TTU/TTL (= Spec &minus; UDE &minus; M.U. / Spec + LDE + M.U.)'
+        '</div>\n'
+    )
+
+    _freq_vals_js = json.dumps(sorted(set(freq_vals))) if freq_vals else "[]"
+    constants = "\n".join([
+        f"var ENV_DATA={json.dumps(env_data)};",
+        f"var KT={json.dumps(k_table)};",
+        f"var EC_TITLE={json.dumps(title)};",
+        f"var EC_Y_LABEL={json.dumps(y_label)};",
+        f"var EC_Y_LIM={json.dumps(y_lim)};",
+        f"var EC_FREQ_MIN={freq_min!r};",
+        f"var EC_FREQ_MAX={freq_max!r};",
+        f"var EC_FREQ_VALS={_freq_vals_js};",
+        f"var COND_DIMS={json.dumps(cond_dims)};",
+        f"var PALETTE={json.dumps(palette)};",
+        f"var ALL_TEMPS={json.dumps(non_room_temps)};",
+        f"var EC_ALL_SERIALS={json.dumps(all_serials or [])};",
+        f"var EC_ALL_PORTS={json.dumps(all_ports or [])};",
+        f"var STATE_KEY='padb_{results_dir}';",
+    ])
+
+    return (
+        "<!DOCTYPE html>\n<html>\n<head>\n"
+        f'<meta charset="utf-8"><title>{title}</title>\n'
+        f"<style>{css}</style>\n"
+        f"<script>{_get_plotlyjs()}</script>\n"
+        "</head>\n<body>\n"
+        '<div id="filter-backdrop" onclick="closeAllFilterPanels()"></div>\n'
+        + ctrl_bar
+        + room_bar
+        + env_bar
+        + temp_bar
+        + footnote
+        + '<div id="plot"></div>\n'
+        + '<div id="ec_stat_panel" style="display:none"></div>\n'
+        + f"<script>\n{constants}\n{_ENV_COVERAGE_JS}</script>\n"
+        "</body>\n</html>"
+    )
 
 
 def _load_env_csv(csv_path: Path) -> pd.DataFrame:
@@ -4489,13 +5570,15 @@ def _build_env_summary_html(
         ' onchange="toggleEnvYRange()">&nbsp;Passing&nbsp;only</label>'
         '&nbsp;'
         '<label><input type="radio" name="env_dfilt" value="yrange"'
-        ' onchange="toggleEnvYRange()">&nbsp;Y&nbsp;range</label>'
+        ' onchange="toggleEnvYRange()">&nbsp;Upper&nbsp;limit</label>'
         '<span id="env_y_range_inputs" style="display:none;gap:4px;align-items:center">'
-        '&nbsp;<label>lo:<input type="number" id="env_y_lo" class="env-yin"'
-        ' oninput="update()"></label>'
-        '&nbsp;<label>hi:<input type="number" id="env_y_hi" class="env-yin"'
-        ' oninput="update()"></label>'
+        '&nbsp;<label><input type="number" id="env_y_hi" class="env-yin"'
+        ' placeholder="dBc limit" oninput="update()"></label>'
+        '&nbsp;<small style="color:#666">hides freqs where UDE exceeds limit</small>'
         '</span>'
+        '&nbsp;&nbsp;<label title="Override TLL for Passing only filter and draw TLL line">'
+        'TLL&nbsp;override:<input type="number" id="env_tll_hi" step="0.001" placeholder="auto"'
+        ' style="width:74px" oninput="update()"></label>'
         '</span>'
     )
     pc_parts = []
@@ -4608,7 +5691,7 @@ def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
         vals = {kv.get(key, "") for kv in group_kv.values() if key in kv}
         if vals and sum(_serial_val.match(v) is not None for v in vals) / len(vals) > 0.5:
             continue
-        if 1 < len(vals) <= 20:
+        if 1 < len(vals) <= 50:
             cond_keys.append(key)
 
     def _sort_numeric(vals):
@@ -4733,7 +5816,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
             vals = {kv.get(key, "") for kv in group_kv_box.values() if key in kv}
             if vals and sum(_serial_val_box.match(v) is not None for v in vals) / len(vals) > 0.5:
                 continue
-            if 1 < len(vals) <= 20:
+            if 1 < len(vals) <= 50:
                 cond_keys_box.append(key)
         def _cond_box(g):
             kv = group_kv_box.get(g, {})
@@ -4838,13 +5921,15 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         "        '<span class=\"out\"><b>'+fs.outliers.length+'</b>: '+fs.outliers.map(function(v){return v.toFixed(4);}).join(', ')+'</span>':'<span style=\"color:#aaa\">—</span>';\n"
         "      rows.push('<tr>'+\n"
         "        '<td>'+cd.condition+'</td>'+\n"
-        "        '<td>'+fs.freq.toFixed(2)+'</td>'+\n"
+        "        '<td>'+fs.freq.toFixed(4)+'</td>'+\n"
         "        '<td>'+fs.n+'</td>'+\n"
         "        '<td>'+fs.mean.toFixed(4)+'</td>'+\n"
         "        '<td>'+fs.s.toFixed(4)+'</td>'+\n"
         "        '<td>'+fs.q1.toFixed(4)+'</td>'+\n"
         "        '<td>'+fs.q2.toFixed(4)+'</td>'+\n"
         "        '<td>'+fs.q3.toFixed(4)+'</td>'+\n"
+        "        '<td>'+fs.lo_w.toFixed(4)+'</td>'+\n"
+        "        '<td>'+fs.hi_w.toFixed(4)+'</td>'+\n"
         "        '<td>'+nrmStr+'</td>'+\n"
         "        '<td>'+outStr+'</td>'+\n"
         "        '</tr>');\n"
@@ -4856,6 +5941,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         "      '<th>Condition</th><th>Freq(MHz)</th><th>n&nbsp;DUTs</th>'+\n"
         "      '<th>Mean</th><th>Std</th>'+\n"
         "      '<th>Q1</th><th>Median</th><th>Q3</th>'+\n"
+        "      '<th>Lo&nbsp;Whisker</th><th>Hi&nbsp;Whisker</th>'+\n"
         "      '<th>Normality</th><th>Outliers</th></tr></thead><tbody>'+\n"
         "      rows.join('')+'</tbody></table>';\n"
         "  }\n"
@@ -4868,7 +5954,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         "}\n"
         "function saveBoxCSV(withExcluded){\n"
         "  var hdrs=['Condition','Freq_MHz','n','Mean','Std','Q1','Median','Q3',\n"
-        "            'Normality','W','p','DEnv_up','DEnv_lo','Spec_lo','Spec_hi','Outliers'];\n"
+        "            'Lo_Whisker','Hi_Whisker','Normality','W','p','DEnv_up','DEnv_lo','Spec_lo','Spec_hi','Outliers'];\n"
         "  var rows=[hdrs.join(',')];\n"
         "  function esc(v){var s=String(v==null?'':v);\n"
         "    return s.indexOf(',')>=0||s.indexOf('\"')>=0?'\"'+s.replace(/\"/g,'\"\"')+'\"':s;}\n"
@@ -4883,6 +5969,8 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         "        fs.q1.toFixed(6),\n"
         "        fs.q2.toFixed(6),\n"
         "        fs.q3.toFixed(6),\n"
+        "        fs.lo_w.toFixed(6),\n"
+        "        fs.hi_w.toFixed(6),\n"
         "        fs.norm,\n"
         "        fs.W.toFixed(4),\n"
         "        fs.p.toFixed(4),\n"
@@ -4949,8 +6037,9 @@ function _syncLfFromAllDims(){
       var sel=getSelected('box_cond_'+dim.col_id);
       if(!sel.length) return true;
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
-      var m=cond.match(new RegExp(safe+':?\\s*(\\S+)'));
-      return m&&sel.indexOf(m[1])>=0;
+      /* Use lookahead for double-space or end-of-string so multi-word values are captured */
+      var m=cond.match(new RegExp(safe+':\\s*(.+?)(?=  |$)'));
+      return m&&sel.indexOf(m[1].trim())>=0;
     });
     row.querySelector('.box_cond_lf_chk').checked=ok;
   });
@@ -4960,7 +6049,9 @@ function toggleAll(col){
   document.querySelectorAll('.'+col).forEach(function(c){c.checked=allChk.checked;});
   updateBadge(col);
   _syncLfFromAllDims();
-  if(col==='box_cond_HarmonicNumber'){var hs=document.getElementById('box_harm_sel');if(hs&&allChk&&allChk.checked)hs.value='all';}
+  var primaryColEl=document.getElementById('box_lf_primary_col');
+  var primaryClass=primaryColEl?'box_cond_'+primaryColEl.value:'box_cond_HarmonicNumber';
+  if(col===primaryClass){var hs=document.getElementById('box_harm_sel');if(hs&&allChk&&allChk.checked)hs.value='all';}
   update();
 }
 function chkChanged(col){
@@ -4970,9 +6061,11 @@ function chkChanged(col){
   if(allEl){allEl.checked=chk.length===all.length;allEl.indeterminate=chk.length>0&&chk.length<all.length;}
   updateBadge(col);
   _syncLfFromAllDims();
-  if(col==='box_cond_HarmonicNumber'){
+  var primaryColEl2=document.getElementById('box_lf_primary_col');
+  var primaryClass2=primaryColEl2?'box_cond_'+primaryColEl2.value:'box_cond_HarmonicNumber';
+  if(col===primaryClass2){
     var hs=document.getElementById('box_harm_sel');
-    if(hs){var hSel=getSelected('box_cond_HarmonicNumber');hs.value=(hSel.length===1)?hSel[0]:'all';}
+    if(hs){var hSel=getSelected(col);hs.value=(hSel.length===1)?hSel[0]:'all';}
   }
   update();
 }
@@ -4997,8 +6090,8 @@ function getSelectedConds(){
     return COND_DIMS.every(function(dim){
       var allowed=getSelected('box_cond_'+dim.col_id);
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
-      var m=cond.match(new RegExp(safe+':?\\s*(\\S+)'));
-      return m&&allowed.indexOf(m[1])>=0;
+      var m=cond.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
+      return m&&allowed.indexOf(m[1].trim())>=0;
     });
   });
 }
@@ -5008,9 +6101,17 @@ function getSelectedTemps(){
 function getYFilter(){
   var mode='all';
   document.querySelectorAll('input[name="box_flt"]').forEach(function(r){if(r.checked)mode=r.value;});
-  var ylo=parseFloat(document.getElementById('box_flt_ylo').value);
-  var yhi=parseFloat(document.getElementById('box_flt_yhi').value);
-  return {mode:mode,ylo:isNaN(ylo)?-Infinity:ylo,yhi:isNaN(yhi)?Infinity:yhi};
+  var yhi_el=document.getElementById('box_flt_yhi');
+  var yhi=yhi_el?parseFloat(yhi_el.value):NaN;
+  var tll_el=document.getElementById('box_tll_hi');
+  var tll_hi=(tll_el&&tll_el.value!=='')?parseFloat(tll_el.value):null;
+  if(tll_hi!==null&&isNaN(tll_hi)) tll_hi=null;
+  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi,tll_hi:tll_hi};
+}
+function getBoxFreqRange(){
+  var lo=parseFloat(document.getElementById('box_freq_lo').value);
+  var hi=parseFloat(document.getElementById('box_freq_hi').value);
+  return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};
 }
 function isBoxNpTI(){var c=document.getElementById('box_np_ti_chk');return c?c.checked:false;}
 function isShowPoints(){var c=document.getElementById('box_show_pts_chk');return c?c.checked:false;}
@@ -5030,6 +6131,23 @@ function toggleAllBoxSer(){
   var allEl=document.getElementById('all_box_ser');
   document.querySelectorAll('.box_ser_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
   boxSerChkChanged();
+}
+/* ---- port filter ---- */
+function getAllBoxPorts(){return Array.from(document.querySelectorAll('.box_port_chk')).map(function(c){return c.value;});}
+function getSelectedBoxPorts(){return Array.from(document.querySelectorAll('.box_port_chk:checked')).map(function(c){return c.value;});}
+function boxPortChkChanged(){
+  var all=document.querySelectorAll('.box_port_chk');
+  var chk=Array.from(all).filter(function(c){return c.checked;}).length;
+  var allEl=document.getElementById('all_box_port');
+  if(allEl){allEl.checked=chk===all.length;allEl.indeterminate=chk>0&&chk<all.length;}
+  var b=document.getElementById('badge_box_port');
+  if(b){b.textContent=chk<all.length?chk+'/'+all.length:'';b.classList.toggle('active',chk<all.length);}
+  update();
+}
+function toggleAllBoxPort(){
+  var allEl=document.getElementById('all_box_port');
+  document.querySelectorAll('.box_port_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
+  boxPortChkChanged();
 }
 function toggleRangeInputs(){
   var el=document.getElementById('box_flt_range_inputs');
@@ -5054,10 +6172,50 @@ function computeBoxStats(vals,k){
     outliers:sorted.filter(function(v){return v<loF||v>hiF;})};
 }
 function getIqrK(){var el=document.getElementById('box_iqr_k');return el?Math.max(0.5,parseFloat(el.value)||1.5):1.5;}
-function isExcludeOutliers(){var el=document.getElementById('box_excl_out_chk');return el&&el.checked;}
+function isExclRoom(){var el=document.getElementById('box_excl_room_chk');return el&&el.checked;}
+function isExclDEnv(){var el=document.getElementById('box_excl_denv_chk');return el&&el.checked;}
 /* Normalize "_cond" string "A: 1  B: 2" → "A=1|B=2" for cross-plot global filter keys */
 function condToKey(cond){
   return (cond||'').split(/  +/).map(function(p){return p.replace(/\s*:\s*/,'=').trim();}).filter(Boolean).sort().join('|');
+}
+/* Build full sorted condition key including Port dimension (cross-plot GF key compatibility).
+   Scatter _buildCoarseKey includes Port as a _grp_ column; boxplot excludes Port from cond_keys.
+   Adding Port here so boxplot GF keys match what other plots produce. */
+function _boxFullCondKey(rawCond, port){
+  var parts=condToKey(rawCond).split('|').filter(Boolean);
+  if(port) parts.push('Port='+port);
+  parts.sort();
+  return parts.join('|');
+}
+/* GF membership check with dimension-intersection + serial normalisation.
+   Handles old-format keys (port-qualified serial, missing Port/AlcState/Mode in condKey)
+   by: (1) exact match first, (2) strip port suffix from stored serial and compare base,
+   (3) only check dimensions present in BOTH stored key and check key. */
+function _boxIsInGf(checkKey){
+  if(!_boxGfCoarseExcluded||!_boxGfCoarseExcluded.size) return false;
+  if(_boxGfCoarseExcluded.has(checkKey)) return true;
+  var sep=checkKey.indexOf('||');if(sep<0) return false;
+  var ser=checkKey.slice(0,sep);
+  var rowCondMap={};
+  checkKey.slice(sep+2).split('|').filter(Boolean).forEach(function(kv){
+    var i=kv.indexOf('=');if(i<0) return;
+    rowCondMap[kv.slice(0,i)]=kv.slice(i+1);
+  });
+  var found=false;
+  _boxGfCoarseExcluded.forEach(function(gk){
+    if(found) return;
+    var gs=gk.indexOf('||');if(gs<0) return;
+    if(_boxBaseSerial(gk.slice(0,gs))!==ser) return;
+    var allMatch=true;
+    gk.slice(gs+2).split('|').filter(Boolean).forEach(function(kv){
+      if(!allMatch) return;
+      var i=kv.indexOf('=');if(i<0) return;
+      var dim=kv.slice(0,i);
+      if(rowCondMap.hasOwnProperty(dim)&&rowCondMap[dim]!==kv.slice(i+1)) allMatch=false;
+    });
+    if(allMatch) found=true;
+  });
+  return found;
 }
 /* Risk metrics for one outlier removed from allVals */
 function outlierRisk(outlierVal,allVals){
@@ -5102,29 +6260,43 @@ function _specFromStats(selConds,freqToLabel){
 }
 function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var k=getIqrK();
-  var excl=isExcludeOutliers();
+  var exclRoom=isExclRoom();var exclDEnv=isExclDEnv();
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
+  var allPorts=getAllBoxPorts();var selPorts=getSelectedBoxPorts();
+  var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
-  var iqrActive=excl||(Math.abs(k-1.5)>0.001);
-  var needsRecompute=serActive||yActive||passActive||iqrActive;
-  var rlo=yActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+  var yActive=yFlt&&yFlt.mode==='range'&&isFinite(yFlt.yhi);
+  var kChanged=Math.abs(k-1.5)>0.001;
+  var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
+  var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var passHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
+  var passLo=passActive?LO_SPEC:null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+  var fr=getBoxFreqRange();
   var traces=[];
   var condIdxMap={};var ci=0;
   BOX_DATA.forEach(function(cd){if(condIdxMap[cd.condition]===undefined) condIdxMap[cd.condition]=ci++;});
   BOX_DATA.forEach(function(cd){
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
+    var condKey=condToKey(cd.condition);
+    var excl=cd.temp==='Room'?exclRoom:exclDEnv;
+    /* Recompute only when this specific condition needs it */
+    var needsRecompute=serActive||portActive||yActive||passActive||excl||kChanged||gfActive;
     var fs;
     if(needsRecompute){
       fs=[];
       cd.freq_stats.forEach(function(f){
+        if(f.freq<fr.lo||f.freq>fr.hi) return;
         var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
         var detail=allDet.filter(function(d){
-          return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
-            &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
+          if(serActive&&selBoxSers.indexOf(d.s)<0) return false;
+          if(portActive&&selPorts.indexOf(d.p||'')<0) return false;
+          if(d.v>rhi) return false;
+          if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
+          if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p));if(boxGfFocus?!_ig:_ig) return false;}
+          return true;
         });
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
@@ -5132,7 +6304,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         if(!s) return;
         var outDet=detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;});
         var boxDet=excl?detail.filter(function(d){return d.v>=s.lo_w&&d.v<=s.hi_w;}):detail;
-        if(!boxDet.length) return;
+        if(!boxDet.length) boxDet=detail; /* safety: if all values are outliers, show all */
         var bsVals=boxDet.map(function(d){return d.v;});
         var bsRaw=computeBoxStats(bsVals,k);
         if(!bsRaw) return;
@@ -5147,18 +6319,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
           outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:detail});
       });
     } else {
-      /* Override Python-computed IQR-fence whiskers with actual data extent so that
-         outlier circles always sit at the whisker tips, not beyond them. */
-      fs=cd.freq_stats.map(function(f){
-        var vd=f.vals_detail;
-        if(!vd||!vd.length) return f;
-        var mn=Infinity,mx=-Infinity;
-        for(var i=0;i<vd.length;i++){if(vd[i].v<mn)mn=vd[i].v;if(vd[i].v>mx)mx=vd[i].v;}
-        return {freq:f.freq,freq_label:f.freq_label,n:f.n,mean:f.mean,
-                q1:f.q1,q2:f.q2,q3:f.q3,lo_w:mn,hi_w:mx,
-                outlier_detail:f.outlier_detail,outliers:f.outliers,
-                vals_detail:f.vals_detail,vals:f.vals};
-      });
+      fs=cd.freq_stats.filter(function(f){return f.freq>=fr.lo&&f.freq<=fr.hi;});
     }
     if(!fs.length) return;
     var color=PALETTE[(condIdxMap[cd.condition]||0)%PALETTE.length];
@@ -5219,11 +6380,16 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         hovertemplate:'%{text}<extra></extra>'});
     }
   });
-  /* Dynamic per-freq-cat spec lines derived from active conditions */
+  /* Dynamic per-freq-cat spec lines derived from active conditions (filtered to current freq range) */
   var f2l=_getFreqToLabel();
   var specMaps=_specFromStats(selConds,f2l);
+  var _specActiveLabels=new Set();
+  BOX_DATA.forEach(function(cd){
+    (cd.freq_stats||[]).forEach(function(fs){if(fs.freq>=fr.lo&&fs.freq<=fr.hi)_specActiveLabels.add(fs.freq_label);});
+  });
+  var _specOrder=BOX_FREQ_ORDER.filter(function(l){return _specActiveLabels.has(l);});
   var hiX=[],hiY=[],loX=[],loY=[];
-  BOX_FREQ_ORDER.forEach(function(fl){
+  _specOrder.forEach(function(fl){
     var hv=specMaps.hi[fl]; if(hv===undefined&&HI_SPEC!==null) hv=HI_SPEC;
     var lv=specMaps.lo[fl]; if(lv===undefined&&LO_SPEC!==null) lv=LO_SPEC;
     if(hv!==undefined){hiX.push(fl);hiY.push(hv);}
@@ -5235,13 +6401,27 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   if(hiX.length) traces.push({type:'scatter',mode:'lines',x:hiX,y:hiY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
+  /* Manual TLL override line */
+  if(yFlt&&yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined&&_specOrder.length){
+    var tllX=[_specOrder[0],_specOrder[_specOrder.length-1]];
+    traces.push({type:'scatter',mode:'lines',x:tllX,y:[yFlt.tll_hi,yFlt.tll_hi],
+      line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
+      hovertemplate:'TLL↑ (manual): '+yFlt.tll_hi.toFixed(4)+'<extra></extra>'});
+  }
   return traces;
 }
 function buildLayout(){
+  /* Filter category order by current freq range */
+  var fr=getBoxFreqRange();
+  var activeLabels=new Set();
+  BOX_DATA.forEach(function(cd){
+    (cd.freq_stats||[]).forEach(function(fs){if(fs.freq>=fr.lo&&fs.freq<=fr.hi)activeLabels.add(fs.freq_label);});
+  });
+  var filteredOrder=BOX_FREQ_ORDER.filter(function(l){return activeLabels.has(l);});
   return {
     title:{text:BOX_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:'Frequency',categoryorder:'array',categoryarray:BOX_FREQ_ORDER,tickangle:-45},
+    xaxis:{title:'Frequency',categoryorder:'array',categoryarray:filteredOrder,tickangle:-45},
     yaxis:{title:Y_LABEL,range:Y_LIM,autorange:Y_LIM?false:true},
     height:540,boxmode:'group',boxgap:0.2,boxgroupgap:0.15,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1,font:{size:11}},
@@ -5255,22 +6435,25 @@ function updateStatsTable(selConds,yFlt,selBoxSers){
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yFltActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
+  var yFltActive=yFlt&&yFlt.mode==='range'&&isFinite(yFlt.yhi);
+  var stPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
+  var stPassLo=passActive?LO_SPEC:null;
+  var fr=getBoxFreqRange();
   var rows=[];
   if(serActive||yFltActive||passActive){
-    var rlo=yFltActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var fltLabel=(serActive&&yFltActive)?'Serial+Y-filtered':
                  serActive?'Serial-filtered':
                  passActive?'Passing only':
-                 'Y-filtered ['+rlo.toFixed(3)+','+rhi.toFixed(3)+']';
+                 'Y-filtered [hi='+rhi.toFixed(3)+']';
     BOX_DATA.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
       (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(f){
+        if(f.freq<fr.lo||f.freq>fr.hi) return;
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
           .filter(function(d){
-            return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
-              &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
+            return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi
+              &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi));
           });
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
@@ -5282,7 +6465,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers){
         var outStr=outDet.length?
           '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
-        rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(2)+'</td><td>'+s.n+'</td>'+
+        rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+s.n+'</td>'+
           '<td>'+s.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
           '<td><em style="color:#888">'+fltLabel+'</em></td>'+
@@ -5294,6 +6477,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers){
     BOX_STATS.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
       (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(fs){
+        if(fs.freq<fr.lo||fs.freq>fr.hi) return;
         var nc=fs.norm==='Normal'?'green':fs.norm==='Marginal'?'orange':'red';
         var nrmStr='<span style="color:'+nc+';font-weight:bold">'+fs.norm+'</span> W='+fs.W.toFixed(3)+' p='+fs.p.toFixed(3);
         var outDet=fs.outlier_detail||[];
@@ -5307,7 +6491,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers){
           else
             npCell='<td style="color:#aaa;font-size:11px">'+(fs.np_ti_lo==null?'n&nbsp;too&nbsp;small':'Normal&nbsp;(k·s)')+'</td>';
         }
-        rows.push('<tr><td>'+cd.condition+'</td><td>'+fs.freq.toFixed(2)+'</td><td>'+fs.n+'</td>'+
+        rows.push('<tr><td>'+cd.condition+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+fs.s.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
           '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td></tr>');
@@ -5340,11 +6524,13 @@ function saveBoxCSV(withExcluded){
   if(withExcluded) hdrs.push('Included');
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var fr=getBoxFreqRange();
   BOX_DATA.forEach(function(cd){
     if(exportConds.indexOf(cd.condition)<0) return;
     if(exportTemps.indexOf(cd.temp)<0) return;
     var isIncluded=selConds.indexOf(cd.condition)>=0&&selTemps.indexOf(cd.temp)>=0;
     (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(fs){
+      if(!withExcluded&&(fs.freq<fr.lo||fs.freq>fr.hi)) return;
       var row=[esc(cd.condition),esc(cd.temp),fs.freq.toFixed(4),esc(fs.freq_label),
         fs.n,fs.mean.toFixed(6),fs.q1.toFixed(6),fs.q2.toFixed(6),fs.q3.toFixed(6),
         fs.lo_w.toFixed(6),fs.hi_w.toFixed(6),
@@ -5386,18 +6572,21 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yActive=yFlt&&yFlt.mode==='range'&&(isFinite(yFlt.ylo)||isFinite(yFlt.yhi));
-  var rlo=yActive&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+  var yActive=yFlt&&yFlt.mode==='range'&&isFinite(yFlt.yhi);
+  var olPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
+  var olPassLo=passActive?LO_SPEC:null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+  var fr=getBoxFreqRange();
   var result=[];
   BOX_DATA.forEach(function(cd){
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
     cd.freq_stats.forEach(function(f){
+      if(f.freq<fr.lo||f.freq>fr.hi) return;
       var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
       var detail=allDet.filter(function(d){
-        return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v>=rlo&&d.v<=rhi
-          &&(!passActive||(LO_SPEC===null||d.v>=LO_SPEC)&&(HI_SPEC===null||d.v<=HI_SPEC));
+        return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi
+          &&(!passActive||(olPassLo===null||d.v>=olPassLo)&&(olPassHi===null||d.v<=olPassHi));
       });
       if(detail.length<2) return;
       var fv=detail.map(function(d){return d.v;});
@@ -5407,7 +6596,7 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
         var risk=outlierRisk(d.v,fv);
         result.push({cond:cd.condition,temp:cd.temp,freq:f.freq,freqLabel:f.freq_label,
           serial:d.s,value:d.v,sigma:risk.sigma,dNpTi:risk.dNpTi,
-          key:d.s+'||'+condToKey(cd.condition)+'||'+cd.temp+'||'+f.freq.toFixed(3)});
+          key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'||'+cd.temp+'||'+f.freq.toFixed(3)});
       });
     });
   });
@@ -5454,13 +6643,126 @@ function toggleOutlierPanel(){
     updateOutlierPanel(selConds,selTemps,yFlt,getSelectedBoxSerials());
   }
 }
-/* ---- Longform harmonic filter ---- */
+/* ---- delta-outlier (temperature sensitivity) detection ---- */
+function _collectDeltaOutliers(selConds,selTemps,selBoxSers){
+  var k=getIqrK();
+  var fr=getBoxFreqRange();
+  var result=[];
+  selConds.forEach(function(cond){
+    /* Build Room baseline: roomMap[serial][freq] = value */
+    var roomMap={};
+    BOX_DATA.forEach(function(cd){
+      if(cd.condition!==cond||cd.temp!=='Room') return;
+      (cd.freq_stats||[]).forEach(function(fs){
+        if(fs.freq<fr.lo||fs.freq>fr.hi) return;
+        (fs.vals_detail||[]).forEach(function(d){
+          if(selBoxSers.indexOf(d.s)<0) return;
+          if(!roomMap[d.s]) roomMap[d.s]={};
+          roomMap[d.s][fs.freq]=d.v;
+        });
+      });
+    });
+    if(!Object.keys(roomMap).length) return;
+    /* For each non-Room temp, compute per-DUT deltas and apply IQR */
+    selTemps.forEach(function(temp){
+      if(temp==='Room') return;
+      BOX_DATA.forEach(function(cd){
+        if(cd.condition!==cond||cd.temp!==temp) return;
+        (cd.freq_stats||[]).forEach(function(fs){
+          if(fs.freq<fr.lo||fs.freq>fr.hi) return;
+          var deltas=[];
+          (fs.vals_detail||[]).forEach(function(d){
+            if(selBoxSers.indexOf(d.s)<0) return;
+            if(!roomMap[d.s]||roomMap[d.s][fs.freq]===undefined) return;
+            deltas.push({s:d.s,p:d.p||'',delta:d.v-roomMap[d.s][fs.freq],absVal:d.v,roomVal:roomMap[d.s][fs.freq]});
+          });
+          if(deltas.length<4) return;
+          var dv=deltas.map(function(d){return d.delta;}).sort(function(a,b){return a-b;});
+          var n=dv.length;
+          function pct(p){var i=(p/100)*(n-1),lo=Math.floor(i);return lo+1<n?dv[lo]+(dv[lo+1]-dv[lo])*(i-lo):dv[lo];}
+          var q1=pct(25),q3=pct(75),iqr=q3-q1;
+          var loF=q1-k*iqr,hiF=q3+k*iqr;
+          var mean=0;dv.forEach(function(v){mean+=v;});mean/=n;
+          deltas.forEach(function(d){
+            if(d.delta>=loF&&d.delta<=hiF) return;
+            var sigma=iqr>0?(d.delta-mean)/(iqr/1.35):0;
+            result.push({
+              cond:cond,temp:temp,freq:fs.freq,freqLabel:fs.freq_label,
+              serial:d.s,delta:d.delta,absVal:d.absVal,roomVal:d.roomVal,
+              q1:q1,q3:q3,iqr:iqr,loF:loF,hiF:hiF,sigma:sigma,
+              key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cond,d.p)+'||'+temp+'||'+fs.freq.toFixed(3)
+            });
+          });
+        });
+      });
+    });
+  });
+  return result;
+}
+function updateDeltaOutlierPanel(selConds,selTemps,selBoxSers){
+  var panel=document.getElementById('box_delta_panel');
+  if(!panel||panel.style.display==='none') return;
+  var outliers=_collectDeltaOutliers(selConds,selTemps,selBoxSers);
+  window._currentDeltaOutlierKeys=outliers.map(function(o){return o.key;});
+  var applyBtn=document.getElementById('box_apply_delta_gf_btn');
+  if(applyBtn) applyBtn.textContent='Set delta outliers as GF ('+outliers.length+' pt'+(outliers.length!==1?'s':'')+')';
+  if(!outliers.length){
+    panel.innerHTML='<div style="padding:6px 14px;color:#888;font-size:12px">No delta outliers at current k\xd7IQR threshold. (Requires Room data + ≥1 other temperature.)</div>';
+    return;
+  }
+  outliers.sort(function(a,b){return Math.abs(b.sigma)-Math.abs(a.sigma);});
+  var rows=outliers.map(function(o){
+    var absSig=Math.abs(o.sigma);
+    var sigStyle=absSig>=3?'color:#c00;font-weight:bold':absSig>=2?'color:#c80;font-weight:bold':'color:#555';
+    var dir=o.delta>0?'+':'';
+    return '<tr>'+
+      '<td>'+o.cond+'</td>'+
+      '<td>'+o.temp+'</td>'+
+      '<td>'+o.freqLabel+'</td>'+
+      '<td>'+(o.serial==='unknown'?'&mdash;':o.serial)+'</td>'+
+      '<td>'+o.absVal.toFixed(4)+'</td>'+
+      '<td>'+o.roomVal.toFixed(4)+'</td>'+
+      '<td style="'+(o.delta>0?'color:#c00':'color:#00c')+';font-weight:bold">'+dir+o.delta.toFixed(4)+'</td>'+
+      '<td style="'+sigStyle+'">'+o.sigma.toFixed(2)+'σ</td>'+
+      '<td>'+o.loF.toFixed(4)+' to '+o.hiF.toFixed(4)+'</td>'+
+      '</tr>';
+  });
+  panel.innerHTML='<table class="stbl"><thead><tr>'+
+    '<th>Condition</th><th>Temp</th><th>Frequency</th><th>Serial</th>'+
+    '<th>Value(T)</th><th>Value(Room)</th><th>Δ(T−Room)</th>'+
+    '<th>σ from meanΔ</th><th>k\xd7IQR fence</th>'+
+    '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
+}
+function applyDeltaGlobalFilter(){
+  var selConds=getSelectedConds(),selTemps=getSelectedTemps();
+  var selBoxSers=getSelectedBoxSerials();
+  var outliers=_collectDeltaOutliers(selConds,selTemps,selBoxSers);
+  var keys=outliers.map(function(o){return o.key;});
+  if(!keys.length){alert('No delta outliers at current k\xd7IQR threshold.');return;}
+  window._currentDeltaOutlierKeys=keys;
+  _mergeGf(keys);
+}
+function toggleDeltaPanel(){
+  var panel=document.getElementById('box_delta_panel');
+  var btn=document.getElementById('box_delta_toggle_btn');
+  if(!panel||!btn) return;
+  var show=panel.style.display==='none';
+  panel.style.display=show?'':'none';
+  btn.textContent=(show?'▼':'▶')+' Delta Outlier Detail';
+  if(show){
+    var selConds=getSelectedConds();var selTemps=getSelectedTemps();
+    updateDeltaOutlierPanel(selConds,selTemps,getSelectedBoxSerials());
+  }
+}
+/* ---- Longform primary-dim filter (HarmonicNumber or SpurType) ---- */
 function updateBoxHarmonic(){
   var harm=document.getElementById('box_harm_sel').value;
-  /* Sync the COND_DIMS HarmonicNumber panel (if present) so _syncLfFromAllDims reads it */
+  var primaryColEl=document.getElementById('box_lf_primary_col');
+  var primaryColId=primaryColEl?primaryColEl.value:'HarmonicNumber';
+  /* Sync the matching COND_DIMS panel so _syncLfFromAllDims reads it */
   if(COND_DIMS){
     COND_DIMS.forEach(function(dim){
-      if(dim.col_id!=='HarmonicNumber') return;
+      if(dim.col_id!==primaryColId) return;
       var col='box_cond_'+dim.col_id;
       document.querySelectorAll('.'+col).forEach(function(c){c.checked=(harm==='all'||c.value===harm);});
       var allEl=document.getElementById('all_'+col);if(allEl)allEl.checked=(harm==='all');
@@ -5477,6 +6779,7 @@ function selAllBoxLf(on){
 
 /* ---- Clear everything ---- */
 function clearEverything(){
+  _stClear();
   /* Longform harmonic + checkboxes */
   var hs=document.getElementById('box_harm_sel');
   if(hs) hs.value='all';
@@ -5494,6 +6797,10 @@ function clearEverything(){
   document.querySelectorAll('.box_ser_chk').forEach(function(c){c.checked=true;});
   var allSer=document.getElementById('all_box_ser');if(allSer)allSer.checked=true;
   var bSer=document.getElementById('badge_box_ser');if(bSer){bSer.textContent='';bSer.classList.remove('active');}
+  /* Port */
+  document.querySelectorAll('.box_port_chk').forEach(function(c){c.checked=true;});
+  var allPort=document.getElementById('all_box_port');if(allPort)allPort.checked=true;
+  var bPort=document.getElementById('badge_box_port');if(bPort){bPort.textContent='';bPort.classList.remove('active');}
   /* Data filter */
   var allFlt=document.querySelector('input[name="box_flt"][value="all"]');
   if(allFlt)allFlt.checked=true;
@@ -5501,8 +6808,12 @@ function clearEverything(){
   /* IQR k */
   var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value='1.5';
   /* Checkboxes */
-  var exEl=document.getElementById('box_excl_out_chk');if(exEl)exEl.checked=false;
+  var exEl=document.getElementById('box_excl_room_chk');if(exEl)exEl.checked=false;
+  var exEl2=document.getElementById('box_excl_denv_chk');if(exEl2)exEl2.checked=false;
   var ptEl=document.getElementById('box_show_pts_chk');if(ptEl)ptEl.checked=false;
+  /* Freq filter */
+  var flo=document.getElementById('box_freq_lo');if(flo)flo.value=BOX_FREQ_MIN;
+  var fhi=document.getElementById('box_freq_hi');if(fhi)fhi.value=BOX_FREQ_MAX;
   /* Global filter */
   try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
   var gEl=document.getElementById('box_gf_status');if(gEl)gEl.textContent='';
@@ -5510,23 +6821,113 @@ function clearEverything(){
 }
 
 /* ---- global filter (localStorage) ---- */
+var _boxGfCoarseExcluded=null;
+/* Strip port suffix so GF keys store base serial (cross-plot compatible with scatter/stat_summary) */
+function _boxBaseSerial(s){
+  for(var i=0;i<ALL_BOX_PORTS.length;i++){var sfx='_'+ALL_BOX_PORTS[i];if(s&&s.length>sfx.length&&s.slice(-sfx.length)===sfx)return s.slice(0,-sfx.length);}
+  return s||'unknown';
+}
+function _loadBoxGlobalFilter(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    if(!raw){_boxGfCoarseExcluded=null;return;}
+    var obj=JSON.parse(raw);
+    var serKws=['serial','unit id','dut id','s/n'];
+    _boxGfCoarseExcluded=new Set();
+    (obj.excluded||[]).forEach(function(k){
+      var parts=k.split('||');
+      if(parts.length>=2){
+        var condKey=parts[1].split('|').filter(function(p){
+          var lo=p.toLowerCase();
+          return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
+        }).join('|');
+        _boxGfCoarseExcluded.add(parts[0]+'||'+condKey);
+      }
+    });
+    if(!_boxGfCoarseExcluded.size) _boxGfCoarseExcluded=null;
+  }catch(e){_boxGfCoarseExcluded=null;}
+}
+function _updateBoxGfStatus(){
+  var s=document.getElementById('box_gf_status');
+  var btn=document.getElementById('box_gf_mode_btn');
+  var mode=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
+  if(btn) btn.textContent='GF Mode: '+(mode==='focus'?'Inspect ◆':'Exclude ◇');
+  if(!s) return;
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    if(!raw){s.textContent='';s.style.color='#555';return;}
+    var obj=JSON.parse(raw);
+    var keys=obj.excluded||[];
+    if(!keys.length){s.textContent='';return;}
+    var dutSers=new Set();
+    keys.forEach(function(k){dutSers.add(k.split('||')[0]);});
+    s.textContent=keys.length+' pts in GF ('+dutSers.size+' DUTs)'+(mode==='focus'?' — INSPECT MODE':'');
+    s.style.color=mode==='focus'?'#0044aa':'#900';
+  }catch(e){s.textContent='';}
+}
+function toggleGfMode(){
+  var cur=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
+  try{localStorage.setItem('padb_v2_gf_mode',cur==='exclude'?'focus':'exclude');}catch(e){}
+  _updateBoxGfStatus();
+  update();
+}
+/* Merge newKeys into the existing GF (union), preserving previously added entries */
+function _mergeGf(newKeys){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    var existing=raw?JSON.parse(raw).excluded||[]:[];
+    var merged=new Set(existing);
+    newKeys.forEach(function(k){merged.add(k);});
+    localStorage.setItem('padb_v2_excluded',JSON.stringify({v:1,excluded:Array.from(merged)}));
+    _loadBoxGlobalFilter();_updateBoxGfStatus();update();
+  }catch(e){alert('localStorage write failed: '+e.message);}
+}
+/* Set currently selected filter (conditions × serials) directly as GF — no outlier threshold needed.
+   Serial is in vals_detail[].s, NOT in the condition string (BOX_DATA groups without serial). */
+function setFilterAsGf(){
+  var selConds=getSelectedConds();
+  var selBoxSers=getSelectedBoxSerials();
+  var allBoxSers=getAllBoxSerials();
+  var serFlt=allBoxSers.length>1&&selBoxSers.length<allBoxSers.length;
+  var keys=[],seen=new Set();
+  BOX_DATA.forEach(function(cd){
+    if(selConds.indexOf(cd.condition)<0) return;
+    var condKey=condToKey(cd.condition);
+    /* Collect (baseSer, port) pairs that pass the port-qualified serial filter.
+       Port is included in the GF condKey so scatter _buildCoarseKey can match it. */
+    var spSeen=new Set();var condSerPorts=[];
+    (cd.freq_stats||[]).forEach(function(f){
+      (f.vals_detail||[]).forEach(function(d){
+        if(!d.s) return;
+        if(serFlt&&selBoxSers.indexOf(d.s)<0) return; /* filter by port-qualified serial */
+        var baseSer=_boxBaseSerial(d.s);
+        var spKey=baseSer+'\x00'+(d.p||'');
+        if(!spSeen.has(spKey)){spSeen.add(spKey);condSerPorts.push({ser:baseSer,port:d.p||''});}
+      });
+    });
+    condSerPorts.forEach(function(sp){
+      var fullCondKey=_boxFullCondKey(cd.condition,sp.port);
+      var k=sp.ser+'||'+fullCondKey;
+      if(seen.has(k)) return;
+      seen.add(k);
+      keys.push(sp.ser+'||'+fullCondKey+'||manual||0');
+    });
+  });
+  if(!keys.length){alert('No data matches the current condition and serial filter.');return;}
+  _mergeGf(keys);
+}
 function applyGlobalFilter(){
   var selConds=getSelectedConds(),selTemps=getSelectedTemps();
   var yFlt=getYFilter(),selBoxSers=getSelectedBoxSerials();
   var outliers=_collectOutliers(selConds,selTemps,yFlt,selBoxSers);
   var keys=outliers.map(function(o){return o.key;});
   if(!keys.length){alert('No outliers at current k\xd7IQR threshold.');return;}
-  try{
-    localStorage.setItem('padb_v2_excluded',JSON.stringify({v:1,excluded:keys}));
-    window._currentOutlierKeys=keys;
-    var el=document.getElementById('box_gf_status');
-    if(el) el.textContent=keys.length+' pts in global filter';
-  }catch(e){alert('localStorage write failed: '+e.message);}
+  window._currentOutlierKeys=keys;
+  _mergeGf(keys);
 }
 function clearGlobalFilter(){
   try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
-  var s=document.getElementById('box_gf_status');
-  if(s) s.textContent='';
+  _loadBoxGlobalFilter();_updateBoxGfStatus();update();
 }
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
@@ -5534,11 +6935,56 @@ function update(){
   Plotly.react('plot',buildBoxTraces(selConds,selTemps,yFlt,selBoxSers),buildLayout());
   updateStatsTable(selConds,yFlt,selBoxSers);
   updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
+  updateDeltaOutlierPanel(selConds,selTemps,selBoxSers);
+  saveState();
+}
+window.addEventListener('storage',function(e){
+  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadBoxGlobalFilter();_updateBoxGfStatus();update();}
+});
+/* ---- localStorage state persistence ---- */
+function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
+function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
+function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(STATE_KEY)===0)keys.push(k);}keys.forEach(function(k){localStorage.removeItem(k);});}catch(e){}}
+function saveState(){
+  var flo=document.getElementById('box_freq_lo');if(flo)_stSet('freq_lo',flo.value);
+  var fhi=document.getElementById('box_freq_hi');if(fhi)_stSet('freq_hi',fhi.value);
+  document.querySelectorAll('.box_env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var col='box_cond_'+dim.col_id;
+    document.querySelectorAll('.'+col).forEach(function(c){_stSet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
+  });
+  var fltEl=document.querySelector('input[name="box_flt"]:checked');if(fltEl)_stSet('box_filter_mode',fltEl.value);
+  var yhiEl=document.getElementById('box_flt_yhi');if(yhiEl)_stSet('box_filter_yhi',yhiEl.value);
+  var tllEl=document.getElementById('box_tll_hi');if(tllEl)_stSet('box_tll_hi',tllEl.value);
+  var kEl=document.getElementById('box_iqr_k');if(kEl)_stSet('box_iqr_k',kEl.value);
+}
+function loadState(){
+  var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
+  if(lo!==null){var sl=document.getElementById('box_freq_lo');if(sl)sl.value=lo;}
+  if(hi!==null){var sh=document.getElementById('box_freq_hi');if(sh)sh.value=hi;}
+  document.querySelectorAll('.box_env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var col='box_cond_'+dim.col_id;
+    document.querySelectorAll('.'+col).forEach(function(c){var s=_stGet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
+    var chks=Array.from(document.querySelectorAll('.'+col));
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){var n=chks.filter(function(c){return c.checked;}).length;allChk.checked=(n===chks.length);allChk.indeterminate=(n>0&&n<chks.length);}
+    updateBadge(col);
+  });
+  if(typeof COND_DIMS!=='undefined'&&typeof _syncLfFromAllDims==='function') _syncLfFromAllDims();
+  var fm=_stGet('box_filter_mode');
+  if(fm){var fr=document.querySelector('input[name="box_flt"][value="'+fm+'"]');if(fr){fr.checked=true;if(typeof toggleRangeInputs==='function')toggleRangeInputs();}}
+  var fyhi=_stGet('box_filter_yhi');var fyhiEl=document.getElementById('box_flt_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
+  var tll=_stGet('box_tll_hi');var tllEl=document.getElementById('box_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
+  var iqr=_stGet('box_iqr_k');if(iqr!==null){var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value=iqr;}
 }
 (function init(){
+  _loadBoxGlobalFilter();
+  loadState();
   var allConds=[];
   BOX_DATA.forEach(function(cd){if(allConds.indexOf(cd.condition)<0) allConds.push(cd.condition);});
   Plotly.newPlot('plot',buildBoxTraces(allConds,TEMPS_PRESENT,{mode:'all'},getAllBoxSerials()),buildLayout({mode:'all'}),{responsive:true,scrollZoom:true});
+  _updateBoxGfStatus();
 })();
 """
 
@@ -5570,19 +7016,25 @@ def _aggregate_box_data_by_temp(df: pd.DataFrame) -> list:
         }
 
     has_ser = "_serial_id" in df.columns
+    has_port = "_port" in df.columns
     results: list = []
     for cond, cdf in df.groupby("_cond", sort=True):
         for temp, tdf in cdf.groupby("Temperature"):
             freq_stats = []
             for freq in sorted_freqs:
                 if has_ser:
-                    _fdf = tdf.loc[tdf["Frequency_MHz"] == freq, ["Value", "_serial_id"]].dropna(subset=["Value"])
+                    cols = ["Value", "_serial_id"] + (["_port"] if has_port else [])
+                    _fdf = tdf.loc[tdf["Frequency_MHz"] == freq, cols].dropna(subset=["Value"])
                     vals = _fdf["Value"].tolist()
-                    vals_detail = [{"s": str(row["_serial_id"]), "v": round(float(row["Value"]), 6)}
-                                   for _, row in _fdf.iterrows()]
+                    vals_detail = [
+                        {"s": str(row["_serial_id"]),
+                         "p": str(row["_port"]) if has_port else "",
+                         "v": round(float(row["Value"]), 6)}
+                        for _, row in _fdf.iterrows()
+                    ]
                 else:
                     vals = tdf.loc[tdf["Frequency_MHz"] == freq, "Value"].dropna().tolist()
-                    vals_detail = [{"s": "unknown", "v": round(float(v), 6)} for v in vals]
+                    vals_detail = [{"s": "unknown", "p": "", "v": round(float(v), 6)} for v in vals]
                 if not vals:
                     continue
                 s = _box_stats(vals)
@@ -5603,7 +7055,11 @@ def _build_box_interactive_html(
     box_data: list, stat_data_box: list, freq_cat_order: list, all_temps: list,
     cond_dims: list, lo_js: str, hi_js: str, title: str, y_label: str, y_lim, palette: list,
     all_box_serials: list = None,
+    all_box_ports: list = None,
     box_cond_harm=None, harm_orders_box=None, all_conds_ordered=None,
+    box_freq_min: float = 0.0, box_freq_max: float = 1.0,
+    box_cond_spur=None, spur_orders_box=None,
+    results_dir: str = '',
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -5687,6 +7143,23 @@ def _build_box_interactive_html(
             f'<hr class="fdiv">{bser_items}</div></div>'
         )
 
+    box_port_panel_html = ""
+    if all_box_ports and len(all_box_ports) > 1:
+        bport_items = "".join(
+            f'<label class="fitem"><input type="checkbox" class="box_port_chk" value="{p}"'
+            f' checked onchange="boxPortChkChanged()">&nbsp;{p}</label>'
+            for p in all_box_ports
+        )
+        box_port_panel_html = (
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'box_port_panel\')">'
+            f'Port&thinsp;<span id="badge_box_port" class="badge"></span>&#9662;</button>'
+            f'<div class="filter-panel" id="panel_box_port_panel">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_box_port"'
+            f' checked onchange="toggleAllBoxPort()"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{bport_items}</div></div>'
+        )
+
     sep_div = '<div class="sep"></div>'
     ctrl_parts = []
     if cond_dims:
@@ -5695,20 +7168,38 @@ def _build_box_interactive_html(
         if ctrl_parts:
             ctrl_parts.append(sep_div)
         ctrl_parts.append(box_serial_panel_html)
+    if box_port_panel_html:
+        if ctrl_parts:
+            ctrl_parts.append(sep_div)
+        ctrl_parts.append(box_port_panel_html)
     ctrl_bar = (f'<div class="ctrl-bar">\n  ' + '\n  '.join(ctrl_parts) + '\n</div>\n') if ctrl_parts else ""
 
-    # Longform condition checkboxes (all rows always visible)
-    box_lf_harm_opts = '<option value="all">All harmonics</option>\n'
-    if harm_orders_box:
-        box_lf_harm_opts += "\n".join(
-            f'<option value="{h}">Harmonic {h}</option>' for h in harm_orders_box
+    # Longform condition checkboxes — primary filter is HarmonicNumber or SpurType
+    use_spur_lf = bool(spur_orders_box) and not harm_orders_box
+    if use_spur_lf:
+        box_lf_primary_label = "Spur Type"
+        box_lf_primary_col = "SpurType"
+        box_lf_opts = '<option value="all">All spur types</option>\n'
+        box_lf_opts += "\n".join(
+            f'<option value="{s}">{s}</option>' for s in (spur_orders_box or [])
         )
+        box_lf_cond_vals = box_cond_spur or ([""] * len(all_conds_ordered or []))
+    else:
+        box_lf_primary_label = "Harmonic"
+        box_lf_primary_col = "HarmonicNumber"
+        box_lf_opts = '<option value="all">All harmonics</option>\n'
+        if harm_orders_box:
+            box_lf_opts += "\n".join(
+                f'<option value="{h}">Harmonic {h}</option>' for h in harm_orders_box
+            )
+        box_lf_cond_vals = box_cond_harm or ([""] * len(all_conds_ordered or []))
+
     box_lf_rows = ""
-    if all_conds_ordered and box_cond_harm is not None:
+    if all_conds_ordered:
         for i, cond in enumerate(all_conds_ordered):
-            harm = box_cond_harm[i]
+            primary_val = box_lf_cond_vals[i] if i < len(box_lf_cond_vals) else ""
             box_lf_rows += (
-                f'<div class="box_cond_lf_row" data-harm="{harm}">'
+                f'<div class="box_cond_lf_row" data-harm="{primary_val}">'
                 f'<label style="white-space:nowrap;font-size:12px">'
                 f'<input type="checkbox" class="box_cond_lf_chk" value="{cond}" checked'
                 f' onchange="update()">&nbsp;{cond}</label></div>\n'
@@ -5733,15 +7224,16 @@ def _build_box_interactive_html(
         '  <label><input type="radio" name="box_flt" value="passing"'
         ' onchange="toggleRangeInputs();update()">&nbsp;Passing&nbsp;only</label>\n'
         '  <label><input type="radio" name="box_flt" value="range"'
-        ' onchange="toggleRangeInputs();update()">&nbsp;Y&nbsp;range</label>\n'
+        ' onchange="toggleRangeInputs();update()">&nbsp;Upper&nbsp;limit</label>\n'
         '  <span id="box_flt_range_inputs" style="display:none;align-items:center;gap:4px">\n'
-        f'    <input type="number" id="box_flt_ylo" placeholder="Y min" step="0.001"'
-        f' value="{y_lo_val}" oninput="update()">\n'
-        '    &ndash;\n'
-        f'    <input type="number" id="box_flt_yhi" placeholder="Y max" step="0.001"'
+        f'    <input type="number" id="box_flt_yhi" placeholder="dBc limit" step="0.001"'
         f' value="{y_hi_val}" oninput="update()">\n'
-        '    <small style="color:#666">(removes raw samples outside range before computing Q1/Q2/Q3/whiskers)</small>\n'
+        '    <small style="color:#666">(removes raw samples above limit before computing Q1/Q2/Q3/whiskers)</small>\n'
         '  </span>\n'
+        '  <span class="sep"></span>\n'
+        '  <label title="Override TLL for Passing only filter and draw TLL line (bypasses Spec Hi)">'
+        'TLL&nbsp;override:<input type="number" id="box_tll_hi" step="0.001" placeholder="auto"'
+        ' style="width:74px" oninput="update()"></label>\n'
         '  <span class="sep"></span>\n'
         '  <label title="Show non-parametric (order-statistic) TI bounds in the Statistics Table'
         ' for Non-normal and Marginal frequencies">'
@@ -5755,9 +7247,21 @@ def _build_box_interactive_html(
         '  <label title="IQR fence multiplier: points beyond Q1 - k×IQR or Q3 + k×IQR are flagged as outliers">'
         'k&thinsp;&times;&thinsp;IQR:&nbsp;<input type="number" id="box_iqr_k" value="1.5"'
         ' min="0.5" max="5" step="0.1" style="width:52px" oninput="update()"></label>\n'
-        '  <label title="Recompute box statistics with outlier points removed from Q1/Q2/Q3 calculation">'
-        '<input type="checkbox" id="box_excl_out_chk" onchange="update()">'
-        '&nbsp;Exclude&nbsp;outliers&nbsp;from&nbsp;box</label>\n'
+        '  <label title="Exclude Room outliers from Q1/Q2/Q3 calculation">'
+        '<input type="checkbox" id="box_excl_room_chk" onchange="update()">'
+        '&nbsp;Excl&nbsp;outliers:&nbsp;Room</label>\n'
+        '  <label title="Exclude non-room temperature outliers from Q1/Q2/Q3 calculation">'
+        '<input type="checkbox" id="box_excl_denv_chk" onchange="update()">'
+        '&nbsp;&#916;Env&nbsp;temps</label>\n'
+        '  <span class="sep"></span>\n'
+        '  <label>Freq&thinsp;min&thinsp;(MHz):&thinsp;<input type="number" id="box_freq_lo"'
+        f' value="{box_freq_min:.3f}" step="any"'
+        ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
+        ' oninput="update()"></label>\n'
+        '  <label>Freq&thinsp;max&thinsp;(MHz):&thinsp;<input type="number" id="box_freq_hi"'
+        f' value="{box_freq_max:.3f}" step="any"'
+        ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
+        ' oninput="update()"></label>\n'
         f'  {_csv_btn("saveBoxCSV")}\n'
         '</div>\n'
     )
@@ -5767,6 +7271,8 @@ def _build_box_interactive_html(
         f"var BOX_STATS={json.dumps(stat_data_box)};",
         f"var BOX_TITLE={json.dumps(title)};",
         f"var BOX_FREQ_ORDER={json.dumps(freq_cat_order)};",
+        f"var BOX_FREQ_MIN={box_freq_min!r};",
+        f"var BOX_FREQ_MAX={box_freq_max!r};",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
         f"var Y_LIM={json.dumps(y_lim)};",
@@ -5775,7 +7281,9 @@ def _build_box_interactive_html(
         f"var TEMPS_PRESENT={json.dumps(all_temps)};",
         f"var PALETTE={json.dumps(palette)};",
         f"var ALL_BOX_SERIALS={json.dumps(all_box_serials or [])};",
+        f"var ALL_BOX_PORTS={json.dumps(all_box_ports or [])};",
         f"var BOX_COND_HARM={json.dumps(box_cond_harm or [])};",
+        f"var STATE_KEY='padb_{results_dir}';",
     ])
 
     return (
@@ -5785,9 +7293,10 @@ def _build_box_interactive_html(
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
         + '<div class="box_lf_bar">\n'
-        + '<span style="font-weight:600;color:#444;margin-right:4px">Harmonic:</span>\n'
+        + f'<span style="font-weight:600;color:#444;margin-right:4px">{box_lf_primary_label}:</span>\n'
+        + f'<input type="hidden" id="box_lf_primary_col" value="{box_lf_primary_col}">\n'
         + f'<select id="box_harm_sel" style="font-size:12px;padding:1px 4px;border:1px solid #bbb;border-radius:3px" onchange="updateBoxHarmonic()">\n'
-        + box_lf_harm_opts + "\n</select>\n"
+        + box_lf_opts + "\n</select>\n"
         + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;margin-left:6px" onclick="selAllBoxLf(true)">All</button>\n'
         + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff" onclick="selAllBoxLf(false)">None</button>\n'
         + '</div>\n'
@@ -5799,19 +7308,34 @@ def _build_box_interactive_html(
         ' onclick="toggleStatPanel()">&#9658; Statistics Table</button>\n'
         + '  <button class="toggle-btn" id="box_outlier_toggle_btn"'
         ' onclick="toggleOutlierPanel()">&#9658; Outlier Detail</button>\n'
+        + '  <button class="toggle-btn" id="box_delta_toggle_btn"'
+        ' onclick="toggleDeltaPanel()">&#9658; Delta Outlier Detail</button>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
+        ' title="Set currently selected conditions + serials as the global exclusion filter"'
+        ' onclick="setFilterAsGf()">Set filter as GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_gf_btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
-        ' onclick="applyGlobalFilter()">Set as global filter</button>\n'
+        ' title="Set IQR outlier points as the global exclusion filter"'
+        ' onclick="applyGlobalFilter()">Set outliers as GF</button>\n'
+        + '  <button class="toggle-btn" id="box_apply_delta_gf_btn"'
+        ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
+        ' onclick="applyDeltaGlobalFilter()">Set delta outliers as GF</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' onclick="clearGlobalFilter()">Clear global filter</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
         ' onclick="clearEverything()">Clear everything</button>\n'
+        + '  <button class="toggle-btn" id="box_gf_mode_btn"'
+        ' style="background:#f0f4ff;border-color:#6688cc;color:#0044aa"'
+        ' title="Toggle GF mode: Exclude hides flagged data; Inspect shows only flagged data"'
+        ' onclick="toggleGfMode()">GF Mode: Exclude ◇</button>\n'
         + '  <span id="box_gf_status" style="font-size:12px;color:#555"></span>\n'
         + '</div>\n'
         + '<div id="box_stat_panel" style="display:none;overflow-x:auto;padding:4px"></div>\n'
         + '<div id="box_outlier_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
+        + '<div id="box_delta_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + f"<script>\n{constants}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
     )
@@ -5830,20 +7354,25 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     if "Group" in df.columns and not df["Group"].isna().all():
         _serial_val = re.compile(r'^[A-Z]{2,3}\d{5,}$')
         _serial_kws = ("serial", "unit id", "dut id", "s/n")
+        _port_kws   = ("port",)
         unique_groups = df["Group"].dropna().unique()
         group_kv = {g: _parse_group_kv(g) for g in unique_groups}
         all_keys = set(k for kv in group_kv.values() for k in kv)
         cond_keys: list = []
         serial_keys: list = []
+        port_keys: list = []
         for key in sorted(all_keys):
             if any(kw in key.lower() for kw in _serial_kws):
                 serial_keys.append(key)
+                continue
+            if any(kw in key.lower() for kw in _port_kws):
+                port_keys.append(key)
                 continue
             vals = {kv.get(key, "") for kv in group_kv.values() if key in kv}
             if vals and sum(_serial_val.match(v) is not None for v in vals) / len(vals) > 0.5:
                 serial_keys.append(key)
                 continue
-            if 1 < len(vals) <= 20:
+            if 1 < len(vals) <= 50:
                 cond_keys.append(key)
 
         def _make_cond(g: str) -> str:
@@ -5853,16 +7382,33 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
 
         def _make_serial(g: str) -> str:
             kv = group_kv.get(g, {})
+            base = None
             for k in serial_keys:
                 if k in kv:
-                    return kv[k]
-            return g
+                    base = kv[k]
+                    break
+            if base is None:
+                base = g
+            for k in port_keys:
+                if k in kv:
+                    base = f"{base}_{kv[k]}"
+                    break
+            return base
+
+        def _make_port(g: str) -> str:
+            kv = group_kv.get(g, {})
+            for k in port_keys:
+                if k in kv:
+                    return str(kv[k])
+            return ""
 
         df["_cond"] = df["Group"].map(_make_cond).fillna("All")
         df["_serial_id"] = df["Group"].map(_make_serial).fillna("unknown")
+        df["_port"] = df["Group"].map(_make_port).fillna("")
     else:
         df["_cond"] = "All"
         df["_serial_id"] = "unknown"
+        df["_port"] = ""
 
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
 
@@ -5879,7 +7425,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     dim_vals: dict = {}
     for cd in stat_data_box:
         for part in re.split(r"  +", cd["condition"]):
-            m = re.match(r"(.+?):\s*(\S+)", part.strip())
+            m = re.match(r"(.+?):\s*(.+?)\s*$", part.strip())
             if m:
                 dim_vals.setdefault(m.group(1).strip(), set()).add(m.group(2).strip())
 
@@ -5906,6 +7452,14 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         key=lambda x: float(x) if x else float("inf")
     )
 
+    # SpurType extraction for longform panel (used when no HarmonicNumber is present)
+    _spur_re_box = re.compile(r'SpurType:\s*(.+?)(?:\s{2,}|$)', re.IGNORECASE)
+    def _extract_spur_box(cond: str) -> str:
+        m = _spur_re_box.search(cond)
+        return m.group(1).strip() if m else ""
+    box_cond_spur = [_extract_spur_box(c) for c in all_conds_ordered]
+    spur_orders_box = sorted(set(s for s in box_cond_spur if s))
+
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
     palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
@@ -5915,13 +7469,28 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
                               for cd in box_data
                               for fs in cd.get("freq_stats", [])
                               for d in fs.get("vals_detail", [])})
+    all_box_ports = sorted({d["p"]
+                            for cd in box_data
+                            for fs in cd.get("freq_stats", [])
+                            for d in fs.get("vals_detail", [])
+                            if d.get("p")})
+
+    all_box_freqs = sorted({fs["freq"] for cd in box_data for fs in cd.get("freq_stats", [])})
+    box_freq_min = all_box_freqs[0] if all_box_freqs else 0.0
+    box_freq_max = all_box_freqs[-1] if all_box_freqs else 1.0
 
     html = _build_box_interactive_html(
         box_data, stat_data_box, freq_cat_order, all_temps,
         cond_dims, lo_js, hi_js, title, y_label, y_lim, palette, all_box_serials,
+        all_box_ports=all_box_ports,
         box_cond_harm=box_cond_harm,
         harm_orders_box=harm_orders_box,
         all_conds_ordered=all_conds_ordered,
+        box_freq_min=box_freq_min,
+        box_freq_max=box_freq_max,
+        box_cond_spur=box_cond_spur,
+        spur_orders_box=spur_orders_box,
+        results_dir=cfg.get('results_dir', ''),
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -6036,6 +7605,85 @@ function getActive(){
   });
 }
 
+/* ---- k-factor bilinear interpolation ---- */
+function kLookup(n,P,C){
+  if(!KT||!KT.P) return 2.0;
+  var Pv=KT.P,Cv=KT.C,nv=KT.n;
+  var Pi=Pv.reduce(function(b,v,i){return Math.abs(v-P)<Math.abs(Pv[b]-P)?i:b;},0);
+  var Ci=Cv.reduce(function(b,v,i){return Math.abs(v-C)<Math.abs(Cv[b]-C)?i:b;},0);
+  var Pi2=Math.min(Pi+1,Pv.length-1),Ci2=Math.min(Ci+1,Cv.length-1);
+  var tP=Pv[Pi]===Pv[Pi2]?0:(P-Pv[Pi])/(Pv[Pi2]-Pv[Pi]);
+  var tC=Cv[Ci]===Cv[Ci2]?0:(C-Cv[Ci])/(Cv[Ci2]-Cv[Ci]);
+  function lookAt(pi,ci){
+    var key=KT.P[pi]+'_'+KT.C[ci],arr=KT.k[key];
+    if(!arr)return 2.0;
+    var nC=Math.max(nv[0],Math.min(nv[nv.length-1],n));
+    var idx=nC-nv[0],lo=Math.max(0,Math.min(Math.floor(idx),arr.length-2));
+    var t=idx-lo;
+    return arr[lo]*(1-t)+arr[lo+1]*t;
+  }
+  var k00=lookAt(Pi,Ci),k10=lookAt(Pi2,Ci),k01=lookAt(Pi,Ci2),k11=lookAt(Pi2,Ci2);
+  return k00*(1-tP)*(1-tC)+k10*tP*(1-tC)+k01*(1-tP)*tC+k11*tP*tC;
+}
+
+/* ---- temperature filter ---- */
+function getSelTemps(){
+  var chks=Array.from(document.querySelectorAll('.sum_temp_chk:checked'));
+  return chks.length?chks.map(function(c){return c.value;}):(TEMPS_ALL||[]);
+}
+
+/* ---- stat parameter controls ---- */
+function getSumParams(){
+  function _n(id,def){var el=document.getElementById(id);return el?(parseFloat(el.value)||def):def;}
+  function _i(id,def){var el=document.getElementById(id);return el?(parseInt(el.value)||def):def;}
+  function _nn(id){var el=document.getElementById(id);if(!el||el.value==='')return null;var v=parseFloat(el.value);return isNaN(v)?null:v;}
+  return {P:_n('sum_P',0.90),C:_n('sum_C',0.90),n_override:_i('sum_n',0),
+          mu:_n('sum_mu',0),denv:_n('sum_denv',0),tll_hi_override:_nn('sum_tll_hi')};
+}
+
+/* ---- get temp-filtered + param-adjusted stats for a condition ---- */
+function getSumCondData(cd,selTemps,params){
+  var allTemps=TEMPS_ALL||[];
+  var filtering=selTemps&&allTemps.length>0&&selTemps.length<allTemps.length;
+  /* No by_temp data (old record format) — use pre-computed, offset by budget */
+  if(!cd.by_temp){
+    if(!params.mu&&!params.denv)
+      return {mean:cd.mean,min_data:cd.min_data,max_data:cd.max_data,
+              uttl:cd.uttl,lttl:cd.lttl,uttl_is_estimate:cd.uttl_is_estimate||false};
+    return {mean:cd.mean,min_data:cd.min_data,max_data:cd.max_data,
+            uttl:cd.uttl.map(function(v){return v!==null?v+params.mu+params.denv:null;}),
+            lttl:cd.lttl.map(function(v){return v!==null?v-params.mu-params.denv:null;}),
+            uttl_is_estimate:true};
+  }
+  /* by_temp available — always recompute parametric k-TI so all controls take effect */
+  var temps=filtering?selTemps:allTemps;
+  var nFreqs=cd.freqs.length;
+  var out_mean=[],out_min=[],out_max=[],out_uttl=[],out_lttl=[];
+  for(var fi=0;fi<nFreqs;fi++){
+    var tot_n=0,w_mean=0,pool_ss=0,mn=null,mx=null;
+    temps.forEach(function(t){
+      var bt=cd.by_temp[t];if(!bt)return;
+      var n=bt.n[fi],m=bt.mean[fi],s=bt.std[fi];
+      if(!n||m===null||m===undefined)return;
+      w_mean+=n*m;pool_ss+=(n>1?(n-1)*s*s:0);tot_n+=n;
+      if(mn===null||bt.min_data[fi]<mn)mn=bt.min_data[fi];
+      if(mx===null||bt.max_data[fi]>mx)mx=bt.max_data[fi];
+    });
+    if(!tot_n){out_mean.push(null);out_min.push(null);out_max.push(null);
+               out_uttl.push(null);out_lttl.push(null);continue;}
+    var mu=w_mean/tot_n;
+    var sigma=tot_n>1?Math.sqrt(pool_ss/Math.max(tot_n-1,1)):0;
+    var n_use=params.n_override>0?params.n_override:tot_n;
+    var k=kLookup(n_use,params.P,params.C);
+    out_mean.push(Math.round(mu*1e6)/1e6);
+    out_min.push(mn);out_max.push(mx);
+    out_uttl.push(Math.round((mu+k*sigma+params.mu+params.denv)*1e4)/1e4);
+    out_lttl.push(Math.round((mu-k*sigma-params.mu-params.denv)*1e4)/1e4);
+  }
+  return {mean:out_mean,min_data:out_min,max_data:out_max,
+          uttl:out_uttl,lttl:out_lttl,uttl_is_estimate:true};
+}
+
 /* ---- build traces ---- */
 function hexToRgba(hex,a){
   var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
@@ -6068,20 +7716,23 @@ function buildTraces(active,excl){
       type:'scatter',x:freqs,y:means,mode:'lines',
       line:{color:'rgba(170,170,170,0.55)',width:1.2},
       name:cd.condition+' (excl)',legendgroup:cd.condition+'_excl',showlegend:false,
-      hovertemplate:'<b>'+cd.condition+'</b> (excluded)<br>Freq: %{x:.4g} MHz<br>Mean: %{y:.2f}<extra></extra>'
+      hovertemplate:'<b>'+cd.condition+'</b> (excluded)<br>Freq: %{x:.4f} MHz<br>Mean: %{y:.2f}<extra></extra>'
     });
   });
+  var _selTemps=getSelTemps();
+  var _sumParams=getSumParams();
   active.forEach(function(cd,ci){
     var color=PALETTE[ci%PALETTE.length];
     var idxs=[];
     cd.freqs.forEach(function(f,i){if(f>=freqLo&&f<=freqHi)idxs.push(i);});
     if(!idxs.length)return;
     var freqs=idxs.map(function(i){return cd.freqs[i];});
-    var means=idxs.map(function(i){return cd.mean[i];});
-    var mins=idxs.map(function(i){return cd.min_data[i];});
-    var maxs=idxs.map(function(i){return cd.max_data[i];});
-    var uttls=idxs.map(function(i){return cd.uttl[i];});
-    var lttls=idxs.map(function(i){return cd.lttl[i];});
+    var _stats=getSumCondData(cd,_selTemps,_sumParams);
+    var means=idxs.map(function(i){return _stats.mean[i];});
+    var mins=idxs.map(function(i){return _stats.min_data[i];});
+    var maxs=idxs.map(function(i){return _stats.max_data[i];});
+    var uttls=idxs.map(function(i){return _stats.uttl[i];});
+    var lttls=idxs.map(function(i){return _stats.lttl[i];});
     /* min-max band */
     traces.push({
       type:'scatter',
@@ -6097,26 +7748,16 @@ function buildTraces(active,excl){
       type:'scatter',x:freqs,y:means,mode:'lines',
       line:{color:color,width:2},
       name:cd.condition,legendgroup:cd.condition,
-      hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4g} MHz<br>Mean: %{y:.2f}<extra></extra>'
+      hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>Mean: %{y:.2f}<extra></extra>'
     });
     /* TTL upper */
     if(uttls.some(function(v){return v!==null&&v!==undefined;})){
-      var ttlLabel=cd.uttl_is_estimate?' TTL↑ (est)':' TTL↑';
+      var ttlLabel=_stats.uttl_is_estimate?' TTL↑ (est)':' TTL↑';
       traces.push({
         type:'scatter',x:freqs,y:uttls,mode:'lines',
-        line:{color:color,width:1.5,dash:cd.uttl_is_estimate?'dot':'dash'},
+        line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
         name:cd.condition+ttlLabel,legendgroup:cd.condition,showlegend:false,
-        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4g} MHz<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
-      });
-    }
-    /* TTL lower */
-    if(lttls.some(function(v){return v!==null&&v!==undefined;})){
-      var ttlLabelLo=cd.uttl_is_estimate?' TTL↓ (est)':' TTL↓';
-      traces.push({
-        type:'scatter',x:freqs,y:lttls,mode:'lines',
-        line:{color:color,width:1.5,dash:cd.uttl_is_estimate?'dot':'dash'},
-        name:cd.condition+ttlLabelLo,legendgroup:cd.condition,showlegend:false,
-        hoverinfo:'skip'
+        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
       });
     }
   });
@@ -6155,6 +7796,12 @@ function buildTraces(active,excl){
       line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
       hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
   });
+  /* Manual TLL override line */
+  var _sumPar=getSumParams();
+  if(_sumPar.tll_hi_override!==null&&isFinite(fLo)&&isFinite(fHi))
+    traces.push({type:'scatter',x:[fLo,fHi],y:[_sumPar.tll_hi_override,_sumPar.tll_hi_override],
+      mode:'lines',line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
+      hovertemplate:'TLL↑ (manual): '+_sumPar.tll_hi_override.toFixed(4)+'<extra></extra>'});
   return traces;
 }
 
@@ -6176,6 +7823,7 @@ function buildLayout(){
 
 /* ---- reset ---- */
 function resetFilters(){
+  _stClear();
   COND_DIMS.forEach(function(dim){
     var col='cond_'+dim.col_id;
     document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=true;});
@@ -6190,9 +7838,14 @@ function resetFilters(){
   document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
   var allRad=document.querySelector('input[name="sum_flt"][value="all"]');
   if(allRad){allRad.checked=true;toggleRangeInputs();}
-  var ylo=document.getElementById('sum_ylo');if(ylo)ylo.value='';
   var yhi=document.getElementById('sum_yhi');if(yhi)yhi.value='';
   var ec=document.getElementById('sum_show_excl_chk');if(ec)ec.checked=false;
+  document.querySelectorAll('.sum_temp_chk').forEach(function(c){c.checked=true;});
+  var pEl=document.getElementById('sum_P');if(pEl)pEl.value='0.95';
+  var cEl=document.getElementById('sum_C');if(cEl)cEl.value='0.90';
+  var nEl=document.getElementById('sum_n');if(nEl)nEl.value='0';
+  var muEl=document.getElementById('sum_mu');if(muEl)muEl.value='0';
+  var dvEl=document.getElementById('sum_denv');if(dvEl)dvEl.value='0';
   update();
 }
 
@@ -6200,9 +7853,8 @@ function resetFilters(){
 function getDataFilter(){
   var mode='all';
   document.querySelectorAll('input[name="sum_flt"]').forEach(function(r){if(r.checked)mode=r.value;});
-  var ylo=parseFloat(document.getElementById('sum_ylo').value);
   var yhi=parseFloat(document.getElementById('sum_yhi').value);
-  return {mode:mode,ylo:isNaN(ylo)?-Infinity:ylo,yhi:isNaN(yhi)?Infinity:yhi};
+  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi};
 }
 function toggleRangeInputs(){
   var el=document.getElementById('sum_range_inputs');
@@ -6218,8 +7870,10 @@ function applyDataFilter(active){
     var vis=[];cd.freqs.forEach(function(f,i){if(f>=fLo&&f<=fHi)vis.push(i);});
     if(!vis.length) return false;
     if(flt.mode==='passing'){
+      var sumPar=getSumParams();
+      var tllHiOv=sumPar.tll_hi_override;
       return vis.every(function(i){
-        var hi=(cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi;
+        var hi=tllHiOv!==null?tllHiOv:((cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi);
         var lo=(cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
         var uOk=(hi===null||cd.uttl[i]===null||Number(cd.uttl[i])<=hi);
         var lOk=(lo===null||cd.lttl[i]===null||Number(cd.lttl[i])>=lo);
@@ -6228,7 +7882,7 @@ function applyDataFilter(active){
     }
     if(flt.mode==='range'){
       return vis.some(function(i){
-        return cd.max_data[i]>=flt.ylo&&cd.min_data[i]<=flt.yhi;
+        return cd.max_data[i]<=flt.yhi;
       });
     }
     return true;
@@ -6236,9 +7890,7 @@ function applyDataFilter(active){
 }
 function saveCSV(withExcluded){
   var savedGf=_sumGfExcluded;
-  if(withExcluded) _sumGfExcluded=null;
-  var active=applyDataFilter(getActive());
-  if(withExcluded) _sumGfExcluded=savedGf;
+  var active=_getFilteredActive(!withExcluded);
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
   var rows=['Condition,Freq_MHz,Mean,Min,Max,TTL_upper,TTL_lower,Spec_hi,Spec_lo'];
@@ -6284,56 +7936,256 @@ function saveCSV(withExcluded){
 
 /* ---- global filter (localStorage) ---- */
 var _sumGfExcluded=null;
+var _sumGfCoarseExcluded=null;
+/* Convert "Key: Value  Key2: Value2" cond string to "Key=Value|Key2=Value2" without serial parts */
+function _sumCoarseCondKey(cond){
+  /* Use same format as condToKey() — preserve spaces in key names so GF entries match.
+     Also strip serial and temperature dimensions (summary aggregates both away). */
+  var stripKws=['serial','unit id','dut id','s/n','temperature','temp','deg c','deg f'];
+  return (cond||'').split(/  +/).map(function(p){
+    return p.replace(/\s*:\s*/,'=').trim();
+  }).filter(function(p){
+    if(!p) return false;
+    var lo=p.toLowerCase();
+    return !stripKws.some(function(kw){return lo.indexOf(kw)===0;});
+  }).sort().join('|');
+}
 function _loadSumGlobalFilter(){
   try{
     var raw=localStorage.getItem('padb_v2_excluded');
-    _sumGfExcluded=raw?new Set(JSON.parse(raw).excluded||[]):null;
-  }catch(e){_sumGfExcluded=null;}
+    if(!raw){_sumGfExcluded=null;_sumGfCoarseExcluded=null;}
+    else{
+      var obj=JSON.parse(raw);
+      _sumGfExcluded=new Set(obj.excluded||[]);
+      _sumGfCoarseExcluded=new Set();
+      /* Strip serial AND temperature from GF condKey — summary aggregates both.
+         Temperature is included in boxplot GF keys but not in summary conditions. */
+      var stripKws=['serial','unit id','dut id','s/n','temperature','temp','deg c','deg f'];
+      _sumGfExcluded.forEach(function(k){
+        var parts=k.split('||');
+        if(parts.length>=2){
+          var coarseCond=parts[1].split('|').filter(function(p){
+            var lo=p.toLowerCase();
+            return !stripKws.some(function(kw){return lo.indexOf(kw)===0;});
+          }).join('|');
+          _sumGfCoarseExcluded.add(parts[0]+'||'+coarseCond);
+        }
+      });
+    }
+  }catch(e){_sumGfExcluded=null;_sumGfCoarseExcluded=null;}
   _updateSumGfBadge();
 }
 function _updateSumGfBadge(){
   var el=document.getElementById('sum_gf_badge');
   if(!el) return;
-  var n=_sumGfExcluded?_sumGfExcluded.size:0;
-  el.textContent=n>0?n+' globally excl.':'';
+  if(!_sumGfExcluded||!_sumGfExcluded.size){el.textContent='';el.style.display='none';return;}
+  var dutSers=new Set();
+  _sumGfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
+  var n=dutSers.size,pts=_sumGfExcluded.size;
+  var mode=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
+  var isFocus=mode==='focus';
+  el.textContent=n>0?(isFocus?'Inspect: ':'')+pts+' pts in GF ('+n+' DUT'+(n!==1?'s':')')+(isFocus?' — INSPECT':''):'';
+  el.style.background=isFocus?'#e8f0ff':'#ffeaea';
+  el.style.borderColor=isFocus?'#6688cc':'#c88';
+  el.style.color=isFocus?'#0044aa':'#900';
   el.style.display=n>0?'':'none';
 }
 window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'){_loadSumGlobalFilter();update();}
+  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadSumGlobalFilter();update();}
 });
-/* Extract set of serials mentioned in any excluded key */
-function _sumGfExclSers(){
-  if(!_sumGfExcluded||!_sumGfExcluded.size) return null;
-  var sers=new Set();
-  _sumGfExcluded.forEach(function(k){sers.add(k.split('||')[0]);});
-  return sers;
-}
 /* Extract serial from a condition string (Serial Number: X pattern) */
 function _sumSerFromCond(cond){
   var m=(cond||'').match(/Serial Number:\s*(\S+)/i);
   return m?m[1]:null;
 }
+/* ---- filtered active helper (useGf defaults to sum_gf_chk state) ---- */
+function _getFilteredActive(useGf){
+  var active=applyDataFilter(getActive());
+  if(useGf===undefined){var t=document.getElementById('sum_gf_chk');useGf=!t||t.checked;}
+  if(useGf&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size){
+    /* Summary conditions are always aggregate (render_summary strips serial from cond_cols).
+       The GF is a per-DUT serial filter — it cannot meaningfully hide an aggregate condition
+       that spans all DUTs just because one DUT was excluded in another view.
+       Only apply GF filtering to conditions that embed a serial number in their label
+       (future-proof: if a summary is ever broken out per-serial). */
+    var _isGfCond=function(cd){
+      var condSerial=_sumSerFromCond(cd.condition);
+      if(!condSerial) return false;
+      var coarseCond=_sumCoarseCondKey(cd.condition);
+      return _sumGfCoarseExcluded.has(condSerial+'||'+coarseCond);
+    };
+    var focus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+    if(focus){
+      active=active.filter(function(cd){return _isGfCond(cd);});
+    } else {
+      active=active.filter(function(cd){return !_isGfCond(cd);});
+    }
+  }
+  return active;
+}
+/* ---- results table helpers ---- */
+function _buildCondRows(condList,gfLabel,selTemps,params){
+  var fLo=parseFloat(document.getElementById('freq_lo').value);
+  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var rows=[];
+  condList.forEach(function(cd){
+    var stats=getSumCondData(cd,selTemps,params);
+    cd.freqs.forEach(function(f,fi){
+      if(f<fLo||f>fHi) return;
+      var tot_n=0;
+      selTemps.forEach(function(t){
+        var bt=cd.by_temp&&cd.by_temp[t];
+        if(bt&&bt.n&&bt.n[fi]) tot_n+=bt.n[fi];
+      });
+      var sHi=(cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:
+              (cd.spec_hi!==undefined&&cd.spec_hi!==null?cd.spec_hi:null);
+      var tUp=stats.uttl[fi];
+      rows.push({
+        condition:cd.condition,freq:f,n:tot_n,gf:gfLabel,
+        mean:stats.mean[fi],min:stats.min_data[fi],max:stats.max_data[fi],
+        ttl_up:tUp,mu:params.mu,denv:params.denv,spec_hi:sHi,
+        margin_up:(sHi!==null&&tUp!==null)?sHi-tUp:null,
+      });
+    });
+  });
+  return rows;
+}
+function buildTable(){
+  var wrap=document.getElementById('sum_table_wrap');
+  if(!wrap) return;
+  var active=_getFilteredActive();
+  var selTemps=getSelTemps();
+  var params=getSumParams();
+  var rows=_buildCondRows(active,'',selTemps,params);
+  if(!rows.length){
+    wrap.innerHTML='<p style="color:#888;font-size:12px;margin:4px 8px">No data in current view.</p>';
+    return;
+  }
+  function fmt(v,d){return v===null||v===undefined?'—':Number(v).toFixed(d!==undefined?d:4);}
+  var cols=['Condition','Freq (MHz)','n','Mean','Min','Max',
+            'TTL↑','M.U.','ΔEnv','Spec Hi','Margin↑'];
+  var th=cols.map(function(c){
+    return '<th style="border:1px solid #ccc;padding:3px 8px;background:#f0f2f5;white-space:nowrap">'
+           +c+'</th>';
+  }).join('');
+  var trs=rows.map(function(r){
+    var fail=r.margin_up!==null&&r.margin_up<0;
+    var bg=fail?'background:#ffe8e8;border-left:3px solid #cc0000;':'';
+    function td(v,d){
+      return '<td style="border:1px solid #eee;padding:2px 8px;text-align:right;white-space:nowrap">'
+             +fmt(v,d)+'</td>';
+    }
+    function tdL(v){
+      return '<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap">'+v+'</td>';
+    }
+    var mColor=r.margin_up===null?'':r.margin_up>=0?'color:#006600;font-weight:bold':'color:#cc0000;font-weight:bold';
+    var mStr=r.margin_up===null?'—':((r.margin_up>=0?'+':'')+r.margin_up.toFixed(4)+' '
+              +(r.margin_up>=0?'\u2714':'\u2718'));
+    return '<tr style="'+bg+'">'
+      +tdL(r.condition)
+      +td(r.freq,4)+td(r.n,0)
+      +td(r.mean,4)+td(r.min,4)+td(r.max,4)
+      +td(r.ttl_up,4)+td(r.mu,4)+td(r.denv,4)
+      +td(r.spec_hi,4)
+      +'<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap;'+mColor+'">'+mStr+'</td>'
+      +'</tr>';
+  });
+  wrap.innerHTML='<table style="border-collapse:collapse;width:100%;font-size:12px">'
+    +'<thead><tr>'+th+'</tr></thead>'
+    +'<tbody>'+trs.join('')+'</tbody></table>';
+}
+function exportTableCSV(){
+  var active=_getFilteredActive();
+  var excluded=DATA.filter(function(cd){return active.indexOf(cd)<0;});
+  var selTemps=getSelTemps();
+  var params=getSumParams();
+  var rows=_buildCondRows(active,'',selTemps,params)
+           .concat(_buildCondRows(excluded,'GF Excluded',selTemps,params));
+  rows.sort(function(a,b){
+    if(a.condition<b.condition) return -1;
+    if(a.condition>b.condition) return 1;
+    return a.freq-b.freq;
+  });
+  function fv(v,d){return v===null||v===undefined?'':Number(v).toFixed(d!==undefined?d:4);}
+  var hdrs=['Condition','GF_Status','Freq (MHz)','n','Mean','Min','Max',
+            'TTL Up','MU','DEnv','Spec Hi','Margin Up'];
+  var lines=[hdrs.join(',')];
+  rows.forEach(function(r){
+    var cond='"'+String(r.condition).replace(/"/g,'""')+'"';
+    var gf='"'+(r.gf||'')+'"';
+    lines.push([cond,gf,fv(r.freq),r.n,fv(r.mean),fv(r.min),fv(r.max),
+                fv(r.ttl_up),fv(r.mu),fv(r.denv),
+                fv(r.spec_hi),fv(r.margin_up)].join(','));
+  });
+  var blob=new Blob([lines.join('\r\n')],{type:'text/csv'});
+  var a=document.createElement('a');
+  a.href=URL.createObjectURL(blob);
+  a.download=(typeof TITLE!=='undefined'?TITLE.replace(/[^\w-]/g,'_'):'summary')+'_table.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);
+}
 /* ---- main update ---- */
 function update(){
-  var active=applyDataFilter(getActive());
-  /* Apply global exclusion filter — exclude conditions whose serial is in GF */
-  var gfSers=_sumGfExclSers();
-  if(gfSers){
-    active=active.filter(function(cd){
-      var ser=_sumSerFromCond(cd.condition);
-      return !ser||!gfSers.has(ser);
-    });
-  }
+  var active=_getFilteredActive();
   document.getElementById('n_groups').textContent=active.length+' groups';
   var showExcl=document.getElementById('sum_show_excl_chk');
   showExcl=showExcl?showExcl.checked:false;
   var excl=showExcl?DATA.filter(function(cd){return active.indexOf(cd)<0;}):[];
   Plotly.react('plot',buildTraces(active,excl),buildLayout());
+  var rb=document.getElementById('sum_refresh_table_btn');if(rb)rb.textContent='Refresh table (stale)';
+  saveState();
+}
+
+/* ---- localStorage state persistence ---- */
+function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
+function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
+function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k&&k.indexOf(STATE_KEY)===0)keys.push(k);}keys.forEach(function(k){localStorage.removeItem(k);});}catch(e){}}
+function saveState(){
+  _stSet('freq_lo',document.getElementById('freq_lo').value);
+  _stSet('freq_hi',document.getElementById('freq_hi').value);
+  document.querySelectorAll('.sum_temp_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){_stSet('cond_'+col+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
+  });
+  var fltEl=document.querySelector('input[name="sum_flt"]:checked');if(fltEl)_stSet('sum_filter_mode',fltEl.value);
+  var yhiEl=document.getElementById('sum_yhi');if(yhiEl)_stSet('sum_filter_yhi',yhiEl.value);
+  var tllEl=document.getElementById('sum_tll_hi');if(tllEl)_stSet('sum_tll_hi',tllEl.value);
+  var pEl=document.getElementById('sum_P');if(pEl)_stSet('sum_P',pEl.value);
+  var cEl=document.getElementById('sum_C');if(cEl)_stSet('sum_C',cEl.value);
+  var nEl=document.getElementById('sum_n');if(nEl)_stSet('sum_n',nEl.value);
+  var muEl=document.getElementById('sum_mu');if(muEl)_stSet('sum_mu',muEl.value);
+  var dvEl=document.getElementById('sum_denv');if(dvEl)_stSet('sum_denv',dvEl.value);
+}
+function loadState(){
+  var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
+  if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
+  if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  document.querySelectorAll('.sum_temp_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){var s=_stGet('cond_'+col+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
+    var chks=Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]'));
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){var n=chks.filter(function(c){return c.checked;}).length;allChk.checked=(n===chks.length);allChk.indeterminate=(n>0&&n<chks.length);}
+    updateBadge(col);
+  });
+  var fm=_stGet('sum_filter_mode');
+  if(fm){var fr=document.querySelector('input[name="sum_flt"][value="'+fm+'"]');if(fr){fr.checked=true;if(typeof toggleRangeInputs==='function')toggleRangeInputs();}}
+  var fyhi=_stGet('sum_filter_yhi');var fyhiEl=document.getElementById('sum_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
+  var tll=_stGet('sum_tll_hi');var tllEl=document.getElementById('sum_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
+  var sp=_stGet('sum_P');if(sp!==null){var pEl=document.getElementById('sum_P');if(pEl)pEl.value=sp;var lpEl=document.getElementById('lbl_sum_P');if(lpEl)lpEl.value=sp;}
+  var sc=_stGet('sum_C');if(sc!==null){var cEl=document.getElementById('sum_C');if(cEl)cEl.value=sc;var lcEl=document.getElementById('lbl_sum_C');if(lcEl)lcEl.value=sc;}
+  var sn=_stGet('sum_n');if(sn!==null){var nEl=document.getElementById('sum_n');if(nEl)nEl.value=sn;}
+  var smu=_stGet('sum_mu');if(smu!==null){var muEl=document.getElementById('sum_mu');if(muEl)muEl.value=smu;}
+  var sdv=_stGet('sum_denv');if(sdv!==null){var dvEl=document.getElementById('sum_denv');if(dvEl)dvEl.value=sdv;}
 }
 
 _loadSumGlobalFilter();
-Plotly.newPlot('plot',buildTraces(DATA,[]),buildLayout());
-document.getElementById('n_groups').textContent=DATA.length+' groups';
+loadState();
+var _sumInitActive=_getFilteredActive();
+Plotly.newPlot('plot',buildTraces(_sumInitActive,[]),buildLayout());
+document.getElementById('n_groups').textContent=_sumInitActive.length+' groups';
+buildTable();
 """
 
 
@@ -6348,6 +8200,7 @@ def _build_summary_html(
     freq_min: float,
     freq_max: float,
     freq_vals: list,
+    temps_all: list = [],
 ) -> None:
     """Assemble and write the interactive summary-plot HTML from pre-built records."""
     title   = cfg.get("title", output_html.stem)
@@ -6392,9 +8245,12 @@ def _build_summary_html(
         )
     band_section_html = (f'  <div class="sep"></div>\n{band_btns_html}') if freq_bands else ""
 
+    k_table = _build_k_table()
     constants = "\n".join([
         f"var DATA={json.dumps(records)};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
+        f"var KT={json.dumps(k_table)};",
+        f"var TEMPS_ALL={json.dumps(list(temps_all))};",
         f"var HI_SPEC={hi_js};",
         f"var LO_SPEC={lo_js};",
         f"var Y_LABEL={json.dumps(y_label)};",
@@ -6404,6 +8260,7 @@ def _build_summary_html(
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in freq_vals))};",
+        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
     ])
 
     css = (
@@ -6446,6 +8303,46 @@ def _build_summary_html(
     )
 
     sep = '<div class="sep"></div>'
+    if temps_all:
+        _temp_section = ""
+        if len(temps_all) > 1:
+            _temp_chks = "".join(
+                f'  <label style="white-space:nowrap"><input type="checkbox" class="sum_temp_chk"'
+                f' value="{t}" checked onchange="update()">&nbsp;{t}</label>\n'
+                for t in temps_all
+            )
+            _temp_section = (
+                '  <b>Temperature:</b>&nbsp;\n'
+                + _temp_chks
+                + f'  {sep}\n'
+            )
+        temp_stat_bar_html = (
+            '<div class="flt-bar" onclick="event.stopPropagation()">\n'
+            + _temp_section
+            + '  <b>Stat:</b>&nbsp;\n'
+            + '  <label>P:&nbsp;<select id="sum_P" onchange="update()">'
+            + '<option value="0.80">80%</option>'
+            + '<option value="0.95" selected>95%</option>'
+            + '<option value="0.9973">99.73%</option>'
+            + '</select></label>\n'
+            + '  <label>C:&nbsp;<select id="sum_C" onchange="update()">'
+            + '<option value="0.90" selected>90%</option>'
+            + '<option value="0.95">95%</option>'
+            + '</select></label>\n'
+            + '  <label title="Override sample size (0=auto)">n override:'
+            + '<input type="number" id="sum_n" min="0" max="9999" value="0"'
+            + ' style="width:55px" oninput="update()"></label>\n'
+            + f'  {sep}\n'
+            + '  <label title="Measurement Uncertainty (dB)">M.U.:'
+            + '<input type="number" id="sum_mu" value="0" min="0" step="0.001"'
+            + ' style="width:60px" oninput="update()"></label>\n'
+            + '  <label title="Environmental Delta (dB)">&#916;Env:'
+            + '<input type="number" id="sum_denv" value="0" min="0" step="0.001"'
+            + ' style="width:60px" oninput="update()"></label>\n'
+            + '</div>\n'
+        )
+    else:
+        temp_stat_bar_html = ""
     html = (
         "<!DOCTYPE html>\n<html>\n<head>\n"
         f'<meta charset="utf-8"><title>{title}</title>\n'
@@ -6455,13 +8352,13 @@ def _build_summary_html(
         + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
         + f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
         f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
-        f' step="{freq_step:.4f}" oninput="syncFreq()">'
+        f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
         f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
@@ -6473,6 +8370,7 @@ def _build_summary_html(
         + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         + '  <span id="n_groups"></span>\n'
         + "</div>\n"
+        + temp_stat_bar_html
         + '<div class="flt-bar" onclick="event.stopPropagation()">\n'
         + '  <b>Data&nbsp;filter:</b>\n'
         + '  <label><input type="radio" name="sum_flt" value="all" checked'
@@ -6480,17 +8378,22 @@ def _build_summary_html(
         + '  <label><input type="radio" name="sum_flt" value="passing"'
         + ' onchange="toggleRangeInputs();update()"> Passing&nbsp;only&nbsp;(TTL&nbsp;&#8804;&nbsp;Spec)</label>\n'
         + '  <label><input type="radio" name="sum_flt" value="range"'
-        + ' onchange="toggleRangeInputs();update()"> Y&nbsp;range</label>\n'
+        + ' onchange="toggleRangeInputs();update()"> Upper&nbsp;limit</label>\n'
         + '  <span id="sum_range_inputs" style="display:none;align-items:center;gap:4px">\n'
-        + '    <input type="number" id="sum_ylo" placeholder="Y min" step="0.001" oninput="update()">\n'
-        + '    &ndash;\n'
-        + '    <input type="number" id="sum_yhi" placeholder="Y max" step="0.001" oninput="update()">\n'
-        + '    <small style="color:#666">(hides conditions where band is outside range)</small>\n'
+        + '    <input type="number" id="sum_yhi" placeholder="dBc limit" step="0.001" oninput="update()">\n'
+        + '    <small style="color:#666">(hides conditions where max data exceeds limit)</small>\n'
         + '  </span>\n'
+        + '  <span class="sep"></span>\n'
+        + '  <label title="Override TLL for Passing only filter and draw TLL line">'
+        + 'TLL&nbsp;override:<input type="number" id="sum_tll_hi" step="0.001" placeholder="auto"'
+        + ' style="width:74px" oninput="update()"></label>\n'
         + '  <span class="sep"></span>\n'
         + '  <label title="Show non-selected conditions as dim gray bands">'
         + '<input type="checkbox" id="sum_show_excl_chk" onchange="update()">'
         + '&nbsp;Show&nbsp;excluded</label>\n'
+        + '  <label title="Apply global exclusion filter from boxplot (excludes whole DUTs)">'
+        + '<input type="checkbox" id="sum_gf_chk" checked onchange="update()">'
+        + '&nbsp;Apply&nbsp;GF</label>\n'
         + '  <span id="sum_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
         + 'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
         + 'margin-left:4px"></span>\n'
@@ -6501,6 +8404,14 @@ def _build_summary_html(
         + ' &nbsp;|&nbsp; Dashed&nbsp;=&nbsp;TTL estimate'
         + ' &nbsp;|&nbsp; Red dashed&nbsp;=&nbsp;Spec limit</p>\n'
         + '<div id="plot"></div>\n'
+        + '<div style="margin:4px 8px 2px;display:flex;gap:8px;align-items:center">\n'
+        + '  <b style="font-size:13px">Results Table</b>\n'
+        + '  <button id="sum_refresh_table_btn" class="reset-btn"'
+        + ' onclick="buildTable();this.textContent=\'Refresh table\'">Refresh&nbsp;table</button>\n'
+        + '  <button class="csv-btn" onclick="exportTableCSV()">Export&nbsp;CSV</button>\n'
+        + '  <small style="color:#888;font-size:11px">Active conditions within current freq range</small>\n'
+        + '</div>\n'
+        + '<div id="sum_table_wrap" style="overflow-x:auto;margin:0 8px 12px"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"
