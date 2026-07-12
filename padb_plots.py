@@ -6413,7 +6413,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
           if(portActive&&selPorts.indexOf(d.p||'')<0) return false;
           if(d.v>rhi) return false;
           if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
-          if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p));if(boxGfFocus?!_ig:_ig) return false;}
+          if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return false;}
           return true;
         });
         if(!detail.length) return;
@@ -6713,7 +6713,7 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
       detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;}).forEach(function(d){
         var risk=outlierRisk(d.v,fv);
         result.push({cond:cd.condition,temp:cd.temp,freq:f.freq,freqLabel:f.freq_label,
-          serial:d.s,value:d.v,sigma:risk.sigma,dNpTi:risk.dNpTi,
+          serial:d.s,port:d.p||'',value:d.v,sigma:risk.sigma,dNpTi:risk.dNpTi,
           key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'||'+cd.temp+'||'+f.freq.toFixed(3)});
       });
     });
@@ -6733,19 +6733,22 @@ function updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers){
   }
   outliers.sort(function(a,b){return Math.abs(b.sigma)-Math.abs(a.sigma);});
   var hasSpec=LO_SPEC!==null||HI_SPEC!==null;
+  var hasPort=outliers.some(function(o){return !!o.port;});
   var rows=outliers.map(function(o){
     var absSig=Math.abs(o.sigma);
     var sigStyle=absSig>=3?'color:#c00;font-weight:bold':absSig>=2?'color:#c80;font-weight:bold':'color:#555';
     var specCell=hasSpec?'<td style="'+(((LO_SPEC!==null&&o.value<LO_SPEC)||(HI_SPEC!==null&&o.value>HI_SPEC))?'color:#c00;font-weight:bold':'color:#080')+'">'+(((LO_SPEC!==null&&o.value<LO_SPEC)||(HI_SPEC!==null&&o.value>HI_SPEC))?'FAIL':'Pass')+'</td>':'';
+    var portCell=hasPort?'<td>'+o.port+'</td>':'';
     return '<tr><td>'+o.cond+'</td><td>'+o.temp+'</td><td>'+o.freqLabel+'</td>'+
-      '<td>'+(o.serial==='unknown'?'&mdash;':o.serial)+'</td>'+
+      '<td>'+(o.serial==='unknown'?'&mdash;':o.serial)+'</td>'+portCell+
       '<td>'+o.value.toFixed(4)+'</td>'+
       '<td style="'+sigStyle+'">'+o.sigma.toFixed(2)+'σ</td>'+
       '<td>'+o.dNpTi.toFixed(4)+'</td>'+specCell+'</tr>';
   });
   var specHdr=hasSpec?'<th>Pass/Fail</th>':'';
+  var portHdr=hasPort?'<th>Port</th>':'';
   panel.innerHTML='<table class="stbl"><thead><tr>'+
-    '<th>Condition</th><th>Temp</th><th>Frequency</th><th>Serial</th>'+
+    '<th>Condition</th><th>Temp</th><th>Frequency</th><th>Serial</th>'+portHdr+
     '<th>Value</th><th>σ from mean</th><th>Δ NP TI/2</th>'+specHdr+
     '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 }
@@ -6806,7 +6809,7 @@ function _collectDeltaOutliers(selConds,selTemps,selBoxSers){
             var sigma=iqr>0?(d.delta-mean)/(iqr/1.35):0;
             result.push({
               cond:cond,temp:temp,freq:fs.freq,freqLabel:fs.freq_label,
-              serial:d.s,delta:d.delta,absVal:d.absVal,roomVal:d.roomVal,
+              serial:d.s,port:d.p||'',delta:d.delta,absVal:d.absVal,roomVal:d.roomVal,
               q1:q1,q3:q3,iqr:iqr,loF:loF,hiF:hiF,sigma:sigma,
               key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cond,d.p)+'||'+temp+'||'+fs.freq.toFixed(3)
             });
@@ -6829,30 +6832,31 @@ function updateDeltaOutlierPanel(selConds,selTemps,selBoxSers){
     return;
   }
   outliers.sort(function(a,b){return Math.abs(b.sigma)-Math.abs(a.sigma);});
+  var hasPort=outliers.some(function(o){return !!o.port;});
   var rows=outliers.map(function(o){
     var absSig=Math.abs(o.sigma);
     var sigStyle=absSig>=3?'color:#c00;font-weight:bold':absSig>=2?'color:#c80;font-weight:bold':'color:#555';
     var dir=o.delta>0?'+':'';
+    var portCell=hasPort?'<td>'+o.port+'</td>':'';
     return '<tr>'+
       '<td>'+o.cond+'</td>'+
       '<td>'+o.temp+'</td>'+
       '<td>'+o.freqLabel+'</td>'+
-      '<td>'+(o.serial==='unknown'?'&mdash;':o.serial)+'</td>'+
+      '<td>'+(o.serial==='unknown'?'&mdash;':o.serial)+'</td>'+portCell+
       '<td>'+o.absVal.toFixed(4)+'</td>'+
       '<td>'+o.roomVal.toFixed(4)+'</td>'+
       '<td style="'+(o.delta>0?'color:#c00':'color:#00c')+';font-weight:bold">'+dir+o.delta.toFixed(4)+'</td>'+
-      '<td style="'+sigStyle+'">'+o.sigma.toFixed(2)+'σ</td>'+
+      '<td style="'+sigStyle+'">'+ o.sigma.toFixed(2)+'σ</td>'+
       '<td>'+o.loF.toFixed(4)+' to '+o.hiF.toFixed(4)+'</td>'+
       '</tr>';
   });
+  var portHdr=hasPort?'<th>Port</th>':'';
   panel.innerHTML='<table class="stbl"><thead><tr>'+
-    '<th>Condition</th><th>Temp</th><th>Frequency</th><th>Serial</th>'+
+    '<th>Condition</th><th>Temp</th><th>Frequency</th><th>Serial</th>'+portHdr+
     '<th>Value(T)</th><th>Value(Room)</th><th>Δ(T−Room)</th>'+
-    '<th>σ from meanΔ</th><th>k\xd7IQR fence</th>'+
+    '<th>σ from meanΔ</th><th>k×IQR fence</th>'+
     '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 }
-function applyDeltaGlobalFilter(){
-  var selConds=getSelectedConds(),selTemps=getSelectedTemps();
   var selBoxSers=getSelectedBoxSerials();
   var outliers=_collectDeltaOutliers(selConds,selTemps,selBoxSers);
   var keys=outliers.map(function(o){return o.key;});
@@ -6934,7 +6938,7 @@ function clearEverything(){
   var fhi=document.getElementById('box_freq_hi');if(fhi)fhi.value=BOX_FREQ_MAX;
   /* Global filter */
   try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
-  var gEl=document.getElementById('box_gf_status');if(gEl)gEl.textContent='';
+  _loadBoxGlobalFilter();_updateBoxGfStatus();
   update();
 }
 
@@ -6959,7 +6963,7 @@ function _loadBoxGlobalFilter(){
           var lo=p.toLowerCase();
           return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
         }).join('|');
-        _boxGfCoarseExcluded.add(parts[0]+'||'+condKey);
+        _boxGfCoarseExcluded.add(parts[0]+'||'+condKey+(parts.length>=3&&parts[2]?'|Temp='+parts[2]:''));
       }
     });
     if(!_boxGfCoarseExcluded.size) _boxGfCoarseExcluded=null;
