@@ -6546,7 +6546,7 @@ function buildLayout(){
     margin:{l:60,r:30,t:60,b:90},
   };
 }
-function updateStatsTable(selConds,yFlt,selBoxSers){
+function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
   var el=document.getElementById('box_stat_panel');
   if(!el||el.style.display==='none') return;
   var showNp=isBoxNpTI();
@@ -6558,14 +6558,17 @@ function updateStatsTable(selConds,yFlt,selBoxSers){
   var stPassLo=passActive?LO_SPEC:null;
   var fr=getBoxFreqRange();
   var rows=[];
-  if(serActive||yFltActive||passActive){
+  var tempActive=selTemps&&selTemps.length<TEMPS_PRESENT.length;
+  if(serActive||yFltActive||passActive||tempActive){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var fltLabel=(serActive&&yFltActive)?'Serial+Y-filtered':
                  serActive?'Serial-filtered':
                  passActive?'Passing only':
+                 tempActive?'Temp-filtered':
                  'Y-filtered [hi='+rhi.toFixed(3)+']';
     BOX_DATA.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
+      if(selTemps&&selTemps.indexOf(cd.temp)<0) return;
       (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(f){
         if(f.freq<fr.lo||f.freq>fr.hi) return;
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
@@ -7055,7 +7058,7 @@ function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
   Plotly.react('plot',buildBoxTraces(selConds,selTemps,yFlt,selBoxSers),buildLayout());
-  updateStatsTable(selConds,yFlt,selBoxSers);
+  updateStatsTable(selConds,yFlt,selBoxSers,selTemps);
   updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
   updateDeltaOutlierPanel(selConds,selTemps,selBoxSers);
   saveState();
