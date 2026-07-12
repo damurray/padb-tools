@@ -4755,7 +4755,8 @@ function buildTraces(selConds,exclConds){
     if(st.ude.some(function(v){return v!==null;})){
       traces.push({type:'scatter',x:st.freqs,y:st.ude,mode:'lines',
         line:{color:color,width:2},
-        name:cd.condition+' UDE',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
+        name:cd.condition+' UDE',legendgroup:cd.condition,showlegend:false,
+        text:hov,hovertemplate:'%{text}<extra></extra>'});
       traces.push({type:'scatter',x:st.freqs,y:neg_lde,mode:'lines',
         fill:'tonexty',fillcolor:hexAlpha(color,0.22),
         line:{color:color,width:2},
@@ -4918,6 +4919,29 @@ function saveCSV(){
   var a=document.createElement('a');
   a.href=URL.createObjectURL(blob);a.download=EC_TITLE.replace(/[^a-z0-9_\-]/gi,'_')+'.csv';a.click();
 }
+function updateSummaryBar(selConds){
+  var el=document.getElementById('ec_summary_bar');
+  if(!el) return;
+  var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
+  var maxUde=null,maxLde=null,minTtu=null,minTtl=null;
+  selConds.forEach(function(cd){
+    var st=computeStats(cd,params,fr,selTemps);
+    st.ude.forEach(function(v){if(v!==null&&(maxUde===null||v>maxUde))maxUde=v;});
+    st.lde.forEach(function(v){if(v!==null&&(maxLde===null||v>maxLde))maxLde=v;});
+    st.ttu.forEach(function(v){if(v!==null&&(minTtu===null||v<minTtu))minTtu=v;});
+    st.ttl.forEach(function(v){if(v!==null&&(minTtl===null||v<minTtl))minTtl=v;});
+  });
+  var parts=[];
+  parts.push('<span class="smry-item"><span class="smry-lbl">Max UDE:</span>'
+    +'<span class="smry-val">'+(maxUde!==null?maxUde.toFixed(4):'—')+'</span></span>');
+  parts.push('<span class="smry-item"><span class="smry-lbl">Max LDE:</span>'
+    +'<span class="smry-val">'+(maxLde!==null?maxLde.toFixed(4):'—')+'</span></span>');
+  if(minTtu!==null) parts.push('<span class="smry-item"><span class="smry-lbl">Min TTU:</span>'
+    +'<span class="smry-val">'+minTtu.toFixed(4)+'</span></span>');
+  if(minTtl!==null) parts.push('<span class="smry-item"><span class="smry-lbl">Min TTL:</span>'
+    +'<span class="smry-val">'+minTtl.toFixed(4)+'</span></span>');
+  el.innerHTML=parts.join('');
+}
 function update(){
   var selConds=getSelectedConds();
   var showExcl=document.getElementById('ec_show_excl');
@@ -4926,6 +4950,7 @@ function update(){
   var _r=buildTraces(selConds,exclConds);
   Plotly.react('plot',_r.traces,buildLayout(_r.yRange));
   updateStatsTable(selConds);
+  updateSummaryBar(selConds);
   saveState();
 }
 
@@ -4979,6 +5004,7 @@ _loadEcGlobalFilter();
 loadState();
 var _ir=buildTraces(getSelectedConds(),[]);
 Plotly.newPlot('plot',_ir.traces,buildLayout(_ir.yRange),{responsive:true,scrollZoom:true});
+updateSummaryBar(getSelectedConds());
 """
 
 
@@ -5241,6 +5267,11 @@ def _build_env_coverage_html(
         "input.freq-txt{font-size:12px;width:72px;padding:1px 3px;border:1px solid #bbb;"
         "border-radius:3px;text-align:right;margin-left:2px;}"
         ".footnote{font-size:11px;color:#888;padding:2px 14px;}"
+        "#ec_summary_bar{font-size:12px;padding:4px 14px;background:#f0f2f5;border-radius:4px;"
+        "margin-bottom:4px;display:flex;flex-wrap:wrap;gap:20px;align-items:center;}"
+        "#ec_summary_bar .smry-item{white-space:nowrap;}"
+        "#ec_summary_bar .smry-lbl{font-weight:bold;color:#555;margin-right:3px;}"
+        "#ec_summary_bar .smry-val{font-family:monospace;color:#222;}"
     )
 
     panels: list = []
@@ -5474,6 +5505,7 @@ def _build_env_coverage_html(
         + env_bar
         + temp_bar
         + footnote
+        + '<div id="ec_summary_bar"></div>\n'
         + '<div id="plot"></div>\n'
         + '<div id="ec_stat_panel" style="display:none"></div>\n'
         + f"<script>\n{constants}\n{_ENV_COVERAGE_JS}</script>\n"
@@ -6367,8 +6399,9 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
     if(selTemps.indexOf(cd.temp)<0) return;
     var condKey=condToKey(cd.condition);
     var excl=cd.temp==='Room'?exclRoom:exclDEnv;
-    /* Recompute only when this specific condition needs it */
-    var needsRecompute=serActive||portActive||yActive||passActive||excl||kChanged||gfActive;
+    /* Always recompute from vals_detail — avoids Plotly.react stale-data issue when
+       switching from a filtered trace back to the pre-computed fast path */
+    var needsRecompute=true;
     var fs;
     if(needsRecompute){
       fs=[];
