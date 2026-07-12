@@ -6559,9 +6559,13 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
   var fr=getBoxFreqRange();
   var rows=[];
   var tempActive=selTemps&&selTemps.length<TEMPS_PRESENT.length;
-  if(serActive||yFltActive||passActive||tempActive){
+  var _gfActiveSt=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
+  var _gfFocusSt=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var gfFocusActive=_gfActiveSt&&_gfFocusSt;
+  if(serActive||yFltActive||passActive||tempActive||gfFocusActive){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
-    var fltLabel=(serActive&&yFltActive)?'Serial+Y-filtered':
+    var fltLabel=gfFocusActive?'GF Focus':
+                 (serActive&&yFltActive)?'Serial+Y-filtered':
                  serActive?'Serial-filtered':
                  passActive?'Passing only':
                  tempActive?'Temp-filtered':
@@ -6573,6 +6577,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
         if(f.freq<fr.lo||f.freq>fr.hi) return;
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
           .filter(function(d){
+            if(gfFocusActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp;if(!_boxIsInGf(_ck)) return false;}
             return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi
               &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi));
           });
@@ -6860,10 +6865,12 @@ function updateDeltaOutlierPanel(selConds,selTemps,selBoxSers){
     '<th>σ from meanΔ</th><th>k×IQR fence</th>'+
     '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 }
+function applyDeltaGlobalFilter(){
+  var selConds=getSelectedConds(),selTemps=getSelectedTemps();
   var selBoxSers=getSelectedBoxSerials();
   var outliers=_collectDeltaOutliers(selConds,selTemps,selBoxSers);
   var keys=outliers.map(function(o){return o.key;});
-  if(!keys.length){alert('No delta outliers at current k\xd7IQR threshold.');return;}
+  if(!keys.length){alert('No delta outliers at current k×IQR threshold.');return;}
   window._currentDeltaOutlierKeys=keys;
   _mergeGf(keys);
 }
@@ -6966,7 +6973,7 @@ function _loadBoxGlobalFilter(){
           var lo=p.toLowerCase();
           return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
         }).join('|');
-        _boxGfCoarseExcluded.add(parts[0]+'||'+condKey+(parts.length>=3&&parts[2]?'|Temp='+parts[2]:''));
+        _boxGfCoarseExcluded.add(parts[0]+'||'+condKey+(parts.length>=3&&parts[2]&&parts[2]!=='manual'?'|Temp='+parts[2]:''));
       }
     });
     if(!_boxGfCoarseExcluded.size) _boxGfCoarseExcluded=null;
