@@ -244,13 +244,30 @@ With 11 OA State values (0–10), this produces one condition filter dropdown wi
 For each analytic you want to plot, verify:
 
 - [ ] `OutputConfig_OutputCSV=True` is set
-- [ ] `OutputConfig_OutputFile=` is set to a unique, recognisable name
+- [ ] `OutputConfig_OutputFile=` is set to a name that **matches the analytic name** (see note below)
 - [ ] The Group string includes a serial key (for `stat_summary`, `stat_boxplot`, `accuracy_vs_freq`)
 - [ ] The Group string includes a `Temp` key (for `stat_boxplot` multi-temperature capability)
 - [ ] The Group string includes condition keys with 2–20 distinct values (for filter dropdowns)
 - [ ] `Lower Limit` / `Upper Limit` are configured if spec lines and pass/fail are needed
 - [ ] `TestRun_RunStatus` is set to `{All}` in subex if the pod defaults to passing runs only
 - [ ] For Environmental analytics: `UDE`, `LDE`, `Upper TTL (est)`, `Lower TTL (est)` are enabled in the output
+
+### CSV filename must match the analytic name
+
+`padb_run.py` locates each output CSV by matching the filename stem against the analytic name. If the names don't correspond, the CSV is not found and the plot is silently skipped.
+
+**Rule:** Set `OutputConfig_OutputFile` to a filename whose stem is a close match (spaces → underscores, same words in the same order) to the analytic name in the pod.
+
+Example — analytic named `Harmonics_Env_Dataset2`, output file should be:
+```
+OutputConfig_OutputFile=Harmonics_Env_Dataset2.csv      ← correct
+OutputConfig_OutputFile=Harmonics_Dataset.csv           ← will not match, plot skipped
+```
+
+If an exact name match is not possible (e.g. the analytic name contains words that don't appear in the output filename), use `csv_file` in the job JSON to specify the filename explicitly instead of relying on auto-matching:
+```json
+{ "type": "accuracy_vs_freq", "csv_file": "Scatter_My_Data.csv", ... }
+```
 
 ### Minimum n for statistical plots
 
@@ -362,4 +379,4 @@ PADB always outputs a `Serial Number` column in scatter CSVs. Do not suppress it
 - [ ] `TestRun_RunStatus={All}` in subex (most pods default to passing runs only, which can silently exclude data)
 - [ ] Spec limits configured in the analytic if available (optional — can be entered manually in the HTML)
 - [ ] `OutputConfig_OutputCSV=True` on each analytic
-- [ ] `OutputConfig_OutputFile=` set to a recognisable unique filename
+- [ ] `OutputConfig_OutputFile=` filename stem matches the analytic name (words in the same order, spaces → underscores); or use `csv_file` in the job JSON to specify the path explicitly
