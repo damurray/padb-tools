@@ -355,6 +355,13 @@ def render_summary(
         if len(vals) > 1:
             cond_dims.append({"col": label, "col_id": col_id, "label": label, "vals": vals})
 
+    # Identify serial column so per-DUT means can be embedded for GF support
+    _ser_col = next(
+        (c for c in all_grp
+         if any(kw in c.removeprefix("_grp_").lower() for kw in _serial_kws)),
+        None
+    )
+
     hi_spec_global = float("nan")
     lo_spec_global = float("nan")
     records: list[dict] = []
@@ -414,6 +421,29 @@ def render_summary(
                 "min_data": t_mins_t, "max_data": t_maxs_t,
             }
 
+        # Per-DUT means per frequency — embedded so JS can recompute aggregates
+        # when the global filter is active (GF excludes specific DUTs).
+        dut_info: list[dict] = []
+        dut_vals: list[list] = []  # [freq_idx][dut_idx] = mean across all temps
+        if _ser_col:
+            dut_serials = sorted(str(s) for s in cdf[_ser_col].dropna().unique())
+            dut_info = [{"s": s} for s in dut_serials]
+            # Single groupby instead of nested per-freq per-DUT filter loops
+            _sfm = (
+                cdf[["Frequency_MHz", _ser_col, "Value"]]
+                .dropna(subset=["Value"])
+                .groupby(["Frequency_MHz", _ser_col], sort=False)["Value"]
+                .mean()
+                .unstack(level=_ser_col)
+                .reindex(index=all_freqs, columns=dut_serials)
+            )
+            for freq in all_freqs:
+                row_s = _sfm.loc[freq]
+                dut_vals.append([
+                    round(float(v), 4) if pd.notna(v) else None
+                    for v in row_s
+                ])
+
         # cond_keys: label -> value for each condition dimension
         cond_keys_dict = {}
         for col in cond_cols:
@@ -437,6 +467,8 @@ def render_summary(
             "spec_lo_list":     spec_lo_list,
             "by_temp":          by_temp,
             "temps":            temps_in_cond,
+            "dut_info":         dut_info,
+            "dut_vals":         dut_vals,
         })
 
         if np.isnan(hi_spec_global) and g_hi is not None:

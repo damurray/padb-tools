@@ -162,9 +162,16 @@ function freqTxtChange(which){
   var v=parseFloat(txt.value);
   if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
   v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
-  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
-  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
-  txt.value=v.toFixed(3);slider.value=v;syncFreq();update();
+  var loTxt=document.getElementById('freq_lo_txt'),hiTxt=document.getElementById('freq_hi_txt');
+  if(which==='lo'){var h=hiTxt&&hiTxt.value!==''?parseFloat(hiTxt.value):parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  txt.value=v.toFixed(3);slider.value=v;
+  /* Read from text inputs (not slider) to avoid step-snapping corrupting the range */
+  var loV=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  var hiV=hiTxt&&hiTxt.value!==''?parseFloat(hiTxt.value):parseFloat(document.getElementById('freq_hi').value);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  update();
 }
 function freqStep(which,dir){
   var fv=FREQ_VALS,txt=document.getElementById('freq_'+which+'_txt'),slider=document.getElementById('freq_'+which);
@@ -462,7 +469,8 @@ function _isInGfFull(r){
       if(rowCondMap.hasOwnProperty(kv.dim)&&rowCondMap[kv.dim]!==kv.val){condMatch=false;break;}
     }
     if(!condMatch) continue;
-    if(!e.isManual&&(e.temp!==tmp||e.freq!==frq)) continue;
+    if(e.isManual) return true;
+    if(e.temp!==tmp||e.freq!==frq) continue;
     return true;
   }
   return false;
@@ -487,8 +495,10 @@ function _loadGlobalFilter(){
         parts[1].split('|').filter(Boolean).forEach(function(kv){
           var i=kv.indexOf('=');if(i>=0) condKvs.push({dim:kv.slice(0,i),val:kv.slice(i+1)});
         });
+        var _freqRaw=parts.length>=4?parts[3]:'';
         var entry={condKvs:condKvs,isManual:parts.length>=3&&parts[2]==='manual',
-                   temp:parts.length>=3?parts[2]:'',freq:parts.length>=4?parts[3]:''};
+                   temp:parts.length>=3?parts[2]:'',freq:_freqRaw,
+                   isRange:false,freqLo:-Infinity,freqHi:Infinity};
         if(!_gfParsed.has(baseSer)) _gfParsed.set(baseSer,[]);
         _gfParsed.get(baseSer).push(entry);
       });
@@ -746,7 +756,9 @@ def _detect_group_cols(df: pd.DataFrame) -> list[tuple[str, str]]:
                 result.append((col, label))
     if "Station" in df.columns and df["Station"].replace("", pd.NA).nunique(dropna=True) > 1:
         result.append(("Station", "Test Station"))
-    if "Serial" in df.columns and df["Serial"].replace("", pd.NA).nunique(dropna=True) > 1:
+    _serial_kws = ("serial", "unit id", "dut id", "s/n")
+    _has_grp_serial = any(any(kw in lbl.lower() for kw in _serial_kws) for _, lbl in result)
+    if not _has_grp_serial and "Serial" in df.columns and df["Serial"].replace("", pd.NA).nunique(dropna=True) > 1:
         result.append(("Serial", "Serial"))
     if "Test_Step" in df.columns and df["Test_Step"].replace("", pd.NA).nunique(dropna=True) > 1:
         result.append(("Test_Step", "Temperature"))
@@ -1218,8 +1230,9 @@ function freqTxtChange(which){
   var v=parseFloat(txt.value);
   if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
   v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
-  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
-  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  var loTxt2=document.getElementById('freq_lo_txt'),hiTxt2=document.getElementById('freq_hi_txt');
+  if(which==='lo'){var h=hiTxt2&&hiTxt2.value!==''?parseFloat(hiTxt2.value):parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=loTxt2&&loTxt2.value!==''?parseFloat(loTxt2.value):parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
   txt.value=v.toFixed(3);slider.value=v;update();
 }
 function freqStep(which,dir){
@@ -1246,8 +1259,9 @@ function setFreqBand(lo,hi){
   update();
 }
 function applyFilters(data){
-  var freqLo=parseFloat(document.getElementById('freq_lo').value);
-  var freqHi=parseFloat(document.getElementById('freq_hi').value);
+  var _flt=document.getElementById('freq_lo_txt'),_fht=document.getElementById('freq_hi_txt');
+  var freqLo=_flt&&_flt.value!==''?parseFloat(_flt.value):parseFloat(document.getElementById('freq_lo').value);
+  var freqHi=_fht&&_fht.value!==''?parseFloat(_fht.value):parseFloat(document.getElementById('freq_hi').value);
   var selections={};
   GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
   return data.filter(function(r){
@@ -1438,6 +1452,8 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     # -------------------------------------------------------------------------
     # 0.  KDE helpers
     # -------------------------------------------------------------------------
+    k_table = _build_k_table()
+
     try:
         from scipy.stats import gaussian_kde as _gkde
         _has_scipy = True
@@ -1528,6 +1544,10 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     temp_colors = {t: _pal[i % len(_pal)] for i, t in enumerate(temps_present)}
     spur_colors = {s: _pal[i % len(_pal)] for i, s in enumerate(spur_types)}
 
+    # Serials that have at least one non-Room measurement — used to restrict Room
+    # data so Room and env KDEs are computed from the same set of DUTs.
+    env_serials: set = set(df[df["Temperature"] != "Room"]["Serial"].unique())
+
     # -------------------------------------------------------------------------
     # 2.  Abs mode KDE: aggregate per (SpurType, Temperature)
     # -------------------------------------------------------------------------
@@ -1540,7 +1560,10 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         row: list = []
         spur_df = df[df["_spur"] == spur]
         for temp in temps_present:
-            vals = spur_df[spur_df["Temperature"] == temp]["Value"].dropna().tolist()
+            t_df = spur_df[spur_df["Temperature"] == temp]
+            if temp == "Room" and env_serials:
+                t_df = t_df[t_df["Serial"].isin(env_serials)]
+            vals = t_df["Value"].dropna().tolist()
             row.append(_kde_curve(vals))
         kde_abs.append(row)
 
@@ -1630,6 +1653,8 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         row: list = []
         for temp in temps_present:
             t_df = spur_df[spur_df["Temperature"] == temp][_abs_cols].dropna(subset=["Frequency_MHz", "Value"])
+            if temp == "Room" and env_serials:
+                t_df = t_df[t_df["Serial"].isin(env_serials)]
             row.append({
                 "f":  [round(float(x), 1) for x in t_df["Frequency_MHz"]],
                 "v":  [round(float(x), 2) for x in t_df["Value"]],
@@ -1686,6 +1711,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var DUT_PORT_MAP={json.dumps(dut_port_map)};",
         f"var DIST_FREQ_MIN={dist_freq_min};",
         f"var DIST_FREQ_MAX={dist_freq_max};",
+        f"var KT={json.dumps(k_table)};",
     ])
 
     # -------------------------------------------------------------------------
@@ -1789,9 +1815,9 @@ function loadState(){
   var vm=_stGet('dist_view');
   if(vm){var el=document.querySelector('input[name="view_mode"][value="'+vm+'"]');if(el)el.checked=true;}
   var lo=_stGet('dist_freq_lo');
-  if(lo!=null){var sl=document.getElementById('dist_freq_lo');if(sl){sl.value=lo;var lt=document.getElementById('dist_freq_lo_txt');if(lt)lt.value=parseFloat(lo).toFixed(1);}}
+  if(lo!=null){var sl=document.getElementById('dist_freq_lo');if(sl){sl.value=lo;var lt=document.getElementById('dist_freq_lo_txt');if(lt)lt.value=parseFloat(lo).toFixed(3);}}
   var hi=_stGet('dist_freq_hi');
-  if(hi!=null){var sh=document.getElementById('dist_freq_hi');if(sh){sh.value=hi;var ht=document.getElementById('dist_freq_hi_txt');if(ht)ht.value=parseFloat(hi).toFixed(1);}}
+  if(hi!=null){var sh=document.getElementById('dist_freq_hi');if(sh){sh.value=hi;var ht=document.getElementById('dist_freq_hi_txt');if(ht)ht.value=parseFloat(hi).toFixed(3);}}
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   document.querySelectorAll('.dist_spur_chk').forEach(function(c){var s=_stGet('dist_spur_'+c.value);if(s!==null)c.checked=(s==='1');});
   /* If all spur checkboxes ended up deselected (stale saved state), restore all */
@@ -1875,19 +1901,19 @@ function syncFreqDist(){
   if(!lo||!hi) return;
   var loV=parseFloat(lo.value),hiV=parseFloat(hi.value);
   if(loV>hiV){lo.value=hiV;loV=hiV;}
-  document.getElementById('dist_freq_lo_txt').value=loV.toFixed(1);
-  document.getElementById('dist_freq_hi_txt').value=parseFloat(hi.value).toFixed(1);
+  document.getElementById('dist_freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('dist_freq_hi_txt').value=parseFloat(hi.value).toFixed(3);
 }
 function freqDistTxtChange(which){
   var txt=document.getElementById('dist_freq_'+which+'_txt');
   var slider=document.getElementById('dist_freq_'+which);
   if(!txt||!slider) return;
   var v=parseFloat(txt.value);
-  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(1);return;}
+  if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
   v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
   if(which==='lo'){var h=parseFloat(document.getElementById('dist_freq_hi').value);if(v>h)v=h;}
   else{var l=parseFloat(document.getElementById('dist_freq_lo').value);if(v<l)v=l;}
-  txt.value=v.toFixed(1);slider.value=v;update();
+  txt.value=v.toFixed(3);slider.value=v;update();
 }
 function freqDistKeyDown(e,which){if(e.key==='Enter')freqDistTxtChange(which);}
 
@@ -2032,7 +2058,7 @@ function update(){
   }
 
   var layout={
-    title:{text:TITLE+(freqFlt?' ['+fr.lo.toFixed(1)+'–'+fr.hi.toFixed(1)+' MHz]':''),font:{size:14}},
+    title:{text:TITLE+(freqFlt?' ['+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+' MHz]':''),font:{size:14}},
     xaxis:{title:{text:isAbs?Y_LABEL:('ΔTemp ('+Y_LABEL+')')},zeroline:false},
     yaxis:{title:{text:'Density'},zeroline:false},
     legend:{orientation:'v',x:1.01,y:1,xanchor:'left',font:{size:11}},
@@ -2048,6 +2074,7 @@ function update(){
 
   Plotly.react('kde_plot',traces,layout,{responsive:true});
   updateDeltaTable();
+  updateTiTable();
   saveState();
 }
 
@@ -2113,7 +2140,7 @@ function updateDeltaTable(){
     return a.serial<b.serial?-1:a.serial>b.serial?1:0;
   });
 
-  var freqNote=freqFlt?(' <span style="font-size:11px;color:#888">['+fr.lo.toFixed(1)+'–'+fr.hi.toFixed(1)+' MHz]</span>'):'';
+  var freqNote=freqFlt?(' <span style="font-size:11px;color:#888">['+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+' MHz]</span>'):'';
   var html='<table class="stbl"><thead><tr><th>Serial</th><th>Port</th>';
   nrTemps.forEach(function(t){html+='<th>'+t+' mean Δ (dB)'+freqNote+'</th>';});
   html+='</tr></thead><tbody>';
@@ -2157,6 +2184,136 @@ function updateDeltaTable(){
 
   el.innerHTML=html;
   saveState();
+}
+
+/* ---- k-table lookup (same as env_coverage) ---- */
+function kLookup(n,P,C){
+  if(!KT||!KT.P) return 2.0;
+  var Pv=KT.P,Cv=KT.C,nv=KT.n;
+  var pi=0;for(var i=1;i<Pv.length;i++){if(Math.abs(Pv[i]-P)<Math.abs(Pv[pi]-P))pi=i;}
+  var ci=0;for(var i=1;i<Cv.length;i++){if(Math.abs(Cv[i]-C)<Math.abs(Cv[ci]-C))ci=i;}
+  var key=KT.P[pi]+'_'+KT.C[ci],arr=KT.k[key];
+  if(!arr||!arr.length) return 2.0;
+  if(n<=nv[0]) return arr[0];
+  if(n>=nv[nv.length-1]) return arr[arr.length-1];
+  for(var i=0;i<nv.length-1;i++){
+    if(n>=nv[i]&&n<=nv[i+1]){var t2=(n-nv[i])/(nv[i+1]-nv[i]);return arr[i]+t2*(arr[i+1]-arr[i]);}
+  }
+  return arr[arr.length-1];
+}
+function getDistParams(){
+  var pEl=document.getElementById('dist_P');
+  var cEl=document.getElementById('dist_C');
+  var nEl=document.getElementById('dist_n');
+  var n_override=nEl?(parseInt(nEl.value)||0):0;
+  return {P:pEl?parseFloat(pEl.value):0.90,C:cEl?parseFloat(cEl.value):0.90,n_override:n_override};
+}
+
+/* ---- ΔEnv Tolerance Interval table ---- */
+function updateTiTable(){
+  var el=document.getElementById('dist_ti_tbl');
+  if(!el) return;
+  var params=getDistParams();
+  var linEl=document.getElementById('dist_linear_ti');
+  var isLinear=linEl?linEl.checked:false;
+  var paramEl=document.getElementById('dist_ti_params');
+  if(paramEl) paramEl.textContent='P='+Math.round(params.P*100)+'%, C='+Math.round(params.C*100)+'%'
+    +(params.n_override>0?', n←'+params.n_override:'')+(isLinear?' | Linear domain':'');
+  var selSer=getSelSerials(),selPor=getSelPorts();
+  var selSpurIdxs=getSelSpurIdxs();
+  var selNrIdxs=getSelNonRoomIdxs();
+  if(!selNrIdxs.length) selNrIdxs=NON_ROOM_TEMPS.map(function(_,i){return i;});
+  var nrTemps=selNrIdxs.map(function(i){return NON_ROOM_TEMPS[i];});
+  var fr=getFreqRange();
+  var freqFlt=(typeof DIST_FREQ_MIN!=='undefined')&&(fr.lo>DIST_FREQ_MIN+0.09||fr.hi<DIST_FREQ_MAX-0.09);
+  /* Build per-DUT delta accumulator (raw deltas per DUT per temp, then averaged to one value per DUT) */
+  var dutAcc={};
+  selSpurIdxs.forEach(function(si){
+    selNrIdxs.forEach(function(di){
+      var temp=NON_ROOM_TEMPS[di];
+      var raw=RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di];
+      if(freqFlt&&raw&&raw.s&&raw.s.length){
+        for(var i=0;i<raw.f.length;i++){
+          if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
+          var ser=raw.s[i],dv=raw.d[i];
+          if(!selSer.has(ser)) continue;
+          var port=DUT_PORT_MAP&&DUT_PORT_MAP[ser]||'';
+          if(selPor.size&&port&&!selPor.has(port)) continue;
+          if(!dutAcc[ser]) dutAcc[ser]={by_temp:{}};
+          if(!dutAcc[ser].by_temp[temp]) dutAcc[ser].by_temp[temp]=[];
+          dutAcc[ser].by_temp[temp].push(dv);
+        }
+      } else {
+        var entries=DUT_DELTA[si]&&DUT_DELTA[si][di];
+        if(!entries) return;
+        entries.forEach(function(d){
+          if(!d) return;
+          if(!selSer.has(d.serial)) return;
+          var port=d.port||'';
+          if(selPor.size&&port&&!selPor.has(port)) return;
+          if(!dutAcc[d.serial]) dutAcc[d.serial]={by_temp:{}};
+          if(!dutAcc[d.serial].by_temp[temp]) dutAcc[d.serial].by_temp[temp]=[];
+          dutAcc[d.serial].by_temp[temp].push(d.mean);
+        });
+      }
+    });
+  });
+  /* Per-DUT mean delta for each temp → population for TI */
+  var dutMeans={};
+  Object.values(dutAcc).forEach(function(dut){
+    nrTemps.forEach(function(t){
+      var arr=dut.by_temp[t]||[];
+      if(!arr.length) return;
+      var m=arr.reduce(function(a,b){return a+b;},0)/arr.length;
+      if(!dutMeans[t]) dutMeans[t]=[];
+      dutMeans[t].push(m);
+    });
+  });
+  function _mu(a){return a.length?a.reduce(function(x,y){return x+y;},0)/a.length:null;}
+  function _sig(a){var mu=_mu(a);if(mu===null||a.length<2)return null;
+    return Math.sqrt(a.reduce(function(s,x){return s+(x-mu)*(x-mu);},0)/(a.length-1));}
+  var freqNote=freqFlt?' <span style="font-size:11px;color:#888">['+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+' MHz]</span>':'';
+  var linNote=isLinear?' <span style="font-size:10px;color:#555">[lin]</span>':'';
+  var html='<table class="stbl"><thead><tr>'
+    +'<th>Temperature'+freqNote+'</th><th>n (DUTs)</th><th>Mean&nbsp;&#916; (dB)</th>'
+    +'<th>&#963; (dB)</th><th>k (P='+Math.round(params.P*100)+'%,C='+Math.round(params.C*100)+'%)</th>'
+    +'<th style="color:#c62828">UDE (dB)'+linNote+'</th><th style="color:#1565c0">LDE (dB)'+linNote+'</th>'
+    +'</tr></thead><tbody>';
+  var hasSome=false;
+  nrTemps.forEach(function(t){
+    var means=dutMeans[t]||[];
+    var n=means.length;
+    if(!n){
+      html+='<tr><td>'+t+'</td><td>0</td><td colspan="5" style="color:#999">No data</td></tr>';
+      return;
+    }
+    hasSome=true;
+    var mu=_mu(means),sig=_sig(means);
+    var n_use=params.n_override>0?params.n_override:n;
+    var k=n>1?kLookup(n_use,params.P,params.C):null;
+    var ude,lde;
+    if(isLinear){
+      var linMeans=means.map(function(x){return Math.pow(10,x/10);});
+      var mu_lin=_mu(linMeans),sig_lin=_sig(linMeans);
+      var ude_lin=(k!==null&&sig_lin!==null)?mu_lin+k*sig_lin:null;
+      var lde_lin=(k!==null&&sig_lin!==null)?mu_lin-k*sig_lin:null;
+      ude=(ude_lin!==null&&ude_lin>0)?10*Math.log10(ude_lin):null;
+      lde=(lde_lin!==null&&lde_lin>0)?10*Math.log10(lde_lin):null;
+    } else {
+      ude=(k!==null&&sig!==null)?mu+k*sig:null;
+      lde=(k!==null&&sig!==null)?mu-k*sig:null;
+    }
+    var nDisp=params.n_override>0
+      ?n+' <span title="k-factor uses n='+n_use+'" style="color:#888;font-size:11px">(k←'+n_use+')</span>'
+      :String(n);
+    html+='<tr><td>'+t+'</td><td>'+nDisp+'</td><td>'+_fd(mu,3)+'</td>'
+      +'<td>'+_fd(sig,3)+'</td><td>'+_fd(k,3)+'</td>'
+      +'<td style="font-weight:bold;color:#c62828">'+_fd(ude,3)+'</td>'
+      +'<td style="font-weight:bold;color:#1565c0">'+_fd(lde,3)+'</td></tr>';
+  });
+  if(!hasSome) html+='<tr><td colspan="7" style="text-align:center;color:#999;padding:8px">No data for current selection</td></tr>';
+  html+='</tbody></table>';
+  el.innerHTML=html;
 }
 
 /* ---- reset ---- */
@@ -2221,6 +2378,22 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         f' style="width:55px;font-size:12px;border:1px solid #bbb;border-radius:3px;padding:1px 3px"'
         f' onchange="freqDistTxtChange(\'hi\')" onkeydown="freqDistKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
         '  <div class="sep"></div>\n'
+        '  <label>P:&nbsp;<select id="dist_P" onchange="update()" oninput="update()">'
+        '<option value="0.80">80%</option>'
+        '<option value="0.90">90%</option>'
+        '<option value="0.95" selected>95%</option>'
+        '<option value="0.99">99%</option>'
+        '<option value="0.9973">99.73%</option>'
+        '</select></label>\n'
+        '  <label>C:&nbsp;<select id="dist_C" onchange="update()" oninput="update()">'
+        '<option value="0.90" selected>90%</option>'
+        '<option value="0.95">95%</option>'
+        '</select></label>\n'
+        '  <label title="Override n for k-factor lookup (0=auto from data)">n&nbsp;override:'
+        '<input type="number" id="dist_n" min="0" max="200" value="0" oninput="update()"></label>\n'
+        '  <label title="Compute TI bounds in linear power domain: each per-DUT mean is converted via 10^(Δ/10) before computing k·σ, then UDE/LDE are converted back to dB. Reduces asymmetry for small Δ values.">'
+        '<input type="checkbox" id="dist_linear_ti" onchange="update()"> Lin.&nbsp;TI</label>\n'
+        '  <div class="sep"></div>\n'
         '  <span id="n_pts"></span>\n'
         "</div>\n"
         '<div id="multimodal_warn">'
@@ -2234,6 +2407,12 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         'ΔEnv Summary &#8212; mean shift from Room per DUT '
         '(averaged across selected Spur Types)</div>\n'
         '  <div id="delta_tbl"></div>\n'
+        "</div>\n"
+        '<div class="panel-section">\n'
+        '  <div class="panel-title">&#916;Env Tolerance Interval &#8212; '
+        'k&#183;&#963; TI on per-DUT means (use freq filter to exclude noise-floor spurs)'
+        ' &#8212; <span id="dist_ti_params" style="color:#1565c0;font-weight:700">P=95%, C=90%</span></div>\n'
+        '  <div id="dist_ti_tbl"></div>\n'
         "</div>\n"
         f"<script>{_get_plotlyjs()}</script>\n"
         f"<script>\n{constants}\n{dist_js}</script>\n"
@@ -2557,6 +2736,7 @@ def _load_scatter_for_stats(csv_path: Path) -> pd.DataFrame:
     out["Upper_Limit"]   = _parse_limit(df_raw[hi_col]) if hi_col else np.nan
     out["Lower_Limit"]   = _parse_limit(df_raw[lo_col]) if lo_col else np.nan
     out["_val_col_name"] = val_col or "Value"
+    out["_freq_col_name"] = freq_col or "Frequency"
 
     # Extract temperature from Test Step column if present
     if step_col:
@@ -3006,7 +3186,7 @@ function computeFreqResult(fs,params){
     dev_lo=0;
     selTemps2.forEach(function(t){if(dbt2[t]) dev_lo=Math.max(dev_lo,dbt2[t].lo);});
   }
-  var spec_up=(fs.spec_up!=null)?fs.spec_up:params.spec_hi_override;
+  var spec_up=(params.spec_hi_override!==null)?params.spec_hi_override:((fs.spec_up!=null)?fs.spec_up:null);
   // spec_lo stored/entered as either signed (−0.15) or magnitude (0.15) — always apply as lower limit
   var spec_lo_raw=(fs.spec_lo!=null)?fs.spec_lo:params.spec_lo_override;
   var spec_lo_mag=(spec_lo_raw!=null)?Math.abs(spec_lo_raw):null;
@@ -3432,7 +3612,9 @@ function recomputeFreqStat(fs,selSers,cond,freq,applyGf){
     outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),
     np_ti_lo:null,np_ti_up:null});
 }
-function buildLayout(conds,params){
+function buildLayout(conds,params,fLo,fHi){
+  if(fLo===undefined){var _sl=document.getElementById('freq_lo');fLo=_sl?parseFloat(_sl.value):null;}
+  if(fHi===undefined){var _sh=document.getElementById('freq_hi');fHi=_sh?parseFloat(_sh.value):null;}
   var yRange=Y_LIM;
   /* Spec lines as layout shapes — always replaced by Plotly.react, never stale */
   var shapes=[],annotations=[];
@@ -3457,10 +3639,12 @@ function buildLayout(conds,params){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec Lo '+v,showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
+  var xRange=(isFinite(fLo)&&isFinite(fHi))?
+    (isLogX()?[Math.log10(fLo),Math.log10(fHi)]:[fLo,fHi]):null;
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:'Frequency (MHz)',type:isLogX()?'log':'linear'},
+    xaxis:Object.assign({title:'Frequency (MHz)',type:isLogX()?'log':'linear'},xRange?{range:xRange}:{}),
     yaxis:{title:Y_LABEL,range:yRange},
     height:450,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
@@ -3593,12 +3777,11 @@ function toggleRangeInputs(){
   }
 }
 function applyDataFilter(conds,params,flt){
-  if(flt.mode==='all') return conds;
+  if(flt.mode==='all'||flt.mode==='range') return conds;
   return conds.map(function(cd){
     var fs2=(cd.freq_stats||[]).filter(function(fs){
       var r=computeFreqResult(fs,params);
       if(flt.mode==='passing') return r.pass_up&&r.pass_lo;
-      if(flt.mode==='range') return r.ti_up<=flt.yhi;
       return true;
     });
     return Object.assign({},cd,{freq_stats:fs2});
@@ -3619,8 +3802,9 @@ function freqTxtChange(which){
   var v=parseFloat(txt.value);
   if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
   v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
-  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
-  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  var loTxt2=document.getElementById('freq_lo_txt'),hiTxt2=document.getElementById('freq_hi_txt');
+  if(which==='lo'){var h=hiTxt2&&hiTxt2.value!==''?parseFloat(hiTxt2.value):parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=loTxt2&&loTxt2.value!==''?parseFloat(loTxt2.value):parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
   txt.value=v.toFixed(3);slider.value=v;update();
 }
 function freqStep(which,dir){
@@ -3654,6 +3838,8 @@ function update(){
   });
   var params=getParams();
   var selSers=getSelectedSerials();var allSers=getAllSerials();
+  /* If all serials deselected treat as all-selected to avoid blank plot */
+  if(selSers.length===0&&allSers.length>0) selSers=allSers.slice();
   var serFlt=allSers.length>1&&selSers.length<allSers.length;
   var gfToggle=document.getElementById('stat_gf_chk');
   var gfEnabled=gfToggle?gfToggle.checked:true;
@@ -3677,8 +3863,9 @@ function update(){
     });
   }
   var flt=getDataFilter();
+  if(flt.mode==='range'&&isFinite(flt.yhi)){params.spec_hi_override=flt.yhi;}
   conds=applyDataFilter(conds,params,flt);
-  Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params),{responsive:true});
+  Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params,fLo,fHi),{responsive:true});
   updateTLLDisplay(conds,params);
   updateStatPanel(conds,params);
   var nEl=document.getElementById('n_footnote');
@@ -3997,13 +4184,15 @@ def _build_stat_summary_html(
         + '</div>\n'
     )
 
-    _snap_P = min([0.80, 0.95, 0.9973], key=lambda x: abs(x - default_P))
+    _snap_P = min([0.80, 0.90, 0.95, 0.99, 0.9973], key=lambda x: abs(x - default_P))
     _snap_C = min([0.90, 0.95], key=lambda x: abs(x - default_C))
     stat_bar = (
         '<div class="stat-bar" onclick="event.stopPropagation()">\n'
         f'  <label><b>P:</b>&nbsp;<select id="stat_P" onchange="update()">'
         f'<option value="0.80"{"  selected" if abs(_snap_P-0.80)<0.001 else ""}>80%</option>'
+        f'<option value="0.90"{"  selected" if abs(_snap_P-0.90)<0.001 else ""}>90%</option>'
         f'<option value="0.95"{"  selected" if abs(_snap_P-0.95)<0.001 else ""}>95%</option>'
+        f'<option value="0.99"{"  selected" if abs(_snap_P-0.99)<0.001 else ""}>99%</option>'
         f'<option value="0.9973"{"  selected" if abs(_snap_P-0.9973)<0.001 else ""}>99.73%</option>'
         f'</select></label>\n'
         f'  <label><b>C:</b>&nbsp;<select id="stat_C" onchange="update()">'
@@ -4079,7 +4268,7 @@ def _build_stat_summary_html(
         '  <span id="flt_range_inputs" style="display:none;align-items:center;gap:4px">\n'
         f'    <input type="number" id="flt_yhi" placeholder="dBc limit" step="0.001" value="{y_lim_hi}"'
         ' oninput="update()">\n'
-        '    <small style="color:#666">(hides freqs where TI upper bound exceeds this limit; Y scale unchanged)</small>\n'
+        '    <small style="color:#666">(overrides test data spec; TLL and margin recalculated relative to this limit)</small>\n'
         '  </span>\n'
         '  <span class="sep"></span>\n'
         '  <label title="Use non-parametric (distribution-free) order-statistic TI'
@@ -5387,12 +5576,14 @@ def _build_env_coverage_html(
 
     def _slider(el_id, label, default_val, on_change, title=""):
         t = f' title="{title}"' if title else ""
-        sn = min([0.80, 0.95, 0.9973], key=lambda x: abs(x - default_val))
+        sn = min([0.80, 0.90, 0.95, 0.99, 0.9973], key=lambda x: abs(x - default_val))
         return (
             f'<label{t}>{label}&nbsp;'
             f'<select id="{el_id}" onchange="update()">'
             f'<option value="0.80"{"  selected" if abs(sn-0.80)<0.001 else ""}>80%</option>'
+            f'<option value="0.90"{"  selected" if abs(sn-0.90)<0.001 else ""}>90%</option>'
             f'<option value="0.95"{"  selected" if abs(sn-0.95)<0.001 else ""}>95%</option>'
+            f'<option value="0.99"{"  selected" if abs(sn-0.99)<0.001 else ""}>99%</option>'
             f'<option value="0.9973"{"  selected" if abs(sn-0.9973)<0.001 else ""}>99.73%</option>'
             f'</select></label>'
         )
@@ -7021,28 +7212,32 @@ function setFilterAsGf(){
   var selBoxSers=getSelectedBoxSerials();
   var allBoxSers=getAllBoxSerials();
   var serFlt=allBoxSers.length>1&&selBoxSers.length<allBoxSers.length;
+  var allPorts=getAllBoxPorts();var selPorts=getSelectedBoxPorts();
+  var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
+  var fr=getBoxFreqRange();
+  var allTemps=BOX_DATA.map(function(cd){return cd.temp;}).filter(function(t,i,a){return a.indexOf(t)===i;});
+  var selTemps=getSelectedTemps();
+  var tempFlt=allTemps.length>1&&selTemps.length<allTemps.length;
+  var freqFlt=fr.lo>BOX_FREQ_MIN+0.001||fr.hi<BOX_FREQ_MAX-0.001;
   var keys=[],seen=new Set();
   BOX_DATA.forEach(function(cd){
     if(selConds.indexOf(cd.condition)<0) return;
-    var condKey=condToKey(cd.condition);
-    /* Collect (baseSer, port) pairs that pass the port-qualified serial filter.
-       Port is included in the GF condKey so scatter _buildCoarseKey can match it. */
-    var spSeen=new Set();var condSerPorts=[];
+    if(tempFlt&&selTemps.indexOf(cd.temp)<0) return;
+    if(cd.temp==='manual') return; /* safety guard */
     (cd.freq_stats||[]).forEach(function(f){
+      if(f.freq<fr.lo||f.freq>fr.hi) return;
+      /* Collect distinct (baseSer, port) for this freq that pass serial/port filters */
       (f.vals_detail||[]).forEach(function(d){
         if(!d.s) return;
-        if(serFlt&&selBoxSers.indexOf(d.s)<0) return; /* filter by port-qualified serial */
+        if(serFlt&&selBoxSers.indexOf(d.s)<0) return;
+        if(portFlt&&selPorts.indexOf(d.p||'')<0) return;
         var baseSer=_boxBaseSerial(d.s);
-        var spKey=baseSer+'\x00'+(d.p||'');
-        if(!spSeen.has(spKey)){spSeen.add(spKey);condSerPorts.push({ser:baseSer,port:d.p||''});}
+        var fck=_boxFullCondKey(cd.condition,d.p||'');
+        var useTemp=(tempFlt||freqFlt)?cd.temp:'manual';
+        var useFreq=(tempFlt||freqFlt)?f.freq.toFixed(3):'0';
+        var k=baseSer+'||'+fck+'||'+useTemp+'||'+useFreq;
+        if(!seen.has(k)){seen.add(k);keys.push(k);}
       });
-    });
-    condSerPorts.forEach(function(sp){
-      var fullCondKey=_boxFullCondKey(cd.condition,sp.port);
-      var k=sp.ser+'||'+fullCondKey;
-      if(seen.has(k)) return;
-      seen.add(k);
-      keys.push(sp.ser+'||'+fullCondKey+'||manual||0');
     });
   });
   if(!keys.length){alert('No data matches the current condition and serial filter.');return;}
@@ -7060,6 +7255,115 @@ function applyGlobalFilter(){
 function clearGlobalFilter(){
   try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
   _loadBoxGlobalFilter();_updateBoxGfStatus();update();
+}
+function csvTempToTestStep(t){
+  /* Convert CSV temp string (e.g. "30°C") to PADB Test Step label (e.g. "30.0 Deg C") */
+  var m=t.match(/^(\d+(?:\.\d+)?)\s*[°º]?C$/);
+  return m?parseFloat(m[1]).toFixed(1)+' Deg C':t;
+}
+function copyPadbFilter(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    if(!raw){alert('No global filter entries to copy.');return;}
+    var keys=(JSON.parse(raw).excluded||[]);
+    if(!keys.length){alert('No global filter entries to copy.');return;}
+    var fp=typeof PADB_FIELD_PREFIX!=='undefined'?PADB_FIELD_PREFIX:'';
+    var ff=typeof PADB_FREQ_FIELD!=='undefined'?PADB_FREQ_FIELD:'';
+    /* Group by condKey: collect serials, exact frequencies, and all temps */
+    var condGroups={};
+    keys.forEach(function(k){
+      var p=k.split('||');
+      var ser=p[0]||'',cond=p[1]||'',temp=p[2]||'',freqStr=p[3]||'';
+      var freq=parseFloat(freqStr);
+      var isManual=(temp==='manual');
+      if(!condGroups[cond]) condGroups[cond]={sers:new Set(),freqs:new Set(),temps:new Set(),isManual:isManual};
+      if(ser) condGroups[cond].sers.add(ser);
+      if(!isManual&&!isNaN(freq)&&freqStr) condGroups[cond].freqs.add(String(freq));
+      if(!isManual&&temp) condGroups[cond].temps.add(temp);
+      if(isManual) condGroups[cond].isManual=true;
+    });
+    /* One inclusion block per condKey; multiple temps use AND per PADB syntax; blocks joined with OR */
+    var blocks=[];
+    Object.keys(condGroups).sort().forEach(function(condKey){
+      var grp=condGroups[condKey];
+      if(!grp.sers.size) return;
+      var inner=[];
+      /* Exact frequency match(es) */
+      if(grp.freqs.size>0&&ff){
+        var flist=Array.from(grp.freqs).sort(function(a,b){return parseFloat(a)-parseFloat(b);});
+        inner.push(flist.length===1
+          ?"'"+ff+"' = \""+flist[0]+"\""
+          :"'"+ff+"' IN {"+flist.map(function(f){return '"'+f+'"';}).join(',')+"}");
+      }
+      /* Condition parameter = clauses */
+      if(fp&&condKey){
+        condKey.split('|').forEach(function(kv){
+          var eq=kv.indexOf('=');if(eq<0) return;
+          var pname=kv.substring(0,eq).trim();
+          var pval=kv.substring(eq+1).trim();
+          if(pname&&pval) inner.push("'"+fp+':'+pname+"' = \""+pval+"\"");
+        });
+      }
+      /* Temperature clauses — PADB uses AND between multiple 'Test Step' values */
+      if(!grp.isManual&&grp.temps.size>0){
+        var tlist=Array.from(grp.temps).sort();
+        tlist.forEach(function(t){inner.push("'Test Step' = \""+csvTempToTestStep(t)+"\"");});
+      }
+      /* Serial clause */
+      var sers=Array.from(grp.sers).sort();
+      inner.push(sers.length===1
+        ?"'Serial Number' = \""+sers[0]+"\""
+        :"'Serial Number' IN {"+sers.map(function(s){return '"'+s+'"';}).join(',')+"}");
+      blocks.push(inner.length>1?'( '+inner.join(' AND ')+' )':inner[0]);
+    });
+    var expr=blocks.join('\r\n OR ');
+    if(navigator.clipboard){
+      navigator.clipboard.writeText(expr).then(function(){
+        var btn=document.getElementById('box_padb_flt_btn');
+        if(btn){var orig=btn.textContent;btn.textContent='Copied!';setTimeout(function(){btn.textContent=orig;},1500);}
+      });
+    } else {
+      var ta=document.createElement('textarea');ta.value=expr;
+      document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+      var btn=document.getElementById('box_padb_flt_btn');
+      if(btn){var orig=btn.textContent;btn.textContent='Copied!';setTimeout(function(){btn.textContent=orig;},1500);}
+    }
+  }catch(e){alert('Copy failed: '+e);}
+}
+function exportGfCsv(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    if(!raw){alert('No global filter entries to export.');return;}
+    var keys=(JSON.parse(raw).excluded||[]);
+    if(!keys.length){alert('No global filter entries to export.');return;}
+    function esc(v){v=String(v);return v.indexOf(',')>=0||v.indexOf('"')>=0?'"'+v.replace(/"/g,'""')+'"':v;}
+    /* Group by (serial, condKey, temp) — collect freqs into start/stop range */
+    var groups={};
+    keys.forEach(function(k){
+      var p=k.split('||');
+      var ser=p[0]||'',cond=p[1]||'',temp=p[2]||'',freq=parseFloat(p[3]);
+      var isManual=(temp==='manual');
+      var gk=ser+'\x00'+cond+'\x00'+temp;
+      if(!groups[gk]) groups[gk]={ser:ser,cond:cond,temp:temp,flo:Infinity,fhi:-Infinity,n:0,isManual:isManual};
+      groups[gk].n++;
+      if(!isNaN(freq)&&!isManual){
+        if(freq<groups[gk].flo) groups[gk].flo=freq;
+        if(freq>groups[gk].fhi) groups[gk].fhi=freq;
+      }
+    });
+    var rows=['Serial,Condition,Temperature,Start_Freq_MHz,Stop_Freq_MHz,N_Points'];
+    Object.keys(groups).sort().forEach(function(gk){
+      var g=groups[gk];
+      var dispTemp=g.isManual?'All':g.temp;
+      var flo=isFinite(g.flo)?g.flo.toFixed(3):(g.isManual?'All':'');
+      var fhi=isFinite(g.fhi)?g.fhi.toFixed(3):(g.isManual?'All':'');
+      rows.push([esc(g.ser),esc(g.cond),esc(dispTemp),flo,fhi,g.n].join(','));
+    });
+    var blob=new Blob(['﻿'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');a.href=url;a.download='global_filter.csv';
+    document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
+  }catch(e){alert('Export failed: '+e);}
 }
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
@@ -7192,6 +7496,8 @@ def _build_box_interactive_html(
     box_freq_min: float = 0.0, box_freq_max: float = 1.0,
     box_cond_spur=None, spur_orders_box=None,
     results_dir: str = '',
+    padb_field_prefix: str = '',
+    padb_freq_field: str = '',
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -7416,6 +7722,8 @@ def _build_box_interactive_html(
         f"var ALL_BOX_PORTS={json.dumps(all_box_ports or [])};",
         f"var BOX_COND_HARM={json.dumps(box_cond_harm or [])};",
         f"var STATE_KEY='padb_{results_dir}';",
+        f"var PADB_FIELD_PREFIX={json.dumps(padb_field_prefix)};",
+        f"var PADB_FREQ_FIELD={json.dumps(padb_freq_field)};",
     ])
 
     return (
@@ -7457,6 +7765,13 @@ def _build_box_interactive_html(
         ' style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' onclick="clearGlobalFilter()">Clear global filter</button>\n'
         + '  <button class="toggle-btn"'
+        ' style="background:#f0fff4;border-color:#080;color:#060"'
+        ' onclick="exportGfCsv()">Export GF CSV</button>\n'
+        + '  <button class="toggle-btn" id="box_padb_flt_btn"'
+        ' style="background:#f0fff4;border-color:#080;color:#060"'
+        ' title="Copy \'Serial Number\' NOT IN {...} expression to clipboard"'
+        ' onclick="copyPadbFilter()">Copy PADB Filter</button>\n'
+        + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
         ' onclick="clearEverything()">Clear everything</button>\n'
         + '  <button class="toggle-btn" id="box_gf_mode_btn"'
@@ -7479,6 +7794,13 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     df = _parse_group_fields(df)
     title = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
+    padb_field_prefix = df["_val_col_name"].iloc[0] if len(df) else ""
+    # Expand short CSV column name to full PADB path: "Name (units)" → "Name-->Name (units)"
+    if padb_field_prefix and "-->" not in padb_field_prefix:
+        _sp = padb_field_prefix.find(" ")
+        if _sp > 0:
+            padb_field_prefix = f"{padb_field_prefix[:_sp]}-->{padb_field_prefix}"
+    padb_freq_field = (padb_field_prefix + ":Frequency") if padb_field_prefix else ""
     y_lim = cfg.get("y_lim")
     lo_spec, hi_spec = _get_spec(df, cfg)
 
@@ -7623,6 +7945,8 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         box_cond_spur=box_cond_spur,
         spur_orders_box=spur_orders_box,
         results_dir=cfg.get('results_dir', ''),
+        padb_field_prefix=padb_field_prefix,
+        padb_freq_field=padb_freq_field,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -7700,8 +8024,9 @@ function freqTxtChange(which){
   var v=parseFloat(txt.value);
   if(isNaN(v)){txt.value=parseFloat(slider.value).toFixed(3);return;}
   v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
-  if(which==='lo'){var h=parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
-  else{var l=parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
+  var loTxt2=document.getElementById('freq_lo_txt'),hiTxt2=document.getElementById('freq_hi_txt');
+  if(which==='lo'){var h=hiTxt2&&hiTxt2.value!==''?parseFloat(hiTxt2.value):parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
+  else{var l=loTxt2&&loTxt2.value!==''?parseFloat(loTxt2.value):parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
   txt.value=v.toFixed(3);slider.value=v;update();
 }
 function freqStep(which,dir){
@@ -7773,10 +8098,96 @@ function getSumParams(){
           mu:_n('sum_mu',0),denv:_n('sum_denv',0),tll_hi_override:_nn('sum_tll_hi')};
 }
 
+/* ---- serial filter ---- */
+function getSumAllSerials(){return SUM_ALL_SERIALS||[];}
+function getSumSelectedSerials(){
+  return Array.from(document.querySelectorAll('.sum_ser_chk:checked')).map(function(el){return el.value;});
+}
+function sumSerChkChanged(){
+  var chks=Array.from(document.querySelectorAll('.sum_ser_chk'));
+  var a=document.getElementById('all_sum_ser');
+  var n=chks.filter(function(c){return c.checked;}).length;
+  if(a){a.checked=(n===chks.length);a.indeterminate=(n>0&&n<chks.length);}
+  var b=document.getElementById('badge_sum_ser');
+  if(b){if(n<chks.length){b.textContent=n+'/'+chks.length;b.classList.add('active');}
+        else b.classList.remove('active');}
+  update();
+}
+function toggleAllSumSer(){
+  var a=document.getElementById('all_sum_ser');
+  document.querySelectorAll('.sum_ser_chk').forEach(function(c){c.checked=a?a.checked:true;});
+  var b=document.getElementById('badge_sum_ser');
+  if(b)b.classList.remove('active');
+  update();
+}
+
 /* ---- get temp-filtered + param-adjusted stats for a condition ---- */
 function getSumCondData(cd,selTemps,params){
   var allTemps=TEMPS_ALL||[];
   var filtering=selTemps&&allTemps.length>0&&selTemps.length<allTemps.length;
+  /* GF + serial per-DUT filtering: recompute means from active DUTs when either filter is on */
+  var _gfEl=document.getElementById('sum_gf_chk');
+  var _gfOn=!_gfEl||_gfEl.checked;
+  var _selSumSers=getSumSelectedSerials();var _allSumSers=getSumAllSerials();
+  if(_selSumSers.length===0&&_allSumSers.length>0)_selSumSers=_allSumSers.slice();
+  var _sumSerFlt=_allSumSers.length>1&&_selSumSers.length<_allSumSers.length;
+  if((_sumSerFlt||(_gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size))&&
+     cd.dut_info&&cd.dut_info.length&&cd.dut_vals&&cd.dut_vals.length){
+    var _coarseKey=(_gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size)?_sumCoarseCondKey(cd.condition):null;
+    var _nAll=cd.dut_info.length;
+    var _gfMode=localStorage.getItem('padb_v2_gf_mode')||'exclude';
+    var _inclIdxs=[];
+    cd.dut_info.forEach(function(di,idx){
+      if(_sumSerFlt&&_selSumSers.indexOf(di.s)<0)return;
+      if(_coarseKey!==null){
+        var inGf=_sumGfCoarseExcluded.has(di.s+'||'+_coarseKey);
+        if(_gfMode==='focus'?inGf:!inGf)return;
+      }
+      _inclIdxs.push(idx);
+    });
+    if(_inclIdxs.length>0&&_inclIdxs.length<_nAll){
+      var _nGf=_inclIdxs.length;
+      var _scale=_nGf/_nAll;
+      /* Per-freq mean from included DUTs only */
+      var _gfMeans=cd.dut_vals.map(function(row){
+        var vs=_inclIdxs.map(function(i){return row[i];}).filter(function(v){return v!==null;});
+        return vs.length?Math.round(vs.reduce(function(a,b){return a+b;},0)/vs.length*1e6)/1e6:null;
+      });
+      if(!cd.by_temp){
+        return {mean:_gfMeans,min_data:cd.min_data,max_data:cd.max_data,
+                uttl:cd.uttl,lttl:cd.lttl,uttl_is_estimate:cd.uttl_is_estimate||false,gf_n:_nGf,total_duts:_nAll};
+      }
+      /* Recompute TI using scaled-n approximation */
+      var _tps=filtering?selTemps:allTemps;
+      var _nF=cd.freqs.length;
+      var _om=[],_omin=[],_omax=[],_ou=[],_ol=[];
+      for(var _fi=0;_fi<_nF;_fi++){
+        var _tn=0,_pss=0,_mn=null,_mx=null;
+        _tps.forEach(function(t){
+          var bt=cd.by_temp[t];if(!bt)return;
+          var n=bt.n[_fi],m=bt.mean[_fi],s=bt.std[_fi];
+          if(!n||m===null||m===undefined)return;
+          var ns=Math.max(1,Math.round(n*_scale));
+          _pss+=(ns>1?(ns-1)*s*s:0);_tn+=ns;
+          if(_mn===null||bt.min_data[_fi]<_mn)_mn=bt.min_data[_fi];
+          if(_mx===null||bt.max_data[_fi]>_mx)_mx=bt.max_data[_fi];
+        });
+        var _mu=_gfMeans[_fi];
+        if(!_tn||_mu===null){
+          _om.push(_mu);_omin.push(null);_omax.push(null);_ou.push(null);_ol.push(null);continue;
+        }
+        var _sig=_tn>1?Math.sqrt(_pss/Math.max(_tn-1,1)):0;
+        var _nu=params.n_override>0?params.n_override:_tn;
+        var _k=kLookup(_nu,params.P,params.C);
+        _om.push(Math.round(_mu*1e6)/1e6);
+        _omin.push(_mn);_omax.push(_mx);
+        _ou.push(Math.round((_mu+_k*_sig+params.mu+params.denv)*1e4)/1e4);
+        _ol.push(Math.round((_mu-_k*_sig-params.mu-params.denv)*1e4)/1e4);
+      }
+      return {mean:_om,min_data:_omin,max_data:_omax,
+              uttl:_ou,lttl:_ol,uttl_is_estimate:true,gf_n:_nGf,total_duts:_nAll};
+    }
+  }
   /* No by_temp data (old record format) — use pre-computed, offset by budget */
   if(!cd.by_temp){
     if(!params.mu&&!params.denv)
@@ -7972,6 +8383,9 @@ function resetFilters(){
   if(allRad){allRad.checked=true;toggleRangeInputs();}
   var yhi=document.getElementById('sum_yhi');if(yhi)yhi.value='';
   var ec=document.getElementById('sum_show_excl_chk');if(ec)ec.checked=false;
+  document.querySelectorAll('.sum_ser_chk').forEach(function(c){c.checked=true;});
+  var aSer=document.getElementById('all_sum_ser');if(aSer){aSer.checked=true;aSer.indeterminate=false;}
+  var bSer=document.getElementById('badge_sum_ser');if(bSer)bSer.classList.remove('active');
   document.querySelectorAll('.sum_temp_chk').forEach(function(c){c.checked=true;});
   var pEl=document.getElementById('sum_P');if(pEl)pEl.value='0.95';
   var cEl=document.getElementById('sum_C');if(cEl)cEl.value='0.90';
@@ -8099,7 +8513,7 @@ function _loadSumGlobalFilter(){
           var coarseCond=parts[1].split('|').filter(function(p){
             var lo=p.toLowerCase();
             return !stripKws.some(function(kw){return lo.indexOf(kw)===0;});
-          }).join('|');
+          }).sort().join('|');
           _sumGfCoarseExcluded.add(parts[0]+'||'+coarseCond);
         }
       });
@@ -8169,6 +8583,9 @@ function _buildCondRows(condList,gfLabel,selTemps,params){
         var bt=cd.by_temp&&cd.by_temp[t];
         if(bt&&bt.n&&bt.n[fi]) tot_n+=bt.n[fi];
       });
+      if(stats.gf_n!==undefined&&stats.total_duts&&stats.total_duts>0){
+        tot_n=Math.round(tot_n*stats.gf_n/stats.total_duts);
+      }
       var sHi=(cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:
               (cd.spec_hi!==undefined&&cd.spec_hi!==null?cd.spec_hi:null);
       var tUp=stats.uttl[fi];
@@ -8368,6 +8785,31 @@ def _build_summary_html(
         )
     panels_html = "\n  ".join(panels)
 
+    # Build serial filter panel from all unique serials across all records
+    all_sum_serials = sorted(set(
+        di["s"]
+        for r in records
+        for di in r.get("dut_info", [])
+        if di.get("s")
+    ))
+    if len(all_sum_serials) > 1:
+        _ser_items_html = "".join(
+            f'<label class="fitem"><input type="checkbox" class="sum_ser_chk"'
+            f' value="{s}" checked onchange="sumSerChkChanged()">{s}</label>'
+            for s in all_sum_serials
+        )
+        ser_panel_html = (
+            f'<div class="filter-wrap">'
+            f'<button class="filter-btn" onclick="togglePanel(\'sum_ser\')">'
+            f'Serial&thinsp;<span id="badge_sum_ser" class="badge"></span>&#9662;</button>'
+            f'<div class="filter-panel" id="panel_sum_ser">'
+            f'<label class="fitem fall"><input type="checkbox" id="all_sum_ser"'
+            f' checked onchange="toggleAllSumSer()"><b>Select&nbsp;all</b></label>'
+            f'<hr class="fdiv">{_ser_items_html}</div></div>'
+        )
+    else:
+        ser_panel_html = ""
+
     freq_bands = cfg.get("freq_bands", [])
     band_btns_html = ""
     for _b in freq_bands:
@@ -8383,6 +8825,7 @@ def _build_summary_html(
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var KT={json.dumps(k_table)};",
         f"var TEMPS_ALL={json.dumps(list(temps_all))};",
+        f"var SUM_ALL_SERIALS={json.dumps(all_sum_serials)};",
         f"var HI_SPEC={hi_js};",
         f"var LO_SPEC={lo_js};",
         f"var Y_LABEL={json.dumps(y_label)};",
@@ -8454,7 +8897,9 @@ def _build_summary_html(
             + '  <b>Stat:</b>&nbsp;\n'
             + '  <label>P:&nbsp;<select id="sum_P" onchange="update()">'
             + '<option value="0.80">80%</option>'
+            + '<option value="0.90">90%</option>'
             + '<option value="0.95" selected>95%</option>'
+            + '<option value="0.99">99%</option>'
             + '<option value="0.9973">99.73%</option>'
             + '</select></label>\n'
             + '  <label>C:&nbsp;<select id="sum_C" onchange="update()">'
@@ -8482,6 +8927,7 @@ def _build_summary_html(
         "</head>\n<body>\n"
         '<div class="ctrl-bar">\n'
         + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
+        + (f'  {ser_panel_html}\n  {sep}\n' if ser_panel_html else "")
         + f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
