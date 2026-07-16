@@ -588,6 +588,10 @@ def _fill_spec_nulls(df: pd.DataFrame) -> pd.DataFrame:
             continue
         total_null = int(df[col].isna().sum())
 
+        # If no non-null values exist at all, there is nothing to fill from — skip silently.
+        if df[col].notna().sum() == 0:
+            continue
+
         # Pass 1: fine grouping
         df[col] = df.groupby(fine_grp, group_keys=False)[col].transform(_mode_fill)
         after_p1 = int(df[col].isna().sum())
@@ -698,14 +702,22 @@ def generate_report(
 # ===========================================================================
 
 def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dict) -> None:
+    # Merge newly generated files with any pre-existing HTML files in the directory
+    # so multiple job runs into the same output dir all appear in the index.
+    existing = sorted(
+        p for p in output_dir.glob("*.html")
+        if p.name != "index.html" and p not in html_files
+    )
+    all_files = sorted(set(existing) | set(html_files), key=lambda p: p.stem.lower())
     items = "".join(
         f'<li><a href="{p.name}">{p.stem.replace("_", " ")}</a></li>'
-        for p in html_files
+        for p in all_files
     )
+    title = cfg.get("index_title", prefix)
     desc = cfg.get("description", "")
     html = f"""<!DOCTYPE html>
 <html>
-<head><meta charset='utf-8'><title>{prefix}</title>
+<head><meta charset='utf-8'><title>{title}</title>
 <style>
   body{{font-family:sans-serif;max-width:800px;margin:40px auto;}}
   h1{{font-size:1.4em;}} li{{margin:6px 0;}}
@@ -713,7 +725,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
 </style>
 </head>
 <body>
-<h1>{prefix}</h1>
+<h1>{title}</h1>
 {"<p>"+desc+"</p>" if desc else ""}
 <ul>{items}</ul>
 </body></html>"""
