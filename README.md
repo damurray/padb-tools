@@ -28,7 +28,12 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `linespurs_job.json` | Line-related spurs |
 | `closein_job.json` | Close-in non-harmonics |
 | `absphase_noise_job.json` | Absolute phase noise |
-| `maxpower2_job.json` | Max power |
+| `maxpower2_job.json` | Max power (superseded — known issues, see `CLAUDE.md`) |
+| `maxpower3_run_job.json` | Max power V3 — extract step (V2 pipeline) |
+| `maxpower3_leveled_log_job.json` | Max power V3 — leveled, log X, scatter only |
+| `maxpower3_unleveled_log_job.json` | Max power V3 — unleveled, log X, scatter only |
+| `maxpower3_leveled_linear_job.json` | Max power V3 — leveled, linear X, full view set |
+| `maxpower3_unleveled_linear_job.json` | Max power V3 — unleveled, linear X |
 | `v2_probe_job.json` | V2 probe run |
 | `job.json` | Scratch / template |
 

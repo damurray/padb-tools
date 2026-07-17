@@ -366,6 +366,8 @@ Keys with only one value across all data (e.g. Mode always = 0) are silently ign
 
 If the analytic has spec limits configured, they appear automatically as `Lower Limit (>=)` and `Upper Limit (<=)` columns in the CSV and are shown as spec lines in the plots. If not configured, the stat_summary still works — users can type spec limits manually via the Spec↑/↓ controls in the HTML.
 
+**One-sided measurements with no pod spec limits:** `stat_summary` auto-detects which spec line(s) to draw based on whether `Lower Limit`/`Upper Limit` are populated in the CSV. If the pod has `Limits_YLimit=None` on every analytic (no limits configured at all) but the measurement is conceptually one-sided — e.g. a guaranteed-minimum max-power spec — auto-detection resolves to "none" and no pass/fail line ever shows. Set `"spec_direction": "lo"` (or `"hi"`) explicitly in the job JSON to force the correct spec line regardless of what's in the CSV. See `maxpower3_leveled_linear_job.json` for a working example.
+
 ### Serial Number column
 
 PADB always outputs a `Serial Number` column in scatter CSVs. Do not suppress it. Without it all DUTs collapse to n=1 and statistical plots are not meaningful.

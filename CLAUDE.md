@@ -58,7 +58,7 @@ py padb_run.py job.json --dry-run
 
 ---
 
-## Active job files (as of 2026-06-30)
+## Active job files (as of 2026-07-16)
 
 | Job file | Pod | Status | Publish destination |
 |---|---|---|---|
@@ -68,8 +68,30 @@ py padb_run.py job.json --dry-run
 | `linespurs_job.json` | Line_Related_Spurs_all_Spec_DUTS_June10.pod | ✓ Published | `...\LineSpurs` |
 | `closein_job.json` | Non-Harmonics_Close-In_all_Spec_DUTS_June10.pod | ❓ Status unknown | `...\CloseIn` |
 | `absphase_noise_job.json` | Absolute Phase Noise EP6 Spec Setting.pod | ✓ Published | `...\AbsPhaseNoise` |
+| `maxpower2_job.json` | (superseded) | ⚠️ Known issues, not fixed — see below | — |
+| `maxpower3_run_job.json` | MaxPower3.pod | ✓ Extracted (V2 run step) | — |
+| `maxpower3_leveled_log_job.json` | (via maxpower3_run_job) | ✓ Plotted — `scatter` only | not yet published |
+| `maxpower3_unleveled_log_job.json` | (via maxpower3_run_job) | ✓ Plotted — `scatter` only | not yet published |
+| `maxpower3_leveled_linear_job.json` | (via maxpower3_run_job) | ✓ Plotted — full V2 view set | not yet published |
+| `maxpower3_unleveled_linear_job.json` | (via maxpower3_run_job) | ✓ Plotted — `scatter`/`stat_summary`/`boxplot`/`distribution` | not yet published |
 
 All publish destinations are under `\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\`.
+
+### MaxPower2 → MaxPower3
+
+`maxpower2_job.json` had three known unresolved issues (empty Environmental plot, no spec limits, n=17 below NP-TI threshold — see project memory `project_maxpower2_issues`). MaxPower3 is the redo with a new pod:
+
+- **Fixed:** `Environment_TestStep={All}` is now set in `MaxPower3.pod` (was `'Room'` in MaxPower2), so `distribution`/`env_coverage`/`summary` views now have non-Room data to compute deltas from.
+- **Still open:** Every analytic in `MaxPower3.pod` has `Limits_YLimit=None` — no spec limits are configured at the pod level. Worked around per-job via the `spec_direction` key (see below) rather than a pod fix.
+- MaxPower is the first non-spur (dBm, one-sided-lower-spec) pod family run through the V2 pipeline — see `spec_direction` below for what that surfaced.
+
+### `spec_direction` job.json key (added for MaxPower3)
+
+`stat_summary` (V2) auto-detects whether to show the lower spec line, upper spec line, both, or neither, based on whether any `freq_stats` entry has `spec_lo`/`spec_up` populated (`padb_plots.py` ~line 4072). MaxPower3's pod has no spec limits at all (`Limits_YLimit=None` everywhere), so auto-detection always resolves to `"none"` — no pass/fail line would ever show, even though MaxPower is conceptually a lower-spec-only (guaranteed minimum power) measurement.
+
+Fix: set `"spec_direction": "lo"` explicitly in the job JSON (`maxpower3_leveled_linear_job.json`, `maxpower3_unleveled_linear_job.json`) to force the lower-spec display regardless of what's in the CSV. Valid values: `"lo"`, `"hi"`, `"both"`, `"none"`, or omit for `"auto"` (data-driven detection, correct for spur-family pods that do have `Lower Limit`/`Upper Limit` columns).
+
+**This was not previously documented** — added to `PADB_Tools_Guide.md` and `PADB_Analytic_Requirements.md` on 2026-07-16.
 
 ---
 

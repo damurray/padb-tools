@@ -330,6 +330,7 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 **Key parameters:**
 - `proportion` — fraction of the population the TI must capture (default 0.90)
 - `confidence` — confidence level that the stated proportion is captured (default 0.90)
+- `spec_direction` — which spec line(s) to show: `"lo"`, `"hi"`, `"both"`, `"none"`, or `"auto"` (default). Auto-detects from whether the CSV's `Lower Limit`/`Upper Limit` columns are populated. Set explicitly when the pod has no spec limits configured (`Limits_YLimit=None`) but the measurement is conceptually one-sided — e.g. MaxPower3 uses `"spec_direction": "lo"` because max output power is a guaranteed-minimum (lower-spec-only) measurement with no limits in the pod itself.
 - Required n: 29 for P90/C90, 59 for P95/C90, 299 for P99/C95
 
 ---
@@ -634,6 +635,7 @@ The run job JSON (`*_run_job.json`) references the pod file and sets `padb_outpu
 | `env_coverage_y_label` | Y-axis label override for env_coverage |
 | `env_coverage_y_lim` | `[min, max]` Y-axis range for env_coverage |
 | `env_coverage_freq_scale` | Frequency scale multiplier for env_coverage (e.g. `0.000001` converts Hz to MHz) |
+| `spec_direction` | `"lo"` / `"hi"` / `"both"` / `"none"` / `"auto"` (default). Overrides auto-detected spec-line display in `stat_summary` — needed when the pod has no `Lower Limit`/`Upper Limit` data but the measurement is one-sided. See MaxPower3 example above. |
 
 ---
 
