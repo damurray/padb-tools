@@ -714,7 +714,8 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
         for p in all_files
     )
     title = cfg.get("index_title", prefix)
-    desc = cfg.get("description", "")
+    # Suppress per-job description when multiple jobs share the same output dir
+    desc = cfg.get("description", "") if not existing else ""
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset='utf-8'><title>{title}</title>

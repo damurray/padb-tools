@@ -1711,6 +1711,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var DUT_PORT_MAP={json.dumps(dut_port_map)};",
         f"var DIST_FREQ_MIN={dist_freq_min};",
         f"var DIST_FREQ_MAX={dist_freq_max};",
+        f"var DIST_FREQS_ARR={json.dumps([round(f, 3) for f in all_freqs_sorted])};",
         f"var KT={json.dumps(k_table)};",
     ])
 
@@ -1915,7 +1916,25 @@ function freqDistTxtChange(which){
   else{var l=parseFloat(document.getElementById('dist_freq_lo').value);if(v<l)v=l;}
   txt.value=v.toFixed(3);slider.value=v;update();
 }
-function freqDistKeyDown(e,which){if(e.key==='Enter')freqDistTxtChange(which);}
+function freqDistKeyDown(e,which){
+  if(e.key==='Enter'){freqDistTxtChange(which);return;}
+  if((e.key==='ArrowUp'||e.key==='ArrowDown')&&typeof DIST_FREQS_ARR!=='undefined'&&DIST_FREQS_ARR.length){
+    e.preventDefault();
+    var txt=document.getElementById('dist_freq_'+which+'_txt');
+    var slider=document.getElementById('dist_freq_'+which);
+    if(!txt||!slider) return;
+    var cur=parseFloat(txt.value);
+    if(isNaN(cur)) cur=parseFloat(slider.value);
+    var arr=DIST_FREQS_ARR;
+    var idx=0,best=Infinity;
+    for(var i=0;i<arr.length;i++){var d=Math.abs(arr[i]-cur);if(d<best){best=d;idx=i;}}
+    var nxt=e.key==='ArrowUp'?Math.min(idx+1,arr.length-1):Math.max(idx-1,0);
+    var v=arr[nxt];
+    if(which==='lo'){var h=parseFloat(document.getElementById('dist_freq_hi').value);if(v>h)return;}
+    else{var l=parseFloat(document.getElementById('dist_freq_lo').value);if(v<l)return;}
+    txt.value=v.toFixed(1);slider.value=v;update();
+  }
+}
 
 /* ---- client-side Gaussian KDE (Silverman bandwidth) ---- */
 function jsKde(vals,nPts){
@@ -3187,27 +3206,26 @@ function computeFreqResult(fs,params){
     selTemps2.forEach(function(t){if(dbt2[t]) dev_lo=Math.max(dev_lo,dbt2[t].lo);});
   }
   var spec_up=(params.spec_hi_override!==null)?params.spec_hi_override:((fs.spec_up!=null)?fs.spec_up:null);
-  // spec_lo stored/entered as either signed (−0.15) or magnitude (0.15) — always apply as lower limit
+  // spec_lo entered as signed value: negative for upper-limit specs (e.g. −0.15 dBc), positive for lower-limit specs (e.g. +14 dBm)
   var spec_lo_raw=(fs.spec_lo!=null)?fs.spec_lo:params.spec_lo_override;
-  var spec_lo_mag=(spec_lo_raw!=null)?Math.abs(spec_lo_raw):null;
   var g_up=params.mu+dev_up+params.gb+params.drift;
   var g_lo=params.mu+dev_lo+params.gb+params.drift;
   var tll_up=(params.tll_hi_override!==null)?params.tll_hi_override:((spec_up!=null)?spec_up-g_up:null);
-  var tll_lo=(params.tll_lo_override!==null)?params.tll_lo_override:((spec_lo_mag!=null)?-spec_lo_mag+g_lo:null);
+  var tll_lo=(params.tll_lo_override!==null)?params.tll_lo_override:((spec_lo_raw!=null)?spec_lo_raw+g_lo:null);
   var ssu_up=ti_up+g_up;   // spec supportable from data (upper): TI_up + full budget
   var ssu_lo=ti_lo-g_lo;   // spec supportable (lower): TI_lo - full budget
   var margin_up=(spec_up!==null)?spec_up-ssu_up:null;   // positive = passing with margin
-  var margin_lo=(spec_lo_mag!==null)?ssu_lo-(-spec_lo_mag):null;
+  var margin_lo=(spec_lo_raw!==null)?ssu_lo-spec_lo_raw:null;
   return {n_use:n_use,k:k,ti_up:ti_up,ti_lo:ti_lo,np_active:useNp,
           tll_up:tll_up,tll_lo:tll_lo,
           ssu_up:ssu_up,ssu_lo:ssu_lo,
           margin_up:margin_up,margin_lo:margin_lo,
           denv_up:dev_up,denv_lo:dev_lo,
-          spec_lo:-spec_lo_mag,spec_up:spec_up,
+          spec_lo:spec_lo_raw,spec_up:spec_up,
           pass_up:tll_up===null||ti_up<=tll_up,
           pass_lo:tll_lo===null||ti_lo>=tll_lo,
           ssu_pass_up:spec_up===null||ssu_up<=spec_up,
-          ssu_pass_lo:spec_lo_mag===null||ssu_lo>=-spec_lo_mag};
+          ssu_pass_lo:spec_lo_raw===null||ssu_lo>=spec_lo_raw};
 }
 
 /* ---- CSV export ---- */
@@ -3340,7 +3358,7 @@ function buildTraces(conds,params){
         'Mean: '+fs.mean.toFixed(4)+'  Std: '+fs.s.toFixed(4)+'<br>'+
         'n='+r.n_use+(r.np_active?'  (NP TI)':'  k='+r.k.toFixed(3))+'<br>'+
         tiLabel+'['+r.ti_lo.toFixed(4)+', '+r.ti_up.toFixed(4)+']<br>'+
-        (r.tll_lo!==null?'TLL: ['+r.tll_lo.toFixed(4)+', '+r.tll_up.toFixed(4)+']<br>':'')+
+        ((r.tll_lo!==null||r.tll_up!==null)?'TLL: ['+(r.tll_lo!==null?r.tll_lo.toFixed(4):'—')+', '+(r.tll_up!==null?r.tll_up.toFixed(4):'—')+']<br>':'')+
         'Norm: '+fs.norm+' (W='+fs.W+', p='+fs.p+')<br>'+outStr
       );
       var pass=r.pass_up&&r.pass_lo;
@@ -3388,33 +3406,61 @@ function buildTraces(conds,params){
       name:cd.condition+' FAIL',legendgroup:cd.condition,
       showlegend:fail_x.length>0,hoverinfo:'skip'
     });
-    // Trace 5: Spec supportable = TI_up + MU + DEnv + GB (bottom-up view)
-    // Shows what spec this population can commit to at each frequency.
-    // Green markers where ssu <= spec (passing with margin); red where ssu > spec.
-    var ssu_x=[],ssu_y=[],ssu_cols=[],ssu_hover=[];
-    var any_ssu_fail=false;
+    // Trace 5/5b: Spec Supportable lower (▼) and/or upper (▲).
+    // When no spec defined both are shown — they bracket the mean as an envelope.
+    // When a spec is entered only the matching direction is shown.
+    var _ssuR0=sorted.length?computeFreqResult(sorted[0],params):null;
+    var _hasLoSpec=!!(_ssuR0&&_ssuR0.tll_lo!==null);
+    var _hasHiSpec=!!(_ssuR0&&_ssuR0.tll_up!==null);
+    var _showSsuLo=_hasLoSpec||!_hasHiSpec;
+    var _showSsuHi=_hasHiSpec||!_hasLoSpec;
+    var ssuLo_x=[],ssuLo_y=[],ssuLo_cols=[],ssuLo_hover=[],any_ssuLo_fail=false;
+    var ssuHi_x=[],ssuHi_y=[],ssuHi_cols=[],ssuHi_hover=[],any_ssuHi_fail=false;
     sorted.forEach(function(fs){
       var r=computeFreqResult(fs,params);
-      ssu_x.push(fs.freq);
-      ssu_y.push(r.ssu_up);
-      var col=r.spec_up!==null?(r.ssu_pass_up?'#2ca02c':'#d62728'):'#9467bd';
-      if(!r.ssu_pass_up) any_ssu_fail=true;
-      ssu_cols.push(col);
-      var budgetStr='MU='+params.mu.toFixed(2)+' ΔEnv='+r.denv_up.toFixed(2)+' GB='+params.gb.toFixed(2);
-      var mStr=r.margin_up!==null?
-        'Margin: '+(r.margin_up>=0?'+':'')+r.margin_up.toFixed(3)+' dB '+(r.margin_up>=0?'✔':'✘'):
-        'No spec defined';
-      ssu_hover.push('Spec supportable: '+r.ssu_up.toFixed(3)+'<br>'+budgetStr+'<br>'+mStr);
+      var budLo='MU='+params.mu.toFixed(2)+' ΔEnv='+r.denv_lo.toFixed(2)+' GB='+params.gb.toFixed(2);
+      var budHi='MU='+params.mu.toFixed(2)+' ΔEnv='+r.denv_up.toFixed(2)+' GB='+params.gb.toFixed(2);
+      if(_showSsuLo){
+        ssuLo_x.push(fs.freq);ssuLo_y.push(r.ssu_lo);
+        var clo=r.spec_lo!==null?(r.ssu_pass_lo?'#2ca02c':'#d62728'):'#9467bd';
+        if(r.spec_lo!==null&&!r.ssu_pass_lo) any_ssuLo_fail=true;
+        ssuLo_cols.push(clo);
+        var mlo=r.margin_lo;
+        var mStrLo=mlo!==null?'Margin: '+(mlo>=0?'+':'')+mlo.toFixed(3)+' dB '+(mlo>=0?'✔':'✘'):'No spec defined';
+        ssuLo_hover.push('Spec spt↓: '+r.ssu_lo.toFixed(3)+'<br>'+budLo+'<br>'+mStrLo);
+      }
+      if(_showSsuHi){
+        ssuHi_x.push(fs.freq);ssuHi_y.push(r.ssu_up);
+        var chi=r.spec_up!==null?(r.ssu_pass_up?'#2ca02c':'#d62728'):'#9467bd';
+        if(r.spec_up!==null&&!r.ssu_pass_up) any_ssuHi_fail=true;
+        ssuHi_cols.push(chi);
+        var mhi=r.margin_up;
+        var mStrHi=mhi!==null?'Margin: '+(mhi>=0?'+':'')+mhi.toFixed(3)+' dB '+(mhi>=0?'✔':'✘'):'No spec defined';
+        ssuHi_hover.push('Spec spt↑: '+r.ssu_up.toFixed(3)+'<br>'+budHi+'<br>'+mStrHi);
+      }
     });
-    traces.push({
-      type:'scatter',x:ssu_x,y:ssu_y,mode:'lines+markers',
-      line:{color:color,width:1,dash:'dot'},
-      marker:{size:6,color:ssu_cols,line:{color:'white',width:0.5}},
-      name:cd.condition+' ▲Spec',legendgroup:cd.condition,
-      showlegend:any_ssu_fail,
-      text:ssu_hover,
-      hovertemplate:'<b>'+cd.condition+'</b><br>%{text}<extra></extra>'
-    });
+    if(_showSsuLo){
+      traces.push({
+        type:'scatter',x:ssuLo_x,y:ssuLo_y,mode:'lines+markers',
+        line:{color:color,width:1,dash:'dot'},
+        marker:{size:6,color:ssuLo_cols,line:{color:'white',width:0.5}},
+        name:cd.condition+' ▼Spec',legendgroup:cd.condition,
+        showlegend:_hasLoSpec?any_ssuLo_fail:false,
+        text:ssuLo_hover,
+        hovertemplate:'<b>'+cd.condition+'</b><br>%{text}<extra></extra>'
+      });
+    }
+    if(_showSsuHi){
+      traces.push({
+        type:'scatter',x:ssuHi_x,y:ssuHi_y,mode:'lines+markers',
+        line:{color:color,width:1,dash:'dot'},
+        marker:{size:6,color:ssuHi_cols,line:{color:'white',width:0.5}},
+        name:cd.condition+' ▲Spec',legendgroup:cd.condition,
+        showlegend:_hasHiSpec?any_ssuHi_fail:false,
+        text:ssuHi_hover,
+        hovertemplate:'<b>'+cd.condition+'</b><br>%{text}<extra></extra>'
+      });
+    }
     // Trace 6: Individual dut_vals scatter points — toggle via "Show points"
     var showPts=document.getElementById('show_pts_chk');
     showPts=showPts?showPts.checked:false;
@@ -3629,7 +3675,7 @@ function buildLayout(conds,params,fLo,fHi){
     hiSpecs={};hiSpecs[Math.round(params.spec_hi_override*100)/100]=true;
   }
   if(params&&params.spec_lo_override!==null&&params.spec_lo_override!==undefined){
-    loSpecs={};loSpecs[Math.round(-Math.abs(params.spec_lo_override)*100)/100]=true;
+    loSpecs={};loSpecs[Math.round(params.spec_lo_override*100)/100]=true;
   }
   Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
@@ -3704,6 +3750,19 @@ function toggleStatPanel(){
 function updateStatPanel(conds,params){
   var el=document.getElementById('stat_panel');if(!el||el.style.display==='none')return;
   var nFail=0,rows=[];
+  var _hasLo=false,_hasHi=false;
+  (conds||[]).forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){
+    var _r=computeFreqResult(fs,params);
+    if(_r.tll_lo!==null) _hasLo=true;
+    if(_r.tll_up!==null) _hasHi=true;
+  });});
+  if(!_hasLo&&!_hasHi){
+    var _spsd=typeof SPEC_DIRECTION!=='undefined'?SPEC_DIRECTION:'none';
+    if(_spsd==='lo'||_spsd==='both') _hasLo=true;
+    if(_spsd==='hi'||_spsd==='both') _hasHi=true;
+  }
+  var ssuHdr=(_hasLo&&!_hasHi)?'Spec Spt&#8595;':(_hasHi?'Spec Spt&#8593;':'Spec Spt');
+  var marginHdr=(_hasLo&&!_hasHi)?'Margin&#8595;':(_hasHi?'Margin&#8593;':'Margin');
   conds.forEach(function(cd){
     var sorted=(cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;});
     sorted.forEach(function(fs){
@@ -3713,12 +3772,21 @@ function updateStatPanel(conds,params){
       var bg=pass?'':'background:#fff0f0';
       var tiStr=(r.np_active?'[NP] ':'')+
                '['+r.ti_lo.toFixed(4)+', '+r.ti_up.toFixed(4)+']';
-      var tllStr=(r.tll_lo!==null&&r.tll_up!==null)?
-        '['+r.tll_lo.toFixed(4)+', '+r.tll_up.toFixed(4)+']':'—';
-      var ssuStr=r.ssu_up.toFixed(4);
-      var marginStr=r.margin_up!==null?
-        '<span style="color:'+(r.margin_up>=0?'green':'red')+';font-weight:bold">'+
-        (r.margin_up>=0?'+':'')+r.margin_up.toFixed(4)+'</span>':'—';
+      var tllStr;
+      if(r.tll_lo!==null&&r.tll_up!==null)
+        tllStr='['+r.tll_lo.toFixed(4)+', '+r.tll_up.toFixed(4)+']';
+      else if(r.tll_lo!==null)
+        tllStr='Lo: '+r.tll_lo.toFixed(4);
+      else if(r.tll_up!==null)
+        tllStr='Hi: '+r.tll_up.toFixed(4);
+      else
+        tllStr='—';
+      var ssuVal=(_hasLo&&!_hasHi)?r.ssu_lo:r.ssu_up;
+      var ssuStr=ssuVal.toFixed(4);
+      var marginVal=(_hasLo&&!_hasHi)?r.margin_lo:r.margin_up;
+      var marginStr=marginVal!==null?
+        '<span style="color:'+(marginVal>=0?'green':'red')+';font-weight:bold">'+
+        (marginVal>=0?'+':'')+marginVal.toFixed(4)+'</span>':'—';
       var outCells='';
       if(fs.outliers&&fs.outliers.length){
         outCells='<td class="out"><b>'+fs.outliers.length+'</b>: '+
@@ -3755,7 +3823,7 @@ function updateStatPanel(conds,params){
     '<th>Condition</th><th>Freq (MHz)</th><th>n</th>'+
     '<th>Mean</th><th>Std</th>'+
     '<th>TI Bounds</th><th>TLL Bounds</th>'+
-    '<th>Spec Spt↑</th><th>Margin↑</th>'+
+    '<th>'+ssuHdr+'</th><th>'+marginHdr+'</th>'+
     '<th>Pass</th><th>Method</th><th>Normality</th><th>Outliers</th></tr></thead><tbody>';
   el.innerHTML=banner+hdr+rows.join('')+'</tbody></table>';
 }
@@ -3768,6 +3836,25 @@ function getDataFilter(){
   var ylo=parseFloat(yloEl?yloEl.value:'');
   var yhi=parseFloat(yhiEl?yhiEl.value:'');
   return {mode:mode, ylo:isNaN(ylo)?-Infinity:ylo, yhi:isNaN(yhi)?Infinity:yhi};
+}
+function updateFilterLabel(){
+  var _spLo=document.getElementById('stat_spec_lo'),_spHi=document.getElementById('stat_spec_hi');
+  var _loOn=_spLo&&_spLo.value!==''&&isFinite(parseFloat(_spLo.value));
+  var _hiOn=_spHi&&_spHi.value!==''&&isFinite(parseFloat(_spHi.value));
+  if(!_loOn&&!_hiOn){
+    var _sd=typeof SPEC_DIRECTION!=='undefined'?SPEC_DIRECTION:'none';
+    _loOn=_sd==='lo'||_sd==='both';
+    _hiOn=_sd==='hi'||_sd==='both';
+  }
+  var lbl=document.getElementById('flt_range_lbl');
+  var inp=document.getElementById('flt_yhi');
+  if(_loOn&&!_hiOn){
+    if(lbl) lbl.innerHTML='&nbsp;Lower&nbsp;limit';
+    if(inp) inp.placeholder='min (dBm)';
+  } else {
+    if(lbl) lbl.innerHTML='&nbsp;Upper&nbsp;limit';
+    if(inp) inp.placeholder='limit';
+  }
 }
 function toggleRangeInputs(){
   var el=document.getElementById('flt_range_inputs');
@@ -3863,7 +3950,14 @@ function update(){
     });
   }
   var flt=getDataFilter();
-  if(flt.mode==='range'&&isFinite(flt.yhi)){params.spec_hi_override=flt.yhi;}
+  if(flt.mode==='range'&&isFinite(flt.yhi)){
+    var _spLoEl=document.getElementById('stat_spec_lo'),_spHiEl=document.getElementById('stat_spec_hi');
+    var _spLoV=_spLoEl&&_spLoEl.value!==''?parseFloat(_spLoEl.value):NaN;
+    var _spHiV=_spHiEl&&_spHiEl.value!==''?parseFloat(_spHiEl.value):NaN;
+    if(isFinite(_spLoV)&&!isFinite(_spHiV)) params.spec_lo_override=flt.yhi;
+    else params.spec_hi_override=flt.yhi;
+  }
+  updateFilterLabel();
   conds=applyDataFilter(conds,params,flt);
   Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params,fLo,fHi),{responsive:true});
   updateTLLDisplay(conds,params);
@@ -3934,6 +4028,7 @@ function loadState(){
 
 _loadStatGlobalFilter();
 loadState();
+updateFilterLabel();
 Plotly.newPlot('plot',buildTraces(getActiveConditions(),getParams()),buildLayout(getActiveConditions(),getParams()),{responsive:true});
 /* END */
 
@@ -3974,6 +4069,22 @@ def _build_stat_summary_html(
 
     lo_js = "null"
     hi_js = "null"
+    # Determine spec direction from data and job config
+    _any_lo = any(fs.get("spec_lo") is not None
+                  for cd in stat_data for fs in cd.get("freq_stats", []))
+    _any_hi = any(fs.get("spec_up") is not None
+                  for cd in stat_data for fs in cd.get("freq_stats", []))
+    _cfg_dir = cfg.get("spec_direction", "auto")
+    if _cfg_dir in ("lo", "hi", "both", "none"):
+        spec_dir_js = _cfg_dir
+    elif _any_lo and _any_hi:
+        spec_dir_js = "both"
+    elif _any_lo:
+        spec_dir_js = "lo"
+    elif _any_hi:
+        spec_dir_js = "hi"
+    else:
+        spec_dir_js = "none"
 
     # Build COND_DIMS from condition strings in stat_data
     # Each condition is e.g. "OA State: 0  Mode: 1  SpurType: Close-in 10KHz high"
@@ -4053,6 +4164,7 @@ def _build_stat_summary_html(
         f"var TEMPS_PRESENT={json.dumps(['Room'] + non_room_temps)};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
         f"var SS_ALL_PORTS={json.dumps(all_ports_ss)};",
+        f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
     ])
 
@@ -4212,9 +4324,9 @@ def _build_stat_summary_html(
         f' value="{default_gb}" step="0.001" oninput="update()"></label>\n'
         f'  <label>Drift:<input type="number" id="stat_drift" value="0" step="0.001" oninput="update()"></label>\n'
         f'  {sep}\n'
-        f'  <label title="Lower spec magnitude, e.g. 0.15 for a &#177;0.15 spec (sign applied automatically)">'
-        f'&#124;Spec&#8595;&#124;:<input type="number" id="stat_spec_lo" value="{spec_lo_val}" min="0" step="0.001"'
-        f' style="width:74px" placeholder="0.15" oninput="update()"></label>\n'
+        f'  <label title="Lower spec limit as signed value, e.g. 14 for a ≥14 dBm spec or −0.15 for a ≤−0.15 dBc spec">'
+        f'Spec&#8595;:<input type="number" id="stat_spec_lo" value="{spec_lo_val}" step="0.001"'
+        f' style="width:74px" placeholder="e.g. 14" oninput="update()"></label>\n'
         f'  <label title="Upper spec limit, e.g. 0.15 for a &#177;0.15 spec">'
         f'Spec&#8593;:<input type="number" id="stat_spec_hi" value="{spec_hi_val}" step="0.001"'
         f' style="width:74px" placeholder="0.15" oninput="update()"></label>\n'
@@ -4264,9 +4376,9 @@ def _build_stat_summary_html(
         '  <label><input type="radio" name="data_flt" value="passing"'
         ' onchange="toggleRangeInputs();update()"> Passing&nbsp;only&nbsp;(TI&#8838;TLL)</label>\n'
         '  <label><input type="radio" name="data_flt" value="range"'
-        ' onchange="toggleRangeInputs();update()"> Upper&nbsp;limit</label>\n'
+        ' onchange="toggleRangeInputs();update()"><span id="flt_range_lbl">&nbsp;Upper&nbsp;limit</span></label>\n'
         '  <span id="flt_range_inputs" style="display:none;align-items:center;gap:4px">\n'
-        f'    <input type="number" id="flt_yhi" placeholder="dBc limit" step="0.001" value="{y_lim_hi}"'
+        f'    <input type="number" id="flt_yhi" placeholder="limit" step="0.001" value="{y_lim_hi}"'
         ' oninput="update()">\n'
         '    <small style="color:#666">(overrides test data spec; TLL and margin recalculated relative to this limit)</small>\n'
         '  </span>\n'
@@ -6423,6 +6535,21 @@ function getBoxFreqRange(){
 }
 function isBoxNpTI(){var c=document.getElementById('box_np_ti_chk');return c?c.checked:false;}
 function isShowPoints(){var c=document.getElementById('box_show_pts_chk');return c?c.checked:false;}
+/* Group By: extract the value for the selected dimension from a condition string.
+   Returns the full condition string when 'Condition' (empty) is selected. */
+function getGroupKey(cd){
+  var sel=document.getElementById('box_group_by');
+  if(!sel||!sel.value) return cd.condition;
+  var colId=sel.value;
+  if(colId==='__temp__') return cd.temp||'';
+  var condition=cd.condition;
+  var dim=null;
+  for(var i=0;i<COND_DIMS.length;i++){if(COND_DIMS[i].col_id===colId){dim=COND_DIMS[i];break;}}
+  if(!dim) return condition;
+  var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+  var m=condition.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
+  return m?m[1].trim():condition;
+}
 /* ---- serial filter ---- */
 function getAllBoxSerials(){return Array.from(document.querySelectorAll('.box_ser_chk')).map(function(c){return c.value;});}
 function getSelectedBoxSerials(){return Array.from(document.querySelectorAll('.box_ser_chk:checked')).map(function(c){return c.value;});}
@@ -6566,6 +6693,80 @@ function _specFromStats(selConds,freqToLabel){
   });
   return {hi:hi,lo:lo};
 }
+function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
+    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi){
+  var freqVals={},freqSet={},freqLabels={};
+  BOX_DATA.forEach(function(cd){
+    if(selTemps.indexOf(cd.temp)<0) return;
+    (cd.freq_stats||[]).forEach(function(f){
+      if(f.freq<fr.lo||f.freq>fr.hi) return;
+      freqSet[f.freq]=true;
+      if(f.freq_label) freqLabels[f.freq]=f.freq_label;
+      (f.vals_detail||[]).forEach(function(d){
+        if(serActive&&selBoxSers.indexOf(d.s)<0) return;
+        if(portActive&&selPorts.indexOf(d.p||'')<0) return;
+        if(d.v>rhi) return;
+        if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
+        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return;}
+        var gk=colId==='__port__'?(d.p||''):d.s;
+        if(!freqVals[gk]) freqVals[gk]={};
+        if(!freqVals[gk][f.freq]) freqVals[gk][f.freq]=[];
+        freqVals[gk][f.freq].push(d);
+      });
+    });
+  });
+  var sortedFreqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var groups=Object.keys(freqVals).sort();
+  var condIdxMap={};groups.forEach(function(g,i){condIdxMap[g]=i;});
+  var traces=[];
+  groups.forEach(function(gk){
+    var fs_arr=sortedFreqs.map(function(freq){
+      var items=freqVals[gk][freq]||[];
+      if(!items.length) return null;
+      var vals=items.map(function(d){return d.v;});
+      var bs=computeBoxStats(vals,k); if(!bs) return null;
+      var outDet=items.filter(function(d){return d.v<bs.lo_w||d.v>bs.hi_w;});
+      return {freq:freq,freq_label:freqLabels[freq]||String(freq),
+        n:bs.n,mean:bs.mean,q1:bs.q1,q2:bs.q2,q3:bs.q3,
+        lo_w:Math.min.apply(null,vals),hi_w:Math.max.apply(null,vals),
+        outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:items};
+    }).filter(Boolean);
+    if(!fs_arr.length) return;
+    var color=PALETTE[(condIdxMap[gk]||0)%PALETTE.length];
+    traces.push({
+      type:'box',
+      x:fs_arr.map(function(f){return f.freq_label;}),
+      q1:fs_arr.map(function(f){return f.q1;}),
+      median:fs_arr.map(function(f){return f.q2;}),
+      q3:fs_arr.map(function(f){return f.q3;}),
+      lowerfence:fs_arr.map(function(f){return f.lo_w;}),
+      upperfence:fs_arr.map(function(f){return f.hi_w;}),
+      mean:fs_arr.map(function(f){return f.mean;}),
+      boxpoints:false,name:gk,legendgroup:gk,showlegend:true,
+      marker:{color:color,opacity:0.7},line:{color:color,width:2},whiskerwidth:0.6,
+      hovertemplate:'<b>'+gk+'</b><br>Freq: %{x}<br>Q1: %{q1:.4f}<br>Median: %{median:.4f}<br>'+
+        'Q3: %{q3:.4f}<br>Whiskers: [%{lowerfence:.4f}, %{upperfence:.4f}]<extra></extra>',
+    });
+    if(isShowPoints()){
+      var pxP=[],pyP=[],ptP=[];
+      fs_arr.forEach(function(f){(f.vals_detail||[]).forEach(function(d){
+        pxP.push(f.freq_label);pyP.push(d.v);
+        ptP.push((d.s&&d.s!=='unknown'?d.s+': ':'')+d.v.toFixed(4));});});
+      if(pxP.length){traces.push({type:'scatter',x:pxP,y:pyP,mode:'markers',
+        marker:{size:5,color:color,opacity:0.55},name:gk+' pts',showlegend:false,
+        text:ptP,hovertemplate:'%{text}<extra></extra>'});}
+    }
+    var oxArr=[],oyArr=[],oText=[];
+    fs_arr.forEach(function(f){(f.outlier_detail||[]).forEach(function(d){
+      oxArr.push(f.freq_label);oyArr.push(d.v);
+      oText.push(gk+' outlier: '+d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':''));});});
+    if(oxArr.length){traces.push({type:'scatter',x:oxArr,y:oyArr,mode:'markers',text:oText,
+      marker:{symbol:'circle-open',size:7,color:color,opacity:0.9,line:{width:2,color:color}},
+      name:gk+' outliers',showlegend:false,
+      hovertemplate:'%{text}<extra></extra>'});}
+  });
+  return traces;
+}
 function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var k=getIqrK();
   var exclRoom=isExclRoom();var exclDEnv=isExclDEnv();
@@ -6582,9 +6783,16 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var passLo=passActive?LO_SPEC:null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
   var fr=getBoxFreqRange();
+  var _bxGrpEl=document.getElementById('box_group_by');
+  var _bxGrpId=_bxGrpEl?_bxGrpEl.value:'';
+  if(_bxGrpId==='__port__'||_bxGrpId==='__serial__'){
+    return buildPortSerialTraces(_bxGrpId,selBoxSers,selTemps,yFlt,fr,k,
+      serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi);
+  }
   var traces=[];
   var condIdxMap={};var ci=0;
-  BOX_DATA.forEach(function(cd){if(condIdxMap[cd.condition]===undefined) condIdxMap[cd.condition]=ci++;});
+  BOX_DATA.forEach(function(cd){var _gk=getGroupKey(cd);if(condIdxMap[_gk]===undefined) condIdxMap[_gk]=ci++;});
+  var _legendShown={};
   BOX_DATA.forEach(function(cd){
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
@@ -6631,9 +6839,12 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
       fs=cd.freq_stats.filter(function(f){return f.freq>=fr.lo&&f.freq<=fr.hi;});
     }
     if(!fs.length) return;
-    var color=PALETTE[(condIdxMap[cd.condition]||0)%PALETTE.length];
+    var _gkey=getGroupKey(cd);
+    var color=PALETTE[(condIdxMap[_gkey]||0)%PALETTE.length];
     var showTemp=selTemps.length>1;
-    var name=showTemp?cd.condition+' ('+cd.temp+')':cd.condition;
+    var _lgKey=_gkey+'|'+cd.temp;
+    var name=showTemp?_gkey+' ('+cd.temp+')':_gkey;
+    var _showLegend=!_legendShown[_lgKey];_legendShown[_lgKey]=true;
     traces.push({
       type:'box',
       x:fs.map(function(f){return f.freq_label;}),
@@ -6645,6 +6856,8 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
       mean:fs.map(function(f){return f.mean;}),
       boxpoints:false,
       name:name,
+      legendgroup:_lgKey,
+      showlegend:_showLegend,
       marker:{color:color,opacity:0.7},
       line:{color:color,width:2},
       whiskerwidth:0.6,
@@ -7599,6 +7812,27 @@ def _build_box_interactive_html(
         )
 
     sep_div = '<div class="sep"></div>'
+    # Group By: Condition + Temperature Step + Port + Serial + cond_dims
+    grp_opts = '<option value="">Condition</option>\n'
+    if len(all_temps) > 1:
+        grp_opts += '<option value="__temp__">Temperature Step</option>\n'
+    if all_box_ports and len(all_box_ports) > 1:
+        grp_opts += '<option value="__port__">Port</option>\n'
+    if all_box_serials and len(all_box_serials) > 1:
+        grp_opts += '<option value="__serial__">Serial Number</option>\n'
+    grp_opts += ''.join(
+        f'<option value="{d["col_id"]}">{d["label"]}</option>\n' for d in cond_dims
+    )
+    _has_grp_opts = (cond_dims or len(all_temps) > 1
+                     or (all_box_ports and len(all_box_ports) > 1)
+                     or (all_box_serials and len(all_box_serials) > 1))
+    group_by_html = (
+        sep_div
+        + '<label style="font-weight:600">Group&thinsp;by:</label>'
+        + f'<select id="box_group_by" style="font-size:12px;padding:1px 4px;'
+          f'border:1px solid #bbb;border-radius:3px" onchange="update()">\n'
+        + grp_opts + '</select>'
+    ) if _has_grp_opts else ''
     ctrl_parts = []
     if cond_dims:
         ctrl_parts.append(panels_html)
@@ -7610,6 +7844,8 @@ def _build_box_interactive_html(
         if ctrl_parts:
             ctrl_parts.append(sep_div)
         ctrl_parts.append(box_port_panel_html)
+    if group_by_html:
+        ctrl_parts.append(group_by_html)
     ctrl_bar = (f'<div class="ctrl-bar">\n  ' + '\n  '.join(ctrl_parts) + '\n</div>\n') if ctrl_parts else ""
 
     # Longform condition checkboxes — primary filter is HarmonicNumber or SpurType
@@ -7732,15 +7968,19 @@ def _build_box_interactive_html(
         f"<style>{css}</style>\n"
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
-        + '<div class="box_lf_bar">\n'
-        + f'<span style="font-weight:600;color:#444;margin-right:4px">{box_lf_primary_label}:</span>\n'
-        + f'<input type="hidden" id="box_lf_primary_col" value="{box_lf_primary_col}">\n'
-        + f'<select id="box_harm_sel" style="font-size:12px;padding:1px 4px;border:1px solid #bbb;border-radius:3px" onchange="updateBoxHarmonic()">\n'
-        + box_lf_opts + "\n</select>\n"
-        + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;margin-left:6px" onclick="selAllBoxLf(true)">All</button>\n'
-        + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff" onclick="selAllBoxLf(false)">None</button>\n'
-        + '</div>\n'
-        + (('<div class="box_lf_panel">\n' + box_lf_rows + '</div>\n') if box_lf_rows else "")
+        + (
+            '<div class="box_lf_bar">\n'
+            + f'<span style="font-weight:600;color:#444;margin-right:4px">{box_lf_primary_label}:</span>\n'
+            + f'<input type="hidden" id="box_lf_primary_col" value="{box_lf_primary_col}">\n'
+            + f'<select id="box_harm_sel" style="font-size:12px;padding:1px 4px;border:1px solid #bbb;border-radius:3px" onchange="updateBoxHarmonic()">\n'
+            + box_lf_opts + "\n</select>\n"
+            + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;margin-left:6px" onclick="selAllBoxLf(true)">All</button>\n'
+            + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff" onclick="selAllBoxLf(false)">None</button>\n'
+            + '</div>\n'
+            + (('<div class="box_lf_panel">\n' + box_lf_rows + '</div>\n') if box_lf_rows else "")
+            if (harm_orders_box or spur_orders_box) else
+            (('<div class="box_lf_panel">\n' + box_lf_rows + '</div>\n') if box_lf_rows else "")
+        )
         + ctrl_bar + env_bar + filter_bar
         + '<div id="plot"></div>\n'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
