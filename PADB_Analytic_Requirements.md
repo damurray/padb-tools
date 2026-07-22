@@ -114,7 +114,11 @@ Each distinct key in the Group string becomes a potential filter dimension. The 
 
 **Condition detection — a key is used as a filter dropdown if:**
 - It is not classified as serial, and
-- It has more than 1 and no more than 20 distinct values across all groups
+- It has more than 1 distinct value across all groups
+
+There is **no fixed upper cap in `stat_summary`'s own filter-panel builder** (`_build_stat_summary_html` — any key with 2+ distinct values gets a full checkbox panel, however large). A separate cardinality check used elsewhere (env_coverage/boxplot condition-vs-serial classification, `_build_box_interactive_html`) caps at **50**, not 20 — a key with 51+ distinct values is treated as serial-like there instead of becoming a condition filter. Neither path uses 20 as a threshold; earlier versions of this doc were wrong on this point (confirmed against `padb_plots.py` 2026-07-21 — see the VSWR2 pod's `OA` key, 40–56 distinct values, which does render as a full filter panel in `stat_summary`).
+
+A key with high cardinality (dozens of distinct values) still functions, but produces an unwieldy filter panel (one checkbox per value) rather than being silently dropped — if your Group string design produces a key like this unintentionally, expect a large but working checkbox list, not an absent filter.
 
 Keys with only one value (a constant across all groups) are silently ignored — they add no information to the filter.
 
@@ -123,7 +127,7 @@ Keys with only one value (a constant across all groups) are silently ignored —
 | Desired capability | What the Group string must contain |
 |---|---|
 | Serial number filter in `stat_summary` / `stat_boxplot` | A key whose name contains `"serial"` (e.g., `"Serial Number: US65080401"`) **or** values matching `^[A-Z]{2,3}\d{5,}$` |
-| Condition filter dropdowns | At least one key with 2–20 distinct values (e.g., `"OA State: 3"`, `"AlcState: TRUE"`) |
+| Condition filter dropdowns | At least one key with 2+ distinct values, ideally under ~20 for a usable UI (e.g., `"OA State: 3"`, `"AlcState: TRUE"`) |
 | Temperature grouping in `stat_boxplot` | A key whose name contains `"temp"` (e.g., `"Temp: 25"`, `"Temperature: -40"`) |
 | Scatter trace grouping in `accuracy_vs_freq` | Serial key **or** any condition key with multiple values |
 | No filter panels (simple plots) | Group can be blank or omit condition keys |
@@ -145,7 +149,7 @@ This produces: a serial filter with individual DUT checkboxes, three condition f
 
 **Recommended:** Group string with serial number. Without a serial key the tool falls back to grouping by the raw Group string (one trace per unique Group value). Spec lines require `Lower Limit` / `Upper Limit` columns or `spec_limits` in job.json.
 
-**Interactive filter panels** appear only if the Group string contains condition keys with 2–20 distinct values.
+**Interactive filter panels** appear for any Group string condition key with 2+ distinct values — there is no upper cap in `stat_summary`'s builder (see §3 above); keep cardinality low (under ~20) for a usable UI, not because higher counts are dropped.
 
 ---
 
@@ -228,7 +232,7 @@ This produces: serial filter, OA State and AlcState condition filter dropdowns, 
 
 **For the peak UDE footnote:** `UDE (Max)` must be present and not INT_MAX.
 
-**Group string for condition filter dropdowns:** Same rules as Scatter analytics — condition keys with 2–20 distinct values become filter dropdowns. Serial keys are excluded. Unlike Scatter analytics, there is **no serial filter** because the Environmental CSV is pre-aggregated across all DUTs.
+**Group string for condition filter dropdowns:** Same rules as Scatter analytics — condition keys with 2+ distinct values become filter dropdowns (no fixed upper cap; see §3). Serial keys are excluded. Unlike Scatter analytics, there is **no serial filter** because the Environmental CSV is pre-aggregated across all DUTs.
 
 **Group string example for de_summary condition filter:**
 ```
@@ -247,7 +251,7 @@ For each analytic you want to plot, verify:
 - [ ] `OutputConfig_OutputFile=` is set to a name that **matches the analytic name** (see note below)
 - [ ] The Group string includes a serial key (for `stat_summary`, `stat_boxplot`, `accuracy_vs_freq`)
 - [ ] The Group string includes a `Temp` key (for `stat_boxplot` multi-temperature capability)
-- [ ] The Group string includes condition keys with 2–20 distinct values (for filter dropdowns)
+- [ ] The Group string includes condition keys with 2+ distinct values (for filter dropdowns) — keep cardinality low (under ~20) for a usable UI; higher counts still render, just as a large checkbox panel
 - [ ] `Lower Limit` / `Upper Limit` are configured if spec lines and pass/fail are needed
 - [ ] `TestRun_RunStatus` is set to `{All}` in subex if the pod defaults to passing runs only
 - [ ] For Environmental analytics: `UDE`, `LDE`, `Upper TTL (est)`, `Lower TTL (est)` are enabled in the output
@@ -347,7 +351,7 @@ Room-only extracts (`Environment_TestStep='Room'`) disable the distribution, env
 
 ### Group column — what becomes a filter
 
-The Group column is parsed automatically into filter dropdowns. PADB populates it from the grouping dimensions you configure in the analytic. Each distinct key in the Group string becomes a filter if it has 2–20 distinct values.
+The Group column is parsed automatically into filter dropdowns. PADB populates it from the grouping dimensions you configure in the analytic. Each distinct key in the Group string becomes a filter if it has 2+ distinct values — there is no fixed upper cap (see §3), so a high-cardinality grouping dimension (e.g. a compound calibration-state key) still becomes a filter panel, just an unwieldy one.
 
 Design your grouping dimensions with the filters you want in mind:
 
