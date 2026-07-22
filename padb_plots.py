@@ -228,7 +228,7 @@ function saveCSV(withExcluded){
   GROUP_COLS.forEach(function(p){var sel=getSelected(p[0]);condLines.push('# '+p[1]+': '+(sel.length?sel.join(', '):'(none)'));});
   var meta=['# PADB Export','# Plot: '+TITLE,'# Generated: '+ts,
     '# Export: '+(withExcluded?'Filtered + excluded (GF-excluded rows flagged in Excluded column)':'Filtered data'),
-    '# Freq range: '+freqLo.toFixed(2)+' - '+freqHi.toFixed(2)+' MHz']
+    '# Freq range: '+freqLo.toFixed(2)+' - '+freqHi.toFixed(2)+' '+X_UNIT]
     .concat(condLines)
     .concat(['# GF excluded DUTs ('+gfSers.length+'): '+(gfSers.length?gfSers.join(', '):'None'),'#'])
     .join('\r\n');
@@ -296,7 +296,7 @@ function buildTraces(filtered){
     var customdata=sorted.map(function(r){
       return HOVER_COLS.map(function(hc){var v=r[hc[0]];return (v===null||v===undefined)?'':v;});
     });
-    var tmpl='<b>'+key+'</b><br>Freq: %{x:.4f} MHz<br>'+Y_LABEL+': %{y:.4f}';
+    var tmpl='<b>'+key+'</b><br>Freq: %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f}';
     HOVER_COLS.forEach(function(hc,i){
       if(hoverSel.indexOf(hc[0])>=0) tmpl+='<br>'+hc[1]+': %{customdata['+i+']}';
     });
@@ -340,7 +340,7 @@ function buildLayout(filtered){
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:'Frequency (MHz)',type:isLogX()?'log':'linear'},
+    xaxis:{title:X_LABEL,type:isLogX()?'log':'linear'},
     yaxis:{title:Y_LABEL,range:Y_LIM},
     shapes:shapes,annotations:annotations,height:520,
     legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
@@ -787,6 +787,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     """Build a fully self-contained interactive HTML for accuracy-vs-frequency."""
     lo_spec, hi_spec = _get_spec(df, cfg)
     y_label   = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
+    x_label   = cfg.get("x_label", "Frequency (MHz)")
+    x_unit    = cfg.get("x_unit", "MHz")
     y_lim     = cfg.get("y_lim")
     log_x_cfg = cfg.get("log_x", None)   # None = auto-detect
 
@@ -875,6 +877,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
         f"var Y_LABEL={json.dumps(y_label)};",
+        f"var X_LABEL={json.dumps(x_label)};",
+        f"var X_UNIT={json.dumps(x_unit)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var LOG_X={'true' if log_x else 'false'};",
         f"var TITLE={json.dumps(title)};",
@@ -958,13 +962,13 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
-        f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
-        f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>\n'
         f'  <label><input type="checkbox" id="log_x_chk"'
         + (' checked' if log_x else '')
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
@@ -1448,6 +1452,8 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
             "<!DOCTYPE html><html><body style='font-family:Arial;padding:16px'>"
             f"<h3>{title}</h3><p><i>No data available.</i></p></body></html>"
         )
+
+    x_unit = cfg.get("x_unit", "MHz")
 
     # -------------------------------------------------------------------------
     # 0.  KDE helpers
@@ -2389,13 +2395,13 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         f' step="0.1" style="width:100px" oninput="syncFreqDist()" onchange="update()">'
         f'<input type="text" id="dist_freq_lo_txt" value="{dist_freq_min:.1f}"'
         f' style="width:55px;font-size:12px;border:1px solid #bbb;border-radius:3px;padding:1px 3px"'
-        f' onchange="freqDistTxtChange(\'lo\')" onkeydown="freqDistKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
+        f' onchange="freqDistTxtChange(\'lo\')" onkeydown="freqDistKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="dist_freq_hi"'
         f' min="{dist_freq_min:.1f}" max="{dist_freq_max:.1f}" value="{dist_freq_max:.1f}"'
         f' step="0.1" style="width:100px" oninput="syncFreqDist()" onchange="update()">'
         f'<input type="text" id="dist_freq_hi_txt" value="{dist_freq_max:.1f}"'
         f' style="width:55px;font-size:12px;border:1px solid #bbb;border-radius:3px;padding:1px 3px"'
-        f' onchange="freqDistTxtChange(\'hi\')" onkeydown="freqDistKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
+        f' onchange="freqDistTxtChange(\'hi\')" onkeydown="freqDistKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>\n'
         '  <div class="sep"></div>\n'
         '  <label>P:&nbsp;<select id="dist_P" onchange="update()" oninput="update()">'
         '<option value="0.80">80%</option>'
@@ -2792,7 +2798,19 @@ def _parse_group_kv(group_str: str) -> dict:
     """
     s = str(group_str).strip()
     # Try double-space splitting first (preserves multi-word keys and values)
-    parts = re.split(r'  +', s)
+    raw_parts = re.split(r'  +', s)
+    # PADB right-pads some grouping values to a fixed column width, so a
+    # short value (e.g. "10" vs "100") can end up preceded by 2+ spaces --
+    # splitting on any run of 2+ spaces then wrongly cuts "Key:" away from
+    # its own value, leaving an orphaned colon-less fragment. A colon-less
+    # fragment is never a standalone key or value in this format, so
+    # re-merge it into the previous part before matching.
+    parts: list = []
+    for part in raw_parts:
+        if ':' not in part and parts:
+            parts[-1] = parts[-1] + ' ' + part
+        else:
+            parts.append(part)
     result: dict = {}
     for part in parts:
         m = re.match(r'(.+?):\s*(.+?)\s*$', part.strip())
@@ -3259,7 +3277,7 @@ function saveCSV(withExcluded){
   var params=getParams();
   var flt=getDataFilter();
   conds=applyDataFilter(conds,params,flt);
-  var hdrs=['Condition','Freq_MHz','n','Mean','Std','k',
+  var hdrs=['Condition','Freq_'+X_UNIT,'n','Mean','Std','k',
             'TI_lower','TI_upper','TLL_lower','TLL_upper',
             'Pass','Method','Normality','W','p',
             'DEnv_up','DEnv_lo','Spec_lo','Spec_hi','Outliers'];
@@ -3298,7 +3316,7 @@ function saveCSV(withExcluded){
   var excConds=allConds.filter(function(c){return activeConds.indexOf(c)<0;});
   var meta=['# PADB Export','# Plot: '+TITLE,'# Generated: '+ts,
     '# Export: '+(withExcluded?'Filtered + excluded (GF bypassed; n reflects serial filter only)':'Filtered data'),
-    '# Freq range: '+fLo.toFixed(2)+' - '+fHi.toFixed(2)+' MHz',
+    '# Freq range: '+fLo.toFixed(2)+' - '+fHi.toFixed(2)+' '+X_UNIT,
     '# Active conditions ('+activeConds.length+'): '+activeConds.join(', '),
     '# Excluded conditions ('+excConds.length+'): '+(excConds.length?excConds.join(', '):'None'),
     '# Active serials: '+(serFlt?selSers.join(', '):'All ('+allSers.length+')'),
@@ -3354,7 +3372,7 @@ function buildTraces(conds,params){
       }
       var tiLabel=r.np_active?'TI (NP): ':'TI: ';
       hover.push(
-        'Freq: '+fs.freq.toFixed(4)+' MHz<br>'+
+        'Freq: '+fs.freq.toFixed(4)+' '+X_UNIT+'<br>'+
         'Mean: '+fs.mean.toFixed(4)+'  Std: '+fs.s.toFixed(4)+'<br>'+
         'n='+r.n_use+(r.np_active?'  (NP TI)':'  k='+r.k.toFixed(3))+'<br>'+
         tiLabel+'['+r.ti_lo.toFixed(4)+', '+r.ti_up.toFixed(4)+']<br>'+
@@ -3690,7 +3708,7 @@ function buildLayout(conds,params,fLo,fHi){
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:Object.assign({title:'Frequency (MHz)',type:isLogX()?'log':'linear'},xRange?{range:xRange}:{}),
+    xaxis:Object.assign({title:X_LABEL,type:isLogX()?'log':'linear'},xRange?{range:xRange}:{}),
     yaxis:{title:Y_LABEL,range:yRange},
     height:450,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
@@ -3820,7 +3838,7 @@ function updateStatPanel(conds,params){
     banner='<div class="fail-banner">⚠️ '+nFail+
       ' freq/condition pair'+(nFail>1?'s':'')+' exceed TLL</div>';
   var hdr='<table class="stbl"><thead><tr>'+
-    '<th>Condition</th><th>Freq (MHz)</th><th>n</th>'+
+    '<th>Condition</th><th>Freq ('+X_UNIT+')</th><th>n</th>'+
     '<th>Mean</th><th>Std</th>'+
     '<th>TI Bounds</th><th>TLL Bounds</th>'+
     '<th>'+ssuHdr+'</th><th>'+marginHdr+'</th>'+
@@ -4045,6 +4063,8 @@ def _build_stat_summary_html(
 ) -> str:
     """Build a fully self-contained interactive HTML for stat_summary."""
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
+    x_label = cfg.get("x_label", "Frequency (MHz)")
+    x_unit = cfg.get("x_unit", "MHz")
     y_lim = cfg.get("y_lim")
     log_x_cfg = cfg.get("log_x", None)
 
@@ -4090,7 +4110,14 @@ def _build_stat_summary_html(
     # Each condition is e.g. "OA State: 0  Mode: 1  SpurType: Close-in 10KHz high"
     dim_vals: dict[str, set] = {}
     for cd in stat_data:
-        for part in re.split(r'  +', cd["condition"]):
+        raw_cond_parts = re.split(r'  +', cd["condition"])
+        cond_parts: list = []
+        for part in raw_cond_parts:
+            if ':' not in part and cond_parts:
+                cond_parts[-1] = cond_parts[-1] + ' ' + part
+            else:
+                cond_parts.append(part)
+        for part in cond_parts:
             m = re.match(r'(.+?):\s*(.+?)\s*$', part.strip())
             if m:
                 key = m.group(1).strip()
@@ -4150,6 +4177,8 @@ def _build_stat_summary_html(
         f"var KT={json.dumps(k_table)};",
         f"var TITLE={json.dumps(title)};",
         f"var Y_LABEL={json.dumps(y_label)};",
+        f"var X_LABEL={json.dumps(x_label)};",
+        f"var X_UNIT={json.dumps(x_unit)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var LOG_X={'true' if log_x else 'false'};",
         f"var FREQ_MIN={freq_min!r};",
@@ -4235,14 +4264,14 @@ def _build_stat_summary_html(
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
-        f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>'
+        f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>'
     )
     freq_hi_html = (
         f'<label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
-        f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>'
+        f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>'
     )
     log_x_html = (
         f'<label><input type="checkbox" id="log_x_chk"'
@@ -5035,7 +5064,7 @@ function buildTraces(selConds,exclConds){
     st.room_hi.forEach(function(v){if(v!==null)yVals.push(v);});
     st.room_lo.forEach(function(v){if(v!==null)yVals.push(v);});
     var hov=st.freqs.map(function(f,k){
-      var lines=[cd.condition,'Freq: '+f.toFixed(4)+' MHz'];
+      var lines=[cd.condition,'Freq: '+f.toFixed(4)+' '+EC_X_UNIT];
       if(st.ude[k]!==null) lines.push('UDE: '+st.ude[k].toFixed(4));
       if(st.lde[k]!==null) lines.push('LDE: '+st.lde[k].toFixed(4));
       if(st.ttu[k]!==null) lines.push('TTU: '+st.ttu[k].toFixed(4));
@@ -5088,7 +5117,7 @@ function buildLayout(yRange){
   return {
     title:{text:EC_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:'Frequency (MHz)',type:isLogX()?'log':'linear'},
+    xaxis:{title:EC_X_LABEL,type:isLogX()?'log':'linear'},
     yaxis:{title:EC_Y_LABEL,range:yRange||null},
     height:480,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
@@ -5160,7 +5189,7 @@ function updateStatsTable(selConds){
   var el=document.getElementById('ec_stat_panel');
   if(!el||el.style.display==='none') return;
   var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
-  var hdrs=['Condition','Freq (MHz)','UDE','LDE','TTU','TTL','Room μ','Room n','ΔEnv n'];
+  var hdrs=['Condition','Freq ('+EC_X_UNIT+')','UDE','LDE','TTU','TTL','Room μ','Room n','ΔEnv n'];
   var hrow='<tr>'+hdrs.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
   var rows=[];
   selConds.forEach(function(cd){
@@ -5199,7 +5228,7 @@ function toggleStatsPanel(){
 function saveCSV(){
   var selConds=getSelectedConds();
   var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
-  var hdrs=['Condition','Freq_MHz','UDE','LDE','TTU','TTL','Room_mean','Room_n','DeltaEnv_n','Spec_hi','Spec_lo'];
+  var hdrs=['Condition','Freq_'+EC_X_UNIT,'UDE','LDE','TTU','TTL','Room_mean','Room_n','DeltaEnv_n','Spec_hi','Spec_lo'];
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   selConds.forEach(function(cd){
@@ -5514,6 +5543,8 @@ def _build_env_coverage_html(
     default_P: float = 0.90,
     default_C: float = 0.90,
     results_dir: str = '',
+    x_label: str = "Frequency (MHz)",
+    x_unit: str = "MHz",
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -5644,14 +5675,14 @@ def _build_env_coverage_html(
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="ec_freq_lo_txt" type="text" value="{freq_min:.3f}"'
-        f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>'
+        f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>'
     )
     freq_hi_html = (
         f'<label>Freq&nbsp;max:<input type="range" id="ec_freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="ec_freq_hi_txt" type="text" value="{freq_max:.3f}"'
-        f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>'
+        f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>'
     )
     log_x_html = (
         f'<label><input type="checkbox" id="ec_log_x_chk"'
@@ -5784,6 +5815,8 @@ def _build_env_coverage_html(
         f"var KT={json.dumps(k_table)};",
         f"var EC_TITLE={json.dumps(title)};",
         f"var EC_Y_LABEL={json.dumps(y_label)};",
+        f"var EC_X_LABEL={json.dumps(x_label)};",
+        f"var EC_X_UNIT={json.dumps(x_unit)};",
         f"var EC_Y_LIM={json.dumps(y_lim)};",
         f"var EC_FREQ_MIN={freq_min!r};",
         f"var EC_FREQ_MAX={freq_max!r};",
@@ -7030,7 +7063,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
   }
   var npHdr=showNp?'<th>NP&nbsp;TI&nbsp;Bounds</th>':'';
   el.innerHTML='<table class="stbl"><thead><tr>'+
-    '<th>Condition</th><th>Freq(MHz)</th><th>n&nbsp;DUTs</th>'+
+    '<th>Condition</th><th>Freq('+X_UNIT+')</th><th>n&nbsp;DUTs</th>'+
     '<th>Mean</th><th>Std</th><th>Q1</th><th>Median</th><th>Q3</th>'+
     '<th>Normality</th>'+npHdr+'<th>Outliers</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 }
@@ -7050,7 +7083,7 @@ function saveBoxCSV(withExcluded){
   /* withExcluded: include all conditions/temps regardless of current filter */
   var exportConds=withExcluded?BOX_DATA.map(function(cd){return cd.condition;}).filter(function(v,i,a){return a.indexOf(v)===i;}):selConds;
   var exportTemps=withExcluded?TEMPS_PRESENT:selTemps;
-  var hdrs=['Condition','Temperature','Freq_MHz','Freq_Label','n_raw','Mean','Q1','Median','Q3','LowerFence','UpperFence','Outliers'];
+  var hdrs=['Condition','Temperature','Freq_'+X_UNIT,'Freq_Label','n_raw','Mean','Q1','Median','Q3','LowerFence','UpperFence','Outliers'];
   if(withExcluded) hdrs.push('Included');
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
@@ -7564,7 +7597,7 @@ function exportGfCsv(){
         if(freq>groups[gk].fhi) groups[gk].fhi=freq;
       }
     });
-    var rows=['Serial,Condition,Temperature,Start_Freq_MHz,Stop_Freq_MHz,N_Points'];
+    var rows=['Serial,Condition,Temperature,Start_Freq_'+X_UNIT+',Stop_Freq_'+X_UNIT+',N_Points'];
     Object.keys(groups).sort().forEach(function(gk){
       var g=groups[gk];
       var dispTemp=g.isManual?'All':g.temp;
@@ -7638,12 +7671,15 @@ function loadState(){
 """
 
 
-def _aggregate_box_data_by_temp(df: pd.DataFrame) -> list:
+def _aggregate_box_data_by_temp(df: pd.DataFrame, x_unit: str = "MHz") -> list:
     """Raw-measurement IQR box stats grouped by (condition, temperature, frequency)."""
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
 
     def _freq_label(f: float) -> str:
-        return f"{f / 1000:.3g} GHz" if f >= 1000 else f"{f:.4g} MHz"
+        # GHz auto-conversion only makes sense when the base unit really is MHz.
+        if x_unit == "MHz" and f >= 1000:
+            return f"{f / 1000:.3g} GHz"
+        return f"{f:.4g} {x_unit}"
 
     def _box_stats(vals: list) -> dict:
         arr = np.sort(np.array(vals, dtype=float))
@@ -7711,6 +7747,7 @@ def _build_box_interactive_html(
     results_dir: str = '',
     padb_field_prefix: str = '',
     padb_freq_field: str = '',
+    x_unit: str = "MHz",
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -7928,11 +7965,11 @@ def _build_box_interactive_html(
         '<input type="checkbox" id="box_excl_denv_chk" onchange="update()">'
         '&nbsp;&#916;Env&nbsp;temps</label>\n'
         '  <span class="sep"></span>\n'
-        '  <label>Freq&thinsp;min&thinsp;(MHz):&thinsp;<input type="number" id="box_freq_lo"'
+        f'  <label>Freq&thinsp;min&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_lo"'
         f' value="{box_freq_min:.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
-        '  <label>Freq&thinsp;max&thinsp;(MHz):&thinsp;<input type="number" id="box_freq_hi"'
+        f'  <label>Freq&thinsp;max&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_hi"'
         f' value="{box_freq_max:.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
@@ -7951,6 +7988,7 @@ def _build_box_interactive_html(
         f"var HI_SPEC={hi_js};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var Y_LABEL={json.dumps(y_label)};",
+        f"var X_UNIT={json.dumps(x_unit)};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var TEMPS_PRESENT={json.dumps(all_temps)};",
         f"var PALETTE={json.dumps(palette)};",
@@ -8034,6 +8072,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     df = _parse_group_fields(df)
     title = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
+    x_unit = cfg.get("x_unit", "MHz")
     padb_field_prefix = df["_val_col_name"].iloc[0] if len(df) else ""
     # Expand short CSV column name to full PADB path: "Name (units)" → "Name-->Name (units)"
     if padb_field_prefix and "-->" not in padb_field_prefix:
@@ -8107,12 +8146,14 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
 
     def _freq_label(f: float) -> str:
-        return f"{f / 1000:.3g} GHz" if f >= 1000 else f"{f:.4g} MHz"
+        if x_unit == "MHz" and f >= 1000:
+            return f"{f / 1000:.3g} GHz"
+        return f"{f:.4g} {x_unit}"
 
     df["_freq_cat"] = df["Frequency_MHz"].map({f: _freq_label(f) for f in sorted_freqs})
     freq_cat_order = [_freq_label(f) for f in sorted_freqs]
 
-    box_data = _aggregate_box_data_by_temp(df)
+    box_data = _aggregate_box_data_by_temp(df, x_unit=x_unit)
     stat_data_box = _aggregate_stat_data(df, cfg)
     all_temps = sorted(df["Temperature"].dropna().unique().tolist())
 
@@ -8187,6 +8228,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         results_dir=cfg.get('results_dir', ''),
         padb_field_prefix=padb_field_prefix,
         padb_freq_field=padb_freq_field,
+        x_unit=x_unit,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -8596,7 +8638,7 @@ function buildLayout(){
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:'Frequency (MHz)',type:log?'log':'linear',range:range},
+    xaxis:{title:X_LABEL,type:log?'log':'linear',range:range},
     yaxis:{title:Y_LABEL,range:Y_LIM},
     height:520,
     legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
@@ -8994,6 +9036,8 @@ def _build_summary_html(
     """Assemble and write the interactive summary-plot HTML from pre-built records."""
     title   = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", "Level (dBc)")
+    x_label = cfg.get("x_label", "Frequency (MHz)")
+    x_unit  = cfg.get("x_unit", "MHz")
     y_lim   = cfg.get("y_lim")
 
     log_x_cfg = cfg.get("log_x")
@@ -9069,6 +9113,8 @@ def _build_summary_html(
         f"var HI_SPEC={hi_js};",
         f"var LO_SPEC={lo_js};",
         f"var Y_LABEL={json.dumps(y_label)};",
+        f"var X_LABEL={json.dumps(x_label)};",
+        f"var X_UNIT={json.dumps(x_unit)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var TITLE={json.dumps(title)};",
         f"var LOG_X={'true' if log_x else 'false'};",
@@ -9173,13 +9219,13 @@ def _build_summary_html(
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
-        f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
-        f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
+        f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>\n'
         f'  <label><input type="checkbox" id="log_x_chk"'
         + (" checked" if log_x else "")
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'

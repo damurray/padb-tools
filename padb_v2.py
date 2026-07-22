@@ -290,6 +290,8 @@ def render_env_coverage(
         default_P=cfg.get("proportion", 0.90),
         default_C=cfg.get("confidence", 0.90),
         results_dir=cfg.get("results_dir", ""),
+        x_label=cfg.get("x_label", "Frequency (MHz)"),
+        x_unit=cfg.get("x_unit", "MHz"),
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
