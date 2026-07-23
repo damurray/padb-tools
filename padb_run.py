@@ -235,7 +235,7 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) 
 
     known_stems = _analytic_stems(analytics)
     if not known_stems:
-        print(f"  WARNING: no analytic stems found — skipping R-Plots collection")
+        print(f"  WARNING: no analytic stems found -- skipping R-Plots collection")
         return
 
     results_padb.mkdir(parents=True, exist_ok=True)
@@ -254,7 +254,7 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) 
         for name in sorted(copied):
             print(f"    {name}")
     else:
-        print(f"  No matching files in {output_dir.name}/ — check PADB log")
+        print(f"  No matching files in {output_dir.name}/ -- check PADB log")
 
 
 def run_padb(cfg: dict, run_pod: Path, results_padb: Path,

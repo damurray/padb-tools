@@ -244,10 +244,10 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 
 ## Plot Types
 
-### `accuracy_vs_freq`
+### `accuracy_vs_freq` (V1) / `scatter` (V2)
 
-**Source:** Type=80 Scatter CSV  
-**What it shows:** Individual measurement values vs frequency, one trace per serial number or condition. Spec limit lines as horizontal dashed red lines.
+**Source:** Type=80 Scatter CSV. The V2 `scatter` view is this same function called via `render_scatter`.
+**What it shows:** Individual measurement values vs frequency, one trace per serial number or condition. Spec limit line rendering **auto-detects constant vs. frequency-varying specs**: a genuinely constant spec (≤3 distinct rounded values, e.g. small MU-adjustment noise) draws full-width horizontal dashed lines as before; a frequency-varying spec (PADB `Limits_YLimit=Line` — a phase-noise mask, a frequency-banded dBc spec) draws a proper per-frequency step line (`line:{shape:'hv'}`) following the real (frequency, limit) pairs instead. No job.json key controls this — it's re-detected from the currently-filtered data on every render.
 
 **Interactive controls:**
 - **Group by** — display by serial number, test step, or any condition dimension parsed from the Group field
@@ -256,7 +256,9 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Frequency sliders** — min/max zoom on the X axis
 - **Log X toggle**
 - **Reset button**
-- **Hover** — shows frequency, group label, and value
+- **Hover** — shows frequency (labelled with `x_unit`, default `"MHz"`), group label, and value
+
+**Axis labeling:** x-axis title comes from `x_label` (default `"Frequency (MHz)"`); hover/CSV-export text uses the shorter `x_unit` (default `"MHz"`). Set both explicitly for a non-MHz x-axis (e.g. a phase-noise pod's `"Frequency Offset (Hz)"` / `"Hz"`).
 
 **Best for:** Initial sanity check. Spotting outlier DUTs. Confirming which units are out of spec and at which frequencies.
 
@@ -322,7 +324,7 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Show excluded** — display conditions currently excluded by the condition filter as dim grey traces in the background, so you can compare filtered and unfiltered populations without switching the filter off.
 - **Frequency sliders** — min/max zoom on the X axis
 - **Log X toggle**
-- **Statistics Table toggle** — opens a scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality (Shapiro-Wilk W), NP TI bounds, outliers with serial numbers
+- **Statistics Table toggle** — opens a scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality (Shapiro-Wilk W), NP TI bounds, outliers with serial numbers. Wrapped in try/catch — if it ever fails to build, the panel shows the actual JS error message instead of staying empty. **If the table looks stale/unresponsive to filter changes, hard-reload the browser tab (Ctrl+Shift+R) before assuming it's a bug** — a stale cached copy of an older version of this same file is the most common cause, confirmed twice in practice.
 - **CSV export** — downloads a CSV of all visible data
 
 **Best for:** Primary statistical deliverable for a measurement characterisation. Captures both the population spread and the statistical confidence bounds.
@@ -331,6 +333,7 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - `proportion` — fraction of the population the TI must capture (default 0.90)
 - `confidence` — confidence level that the stated proportion is captured (default 0.90)
 - `spec_direction` — which spec line(s) to show: `"lo"`, `"hi"`, `"both"`, `"none"`, or `"auto"` (default). Auto-detects from whether the CSV's `Lower Limit`/`Upper Limit` columns are populated. Set explicitly when the pod has no spec limits configured (`Limits_YLimit=None`) but the measurement is conceptually one-sided — e.g. MaxPower3 uses `"spec_direction": "lo"` because max output power is a guaranteed-minimum (lower-spec-only) measurement with no limits in the pod itself.
+- `x_label` / `x_unit` — axis title / short unit suffix for a non-MHz x-axis (default `"Frequency (MHz)"` / `"MHz"`); see the `accuracy_vs_freq` section above.
 - Required n: 29 for P90/C90, 59 for P95/C90, 299 for P99/C95
 
 ---
@@ -352,6 +355,8 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Outlier hover** — shows value and serial number of each outlier point
 
 **Best for:** Comparing spread across temperature conditions. Identifying which condition drives the worst-case. Outlier identification with serial traceability.
+
+**Axis labeling:** the frequency filter label, stats table header, and CSV export headers follow `x_unit` (default `"MHz"`) — set alongside `x_label` for a non-MHz x-axis. Note the plot's own x-axis title stays a generic `"Frequency"` (no unit suffix), since it's categorical (one box per discretized frequency label), not a continuous numeric axis.
 
 ---
 
@@ -538,13 +543,16 @@ V2 job JSON schema (all keys optional unless marked):
 |---|---|
 | `title_prefix` | Stem used for all output filenames and plot titles |
 | `y_label` | Y-axis label for all plots |
+| `x_label` | X-axis title for `scatter`/`stat_summary`/`env_coverage`/`summary`/`distribution`/`boxplot`. Default: `"Frequency (MHz)"`. Set for non-MHz x-axes (e.g. `"Frequency Offset (Hz)"` for phase noise). |
+| `x_unit` | Short unit suffix used in hover text, stats table headers, CSV export headers, and filter-bar labels. Default: `"MHz"`. Set alongside `x_label` (e.g. `"Hz"`). |
 | `y_lim` | `[min, max]` Y-axis range |
 | `room_values` | List of Test Step strings treated as room temperature (default `["Room"]`) |
 | `proportion` | TI proportion (default `0.90`) |
 | `confidence` | TI confidence (default `0.90`) |
-| `views` | List of views to generate: `scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary` |
+| `views` | List of views to generate: `scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`. **Omit this key** to get automatic selection instead: Room-only data → `scatter` + `boxplot`; multi-temp data → all six. |
+| `room_only_full_views` | `true` to also generate `summary` + `stat_summary` for Room-only data when `views` is omitted (never adds `distribution`/`env_coverage` — meaningless without non-Room data). Default `false`. |
 | `results_dir` | Output folder relative to job file (default `v2_results`) |
-| `publish_to` | Optional UNC or local path to copy results to |
+| `publish_to` | UNC or local path to copy results to. **Omit this key entirely** to publish to the default location `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>` instead. Set explicitly to `""` / `false` / `null` to opt out of publishing altogether. |
 
 ### V2 plot: `distribution`
 
@@ -558,6 +566,8 @@ V2 job JSON schema (all keys optional unless marked):
 - **Frequency sliders** — restrict to a frequency sub-range
 - **Delta summary table** — per-spur-type statistics comparing temperature points
 - **State persistence** — filter selections and frequency range are remembered across page loads
+
+**Axis labeling:** the frequency filter's `(MHz)` label follows `x_unit` (default `"MHz"`) — set alongside `x_label` for a non-MHz x-axis.
 
 ---
 
@@ -573,6 +583,8 @@ V2 job JSON schema (all keys optional unless marked):
 - **Log X toggle**
 
 **Note on serial filter:** Serial numbers are intentionally absent from the summary filter bar. The summary aggregates all DUT measurements per condition group in Python before generating the HTML — individual serial contributions are not separable in the browser. Use the boxplot or stat_summary for per-serial analysis.
+
+**Axis labeling:** x-axis title / hover text follow `x_label` / `x_unit` (defaults `"Frequency (MHz)"` / `"MHz"`), same as `accuracy_vs_freq`.
 
 ---
 
@@ -594,6 +606,8 @@ V2 job JSON schema (all keys optional unless marked):
 - **Log X toggle**
 - **Statistics table** — per-condition × per-frequency: UDE, LDE, TTU, TTL, Room μ, Room n, ΔEnv n. Rows where TTU/TTL exceeds the spec are highlighted red.
 - **CSV export**
+
+**Axis labeling:** x-axis title / hover / table / CSV header text follow `x_label` / `x_unit` (defaults `"Frequency (MHz)"` / `"MHz"`). Note `y_label` here is **not** configurable — `render_env_coverage` hardcodes `"ΔEnv (dB)"` regardless of job.json; the documented `env_coverage_y_label` key is not actually wired up.
 
 ---
 
@@ -654,6 +668,10 @@ The run job JSON (`*_run_job.json`) references the pod file and sets `padb_outpu
 - **env_coverage Y-axis excludes TTU/TTL from ranging.** TTU/TTL may be in absolute spec units (e.g. carrier power dBm) while UDE/LDE are delta values (dB). The Y-axis is always scaled to UDE/LDE/Room data only; TTU/TTL are rendered as reference lines and may extend outside the visible range.
 
 - **PADB INT_MAX sentinel.** PADB uses ±2,147,483,647 for missing computation results (e.g., UDE (Max) when environmental computation fails). These are filtered to `null` automatically.
+
+- **`scatter`'s spec-line rendering auto-switches between a flat line and a per-frequency mask.** When more than 3 distinct rounded `Upper_Limit`/`Lower_Limit` values exist in the data, `accuracy_vs_freq` draws a proper step-line trace following the real (frequency, limit) pairs instead of a full-width dashed line per value — correct for a PADB `Limits_YLimit=Line` (frequency-varying) spec such as a phase-noise mask or a frequency-banded dBc spec. No job.json key controls this; it's auto-detected from the data every render. If your spec is genuinely constant but happens to produce >3 distinct rounded values (e.g. many small MU-adjustment differences), it will incorrectly render as a mask — check the actual spec structure if the scatter plot's spec line looks unexpectedly stepped.
+
+- **`env_coverage_y_label` is documented but not wired up.** `render_env_coverage` hardcodes `y_label="ΔEnv (dB)"` regardless of job.json. Fine for the intended use (ΔEnv is always the correct label for this view), but don't expect an override to take effect.
 
 - **PADB-R.exe requires a desktop session.** It is a WinForms application and will not run in a headless SSH session.
 

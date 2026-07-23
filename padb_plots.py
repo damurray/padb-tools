@@ -268,6 +268,33 @@ function applyFilters(data){
   });
 }
 
+/* Detect a genuinely frequency-varying spec (e.g. a phase-noise mask, PADB "Line" limit
+   type) vs. a constant spec with only sub-dBc MU-adjustment noise. Constant specs keep
+   the existing full-width dashed-line rendering; masks get a proper per-frequency step
+   line instead of a cluttered stack of full-width lines at every rounded value. */
+function getSpecMask(dataArr){
+  var hiPts={},loPts={};
+  dataArr.forEach(function(r){
+    if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit))){
+      var f=r.Frequency_MHz,v=Number(r.Upper_Limit);
+      if(!(f in hiPts)||v<hiPts[f]) hiPts[f]=v;
+    }
+    if(r.Lower_Limit!==null&&r.Lower_Limit!==undefined&&r.Lower_Limit!==''&&!isNaN(Number(r.Lower_Limit))){
+      var f=r.Frequency_MHz,v=Number(r.Lower_Limit);
+      if(!(f in loPts)||v>loPts[f]) loPts[f]=v;
+    }
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  var hiRounded={};hiFreqs.forEach(function(f){hiRounded[Math.round(hiPts[f])]=1;});
+  var loRounded={};loFreqs.forEach(function(f){loRounded[Math.round(loPts[f])]=1;});
+  var isMask=Object.keys(hiRounded).length>3||Object.keys(loRounded).length>3;
+  return {
+    isMask:isMask,
+    hi:hiFreqs.map(function(f){return {x:f,y:hiPts[f]};}),
+    lo:loFreqs.map(function(f){return {x:f,y:loPts[f]};})
+  };
+}
 function buildTraces(filtered){
   var groupCol=document.getElementById('groupby').value;
   var sortBy=document.getElementById('sortby').value;
@@ -290,7 +317,7 @@ function buildTraces(filtered){
     return median(b[1].map(function(r){return r.Value;}))-median(a[1].map(function(r){return r.Value;}));
   });
   var hoverSel=getHoverSelected();
-  return entries.map(function(entry){
+  var traces=entries.map(function(entry){
     var key=entry[0],rows=entry[1];
     var sorted=rows.slice().sort(function(a,b){return a.Frequency_MHz-b.Frequency_MHz;});
     var customdata=sorted.map(function(r){
@@ -310,13 +337,30 @@ function buildTraces(filtered){
       hovertemplate:tmpl
     };
   });
+  var _mask=getSpecMask(filtered);
+  if(_mask.isMask){
+    if(_mask.hi.length) traces.push({
+      type:'scatter',mode:'lines',
+      x:_mask.hi.map(function(p){return p.x;}),y:_mask.hi.map(function(p){return p.y;}),
+      line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Hi)',
+      hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
+    if(_mask.lo.length) traces.push({
+      type:'scatter',mode:'lines',
+      x:_mask.lo.map(function(p){return p.x;}),y:_mask.lo.map(function(p){return p.y;}),
+      line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Lo)',
+      hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
+  }
+  return traces;
 }
 
 function buildLayout(filtered){
   var shapes=[],annotations=[];
   var hiSpecs={},loSpecs={};
   /* Use integer-rounded keys to deduplicate nominal vs MU-adjusted spec values that differ by <1 dBc.
-     Keep the most stringent value per 1-dBc bin (min for upper limits, max for lower limits). */
+     Keep the most stringent value per 1-dBc bin (min for upper limits, max for lower limits).
+     Skipped entirely when the spec is a genuine frequency-varying mask -- that's drawn as a
+     proper per-frequency step-line trace in buildTraces() instead. */
+  if(!getSpecMask(filtered||DATA).isMask){
   (filtered||DATA).forEach(function(r){
     if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit))){
       var k=Math.round(Number(r.Upper_Limit)),v=Number(r.Upper_Limit);
@@ -337,6 +381,7 @@ function buildLayout(filtered){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec '+v.toFixed(2),showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
+  }
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
@@ -3767,6 +3812,7 @@ function toggleStatPanel(){
 }
 function updateStatPanel(conds,params){
   var el=document.getElementById('stat_panel');if(!el||el.style.display==='none')return;
+  try{
   var nFail=0,rows=[];
   var _hasLo=false,_hasHi=false;
   (conds||[]).forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){
@@ -3844,6 +3890,10 @@ function updateStatPanel(conds,params){
     '<th>'+ssuHdr+'</th><th>'+marginHdr+'</th>'+
     '<th>Pass</th><th>Method</th><th>Normality</th><th>Outliers</th></tr></thead><tbody>';
   el.innerHTML=banner+hdr+rows.join('')+'</tbody></table>';
+  }catch(e){
+    el.innerHTML='<div style="color:red;padding:8px;font-family:monospace">'+
+      'Error building statistics table: '+e.message+'</div>';
+  }
 }
 
 /* ---- data filter ---- */

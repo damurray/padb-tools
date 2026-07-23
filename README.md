@@ -34,6 +34,9 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `maxpower3_unleveled_log_job.json` | Max power V3 — unleveled, log X, scatter only |
 | `maxpower3_leveled_linear_job.json` | Max power V3 — leveled, linear X, full view set |
 | `maxpower3_unleveled_linear_job.json` | Max power V3 — unleveled, linear X |
+| `vswr_v2_job.json` | VSWR (Output Attenuator Cal NA) — Room-only, V2 |
+| `return_loss_v2_job.json` | Return Loss (Output Attenuator Cal NA) — Room-only, V2 |
+| `phase_noise_de_v2_job.json` | Absolute Phase Noise EP6 EFC (DE) — multi-temp, V2, Frequency Offset (Hz) x-axis |
 | `v2_probe_job.json` | V2 probe run |
 | `job.json` | Scratch / template |
 
@@ -88,6 +91,8 @@ Opens a GUI that reads `*_job.json` files from a directory and manages Windows T
 | `de_summary` | Type=60 Environmental | Condition filter, show excluded, freq sliders, stats table, log X, CSV export |
 
 **V2 pipeline** (`padb_v2.py`) generates all views from a single scatter CSV using a two-step workflow: `padb_run.py` extracts from the database → `padb_v2.py` builds the HTML.
+
+Omit `"views"` from job.json to get automatic, data-driven view selection: Room-only data defaults to `scatter` + `boxplot`; multi-temp data defaults to all six. Add `"room_only_full_views": true` to also get `summary` + `stat_summary` on Room-only data (never `distribution`/`env_coverage` — those need non-Room data to be meaningful). See `CLAUDE.md` → **Auto view-selection**.
 
 | Type | Interactive controls |
 |---|---|
@@ -144,3 +149,5 @@ Results land in `results_dir/` and are published to the network share:
 - `index.html` — gallery page linking all plots
 - `*.html` — self-contained interactive plots
 - `padb_run_YYYYMMDD_HHMMSS.log` — full console output for diagnostics
+
+**Default publish location:** V2 jobs (`padb_v2.py`) with no `publish_to` key at all publish to `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>` automatically. Set `"publish_to": ""` (or `false`/`null`) to opt out, or to a real path to publish somewhere specific.

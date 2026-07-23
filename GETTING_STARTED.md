@@ -53,9 +53,9 @@ There are two ways to run this tool, and picking the wrong one is the most commo
 
 ---
 
-## Worked example: two pod "families" we've actually done
+## Worked example: pod "families" we've actually done
 
-The tool has now been proven on two genuinely different measurement types. If you're onboarding a third, expect friction points similar to whichever family yours resembles:
+The tool has now been proven on four genuinely different measurement types. If you're onboarding a new one, expect friction points similar to whichever family yours resembles:
 
 ### Family 1 — dBc spur measurements (Close-In, Clock Leakage, Line-Related, Harmonics/Sub-Harmonics)
 - Two-sided or single-sided spec expressed as dBc, spec limits **are** present in the pod's CSV output
@@ -68,7 +68,18 @@ The tool has now been proven on two genuinely different measurement types. If yo
 - MaxPower3 (redo) fixed the Environmental plot by setting `Environment_TestStep={All}` in the pod, but **still has no spec limits configured** (`Limits_YLimit=None` on every analytic) — worked around per-job with the `"spec_direction": "lo"` key rather than a pod fix, since the measurement is known to be lower-spec-only regardless of what the pod says
 - **New pod checklist item this surfaced:** if your new pod has no spec limits and you know the measurement is one-sided, don't wait for a pod fix — set `spec_direction` explicitly in the plot job JSON. See `maxpower3_leveled_linear_job.json` for the pattern, and `PADB_Analytic_Requirements.md` → "One-sided measurements with no pod spec limits" for the write-up.
 
-If your new pod is a third measurement family (phase noise, modulation quality, etc.), read both of the above before assuming the tool generalizes cleanly — check whether your pod has spec limits, whether it extracts all temperatures, and whether one measurement value per analytic holds (see the Section 7 checklist in `PADB_Analytic_Requirements.md`).
+### Family 3 — VSWR / Return Loss ratio measurements (VSWR2.pod)
+- Room-only data (this specific test suite is never run across temperature) — `distribution`/`env_coverage`/`summary` are structurally meaningless here; use `padb_v2.py`'s auto view-selection (omit `"views"`) rather than hand-picking
+- No spec limits configured at all, same `spec_direction` workaround as MaxPower3
+- A compound grouping key (`OA: Calset: N, State M: X dB`) with 40–56 distinct values still renders as a full (if unwieldy) filter panel — there is **no 20-value cap**, contrary to older versions of this doc; see `PADB_Analytic_Requirements.md` §3
+- Genuinely frequency-varying spec (PADB `Limits_YLimit=Line`) for VSWR needs the `scatter` view's per-frequency mask rendering, not a flat line — auto-detected, no job.json key needed
+
+### Family 4 — Phase noise vs. frequency offset (Absolute Phase Noise EP6 Spec Setting DE.pod)
+- **X-axis is Frequency Offset in Hz, not carrier frequency in MHz** — carrier frequency becomes a *condition* (a Group-string dimension with 2 discrete values), not the swept axis. Set `"x_label"`/`"x_unit"` in job.json (see `PADB_Tools_Guide.md`) or every axis title, hover tooltip, and table header will wrongly claim "MHz."
+- Real spec limits present in the CSV, but genuinely varies by offset (a phase-noise mask, tight near the carrier... no, *loose* near the carrier, tightening at larger offsets) — same auto-detected mask rendering as Family 3's VSWR.
+- Surfaced a real parsing bug: PADB pads short grouping values to a fixed column width, producing 2+ spaces after the key's colon for some values but not others (`"Frequency (MHz):  10"` vs `"...: 100"`) — this silently dropped the padded key from the Group-string parse entirely. Fixed in `_parse_group_kv()`; if a grouping dimension you expect to see just isn't there, this class of bug is worth re-checking for.
+
+If your new pod is a fifth measurement family, read all of the above before assuming the tool generalizes cleanly — check whether your pod has spec limits (and whether they vary by frequency), whether it extracts all temperatures, whether the x-axis is really carrier frequency in MHz, and whether one measurement value per analytic holds (see the Section 7 checklist in `PADB_Analytic_Requirements.md`).
 
 ---
 
@@ -84,6 +95,8 @@ If your new pod is a third measurement family (phase noise, modulation quality, 
 2. No CSV produced but exit code 0? → `TestRun_RunStatus` filter (see `CLAUDE.md` → Common gotchas).
 3. CSV produced but plot won't pick it up? → switch from `csv` (substring match) to `csv_file` (exact filename).
 4. Plot renders but a control does nothing? → check `QA_Checklist.md` for the specific plot type; several known-by-design limitations are listed there (no serial filter on `de_summary`/`summary`, NP-TI nulled when a filter is active, etc.) — not everything odd-looking is a bug.
+5. An interactive control (e.g. a filter, a stats table) doesn't seem to update? → **hard-reload the browser tab first** (Ctrl+Shift+R) before assuming it's a code bug — stale cached JS from a previous version of the same file is the most common cause. If it still doesn't work after a reload, `updateStatPanel` (and the analogous `de_summary` table function) are now wrapped in try/catch and will show the actual JS error in the panel instead of doing nothing, which is the fastest way to find a real bug if one exists.
+6. `[WARN] Publish failed` printed, but you're not sure whether the copy actually happened? → check the destination directly. A `print()` with any non-ASCII character (arrows, em-dashes, etc.) throws `UnicodeEncodeError` on this Windows console's codepage — and since that would happen *after* the actual file copy, you'd see a false "failed" message. Fixed instances of this are ASCII-only now, but if you add a new status message with a fancy character, this is what breaks.
 
 ---
 

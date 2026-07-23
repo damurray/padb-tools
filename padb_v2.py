@@ -32,12 +32,19 @@ Job JSON schema:
     "confidence": 0.90,
     "freq_scale": 1.0,                       # optional: multiply Frequency_MHz by this (e.g. 1e-6 if CSV stores Hz)
     "views": ["scatter", "stat_summary", "boxplot", "distribution",
-              "env_coverage", "summary"],
+              "env_coverage", "summary"],   # omit to auto-select based on data:
+                                             #   Room-only  -> scatter, boxplot
+                                             #   multi-temp -> all six
+    "room_only_full_views": False,          # Room-only data: also add summary + stat_summary
+                                             # (never adds distribution/env_coverage -- those
+                                             # need non-Room data to compute a delta against)
     "env_coverage_csv": "",                  # optional: alternate CSV for env_coverage view (e.g. carrier power dBm)
     "env_coverage_y_label": "",             # y-axis label override for env_coverage when env_coverage_csv is set
     "env_coverage_y_lim": null,             # y-axis limits override [lo, hi] for env_coverage when env_coverage_csv is set
     "env_coverage_freq_scale": 1.0,         # freq_scale override for env_coverage when env_coverage_csv is set
-    "publish_to": ""                         # optional network path
+    "publish_to": ""                         # network path; omit key entirely to use the
+                                              # default padb-tools-results share, or set to
+                                              # "" / false / null to opt out of publishing
 }
 """
 from __future__ import annotations
@@ -50,6 +57,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
+# Default publish destination for jobs that don't set their own "publish_to".
+# Each job gets its own subfolder (named after its results_dir) so unrelated
+# jobs don't collide. Set "publish_to": "" / false / null explicitly to opt out.
+DEFAULT_PUBLISH_ROOT = r"\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\padb-tools-results"
+
 import numpy as np
 import pandas as pd
 
@@ -61,7 +73,7 @@ try:
     _HAS_V1 = True
 except ImportError:
     _HAS_V1 = False
-    print("[WARN] padb_plots not found — HTML rendering unavailable", file=sys.stderr)
+    print("[WARN] padb_plots not found -- HTML rendering unavailable", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -663,7 +675,18 @@ def generate_report(
         print(f"    Rows: {len(df_ec):,}  |  Temps: {sorted(df_ec['Temperature'].unique())}",
               flush=True)
 
-    views = cfg.get("views", list(_VIEW_FN.keys()))
+    if "views" in cfg:
+        views = cfg["views"]
+    else:
+        room_values = set(cfg.get("room_values", ["Room"]))
+        is_room_only = set(df["Temperature"].dropna().unique()) <= room_values
+        if is_room_only:
+            views = ["scatter", "boxplot"]
+            if cfg.get("room_only_full_views", False):
+                views += ["summary", "stat_summary"]
+            print(f"    Room-only data detected -> default views: {views}", flush=True)
+        else:
+            views = list(_VIEW_FN.keys())
     generated: list[Path] = []
 
     for view in views:
@@ -693,8 +716,13 @@ def generate_report(
 
     _write_index(output_dir, prefix, generated, cfg)
 
-    if cfg.get("publish_to"):
-        _publish(output_dir, Path(cfg["publish_to"]))
+    if "publish_to" in cfg:
+        if cfg["publish_to"]:
+            _publish(output_dir, Path(cfg["publish_to"]))
+        # else: "publish_to" explicitly set to "" / false / null -> opt out, skip publishing
+    else:
+        default_dest = Path(DEFAULT_PUBLISH_ROOT) / output_dir.name
+        _publish(output_dir, default_dest)
 
     return generated
 
@@ -748,7 +776,7 @@ def _publish(source_dir: Path, dest_dir: Path) -> None:
         for f in source_dir.glob("*.html"):
             shutil.copy2(f, dest_dir / f.name)
             copied += 1
-        print(f"  Published {copied} file(s) → {dest_dir}", flush=True)
+        print(f"  Published {copied} file(s) -> {dest_dir}", flush=True)
     except Exception as exc:
         print(f"  [WARN] Publish failed: {exc}", flush=True)
 
