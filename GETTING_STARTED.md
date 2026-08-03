@@ -19,6 +19,8 @@ You're looking at this because you've been handed a `.pod` file and need interac
 | "Full reference — every job.json key, every plot type, every parameter" | `PADB_Tools_Guide.md` |
 | "I'm writing/configuring the *pod itself* — what does PADB need to produce for the tool to work?" | `PADB_Analytic_Requirements.md` |
 | "I generated new plots — how do I manually verify they're correct before publishing?" | `QA_Checklist.md` |
+| "Just give me the exact steps to run Simple mode, one page, nothing else" | `Simple_Mode_Cheatsheet.md` |
+| "Just give me the exact steps to run Interactive/V2 mode, one page, nothing else" | `Interactive_Mode_Cheatsheet.md` |
 | "I'm using Claude Code and want the tool's architecture/gotchas loaded automatically" | `CLAUDE.md` (auto-loaded) or type `/padb-tools` |
 | "I'm new, where do I even start" | You're reading it |
 

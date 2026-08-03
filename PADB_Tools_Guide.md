@@ -1,6 +1,6 @@
 # PADB Modern Analysis Tools — User Guide
 
-**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_stats.py`, `padb_scheduler.py`  
+**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_scheduler.py`  
 **Location:** `C:\apps\padb\tools\`  
 **Purpose:** Automate PADB extraction from a `.pod` file, generate interactive self-contained HTML plots, and publish results to a shared drive.
 
@@ -44,6 +44,14 @@ job.json  →  padb_run.py  →  PADB-R.exe  →  results\padb\  (CSVs, PDFs)
 6. `results\` is copied to the publish destination.
 
 **PADB-R.exe is a WinForms application** (GUI subsystem). It runs headlessly but requires a Windows desktop session — do not run from a service or SSH session without a virtual desktop.
+
+**Three tiers.** Everything above describes the default (**legacy**) pipeline. A `"mode"` key in job.json selects one of three tiers — see **PADB Simple Mode** below for the third:
+
+| `mode` | What runs |
+|---|---|
+| *(omitted)* or `"legacy"` | This pipeline — `padb_plots.py` custom plots via `secondary_plots`, as described in this section. Default; every job.json without a `mode` key is unaffected by anything below. |
+| `"simple"` | No custom plotting at all — PADB-R.exe's own native PNG/PDF renders, wrapped in a bare gallery. See **PADB Simple Mode**. |
+| `"interactive"` | Label only, documenting that this job feeds the V2 two-command flow (`padb_run.py` extract, then `padb_v2.py` plot — see **V2 Pipeline** below). Does not change what this step does. |
 
 ---
 
@@ -178,7 +186,8 @@ All configuration for a run lives in `job.json`.
 | `run_labels` | List of run label strings. Overrides `TestRun_RunLabel` in the pod. |
 | `subex` | Raw key=value overrides for any `[Extract]` field. Use for fields not covered by the list keys above. |
 | `run_analytics` | `true` to run PADB analytics. Default: `true`. |
-| `secondary_plots` | List of plot configurations (see below). |
+| `mode` | `"legacy"` (default), `"simple"`, or `"interactive"` — see **Three tiers** above and **PADB Simple Mode** below. |
+| `secondary_plots` | List of plot configurations (see below). Ignored when `mode` is `"simple"`. |
 | `publish.destination` | UNC or local path to copy `results\` to. Omit to skip publish. |
 
 ### Selecting specific test runs
@@ -529,6 +538,54 @@ Available for use in custom scripts. All functions handle NaN and the PADB INT_M
 
 ---
 
+## PADB Simple Mode
+
+A direct, static replacement for the old internal Perl `PADB::Simple` tool: **no custom plotting or statistics at all.** Set `"mode": "simple"` in job.json and `padb_run.py` produces a bare gallery of PADB-R.exe's own native PNG/PDF renders — literally what the pod's analytics request, extracted and posted, nothing computed on top.
+
+### What changes when `mode` is `"simple"`
+
+- **Native rendering is forced on.** `make_run_pod()` sets `OutputConfig_OutputGraph=1` and `OutputConfig_GraphFormat=png,pdf` inside every `[PADBAnalyticN]` section of the run pod, regardless of what the source `.pod` currently has configured. You don't edit the pod yourself — this happens automatically, only for this mode. If those keys were already set (the common case), this is a no-op.
+- **`secondary_plots`/`views` are ignored.** There is no Python-side plotting step in this mode.
+- **`padb_simple.py` builds the gallery** instead of `padb_plots.py` + `make_index_html()`. One card per rendered PNG — an analytic can produce several via PADB's own pagination (a Scatter analytic with many groupings can emit a dozen or more numbered PNGs; that's normal PADB behavior, not a bug), each linked to its matching PDF.
+- **The metadata table is a literal dump**, not a summary: it pulls a fixed set of fields straight from the run pod's own `[Extract]` and matching `[PADBAnalyticN]` sections — `Algorithm_AlgorithmLabel`, `Device_Device`, `Device_Family`, `Environment_TestStep`, `Environment_TestSuite`, `ExtractionOptions_TestStationLabel`, `TestRun_Max`, `TestRun_Min`, `Limits_YLimit`, every `Grouping_ItemN` present, and a synthesized "Extraction Data Date Bounds" from `Device_MinDate`/`Device_MaxDate`. Nothing here is computed — if a field is blank, the pod itself has it blank.
+- **Download links** per analytic: `.pdf` (print-quality native render), `.csv` (if the analytic writes one), `.sao`, `.pod` (PADB's own run snapshot), `.txt` (PADB's tabular export).
+- **`HOW_TO_USE.txt`** is written to `results_dir\` alongside `index.html` — a short, mode-specific explainer of what the output is and how to switch tiers if you need filtering/statistics instead.
+- **Missing native output is visible, not silent.** If PADB didn't render a PNG for a given analytic (e.g. because a stem-matching mismatch prevented collection, or PADB itself failed to render), that analytic's card shows a plain "native graph not found" notice instead of a broken image or a card that silently disappears.
+
+### job.json for Simple mode
+
+Same job.json shape as any other `padb_run.py` job — just add `"mode": "simple"`:
+
+```json
+{
+    "description": "SG6311A MaxPower3 — Simple mode",
+    "pod": "MaxPower3.pod",
+    "mode": "simple",
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+    "results_dir": "maxpower3_simple_results",
+    "padb_timeout": 7200,
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs"
+}
+```
+
+Run it exactly like any other job:
+```
+py padb_run.py path\to\job.json
+```
+`--dry-run`, `--no-publish`, and `--plots-only` all work the same as in legacy mode — `--plots-only` rebuilds the gallery from whatever's already in `results\padb\` without re-running PADB-R.exe.
+
+### What you won't find in Simple mode
+
+No filters, no serial/condition exclusion, no tolerance intervals, no interactivity of any kind. If you need any of that, use `"mode": "interactive"` (V2, below) instead — the gallery's `HOW_TO_USE.txt` says the same thing.
+
+### Known metadata gotcha across PADB versions
+
+`ExtractionOptions_AllRunResults` was renamed to `ExtractionOptions_LastRun` in newer PADB pods (confirmed against a PADB Version 4.12.2.8 pod vs. older 3.1.2-era output). The metadata table checks both field names automatically — if you ever spot another renamed field, it's handled the same way (a small list of candidate key names per row), not a special case.
+
+---
+
 ## V2 Pipeline
 
 `padb_v2.py` is a lighter driver that generates all plot views from a single PADB Scatter (Type=80) CSV — no full `padb_run.py` orchestration required.
@@ -676,3 +733,5 @@ The run job JSON (`*_run_job.json`) references the pod file and sets `padb_outpu
 - **PADB-R.exe requires a desktop session.** It is a WinForms application and will not run in a headless SSH session.
 
 - **Publish destination.** A simple directory copy. Requires write access to the network share. Large result sets (many large CSVs, many PDFs) may be slow.
+
+- **`"mode": "interactive"` does not invoke V2 automatically.** It's a label plus a printed hint after extraction — you still run `padb_v2.py` yourself as a second command (see **V2 Two-Step Workflow**). V2's job.json schema is structurally different from `padb_run.py`'s (different `results_dir`/CSV semantics), and `generate_report()` takes one CSV per call while a `padb_run.py` job's analytics list can produce several — wiring this into one command was a deliberate scope cut, not a missed feature.

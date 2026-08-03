@@ -97,7 +97,10 @@ def build_metadata_table_html(sections: dict[str, dict[str, str]], analytic_inde
         f'<tr><td class="label">{label}:</td><td>{val}</td></tr>'
         for label, val in rows
     )
-    return f'<table class="meta-table"><tr><th colspan="2">Selected Extraction/Analysis Options</th></tr>{row_html}</table>'
+    table = f'<table class="meta-table">{row_html}</table>'
+    # <details> is collapsed by default with zero JS -- keeps the page compact
+    # on narrow/mobile viewports, tap-to-expand per card on any device.
+    return f'<details class="meta-details"><summary>Selected Extraction/Analysis Options</summary>{table}</details>'
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +206,10 @@ def make_simple_gallery_html(
   th {{ background: #f5f5f5; font-weight: 600; color: #555; text-align: left; padding: 5px 8px; }}
   td {{ padding: 4px 8px; border-bottom: 1px solid #f0f0f0; vertical-align: top; }}
   td.label {{ font-weight: 600; color: #555; white-space: nowrap; }}
-  .meta-table {{ border: 1px solid #e0e0e0; }}
+  .meta-table {{ border: 1px solid #e0e0e0; margin-top: 6px; }}
+  .meta-details summary {{ cursor: pointer; font-weight: 600; color: #555; font-size: 0.85em;
+                            padding: 4px 0; }}
+  .meta-details summary:hover {{ color: #003366; }}
   a {{ color: #003366; text-decoration: none; }}
   a:hover {{ text-decoration: underline; }}
   .meta {{ font-size: 0.8em; color: #888; margin-top: 10px; }}
