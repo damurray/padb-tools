@@ -125,6 +125,22 @@ Both default to the exact prior literal text, so no existing pod's output change
 
 ---
 
+## `mode` job.json key (added 2026-08-03)
+
+Three values, default preserves every pre-existing job.json byte-for-byte:
+
+- `"legacy"` (default when the key is omitted) — today's V1 behavior: `run_secondary_plots()` + `make_index_html()`, unchanged.
+- `"simple"` — a direct, static replacement for the old internal Perl `PADB::Simple` tool. No custom plotting or statistics: `make_run_pod()` forces `OutputConfig_OutputGraph=1`/`OutputConfig_GraphFormat=png,pdf` inside every `[PADBAnalyticN]` section (only when this mode is set — no-op otherwise), so PADB-R.exe itself renders each analytic's native PNG/PDF. `padb_simple.py`'s `make_simple_gallery_html()` then wraps those native renders in a bare HTML gallery (one card per PNG, a metadata table dumped verbatim from `_run.pod`'s own `[Extract]`/`[PADBAnalyticN]` settings, download links to `.sao`/`.pod`/`.txt`/`.csv`) — written to the same `results_dir/index.html` path V1/V2 already use, not a nested index-of-indexes.
+- `"interactive"` — label only, documents that this job feeds the existing V2 two-command flow (`padb_run.py` extract, then a separate `py padb_v2.py ... --csv ...`). No dispatch change: V2's job.json schema is structurally different (`csv_path`/`views`/`publish_to` vs V1's `pod`/`subex`/`secondary_plots`), and `generate_report()` takes one CSV per call while a V1-style `analytics` list can yield N CSVs, so wiring this in-process was a deliberate scope cut, not a missed requirement. Setting this mode just prints a one-line "run padb_v2.py with this CSV" hint after extraction.
+
+Both `"simple"` and `"interactive"` also get a `results_dir/HOW_TO_USE.txt` written by `write_mode_guidance()` — a short, mode-aware text explainer (what the output is, what it can't do, how to switch tiers). Not written for `"legacy"` — no behavior change to existing jobs.
+
+**Known metadata gotcha:** the metadata table's `ExtractionOptions_AllRunResults` field was renamed to `ExtractionOptions_LastRun` in newer PADB pods (confirmed: `MaxPower3.pod`, PADB Version 4.12.2.8, uses the new name; the legacy PADB::Simple output on the share, PADB Version 3.1.2, used the old one). `build_metadata_table_html()` in `padb_simple.py` checks both key names — if another renamed field like this ever turns up, add it to that field's candidate-key tuple in `_METADATA_FIELDS` rather than special-casing it.
+
+**Verified no-op case:** `MaxPower3.pod`'s 6 analytics already have `OutputConfig_OutputGraph=1`/`GraphFormat=pdf,png` set, so forcing them in Simple mode is a true no-op there — confirmed by diffing `make_run_pod()` output before/after the change on real pods (`MaxPower3.pod`, `test1.pod`, `flat.pod`) with `force_native_render=False`, byte-identical in every case. Other pod families haven't been checked — if a pod currently renders natively off, flipping it on in Simple mode adds PADB run time/disk and could surface a previously-suppressed render failure.
+
+---
+
 ## Auto view-selection (added 2026-07-22)
 
 `padb_v2.py`'s per-job-runner omits `"views"` from job.json entirely now to get automatic, data-driven defaults instead of hardcoding a list per pod:

@@ -10,9 +10,10 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 
 | File | Description |
 |---|---|
-| `padb_run.py` | V1 job runner — reads a job.json, runs PADB-R.exe, generates plots |
+| `padb_run.py` | Job runner — reads a job.json, runs PADB-R.exe, generates plots. Dispatches on the `mode` key: `legacy` (V1, default), `simple`, or `interactive` (label for the V2 flow) |
 | `padb_v2.py` | V2 job runner — lighter driver for the new interactive plot set |
-| `padb_plots.py` | Plot library — all interactive HTML plot types |
+| `padb_plots.py` | Plot library — all interactive HTML plot types (legacy/V1) |
+| `padb_simple.py` | Simple mode — literal extract-and-post gallery of PADB-R's own native PNG/PDF renders, no custom plotting. See `"mode": "simple"` below |
 | `padb_scheduler.py` | tkinter GUI for managing Windows Task Scheduler entries |
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
 | `v1.0/` | Archive of the original V1.0 scripts |
@@ -139,6 +140,8 @@ Omit `"views"` from job.json to get automatic, data-driven view selection: Room-
 ```
 
 See `Quick_Start.md` for a full walkthrough and `PADB_Tools_Guide.md` for complete documentation.
+
+**`"mode"` key** (optional, default `"legacy"`): `"legacy"` runs the V1 plots above unchanged; `"simple"` produces a literal extract-and-post gallery of PADB-R's own native PNG/PDF renders instead (a modern `PADB::Simple` replacement — no custom plotting); `"interactive"` is a label documenting that this job feeds the V2 flow (`padb_v2.py`, run separately). See `CLAUDE.md` → **`mode` job.json key** for full details. Both `simple` and `interactive` also write `results_dir/HOW_TO_USE.txt`, a short guide to that tier's output.
 
 ---
 

@@ -93,6 +93,7 @@ def load_job(job_path: Path) -> dict:
     cfg.setdefault("padb_exe", r"C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe")
     cfg.setdefault("run_analytics", True)
     cfg.setdefault("padb_timeout", 600)
+    cfg.setdefault("mode", "legacy")  # "legacy" (V1, default) | "simple" | "interactive"
 
     # Convert friendly list fields into subex overrides (raw subex wins on conflict)
     list_overrides = {}
@@ -165,30 +166,56 @@ def parse_pod_analytics(pod_path: Path) -> list[dict]:
     return analytics
 
 
-def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict) -> None:
+# Simple mode needs PADB-R's own native PNG/PDF rendering turned on per analytic.
+_SIMPLE_FORCE_KEYS = {"OutputConfig_OutputGraph": "1", "OutputConfig_GraphFormat": "png,pdf"}
+
+
+def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
+                  force_native_render: bool = False) -> None:
     """
     Write a copy of the pod to dest_pod with [Extract] key=value lines
     patched from subex overrides. The original pod's relative paths (including
     SaoFile=) are left unchanged so PADB resolves them from its own working
     directory during extraction.
+
+    When force_native_render is True, every [PADBAnalyticN] section also gets
+    OutputConfig_OutputGraph/OutputConfig_GraphFormat forced on (Simple mode
+    needs PADB-R's own native renders; existing keys are replaced in place,
+    missing ones are appended when the section ends). No-op when False.
     """
     with open(src_pod, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
 
     in_extract = False
+    in_analytic = False
+    seen_force_keys: set[str] = set()
     out_lines: list[str] = []
+
+    def _flush_analytic_section() -> None:
+        if force_native_render and in_analytic:
+            for key, val in _SIMPLE_FORCE_KEYS.items():
+                if key not in seen_force_keys:
+                    out_lines.append(f"{key}={val}\n")
 
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("["):
+            _flush_analytic_section()
             in_extract = (stripped.lower() == "[extract]")
+            in_analytic = bool(re.match(r"^\[PADBAnalytic\d+\]$", stripped))
+            seen_force_keys = set()
 
-        if "=" in stripped and in_extract:
+        if "=" in stripped:
             key = stripped.split("=", 1)[0].strip()
-            if key in subex:
+            if in_extract and key in subex:
                 line = f"{key}={subex[key]}\n"
+            elif force_native_render and in_analytic and key in _SIMPLE_FORCE_KEYS:
+                line = f"{key}={_SIMPLE_FORCE_KEYS[key]}\n"
+                seen_force_keys.add(key)
 
         out_lines.append(line)
+
+    _flush_analytic_section()  # handle the last section in the file
 
     dest_pod.parent.mkdir(parents=True, exist_ok=True)
     dest_pod.write_text("".join(out_lines), encoding="utf-8")
@@ -633,6 +660,77 @@ def make_index_html(
 
 
 # ---------------------------------------------------------------------------
+# Mode guidance
+# ---------------------------------------------------------------------------
+
+_MODE_GUIDANCE = {
+    "simple": """\
+PADB SIMPLE MODE -- HOW TO GET THE MOST OUT OF THIS RUN
+=========================================================
+
+What you're looking at:
+  index.html shows PADB-R.exe's own native plot renders (PNG, linked to a
+  matching PDF) -- exactly what PADB-R would produce if you ran the pod
+  interactively, no custom plotting or statistics on top. The table next to
+  each image is a literal dump of that analytic's own extraction/analysis
+  settings (grouping, spec limits, date bounds, etc.) straight from the pod
+  -- nothing here is computed by this tool.
+
+What you WON'T find here:
+  No filters, no serial/condition exclusion, no tolerance intervals, no
+  interactive controls. Simple mode is a direct, static replacement for the
+  extract-and-post that PADB::Simple used to do -- if you need to slice the
+  data, filter by serial number, or see statistical summaries with
+  confidence intervals, this is not the tier for that.
+
+Downloads available per analytic (results/padb/):
+  .pdf   -- print-quality version of the same native plot
+  .csv   -- raw extracted data, if the analytic produces one
+  .sao   -- PADB's saved analysis object for this extraction
+  .pod   -- the pod snapshot PADB-R wrote for this run
+  .txt   -- PADB-R's own tabular export of the plotted data
+
+Want the richer interactive tier instead?
+  Set "mode": "interactive" in this job.json and see PADB_Tools_Guide.md /
+  GETTING_STARTED.md for the two-command V2 workflow (filters, tolerance
+  intervals, serial exclusion, global-flag exclusion, CSV export, etc.).
+""",
+    "interactive": """\
+PADB INTERACTIVE MODE -- HOW TO GET THE MOST OUT OF THIS RUN
+================================================================
+
+This job.json is set up to feed the V2 pipeline -- the richer interactive
+plot suite (scatter, stat_summary, boxplot, distribution, env_coverage,
+summary) with filters, tolerance intervals, serial/condition exclusion,
+and global-flag (GF) exclusion.
+
+This step (padb_run.py) only extracted the CSV(s) -- see "CSVs found" above
+in the run log. To build the actual interactive HTML views, run:
+
+  py padb_v2.py <your_v2_job.json> --csv <path/to/data.csv>
+
+using one of the CSVs just extracted into results/padb/. See
+GETTING_STARTED.md ("Two pipelines") and PADB_Tools_Guide.md for the full
+V2 job.json schema (views, room_values, publish_to, etc.) and what each
+interactive control does.
+
+Want the leaner static tier instead?
+  Set "mode": "simple" in this job.json for a direct extract-and-post
+  gallery of PADB-R's own native plot renders, no interactivity.
+""",
+}
+
+
+def write_mode_guidance(cfg: dict, mode: str) -> Path:
+    """Write results/HOW_TO_USE.txt -- a short, mode-aware guidance file so
+    users know how to get the most out of whichever tier they just ran."""
+    results_dir: Path = cfg["_results_dir"]
+    out_path = results_dir / "HOW_TO_USE.txt"
+    out_path.write_text(_MODE_GUIDANCE[mode], encoding="utf-8")
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # Publish
 # ---------------------------------------------------------------------------
 
@@ -678,6 +776,11 @@ def main() -> None:
 
     cfg = load_job(job_path)
 
+    mode = cfg["mode"]
+    if mode not in ("legacy", "simple", "interactive"):
+        print(f"ERROR: unknown mode '{mode}' -- expected 'legacy', 'simple', or 'interactive'")
+        sys.exit(1)
+
     pod_path = cfg.get("_pod_path")
     if not pod_path or not pod_path.exists():
         print(f"ERROR: pod file not found: {pod_path}")
@@ -711,7 +814,7 @@ def main() -> None:
     # Create run pod copy with baked-in subex overrides
     run_pod = results_dir / "_run.pod"
     subex = cfg.get("subex", {})
-    make_run_pod(pod_path, run_pod, subex)
+    make_run_pod(pod_path, run_pod, subex, force_native_render=(mode == "simple"))
     print(f"\nRun pod: {run_pod}\n")
 
     # Run PADB
@@ -728,16 +831,32 @@ def main() -> None:
     for name, path in csv_map.items():
         print(f"  {path.name}")
 
-    # Secondary plots
-    plot_results: list[dict] = []
-    if cfg.get("secondary_plots"):
-        print(f"\nGenerating {len(cfg['secondary_plots'])} secondary plot(s):")
-        plot_results = run_secondary_plots(cfg, csv_map, plots_dir)
+    if mode == "simple":
+        # Simple mode: literal extract-and-post gallery of PADB-R's own native
+        # PNG/PDF renders -- no custom plotting, no secondary_plots.
+        import padb_simple
+        print("\nGenerating Simple mode gallery ...")
+        idx = padb_simple.make_simple_gallery_html(cfg, analytics, results_padb, csv_map)
+        print(f"  {idx}")
+    else:
+        # Secondary plots
+        plot_results: list[dict] = []
+        if cfg.get("secondary_plots"):
+            print(f"\nGenerating {len(cfg['secondary_plots'])} secondary plot(s):")
+            plot_results = run_secondary_plots(cfg, csv_map, plots_dir)
 
-    # Index HTML
-    print("\nGenerating index.html ...")
-    idx = make_index_html(cfg, analytics, csv_map, plot_results, results_padb)
-    print(f"  {idx}")
+        # Index HTML
+        print("\nGenerating index.html ...")
+        idx = make_index_html(cfg, analytics, csv_map, plot_results, results_padb)
+        print(f"  {idx}")
+
+    if mode in ("simple", "interactive"):
+        write_mode_guidance(cfg, mode)
+
+    if mode == "interactive":
+        first_csv = next(iter(csv_map.values()), "<path/to/data.csv>")
+        print(f"\nMode: interactive -- build the V2 view suite with:")
+        print(f"  py padb_v2.py <your_v2_job.json> --csv {first_csv}")
 
     # Publish
     if not args.no_publish:

@@ -38,18 +38,19 @@ Job configs and results live outside this repo, in a `Data\` folder next to your
 
 ---
 
-## Two pipelines — which one do you want?
+## Three tiers — which one do you want?
 
-There are two ways to run this tool, and picking the wrong one is the most common first-timer confusion:
+There are three ways to run this tool, selected via job.json's `"mode"` key (`legacy`/`simple`/`interactive` — `legacy` if the key is omitted, so every pre-existing job.json is unaffected):
 
-| | V1 (`padb_run.py` + `padb_plots.py`) | V2 (`padb_run.py` extract + `padb_v2.py` plot) |
-|---|---|---|
-| **Use when** | You want the older per-analytic plot types (`accuracy_vs_freq`, `distribution`, `de_summary`, etc.), one job.json drives everything | You want the full modern interactive suite (`scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`) from one Type=80 Scatter CSV |
-| **Job files** | One `job.json` per analysis | Two files: `*_run_job.json` (extract) + `*_v2_job.json` (plot) |
-| **Re-plot without re-extracting** | `padb_run.py job.json --plots-only` | `py padb_v2.py the_v2_job.json` alone (Step 2 only) |
-| **Examples in this repo** | `amplitude_job.json`, `harmonics_job.json` | `closein_env_v2_job.json`, `maxpower3_leveled_linear_job.json` |
+| | Legacy/V1 (`padb_run.py` + `padb_plots.py`) | Simple (`padb_run.py` + `padb_simple.py`) | Interactive/V2 (`padb_run.py` extract + `padb_v2.py` plot) |
+|---|---|---|---|
+| **Use when** | You want the older per-analytic plot types (`accuracy_vs_freq`, `distribution`, `de_summary`, etc.), one job.json drives everything | You want a direct, static `PADB::Simple` replacement: PADB-R's own native PNG/PDF renders wrapped in a bare gallery, no custom plotting or statistics | You want the full modern interactive suite (`scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`) from one Type=80 Scatter CSV |
+| **job.json key** | `"mode"` omitted, or `"mode": "legacy"` | `"mode": "simple"` | `"mode": "interactive"` (label only — see below) |
+| **Job files** | One `job.json` per analysis | One `job.json` per analysis (same shape as Legacy/V1) | Two files: `*_run_job.json` (extract) + `*_v2_job.json` (plot) |
+| **Re-plot without re-extracting** | `padb_run.py job.json --plots-only` | `padb_run.py job.json --plots-only` | `py padb_v2.py the_v2_job.json` alone (Step 2 only) |
+| **Examples in this repo** | `amplitude_job.json`, `harmonics_job.json` | (new — none yet; `maxpower3_run_job.json` + `"mode": "simple"` is the verified-safe first target, see `CLAUDE.md`) | `closein_env_v2_job.json`, `maxpower3_leveled_linear_job.json` |
 
-**If you're starting a new pod today, use V2.** It's the actively-developed pipeline with the richer interactive feature set (serial filters, global exclusion, NP-TI, etc.) — see the plot type tables in `PADB_Tools_Guide.md`.
+**If you're starting a new pod today, use Interactive/V2** for the richer interactive feature set (serial filters, global exclusion, NP-TI, etc.) — see the plot type tables in `PADB_Tools_Guide.md`. **Use Simple** only when you specifically want a minimal, literal extract-and-post output with no interactivity (e.g. a quick static report, or matching what the old Perl `PADB::Simple` used to produce). Setting `"mode": "interactive"` on a V1-style job.json does not itself run V2 — it's a label plus a printed hint; you still run `padb_v2.py` separately as shown above.
 
 ---
 
