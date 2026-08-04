@@ -244,7 +244,8 @@ def _slugify_name(name: str) -> str:
 
 def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
                   force_native_render: bool = False,
-                  unique_output_filenames: bool = False) -> None:
+                  unique_output_filenames: bool = False,
+                  force_output_csv: bool = False) -> None:
     """
     Write a copy of the pod to dest_pod with [Extract] key=value lines
     patched from subex overrides. The original pod's relative paths (including
@@ -265,10 +266,21 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     Harmonics_and_Subharmonics pod has 13 of 19 analytics sharing one
     OutputFile despite having 19 distinct AnalyticNames). No-op when False.
 
-    Callers that pass either flag should re-parse analytics from dest_pod
-    (not src_pod) afterward -- the analytics list downstream code uses for
-    file-collection stem-matching must reflect whatever this function
-    actually wrote, not the original pod.
+    When force_output_csv is True, every Type=80 (Scatter) [PADBAnalyticN]
+    section gets OutputConfig_OutputCSV forced to 1. V2/Interactive mode
+    is fundamentally built on a Type=80 CSV -- a real pod (a CW Closed Loop
+    measurement) had OutputConfig_OutputCSV=0 on its only Type=80 analytic,
+    so PADB-R happily rendered native PNG/PDF pages but wrote zero CSVs,
+    silently starving the V2 pipeline of any input. Existing "0"/other
+    values are replaced in place; a missing key is appended when the
+    section ends, same convention as force_native_render. Scoped to Type=80
+    only -- other analytic types may have CSV output disabled on purpose.
+    No-op when False.
+
+    Callers that pass any of these flags should re-parse analytics from
+    dest_pod (not src_pod) afterward -- the analytics list downstream code
+    uses for file-collection stem-matching must reflect whatever this
+    function actually wrote, not the original pod.
 
     Slugifying can itself introduce a new collision when two AnalyticNames
     differ only by punctuation style (e.g. "Sub-Harmonics Summary 50MHz-20GHz"
@@ -277,15 +289,23 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     unique after the first pass gets that analytic's own index appended, so
     uniqueness is actually guaranteed, not just usually true.
     """
+    src_analytics = None
+    if unique_output_filenames or force_output_csv:
+        src_analytics = parse_pod_analytics(src_pod)
+
     analytic_slugs: dict[int, str] = {}
     if unique_output_filenames:
         base_slugs = {a["index"]: _slugify_name(a["name"])
-                       for a in parse_pod_analytics(src_pod) if a.get("name")}
+                       for a in src_analytics if a.get("name")}
         slug_counts: dict[str, int] = {}
         for slug in base_slugs.values():
             slug_counts[slug] = slug_counts.get(slug, 0) + 1
         for index, slug in base_slugs.items():
             analytic_slugs[index] = f"{slug}_{index}" if slug_counts[slug] > 1 else slug
+
+    csv_force_indices: set[int] = set()
+    if force_output_csv:
+        csv_force_indices = {a["index"] for a in src_analytics if a.get("type") == 80}
 
     with open(src_pod, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
@@ -301,6 +321,9 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
             for key, val in _SIMPLE_FORCE_KEYS.items():
                 if key not in seen_force_keys:
                     out_lines.append(f"{key}={val}\n")
+        if (force_output_csv and in_analytic and current_analytic_index in csv_force_indices
+                and "OutputConfig_OutputCSV" not in seen_force_keys):
+            out_lines.append("OutputConfig_OutputCSV=1\n")
 
     for line in lines:
         stripped = line.strip()
@@ -319,6 +342,10 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
                 line = f"{key}={subex[key]}\n"
             elif force_native_render and in_analytic and key in _SIMPLE_FORCE_KEYS:
                 line = f"{key}={_SIMPLE_FORCE_KEYS[key]}\n"
+                seen_force_keys.add(key)
+            elif (force_output_csv and in_analytic and current_analytic_index in csv_force_indices
+                  and key == "OutputConfig_OutputCSV"):
+                line = "OutputConfig_OutputCSV=1\n"
                 seen_force_keys.add(key)
             elif slug and key in ("AnalyticName", "OutputConfig_OutputFile"):
                 line = f"{key}={slug}\n"
@@ -483,6 +510,30 @@ def run_padb(cfg: dict, run_pod: Path, results_padb: Path,
 # CSV discovery
 # ---------------------------------------------------------------------------
 
+def filename_stem_variants(s: str) -> list[str]:
+    """
+    Return candidate filename stems for a name string.
+    PADB replaces spaces with underscores, hyphens kept, and decimal points
+    become underscores (e.g. "1.5" → "1_5" in filenames).
+    We try four variants: (hyphen kept | hyphen→_) × (dot kept | dot→_).
+
+    Module-level (not nested in find_csvs) so padb_v2.py can reuse the exact
+    same normalization rules when resolving a predicted csv_path that
+    doesn't match what PADB actually wrote.
+    """
+    if not s:
+        return []
+    p0 = s.replace(" ", "_")                           # spaces→_, hyphens/dots kept
+    p1 = p0.replace(".", "_")                          # spaces→_, dots→_
+    p2 = p0.replace("-", "_")                          # spaces→_, hyphens→_
+    p3 = p2.replace(".", "_")                          # spaces→_, hyphens→_, dots→_
+    seen: list[str] = []
+    for stem in (p0, p1, p2, p3):
+        if stem not in seen:
+            seen.append(stem)
+    return seen
+
+
 def find_csvs(results_padb: Path, analytics: list[dict]) -> dict[str, Path]:
     """
     Map analytic name → CSV path.
@@ -501,25 +552,7 @@ def find_csvs(results_padb: Path, analytics: list[dict]) -> dict[str, Path]:
 
     # Build a stem→path index of all CSVs actually present
     all_csv_stems: dict[str, Path] = {p.stem: p for p in results_padb.glob("*.csv")}
-
-    def _stems(s: str) -> list[str]:
-        """
-        Return candidate filename stems for a name string.
-        PADB replaces spaces with underscores, hyphens kept, and decimal points
-        become underscores (e.g. "1.5" → "1_5" in filenames).
-        We try four variants: (hyphen kept | hyphen→_) × (dot kept | dot→_).
-        """
-        if not s:
-            return []
-        p0 = s.replace(" ", "_")                           # spaces→_, hyphens/dots kept
-        p1 = p0.replace(".", "_")                          # spaces→_, dots→_
-        p2 = p0.replace("-", "_")                          # spaces→_, hyphens→_
-        p3 = p2.replace(".", "_")                          # spaces→_, hyphens→_, dots→_
-        seen: list[str] = []
-        for stem in (p0, p1, p2, p3):
-            if stem not in seen:
-                seen.append(stem)
-        return seen
+    _stems = filename_stem_variants
 
     csv_map: dict[str, Path] = {}
     for a in analytics:
@@ -940,8 +973,10 @@ def main() -> None:
     run_pod = results_dir / "_run.pod"
     subex = cfg.get("subex", {})
     unique_output_filenames = cfg.get("unique_output_filenames", False)
+    force_output_csv = cfg.get("force_output_csv", False)
     make_run_pod(pod_path, run_pod, subex, force_native_render=(mode == "simple"),
-                 unique_output_filenames=unique_output_filenames)
+                 unique_output_filenames=unique_output_filenames,
+                 force_output_csv=force_output_csv)
     print(f"Run pod: {run_pod}\n")
 
     # Parse analytics from the actual run pod, not the original -- reflects

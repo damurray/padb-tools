@@ -15,6 +15,8 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_plots.py` | Plot library — all interactive HTML plot types (legacy/V1) |
 | `padb_simple.py` | Simple mode — literal extract-and-post gallery of PADB-R's own native PNG/PDF renders, no custom plotting. See `"mode": "simple"` below |
 | `padb_make_job.py` | Generates a job.json from a `.pod` file using this project's standard template — `py padb_make_job.py pod1.pod --module MiniMoab` |
+| `padb_make_v2_job.py` | Generates the full Interactive/V2 job set (run job + one plot job per Type=80 analytic) from a `.pod` file — `py padb_make_v2_job.py pod1.pod --module MiniMoab` |
+| `padb_config.py` | Shared per-user defaults (padb_exe, R-Plots/Logs/Data paths, publish root), optionally overridden via `padb_config.json` |
 | `padb_scheduler.py` | tkinter GUI for managing Windows Task Scheduler entries |
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
 | `v1.0/` | Archive of the original V1.0 scripts |

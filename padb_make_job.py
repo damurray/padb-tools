@@ -107,6 +107,7 @@ def main() -> None:
 
         job_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"Wrote {job_path.name}")
+        padb_config.warn_if_path_long(job_path)
 
 
 if __name__ == "__main__":

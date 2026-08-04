@@ -247,7 +247,7 @@ With 11 OA State values (0–10), this produces one condition filter dropdown wi
 
 For each analytic you want to plot, verify:
 
-- [ ] `OutputConfig_OutputCSV=True` is set
+- [ ] `OutputConfig_OutputCSV=True` is set — if you can't fix the pod (or it's not yours to fix), `"force_output_csv": true` in job.json will force this in the `_run.pod` copy for every Type=80 analytic at run time. A real case: a CW Closed Loop pod had this at `False`, so PADB rendered native PNG/PDF but wrote zero CSVs, silently starving the V2 pipeline. `padb_make_v2_job.py` detects and sets this automatically. See `CLAUDE.md` → **`force_output_csv` job.json key**.
 - [ ] `OutputConfig_OutputFile=` is set to a name that **matches the analytic name** (see note below)
 - [ ] The Group string includes a serial key (for `stat_summary`, `stat_boxplot`, `accuracy_vs_freq`)
 - [ ] The Group string includes a `Temp` key (for `stat_boxplot` multi-temperature capability)
@@ -370,7 +370,7 @@ Keys with only one value across all data (e.g. Mode always = 0) are silently ign
 
 If the analytic has spec limits configured, they appear automatically as `Lower Limit (>=)` and `Upper Limit (<=)` columns in the CSV and are shown as spec lines in the plots. If not configured, the stat_summary still works — users can type spec limits manually via the Spec↑/↓ controls in the HTML.
 
-**One-sided measurements with no pod spec limits:** `stat_summary` auto-detects which spec line(s) to draw based on whether `Lower Limit`/`Upper Limit` are populated in the CSV. If the pod has `Limits_YLimit=None` on every analytic (no limits configured at all) but the measurement is conceptually one-sided — e.g. a guaranteed-minimum max-power spec — auto-detection resolves to "none" and no pass/fail line ever shows. Set `"spec_direction": "lo"` (or `"hi"`) explicitly in the job JSON to force the correct spec line regardless of what's in the CSV. See `maxpower3_leveled_linear_job.json` for a working example.
+**One-sided measurements with no pod spec limits:** `stat_summary`/`summary`/`stat_boxplot` all auto-detect which spec line(s) to draw based on whether `Lower Limit`/`Upper Limit` are populated in the CSV. If the pod has `Limits_YLimit=None` on every analytic (no limits configured at all) but the measurement is conceptually one-sided — e.g. a guaranteed-minimum max-power spec — auto-detection has nothing to go on. Set `"spec_direction": "lo"` (or `"hi"`) explicitly in the job JSON to set the default direction. In `stat_summary` this is the only mechanism (plus manual Spec↑/↓ entry) — there's no live selector. In `summary` and `stat_boxplot`, `spec_direction` only sets the *default*; because the CSV genuinely has no limit, a live "TLL display: Both / Upper only / Lower only" selector is also shown, letting a viewer switch without regenerating (a real CSV limit, when present, always overrides `spec_direction` and removes the selector — data beats config). See the 4 `MaxPower3_*_v2_job.json` jobs (`Leveled_Log`/`Leveled_Linear`/`Unleveled_Log`/`Unleveled_Linear`) for working examples — not `maxpower3_leveled_linear_job.json`, which is set to `"auto"` for an unrelated, earlier reason and no longer demonstrates this pattern.
 
 ### Serial Number column
 

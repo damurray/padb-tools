@@ -1,6 +1,6 @@
 # PADB Modern Analysis Tools — User Guide
 
-**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_scheduler.py`, `padb_make_job.py`  
+**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_scheduler.py`, `padb_make_job.py`, `padb_make_v2_job.py`  
 **Location:** `C:\apps\padb\tools\`  
 **Purpose:** Automate PADB extraction from a `.pod` file, generate interactive self-contained HTML plots, and publish results to a shared drive.
 
@@ -356,7 +356,7 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 **Key parameters:**
 - `proportion` — fraction of the population the TI must capture (default 0.90)
 - `confidence` — confidence level that the stated proportion is captured (default 0.90)
-- `spec_direction` — which spec line(s) to show: `"lo"`, `"hi"`, `"both"`, `"none"`, or `"auto"` (default). Auto-detects from whether the CSV's `Lower Limit`/`Upper Limit` columns are populated. Set explicitly when the pod has no spec limits configured (`Limits_YLimit=None`) but the measurement is conceptually one-sided — e.g. MaxPower3 uses `"spec_direction": "lo"` because max output power is a guaranteed-minimum (lower-spec-only) measurement with no limits in the pod itself.
+- `spec_direction` — which spec line(s) to show: `"lo"`, `"hi"`, `"both"`, `"none"`, or `"auto"` (default). Auto-detects from whether the CSV's `Lower Limit`/`Upper Limit` columns are populated — and a real detected limit always wins over this key regardless of what it's set to. Only sets the *default* selection when the CSV has no limit at all; e.g. the 4 `MaxPower3_*_v2_job.json` jobs use `"spec_direction": "lo"` because max output power is a guaranteed-minimum (lower-spec-only) measurement with no limits in the pod itself. `stat_summary` still only exposes this via the manual spec_lo/spec_hi number-entry fallback (no live radio selector) — see `summary` and `stat_boxplot` below for the selector-based version of this same rule.
 - `x_label` / `x_unit` — axis title / short unit suffix for a non-MHz x-axis (default `"Frequency (MHz)"` / `"MHz"`); see the `accuracy_vs_freq` section above.
 - Required n: 29 for P90/C90, 59 for P95/C90, 299 for P99/C95
 
@@ -371,10 +371,11 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Condition filter dropdowns** — one per non-temperature condition dimension
 - **Temperature filter** — show/hide individual temperature conditions
 - **Serial number filter** — uncheck individual DUTs; box statistics recompute live
-- **Y-range filter** — All data / Passing only / Custom min–max
+- **TLL display: Both / Upper only / Lower only** — same rule as the `summary` plot (see above): shown as a live selector only when the CSV has no `Upper_Limit`/`Lower_Limit` at all, defaulting from job.json's `spec_direction`. A detected CSV limit always wins with no selector.
+- **Data filter: All data / Passing only / Upper limit / Lower limit** — "Upper limit"/"Lower limit" are two independent radios (added 2026-08-04, replacing a single relabeled "range" radio that couldn't represent both bounds when direction is "Both"), each shown only when relevant to the current TLL direction. Unlike `summary`'s filter (which hides whole condition traces), this one trims individual raw sample points *before* Q1/Q2/Q3/whiskers are computed — "Upper limit" removes samples above the typed-in value, "Lower limit" removes samples below it.
 - **Show points** — overlay individual per-DUT measurement points on each box trace (size 5, semi-transparent). Points for serials excluded by the serial filter are shown in grey; outliers remain as open-circle markers for visual distinction. Hovering a scatter point shows the serial number and value.
 - **Log X toggle**
-- **Statistics Table toggle** — scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality, NP TI bounds, outliers with serial numbers
+- **Statistics Table toggle** — scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality, NP TI bounds, outliers with serial numbers. This table is purely descriptive (no spec/TLL columns), so it has no direction-dependent columns to toggle.
 - **CSV export**
 - **Outlier hover** — shows value and serial number of each outlier point
 
@@ -669,14 +670,19 @@ V2 job JSON schema (all keys optional unless marked):
 
 ### V2 plot: `summary`
 
-**What it shows:** All-temperature summary. For each condition group: a min/max shaded band, a NP-TI band, and a mean line across all frequencies, covering every temperature in the dataset.
+**What it shows:** All-temperature summary. For each condition group: a min/max shaded band, a NP-TI band (both upper and lower — see TLL display below), and a mean line across all frequencies, covering every temperature in the dataset.
 
 **Interactive controls:**
 - **Condition filter dropdowns** — one per condition dimension found in the data (e.g. HarmonicNumber, Port, AlcState). Serial number columns are intentionally excluded — the summary pre-aggregates all DUTs per condition in Python, so no per-serial data reaches the browser.
+- **TLL display: Both / Upper only / Lower only** — which side(s) of the NP-TI (TTL) band to draw, and which columns the Results Table/CSV export show (see "TLL display and Data filter direction" below). Shown as a live radio selector *only* when the CSV has no `Upper_Limit`/`Lower_Limit` at all; if the CSV has a real limit, that decides the direction automatically and no selector appears.
+- **Data filter: All data / Passing only / Upper limit / Lower limit** — "Upper limit"/"Lower limit" are two independent radios (not one relabeled control), each shown only when relevant to the current TLL direction. "Upper limit" hides conditions whose max data exceeds a typed-in value; "Lower limit" hides conditions whose min data falls below it.
 - **Global filter (GF)** — cross-plot DUT exclusion set from the boxplot propagates here. Conditions whose pre-aggregated data includes GF-flagged DUTs are visually flagged. In Focus/Inspect mode only GF-flagged conditions are shown; in Exclude mode they are dimmed. GF matching strips both serial and temperature dimensions from the GF key before comparing against summary conditions (which aggregate both away).
 - **Show excluded** — dim grey min/max/mean bands for conditions excluded by the filter, rendered behind the active traces.
 - **Frequency sliders** — min/max zoom on the X axis.
 - **Log X toggle**
+- **Results Table** — per-condition × per-frequency stats table below the plot; columns follow the current TLL direction (TTL↑/Spec Hi/Margin↑ shown for Upper/Both, TTL↓/Spec Lo/Margin↓ for Lower/Both). CSV export mirrors the same column set.
+
+**TLL display and Data filter direction (added 2026-08-04):** a real spec limit in the CSV always decides which side of the tolerance band matters — no ambiguity, no selector. Only when the CSV has **no** limit at all (e.g. a guaranteed-minimum-power pod with `Limits_YLimit=None`) does the direction become a genuine choice; in that case job.json's `spec_direction` sets the *default* selection (or "Both" if unset/`"auto"`), and the live selector lets you override it without regenerating. See `spec_direction` under `stat_summary` above and the CLAUDE.md write-up for the full rule (identical logic is applied to `stat_boxplot` too — see below).
 
 **Note on serial filter:** Serial numbers are intentionally absent from the summary filter bar. The summary aggregates all DUT measurements per condition group in Python before generating the HTML — individual serial contributions are not separable in the browser. Use the boxplot or stat_summary for per-serial analysis.
 
@@ -735,6 +741,7 @@ The run job JSON (`*_run_job.json`) references the pod file and sets `padb_outpu
 | `run_analytics` | `true` to run PADB analytics |
 | `padb_output_dir` | Directory where PADB writes CSV output files |
 | `padb_logs_dir` | Directory for run log files |
+| `unique_output_filenames` | `true` to force every analytic's `AnalyticName`/`OutputConfig_OutputFile` to a guaranteed-unique slug in the `_run.pod` copy — fixes pods where several analytics share one `OutputConfig_OutputFile` (a real case: 13 of 19 analytics in one pod). Not needed for well-behaved pods; `padb_make_v2_job.py` sets it automatically when it detects a collision. See `CLAUDE.md` → **`unique_output_filenames` job.json key**. |
 
 **V2 plot job JSON additional keys:**
 
@@ -745,7 +752,40 @@ The run job JSON (`*_run_job.json`) references the pod file and sets `padb_outpu
 | `env_coverage_y_label` | Y-axis label override for env_coverage |
 | `env_coverage_y_lim` | `[min, max]` Y-axis range for env_coverage |
 | `env_coverage_freq_scale` | Frequency scale multiplier for env_coverage (e.g. `0.000001` converts Hz to MHz) |
-| `spec_direction` | `"lo"` / `"hi"` / `"both"` / `"none"` / `"auto"` (default). Overrides auto-detected spec-line display in `stat_summary` — needed when the pod has no `Lower Limit`/`Upper Limit` data but the measurement is one-sided. See MaxPower3 example above. |
+| `spec_direction` | `"lo"` / `"hi"` / `"both"` / `"none"` / `"auto"` (default). A real CSV limit always overrides this. Only sets the default TLL-display selection in `summary`/`stat_boxplot` (live selector, shown only when the CSV has no limit) and the display in `stat_summary` (manual entry fallback, no selector) — needed when the pod has no `Lower Limit`/`Upper Limit` data but the measurement is one-sided. See the 4 `MaxPower3_*_v2_job.json` jobs above. |
+| `force_output_csv` | `true` to force `OutputConfig_OutputCSV=1` on every Type=80 analytic in the `_run.pod` copy — fixes pods where a Scatter analytic has CSV output disabled at the pod level (a real case: a CW Closed Loop pod rendered native PNG/PDF but wrote zero CSVs). `padb_make_v2_job.py` sets it automatically when it detects this. See `CLAUDE.md` → **`force_output_csv` job.json key**. |
+
+---
+
+## Generating V2 Job Files (padb_make_v2_job.py)
+
+For a new pod, `padb_make_v2_job.py` writes the entire Interactive-mode job set above automatically — the shared run job plus one plot job per Type=80 Scatter analytic:
+
+```
+py padb_make_v2_job.py MyPod.pod --module MyModule
+py padb_make_v2_job.py MyPod.pod --module MyModule --spec-direction lo
+py padb_make_v2_job.py MyPod.pod --module MyModule --min-date "2 months ago" --max-date today
+py padb_make_v2_job.py MyPod.pod --no-publish
+py padb_make_v2_job.py MyPod.pod --module MyModule --force
+```
+
+| Flag | Effect |
+|---|---|
+| `--module NAME` | Subfolder under `--publish-root` (default: this user's `PADB-Interactive` root, kept separate from the Simple-mode `PADB-Simple` tree). **Required unless `--no-publish`.** |
+| `--spec-direction` | Applied to every generated plot job. Default `"auto"` — override if you know a measurement is one-sided despite the pod having no configured spec limits (see `spec_direction` above). Remember a real CSV limit overrides this regardless of what's set here. |
+| `--min-date`, `--max-date` | Written into the run job's `subex` verbatim, including relative-date sentinels (`"today"`, `"2 months ago"`) — same mechanism as `padb_make_job.py`. Omit both to use the pod's own baked-in `[Extract]` date range. |
+| `--no-publish` | Omit `publish_to` from every generated plot job. |
+| `--force` | Overwrite existing job files (default: skip anything that already exists). |
+| `--padb-exe`, `--output-dir`, `--logs-dir`, `--publish-root` | Override this user's `padb_config` defaults for this generation only. |
+
+What it does and doesn't decide for you:
+
+- **`"views"` is always omitted** — every generated plot job relies on `padb_v2.py`'s own auto-view-selection (above) to pick the right set from the actual extracted data. You never need to tell it a pod has Environmental data or is Room-only; it finds out from the CSV.
+- **Every Type=80 analytic gets its own full plot job** — no attempt to pick one "primary" analytic and trim the rest to a lighter view set, unlike some hand-written job sets in this repo. Trim by hand afterward if a pod has several near-duplicate analytics and you don't want the full view set generated for all of them.
+- **`csv_path` is a prediction**, not a guarantee, until the run job has actually executed once — though on every pod tested so far (including one with severe `OutputConfig_OutputFile` collisions across 19 analytics) the prediction matched the real extracted filename exactly, with `unique_output_filenames` set automatically when needed (see above). If a predicted `csv_path` turns out wrong anyway, `padb_v2.py` now has a fallback (`_resolve_csv_path()`) that searches the same directory using the same name-normalization rules `find_csvs()` uses, before failing — see `CLAUDE.md` → **CSV auto-detection fallback**.
+- **`OutputConfig_OutputCSV=0` on a Type=80 analytic is auto-detected and fixed** — `force_output_csv: true` is set automatically on the run job when a Scatter analytic has CSV output disabled at the pod level, so PADB writes a CSV regardless (see `force_output_csv` above).
+- **`spec_direction` can't be inferred** for a one-sided measurement with no configured pod-level spec limits — set `--spec-direction` explicitly if you know better than `"auto"`, though even then it's just the default: a live selector still lets a viewer switch when the CSV has no limit.
+- **Generated file paths are checked against Windows' 260-character `MAX_PATH`** — both `padb_make_job.py` and `padb_make_v2_job.py` print a `WARNING:` with concrete next steps (shorten the module/pod name, move the pod to a shallower directory) if a generated job.json path reaches 220+ characters. See `CLAUDE.md` → **Path-length warning**.
 
 ---
 

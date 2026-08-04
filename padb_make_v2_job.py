@@ -115,6 +115,10 @@ def main() -> None:
     parser.add_argument("--spec-direction", default="auto", choices=["auto", "lo", "hi", "both", "none"],
                          help='Applied to every generated plot job. Default "auto" -- override if you know '
                               "a measurement is one-sided despite the pod having no configured spec limits.")
+    parser.add_argument("--min-date", help='Device_MinDate override on the run job, e.g. "8 weeks ago" or '
+                                            '"2026-05-21". Omit to use whatever is baked into the pod.')
+    parser.add_argument("--max-date", help='Device_MaxDate override on the run job, e.g. "today". '
+                                            "Omit to use whatever is baked into the pod.")
     parser.add_argument("--padb-exe", default=None)
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--logs-dir", default=None)
@@ -162,21 +166,37 @@ def main() -> None:
         "results_dir": run_results_dir,
         "padb_timeout": DEFAULT_TIMEOUT,
         "run_analytics": True,
-        "padb_output_dir": output_dir,
-        "padb_logs_dir": logs_dir,
     }
+    subex = {}
+    if args.min_date:
+        subex["Device_MinDate"] = args.min_date
+    if args.max_date:
+        subex["Device_MaxDate"] = args.max_date
+    if subex:
+        run_job["subex"] = subex
+    run_job["padb_output_dir"] = output_dir
+    run_job["padb_logs_dir"] = logs_dir
     if has_collision:
         run_job["unique_output_filenames"] = True
         print(f"NOTE: OutputConfig_OutputFile collides between analytics in this pod -- "
               f"setting \"unique_output_filenames\": true on the run job so every analytic writes "
               f"a guaranteed-unique, AnalyticName-derived CSV instead of depending on the pod's own "
               f"OutputFile values being unique.")
+    csv_disabled = [a for a in scatter_analytics if not a.get("output_csv", True)]
+    if csv_disabled:
+        run_job["force_output_csv"] = True
+        names = ", ".join(a.get("name", f"analytic{a['index']}") for a in csv_disabled)
+        print(f"NOTE: OutputConfig_OutputCSV=0 on Type=80 analytic(s) [{names}] -- "
+              f"setting \"force_output_csv\": true on the run job so PADB writes a CSV for every "
+              f"Scatter analytic regardless of the pod's own setting (V2 plots can't be built "
+              f"without one).")
     run_job_path = pod_path.with_name(f"{stem}_run_job.json")
     if run_job_path.exists() and not args.force:
         print(f"SKIP (exists, use --force to overwrite): {run_job_path.name}")
     else:
         run_job_path.write_text(json.dumps(run_job, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"Wrote {run_job_path.name}")
+        padb_config.warn_if_path_long(run_job_path)
 
     # -- one plot job per Type=80 analytic, sharing results_dir/publish --
     for a in scatter_analytics:
@@ -196,13 +216,22 @@ def main() -> None:
         if publish_root and args.module:
             plot_job["publish_to"] = f"{publish_root}\\{args.module}\\{stem}"
 
-        plot_job_path = pod_path.with_name(f"{stem}_{_slugify_name(name)}_v2_job.json")
+        # Only append the analytic name when there's more than one Type=80
+        # analytic to disambiguate between -- with just one, the analytic's
+        # own name is usually a near-repeat of the pod's own name (a real
+        # case produced a 256-character path, right at Windows' MAX_PATH),
+        # and there's nothing else it could be confused with anyway.
+        if len(scatter_analytics) > 1:
+            plot_job_path = pod_path.with_name(f"{stem}_{_slugify_name(name)}_v2_job.json")
+        else:
+            plot_job_path = pod_path.with_name(f"{stem}_v2_job.json")
         if plot_job_path.exists() and not args.force:
             print(f"SKIP (exists, use --force to overwrite): {plot_job_path.name}")
             continue
         plot_job_path.write_text(json.dumps(plot_job, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"Wrote {plot_job_path.name}  (csv_path PREDICTED -- verify against "
               f"{run_results_dir}\\padb\\ after running the extraction job)")
+        padb_config.warn_if_path_long(plot_job_path)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,8 @@ You're looking at this because you've been handed a `.pod` file and need interac
 | "I generated new plots — how do I manually verify they're correct before publishing?" | `QA_Checklist.md` |
 | "Just give me the exact steps to run Simple mode, one page, nothing else" | `Simple_Mode_Cheatsheet.md` |
 | "Just give me the exact steps to run Interactive/V2 mode, one page, nothing else" | `Interactive_Mode_Cheatsheet.md` |
-| "I just want a job.json generated from a pod, not written by hand" | `padb_make_job.py` — see `CLAUDE.md` → **`padb_make_job.py`** |
+| "I just want a job.json generated from a pod, not written by hand" | `padb_make_job.py` (Simple/Legacy/Interactive extract job) — see `CLAUDE.md` → **`padb_make_job.py`** |
+| "I want the full Interactive/V2 job set generated from a pod, not hand-written" | `padb_make_v2_job.py` — see `CLAUDE.md` → **`padb_make_v2_job.py`** |
 | "I'm using Claude Code and want the tool's architecture/gotchas loaded automatically" | `CLAUDE.md` (auto-loaded) or type `/padb-tools` |
 | "I'm new, where do I even start" | You're reading it |
 
@@ -51,7 +52,7 @@ There are three ways to run this tool, selected via job.json's `"mode"` key (`le
 | **job.json key** | `"mode"` omitted, or `"mode": "legacy"` | `"mode": "simple"` | `"mode": "interactive"` (label only — see below) |
 | **Job files** | One `job.json` per analysis | One `job.json` per analysis (same shape as Legacy/V1) | Two files: `*_run_job.json` (extract) + `*_v2_job.json` (plot) |
 | **Re-plot without re-extracting** | `padb_run.py job.json --plots-only` | `padb_run.py job.json --plots-only` | `py padb_v2.py the_v2_job.json` alone (Step 2 only) |
-| **Examples in this repo** | `amplitude_job.json`, `harmonics_job.json` | (new — none yet; `maxpower3_run_job.json` + `"mode": "simple"` is the verified-safe first target, see `CLAUDE.md`) | `closein_env_v2_job.json`, `maxpower3_leveled_linear_job.json` |
+| **Examples in this repo** | `amplitude_job.json`, `harmonics_job.json` | (new — none yet; `maxpower3_run_job.json` + `"mode": "simple"` is the verified-safe first target, see `CLAUDE.md`) | `closein_env_v2_job.json`, `MaxPower3_Leveled_Log_v2_job.json` |
 
 **If you're starting a new pod today, use Interactive/V2** for the richer interactive feature set (serial filters, global exclusion, NP-TI, etc.) — see the plot type tables in `PADB_Tools_Guide.md`. **Use Simple** only when you specifically want a minimal, literal extract-and-post output with no interactivity (e.g. a quick static report, or matching what the old Perl `PADB::Simple` used to produce). Setting `"mode": "interactive"` on a V1-style job.json does not itself run V2 — it's a label plus a printed hint; you still run `padb_v2.py` separately as shown above.
 
@@ -70,11 +71,12 @@ The tool has now been proven on four genuinely different measurement types. If y
 - One-sided (guaranteed-minimum) spec, expressed in absolute dBm — a structurally different measurement than dBc spurs
 - MaxPower2 (first attempt) had unresolved issues: empty Environmental plot (pod extracted `Room` only), no spec limits, n below the NP-TI threshold
 - MaxPower3 (redo) fixed the Environmental plot by setting `Environment_TestStep={All}` in the pod, but **still has no spec limits configured** (`Limits_YLimit=None` on every analytic) — worked around per-job with the `"spec_direction": "lo"` key rather than a pod fix, since the measurement is known to be lower-spec-only regardless of what the pod says
-- **New pod checklist item this surfaced:** if your new pod has no spec limits and you know the measurement is one-sided, don't wait for a pod fix — set `spec_direction` explicitly in the plot job JSON. See `maxpower3_leveled_linear_job.json` for the pattern, and `PADB_Analytic_Requirements.md` → "One-sided measurements with no pod spec limits" for the write-up.
+- **New pod checklist item this surfaced:** if your new pod has no spec limits and you know the measurement is one-sided, don't wait for a pod fix — set `spec_direction` explicitly in the plot job JSON. Note this only sets the *default*: `summary` and `stat_boxplot` still show a live "Both/Upper only/Lower only" selector on top of it (since the CSV genuinely has no limit to make the direction unambiguous) — a real CSV limit, if one ever appears, overrides `spec_direction` entirely. See the 4 `MaxPower3_*_v2_job.json` jobs for the pattern, and `PADB_Analytic_Requirements.md` → "One-sided measurements with no pod spec limits" for the full write-up.
+- **A related, structurally different gap surfaced on a later pod family (CW Closed Loop):** `OutputConfig_OutputCSV=False` on a Type=80 analytic produces native PNG/PDF but zero CSVs, silently starving V2 — not a date-range or spec issue. Fixed via `"force_output_csv": true`, auto-set by `padb_make_v2_job.py` when detected. See `CLAUDE.md` → **`force_output_csv` job.json key**.
 
 ### Family 3 — VSWR / Return Loss ratio measurements (VSWR2.pod)
 - Room-only data (this specific test suite is never run across temperature) — `distribution`/`env_coverage`/`summary` are structurally meaningless here; use `padb_v2.py`'s auto view-selection (omit `"views"`) rather than hand-picking
-- No spec limits configured at all, same `spec_direction` workaround as MaxPower3
+- No spec limits configured at all, same `spec_direction`/live-selector behavior as MaxPower3
 - A compound grouping key (`OA: Calset: N, State M: X dB`) with 40–56 distinct values still renders as a full (if unwieldy) filter panel — there is **no 20-value cap**, contrary to older versions of this doc; see `PADB_Analytic_Requirements.md` §3
 - Genuinely frequency-varying spec (PADB `Limits_YLimit=Line`) for VSWR needs the `scatter` view's per-frequency mask rendering, not a flat line — auto-detected, no job.json key needed
 
@@ -96,7 +98,7 @@ If your new pod is a fifth measurement family, read all of the above before assu
 ## When something breaks
 
 1. Check `padb_run_YYYYMMDD_HHMMSS.log` in the results directory first — full stdout/stderr, written on every run.
-2. No CSV produced but exit code 0? → `TestRun_RunStatus` filter (see `CLAUDE.md` → Common gotchas).
+2. No CSV produced but exit code 0? → two distinct known causes, both presenting identically: (a) `TestRun_RunStatus` filter, or a `subex` date range with genuinely no matching runs — usually fast (seconds); sanity-check by re-running with the pod's own baked-in date range (see `CLAUDE.md` → Common gotchas), or (b) `OutputConfig_OutputCSV=False` on the analytic — PADB still renders native PNG/PDF (check `results_dir\padb\` for those even when CSVs are missing) and can take tens of seconds to a couple minutes doing real work, just never writes a CSV. Fix (b) with `"force_output_csv": true` (see `CLAUDE.md` → **`force_output_csv` job.json key**).
 3. CSV produced but plot won't pick it up? → switch from `csv` (substring match) to `csv_file` (exact filename).
 4. Plot renders but a control does nothing? → check `QA_Checklist.md` for the specific plot type; several known-by-design limitations are listed there (no serial filter on `de_summary`/`summary`, NP-TI nulled when a filter is active, etc.) — not everything odd-looking is a bug.
 5. An interactive control (e.g. a filter, a stats table) doesn't seem to update? → **hard-reload the browser tab first** (Ctrl+Shift+R) before assuming it's a code bug — stale cached JS from a previous version of the same file is the most common cause. If it still doesn't work after a reload, `updateStatPanel` (and the analogous `de_summary` table function) are now wrapped in try/catch and will show the actual JS error in the panel instead of doing nothing, which is the fastest way to find a real bug if one exists.

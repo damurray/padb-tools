@@ -50,3 +50,36 @@ def load_defaults() -> dict:
         except (json.JSONDecodeError, OSError) as exc:
             print(f"WARNING: could not read {CONFIG_PATH}: {exc} -- using built-in defaults")
     return cfg
+
+
+# Windows' MAX_PATH is 260 characters. Warn with margin rather than at the
+# exact limit -- a real case (a CW Closed Loop pod nested in its own
+# padbResults tree, with a single analytic whose name nearly repeated the
+# pod's own long name) produced a 256-character job.json path, one bad
+# naming choice away from an outright failure.
+PATH_LENGTH_WARN_THRESHOLD = 220
+
+
+def warn_if_path_long(path) -> None:
+    """Print a WARNING with concrete next steps if path is getting close to
+    Windows' 260-character MAX_PATH. Generators call this right after
+    writing each file -- catching it here, at generation time, is much
+    cheaper than debugging a mysterious file-not-found or copy failure
+    later during a real PADB-R.exe run or a publish step."""
+    p = str(Path(path))
+    n = len(p)
+    if n < PATH_LENGTH_WARN_THRESHOLD:
+        return
+    print(f"WARNING: generated path is {n} characters long, close to Windows' "
+          f"260-character limit:")
+    print(f"  {p}")
+    print("  Recommendations:")
+    print("  - Move or copy the pod to a shallower directory before generating "
+          "(e.g. flat under Data\\ instead of nested under its own padbResults tree).")
+    print("  - Shorten the pod's own filename if you control it.")
+    print("  - If this pod has more than one Type=80 analytic, the per-analytic "
+          "name suffix on plot-job filenames is unavoidable -- a shorter "
+          "AnalyticName in the pod would shorten it.")
+    print("  - Results/publish paths built from this job (results_dir, publish_to) "
+          "will be even longer once nested further -- check those too if this run "
+          "later fails with a file-not-found or copy error.")

@@ -65,6 +65,9 @@ DEFAULT_PUBLISH_ROOT = r"\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\padb
 import numpy as np
 import pandas as pd
 
+sys.path.insert(0, str(Path(__file__).parent))
+import padb_run
+
 # ---------------------------------------------------------------------------
 # Reuse V1.0 internals — same directory
 # ---------------------------------------------------------------------------
@@ -107,7 +110,7 @@ def load_scatter(csv_path: Path, cfg: dict | None = None) -> pd.DataFrame:
     if not _HAS_V1:
         raise RuntimeError("padb_plots is required for load_scatter")
 
-    df = _pp._load_scatter_for_stats(csv_path)
+    df = _pp._load_scatter_for_stats(csv_path, x_col=(cfg.get("x_col") if cfg else None))
     df = _pp._parse_group_fields(df)
 
     # If Serial column came back empty (serial lives in Group string, not a standalone CSV column),
@@ -649,6 +652,15 @@ def generate_report(
 
     print(f"  Loading scatter CSV: {csv_path.name}", flush=True)
     df = load_scatter(csv_path, cfg)
+    if df.empty:
+        msg = (
+            f"No usable rows loaded from {csv_path.name} -- the x-axis/value column "
+            f"auto-detection likely picked the wrong columns (see the [WARN] above). "
+            f'Set "x_col" in job.json to the exact x-axis column name and re-run.'
+        )
+        print(f"  [ERROR] {msg}", flush=True)
+        _write_placeholder(output_dir / "index.html", cfg.get("title_prefix", csv_path.stem), msg)
+        return []
     df = _fill_spec_nulls(df)
     print(f"    Rows: {len(df):,}  |  Temps: {sorted(df['Temperature'].unique())}",
           flush=True)
@@ -785,6 +797,39 @@ def _publish(source_dir: Path, dest_dir: Path) -> None:
 # 8.  PADB runner (optional — skip with --csv)
 # ===========================================================================
 
+def _resolve_csv_path(csv_path: Path) -> Path:
+    """
+    If the configured/predicted csv_path doesn't exist, look for the real
+    CSV PADB actually wrote in the same directory, using the identical
+    filename-normalization rules find_csvs() applies in padb_run.py (PADB
+    replaces spaces with underscores and can normalize hyphens/dots too).
+    A predicted csv_path (e.g. from padb_make_v2_job.py) can drift from
+    reality -- this gives it one more chance before failing outright.
+    """
+    if csv_path.exists():
+        return csv_path
+    parent = csv_path.parent
+    if not parent.exists():
+        return csv_path
+
+    all_stems = {p.stem: p for p in parent.glob("*.csv")}
+    for stem in padb_run.filename_stem_variants(csv_path.stem):
+        if stem in all_stems:
+            found = all_stems[stem]
+            print(f"  CSV  : predicted '{csv_path.name}' not found -- using "
+                  f"'{found.name}' (matched via PADB filename normalization)")
+            return found
+
+    slug = csv_path.stem[:15]
+    matches = sorted(parent.glob(f"{slug}*.csv")) if slug else []
+    if matches:
+        print(f"  CSV  : predicted '{csv_path.name}' not found -- using "
+              f"'{matches[0].name}' (fuzzy prefix match)")
+        return matches[0]
+
+    return csv_path
+
+
 def _run_padb_for_csv(cfg: dict, job_dir: Path) -> Path:
     """
     Run PADB to produce the scatter CSV if not already available.
@@ -844,7 +889,7 @@ def main(argv: list[str] | None = None) -> None:
     if args.csv:
         csv_path = Path(args.csv).resolve()
     elif cfg.get("csv_path"):
-        csv_path = Path(cfg["csv_path"]).resolve()
+        csv_path = _resolve_csv_path(Path(cfg["csv_path"]).resolve())
         print(f"  CSV  : {csv_path.name} (from job json)")
     else:
         # Check if a CSV already exists in the results dir

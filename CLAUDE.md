@@ -84,13 +84,27 @@ All explicit publish destinations are under `\\srsnas01.srs.is.keysight.com\prod
 - **Still open:** Every analytic in `MaxPower3.pod` has `Limits_YLimit=None` — no spec limits are configured at the pod level. Worked around per-job via the `spec_direction` key (see below) rather than a pod fix.
 - MaxPower is the first non-spur (dBm, one-sided-lower-spec) pod family run through the V2 pipeline — see `spec_direction` below for what that surfaced.
 
-### `spec_direction` job.json key (added for MaxPower3)
+### `spec_direction` job.json key and the live TLL-direction selector (added for MaxPower3, finalized 2026-08-04)
 
-`stat_summary` (V2) auto-detects whether to show the lower spec line, upper spec line, both, or neither, based on whether any `freq_stats` entry has `spec_lo`/`spec_up` populated (`padb_plots.py` ~line 4072). MaxPower3's pod has no spec limits at all (`Limits_YLimit=None` everywhere), so auto-detection always resolves to `"none"` — no pass/fail line would ever show, even though MaxPower is conceptually a lower-spec-only (guaranteed minimum power) measurement.
+`stat_summary` (V2) auto-detects whether to show the lower spec line, upper spec line, both, or neither, based on whether any `freq_stats` entry has `spec_lo`/`spec_up` populated (`padb_plots.py` ~line 4072). MaxPower3's pod has no spec limits at all (`Limits_YLimit=None` everywhere), so auto-detection always resolves to `"none"` — no pass/fail line would ever show, even though MaxPower is conceptually a lower-spec-only (guaranteed minimum power) measurement. `"spec_direction"` in job.json (`"lo"`/`"hi"`/`"both"`/`"none"`/`"auto"`) exists to override this.
 
-Fix: set `"spec_direction": "lo"` explicitly in the job JSON (`maxpower3_leveled_linear_job.json`, `maxpower3_unleveled_linear_job.json`) to force the lower-spec display regardless of what's in the CSV. Valid values: `"lo"`, `"hi"`, `"both"`, `"none"`, or omit for `"auto"` (data-driven detection, correct for spur-family pods that do have `Lower Limit`/`Upper Limit` columns).
+**Final rule, confirmed by the user and applied uniformly in `summary` (`_build_summary_html`) and `stat_boxplot`/boxplot (`_stat_boxplot_interactive`/`_build_box_interactive_html`) — both in `padb_plots.py`:**
 
-**This was not previously documented** — added to `PADB_Tools_Guide.md` and `PADB_Analytic_Requirements.md` on 2026-07-16.
+1. **If the CSV itself has a real `Upper_Limit`/`Lower_Limit`, that detected value always wins.** No selector is shown, full stop — this is true even if job.json also sets an explicit `"spec_direction"`. Data beats config.
+2. **If the CSV has no limit at all, a live "TLL display: Both / Upper only / Lower only" radio selector is *always* shown** — never hidden, regardless of whether `spec_direction` is `"auto"` or explicit. `spec_direction` (or `"both"` if unset) only sets which radio is *pre-checked* by default; it does not remove the viewer's ability to switch. (An earlier same-day version of this rule incorrectly hid the selector whenever `spec_direction` was explicit — corrected after user feedback: "explicit config should only set the default, not remove the option to override live.")
+3. **The Data-filter range control is two independent radios, not one relabeled radio**: `"Upper limit"` and `"Lower limit"` are separate options (values `range_hi`/`range_lo`), each shown only when relevant to the *currently selected* TLL direction (both shown when direction is "Both"). A single relabeled radio can't represent two independent bounds simultaneously — this was the actual bug behind an early "why does this still show Upper Limit" report. Filter semantics are literal, not inverted: "Lower limit" cuts off (hides) data *below* it, "Upper limit" cuts off data *above* it — matches whichever side the TLL selector is currently showing.
+4. **Boxplot's filter mechanics differ from summary's**: boxplot trims raw sample points before computing Q1/Q2/Q3/whiskers (`d.v>rhi`/`d.v<rlo` in `buildBoxTraces`/`buildPortSerialTraces`/`updateStatsTable`/`_collectOutliers`), where summary's filter hides/shows whole condition traces (`max_data[i]<=limit`/`min_data[i]>=limit`). Both got the identical two-radio, direction-aware treatment, implemented independently since they're separate JS templates (`_SUMPLOT_JS` vs `_STAT_BOXPLOT_INTERACTIVE_JS`).
+5. **`summary`'s Results Table and CSV export are also direction-aware** (`buildTable()`/`exportTableCSV()`): only show TTL↑/Spec Hi/Margin↑ columns when Upper/Both is active, TTL↓/Spec Lo/Margin↓ when Lower/Both is active. (Boxplot's own Statistics Table has no equivalent gap to fix — it's purely descriptive statistics (Q1/Median/Q3/whiskers/normality), with no spec-direction-dependent columns at all.)
+
+**Current MaxPower3 job settings** (all pod-specific, not tool-wide defaults — confirmed with the user that other pods keep whatever their own data/config implies): the 4 hand-written V2 jobs (`MaxPower3_Leveled_Log_v2_job.json`, `MaxPower3_Leveled_Linear_v2_job.json`, `MaxPower3_Unleveled_Log_v2_job.json`, `MaxPower3_Unleveled_Linear_v2_job.json`) all have `"spec_direction": "lo"` (selector shown, defaults "Lower only"). The legacy V1 job `maxpower3_leveled_linear_job.json` has `"spec_direction": "auto"` (selector shown, defaults "Both") — a separate, earlier user request to match `Leveled_Log`'s config at the time, left as-is. `maxpower3_unleveled_linear_job.json` still has `"lo"` from the original 2026-07-16 fix and was intentionally left alone. **For a new pod's canonical "no spec limits, one-sided measurement" example, use the 4 `MaxPower3_*_v2_job.json` files, not `maxpower3_leveled_linear_job.json`** — the latter no longer demonstrates the explicit-direction pattern.
+
+Verification pattern for this class of fix: render the HTML headlessly and dump the post-JS DOM rather than asking the user to check a browser or guessing from source —
+```
+"$EDGE" --headless --disable-gpu --virtual-time-budget=15000 --user-data-dir=$(mktemp -d) --dump-dom "file:///path/to/file.html" > dump.html
+```
+Plain `--dump-dom` without `--virtual-time-budget` can hang indefinitely on a large embedded-Plotly page; always pair with a virtual-time-budget and an outer shell `timeout`.
+
+**This was not previously documented** — added to `PADB_Tools_Guide.md` and `PADB_Analytic_Requirements.md` on 2026-07-16, revised 2026-08-04.
 
 ---
 
@@ -183,6 +197,64 @@ py padb_make_job.py pod1.pod --module X --force     # overwrite an existing job.
 - `--min-date`/`--max-date` are written into `subex` verbatim (including sentinel strings like `"today"`/`"8 weeks ago"` — resolved later by `load_job()`, not by this script). Omit both and no `subex` key is written at all, leaving the pod's own baked-in `[Extract]` date range untouched — this was the specific design ask that prompted the script.
 - Skips a target file that already exists unless `--force` is passed — won't clobber a manually-tuned job.json.
 - All other defaults (`padb_exe`, `padb_output_dir`, `padb_logs_dir`, `padb_timeout=7200`) match this session's established values and are overridable via their own flags.
+
+---
+
+## `unique_output_filenames` job.json key (added 2026-08-04)
+
+Some pods have multiple analytics sharing one `OutputConfig_OutputFile` despite having distinct `AnalyticName`s — confirmed in the wild: `Harmonics_and_Subharmonics_Spec_Setting_Data2_review.pod` has 13 of 19 analytics sharing one `OutputFile` and 2 more sharing another, all 19 `AnalyticName`s distinct. `find_csvs()` already falls back to `AnalyticName` as the differentiator in this case (documented there), but that's a downstream workaround — the collision still exists in what PADB actually writes, and anything that predicts a CSV filename *before* extraction (like `padb_make_v2_job.py`) has to guess right.
+
+Set `"unique_output_filenames": true` in job.json to fix it at the source instead. `make_run_pod()` (`padb_run.py`) then forces every analytic's `AnalyticName` **and** `OutputConfig_OutputFile` to the same slug of that analytic's own original `AnalyticName`, patched only into the `_run.pod` copy — the original `.pod` is never touched, same convention as every other `make_run_pod()` flag.
+
+**Guaranteed, not just usually true:** slugifying can itself introduce a *new* collision when two `AnalyticName`s differ only by punctuation style — a real case in the same pod: `"Sub-Harmonics Summary 50MHz-20GHz"` (analytic 11) and `"Sub-Harmonics_Summary_50MHz-20GHz"` (analytic 18) both slugify to `Sub_Harmonics_Summary_50MHz_20GHz`. `make_run_pod()` detects any slug that isn't unique after the first pass and appends that analytic's own index (`_11`, `_18`) — confirmed both via direct unit testing and against a real PADB-R.exe run (all 19 analytics wrote distinct, correctly-named CSVs; analytics 11/18 correctly got the index suffix).
+
+**Ordering consequence:** because this can rename fields the rest of the pipeline depends on for file-collection stem-matching, `main()` now calls `make_run_pod()` *before* `parse_pod_analytics()`, and parses from the `_run.pod` copy instead of the original pod path. Verified this reorder is a no-op for every existing job (byte-identical output when no flags are set, so parsing from either file gives identical results) — it only matters once `unique_output_filenames` or a future similar flag is actually used.
+
+`padb_make_v2_job.py` sets this automatically whenever it detects an `OutputConfig_OutputFile` collision while generating a pod's job files, and predicts every `csv_path` using the identical slug + collision-disambiguation logic, so the generator and the runtime patching can't drift out of sync — see below.
+
+---
+
+## `force_output_csv` job.json key (added 2026-08-04)
+
+Real case: a CW Closed Loop pod's single Type=80 Scatter analytic had `OutputConfig_OutputCSV=0` in the pod itself. PADB-R happily rendered native PNG/PDF pages (proving real data existed) but wrote **zero** CSVs — completely silent, since `run_padb()` returns code 0 either way. V2/Interactive mode is fundamentally built on a Type=80 CSV, so this pod could never feed the V2 pipeline as-authored.
+
+Set `"force_output_csv": true` in job.json to fix it at the source. `make_run_pod()` (`padb_run.py`) forces `OutputConfig_OutputCSV=1` on every Type=80 (Scatter) analytic in the `_run.pod` copy only — scoped to Type=80 deliberately, since other analytic types may have CSV output disabled on purpose. Existing values are replaced in place; a missing key is appended when the section ends — same convention as `force_native_render`/`unique_output_filenames`.
+
+`padb_make_v2_job.py` sets this automatically whenever a Type=80 analytic has `OutputConfig_OutputCSV=0` (parsed via `parse_pod_analytics()`'s existing `output_csv` field), printing a `NOTE:` explaining why.
+
+**This is a genuinely separate problem from date-range issues** — a run that returns 0 CSVs in a few seconds can be either "no data in the requested window" (real, expected) or "this analytic doesn't write CSVs at all" (a pod configuration gap `force_output_csv` fixes). Distinguish by checking `OutputConfig_OutputCSV` in the pod and/or re-running with the pod's own baked-in date range as a sanity check — a run that takes tens of seconds and produces native PNG/PDF but still 0 CSVs points at the CSV-disabled case, not the date-range case.
+
+---
+
+## CSV auto-detection fallback in `padb_v2.py` (added 2026-08-04)
+
+`padb_v2.py` resolves its input CSV in priority order: `--csv` CLI arg, then `cfg["csv_path"]` from job.json, then a fallback search. The `cfg["csv_path"]` case previously failed hard (`sys.exit`) if the path didn't exist — a real risk for `padb_make_v2_job.py`-generated jobs, since `csv_path` there is *predicted* from naming conventions, not verified against a real extraction.
+
+`_resolve_csv_path()` now gives a predicted-but-missing `csv_path` one more chance: it searches the same directory for a CSV matching via `padb_run.filename_stem_variants()` — the identical space/hyphen/dot normalization `find_csvs()` already applies in `padb_run.py` (hoisted from a nested function to a module-level one specifically so `padb_v2.py` could reuse it without duplicating the logic) — then falls back further to a fuzzy 15-char-prefix glob, matching `find_csvs()`'s own fallback order. Prints which match (if any) it used and why. Falls through to the original `sys.exit` only if nothing in the directory matches at all.
+
+---
+
+## `padb_make_v2_job.py` — V2 (Interactive mode) job.json generator (added 2026-08-04)
+
+Generates the full Interactive-mode job set from a `.pod` file alone: one shared extraction job (`<pod_stem>_run_job.json`, `padb_run.py`'s schema) plus one plot job per Type=80 Scatter analytic (`<pod_stem>_<analytic>_v2_job.json`, `padb_v2.py`'s schema) — mirroring the real hand-written `MaxPower3.pod` V2 job set structurally, though not every design choice matches (see below).
+
+```
+py padb_make_v2_job.py MyPod.pod --module MyModule
+py padb_make_v2_job.py MyPod.pod --module MyModule --spec-direction lo
+py padb_make_v2_job.py MyPod.pod --no-publish
+py padb_make_v2_job.py MyPod.pod --module MyModule --force
+```
+
+Key design decisions, each deliberate:
+
+- **`"views"` is omitted from every generated plot job.** `padb_v2.py` already auto-detects Room-only (`scatter`+`boxplot`) vs. multi-temp (all six views, including `env_coverage`/`distribution` when non-Room data is present) from the actual extracted CSV at run time — the existing "Auto view-selection" mechanism above. No new detection logic was needed; verified against a real 19-analytic pod where 7 analytics correctly got all six views (genuine multi-temp data) and 2 correctly got just `scatter`+`boxplot` (genuinely Room-only), with zero manual `views` tuning.
+- **Every Type=80 analytic gets its own plot job, full stop** — no attempt to guess which one deserves the "primary" full treatment vs. a lighter `scatter`-only comparison view, the way the hand-written `MaxPower3.pod` jobs do (3 of 4 near-duplicate analytics trimmed to `scatter`-only by a human). See `feedback_padb_automation_completeness` memory / the "completeness over curation" principle — confirmed by the user as the right default after comparing generator output to the hand-curated original side-by-side.
+- **`csv_path` is predicted, not confirmed**, from the analytic's `OutputConfig_OutputFile` (or, when a pod-wide `OutputFile` collision is detected, the same guaranteed-unique slug `unique_output_filenames` will produce) — can't be verified correct until the run job has actually executed once. Verified exact-match against real extraction output on two very different pods: `MaxPower3.pod` (no collisions, `OutputFile`-based prediction) and the Harmonics pod (collisions, `AnalyticName`-slug prediction with index-suffix disambiguation) — both predicted every `csv_path` correctly on the first real run, zero manual correction needed.
+- **`spec_direction` defaults to `"auto"`** — a measurement that's one-sided despite having no configured pod-level spec limits (`MaxPower3.pod`'s hand-tuned jobs hardcode `"lo"` for exactly this reason) can't be inferred from the pod alone; override with `--spec-direction` if you know better.
+- **All plot jobs for one pod share one `results_dir` and one publish destination** — `padb_v2.py`'s `_write_index()` already merges multiple runs into one combined gallery, so N analytics' worth of views (up to N×6 files) accumulate into a single `index.html`, matching the real `MaxPower3.pod` example. Verified: the Harmonics pod's 9 analytics produced exactly 47 files (42 + 4 view files + `index.html`) in one gallery, published to `PADB-Interactive\<module>\<pod_stem>` — a separate top-level share tree from `PADB-Simple`, per user preference.
+- `--module` is required unless `--no-publish`, same reasoning as `padb_make_job.py`.
+
+**Path-length warning (added 2026-08-04):** both `padb_make_job.py` and `padb_make_v2_job.py` call `padb_config.warn_if_path_long()` right after writing each file. Real case that motivated this: a CW Closed Loop pod nested in its own `padbResults\<name>.dir\` tree, with a single Type=80 analytic whose name nearly repeated the pod's own already-long stem, produced a 256-character `_v2_job.json` path — one character away from Windows' 260-char `MAX_PATH`. That specific case was fixed at the naming-logic level (the per-analytic suffix is now only appended when a pod has more than one Type=80 analytic — see `_predict_csv_stem`/plot-job-naming above), but nothing stopped a *different* long pod/module/analytic-name combination from hitting the same wall. `warn_if_path_long()` (`padb_config.py`) prints a `WARNING:` with the full path, its length, and concrete next steps (move the pod to a shallower directory, shorten the pod filename, shorten `AnalyticName` if multiple Type=80 analytics force the suffix, and a reminder that `results_dir`/`publish_to` paths built from this job nest even deeper) whenever a generated path reaches 220+ characters — 40 characters of margin before the hard 260 limit. This only covers the two generators' own output paths; it does not (yet) check `results_dir` or `publish_to` paths themselves, since those aren't known to be problematic in practice yet — extend `warn_if_path_long()` calls to those if a real case surfaces.
 
 ---
 

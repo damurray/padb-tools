@@ -2,6 +2,12 @@
 
 The full interactive suite — filters, tolerance intervals, serial/condition exclusion, global-flag exclusion, CSV export. Two files, two commands: extract, then plot.
 
+**Fastest path:** `padb_make_v2_job.py` generates *both* job files below (steps 1 and 3) in one shot — one run job plus one plot job per Type=80 analytic in the pod, all sharing one results folder/gallery:
+```
+py C:\apps\padb\tools\padb_make_v2_job.py YourPod.pod --module YourFolder
+```
+Read on if you want to understand what it writes, customize by hand, or write it yourself.
+
 ## 1. Write the extract job (`*_run_job.json`)
 Same schema as any `padb_run.py` job — no `mode` key needed (or set `"mode": "interactive"` just as a label; it doesn't change what this step does):
 
@@ -47,7 +53,7 @@ Different schema — this one drives `padb_v2.py`, not `padb_run.py`:
 }
 ```
 - Omit `"views"` for automatic, data-driven selection (Room-only data → `scatter`+`boxplot`; multi-temp → all six; add `"room_only_full_views": true` to also get `stat_summary`/`summary` on Room-only data).
-- `spec_direction`: `"lo"`/`"hi"`/`"both"`/`"none"`/`"auto"` — set explicitly if the pod has no configured spec limits but you know the measurement is one-sided.
+- `spec_direction`: `"lo"`/`"hi"`/`"both"`/`"none"`/`"auto"` — set explicitly if the pod has no configured spec limits but you know the measurement is one-sided. Only sets the *default*: a real CSV limit always overrides it, and `summary`/`stat_boxplot` show a live Both/Upper/Lower selector on top of it whenever the CSV has no limit at all.
 - `x_label`/`x_unit` — override if the x-axis isn't carrier frequency in MHz (e.g. phase-noise offset in Hz).
 - `publish_to` — omit for the default `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>`; set `""` to opt out, or a path to publish elsewhere.
 

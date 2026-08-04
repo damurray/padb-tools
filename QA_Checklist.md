@@ -94,8 +94,10 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 
 ### Y-range filter
 - [ ] "Passing only" radio → boxes outside spec disappear
-- [ ] "Custom range" → min/max inputs appear; entering values clips Y axis
+- [ ] "Upper limit" radio (shown only when TLL display is Upper/Both) → number input appears; entering a value removes raw samples above it before recomputing Q1/Q2/Q3/whiskers
+- [ ] "Lower limit" radio (shown only when TLL display is Lower/Both) → same, removes samples below the entered value
 - [ ] "All data" → returns to full range
+- [ ] TLL display selector (Both/Upper only/Lower only) present only when the CSV has no `Upper_Limit`/`Lower_Limit` at all — switching it hides/shows the Upper limit / Lower limit radios accordingly, and falls back to "All data" if the currently-selected radio becomes hidden
 
 ### Statistics table and CSV
 - [ ] Statistics table toggles (same as stat_summary)
@@ -181,6 +183,14 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 ### Show excluded
 - [ ] "Show excluded" checkbox present
 - [ ] Deselect a harmonic, check "Show excluded" → excluded bands appear dim grey behind selected
+
+### TLL display and Data filter (added 2026-08-04)
+- [ ] TLL display selector (Both/Upper only/Lower only) present only when the CSV has no `Upper_Limit`/`Lower_Limit` at all — if the pod has a real spec limit, this selector should be **absent** and the correct side should already be drawn
+- [ ] Switching TLL display to "Lower only" → the upper TTL band disappears, lower TTL band appears; Results Table columns switch to TTL↓/Spec Lo/Margin↓; Data filter's "Upper limit" radio disappears and "Lower limit" appears
+- [ ] Switching to "Both" → both TTL bands and both sets of table columns appear; both Upper limit and Lower limit radios are available
+- [ ] "Passing only" label text matches direction (`TTL ≤ Spec` for Upper, `TTL ≥ Spec` for Lower, `TTL vs Spec` for Both)
+- [ ] "Upper limit" filter hides conditions whose max data exceeds the entered value; "Lower limit" hides conditions whose min data falls below it
+- [ ] CSV export column set matches the Results Table's current column set
 
 ### Global filter (GF) integration
 - [ ] If GF is set in boxplot, GF badge appears in summary filter bar

@@ -2749,18 +2749,30 @@ def _parse_temp_tag(val: str) -> str:
     return s
 
 
-def _load_scatter_for_stats(csv_path: Path) -> pd.DataFrame:
+def _load_scatter_for_stats(csv_path: Path, x_col: str | None = None) -> pd.DataFrame:
     """
     Load scatter CSV (Type=80) for statistical analysis.
     Like _load_scatter_csv but also extracts Temperature from 'Test Step' column.
     Returns DataFrame with: Frequency_MHz, Value, Group, Station, Temperature,
     Upper_Limit (numeric), Lower_Limit (numeric).
+
+    x_col: exact column name to use as the swept x-axis, overriding the
+    "frequency"/"x value" substring auto-detection. Needed when the CSV's real
+    x-axis isn't named with either substring (e.g. "Amplitude (dBm)") while a
+    *different* column happens to contain "frequency" as a secondary/order
+    dimension -- auto-detection would otherwise silently grab the wrong column.
     """
     df_raw = pd.read_csv(csv_path, dtype=str)
     df_raw.columns = df_raw.columns.str.strip()
     col_lower = {c.lower(): c for c in df_raw.columns}
 
-    freq_col    = next((col_lower[k] for k in col_lower if "frequency" in k or "x value" in k), None)
+    if x_col:
+        matches = [c for c in df_raw.columns if c == x_col]
+        if not matches:
+            raise ValueError(f"x_col={x_col!r} not found in CSV columns: {list(df_raw.columns)}")
+        freq_col = matches[0]
+    else:
+        freq_col = next((col_lower[k] for k in col_lower if "frequency" in k or "x value" in k), None)
     serial_col  = next((col_lower[k] for k in col_lower
                         if any(kw in k for kw in ("serial num", "serial no", "sn", "unit id", "dut id"))
                         and "station" not in k), None)
@@ -2830,7 +2842,16 @@ def _load_scatter_for_stats(csv_path: Path) -> pd.DataFrame:
     else:
         out["Temperature"] = "Room"
 
+    _n_before = len(out)
     out = out.dropna(subset=["Frequency_MHz", "Value"])
+    if _n_before and not len(out):
+        print(
+            f"    [WARN] _load_scatter_for_stats: all {_n_before:,} rows dropped -- "
+            f"x-axis column resolved to {freq_col!r}, value column resolved to "
+            f"{val_col!r}. If this doesn't look right, set \"x_col\" in job.json "
+            f"to the exact x-axis column name.",
+            flush=True,
+        )
     return out
 
 
@@ -6606,10 +6627,12 @@ function getYFilter(){
   document.querySelectorAll('input[name="box_flt"]').forEach(function(r){if(r.checked)mode=r.value;});
   var yhi_el=document.getElementById('box_flt_yhi');
   var yhi=yhi_el?parseFloat(yhi_el.value):NaN;
+  var ylo_el=document.getElementById('box_flt_ylo');
+  var ylo=ylo_el?parseFloat(ylo_el.value):NaN;
   var tll_el=document.getElementById('box_tll_hi');
   var tll_hi=(tll_el&&tll_el.value!=='')?parseFloat(tll_el.value):null;
   if(tll_hi!==null&&isNaN(tll_hi)) tll_hi=null;
-  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi,tll_hi:tll_hi};
+  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi,ylo:isNaN(ylo)?-Infinity:ylo,tll_hi:tll_hi};
 }
 function getBoxFreqRange(){
   var lo=parseFloat(document.getElementById('box_freq_lo').value);
@@ -6668,9 +6691,32 @@ function toggleAllBoxPort(){
   boxPortChkChanged();
 }
 function toggleRangeInputs(){
-  var el=document.getElementById('box_flt_range_inputs');
-  if(el){var r=document.querySelector('input[name="box_flt"][value="range"]');
-    el.style.display=(r&&r.checked)?'inline-flex':'none';}
+  var hiEl=document.getElementById('box_flt_range_hi_inputs');
+  var loEl=document.getElementById('box_flt_range_lo_inputs');
+  var hiChecked=document.querySelector('input[name="box_flt"][value="range_hi"]:checked');
+  var loChecked=document.querySelector('input[name="box_flt"][value="range_lo"]:checked');
+  if(hiEl) hiEl.style.display=hiChecked?'inline-flex':'none';
+  if(loEl) loEl.style.display=loChecked?'inline-flex':'none';
+}
+/* ---- TLL display direction (upper/lower/both) ---- */
+function getTllDirection(){
+  var r=document.querySelector('input[name="box_tll_dir"]:checked');
+  return r?r.value:SPEC_DIRECTION;
+}
+function updateBoxFilterLabels(){
+  var dir=getTllDirection();
+  var showHi=dir==='hi'||dir==='both';
+  var showLo=dir==='lo'||dir==='both';
+  var hiWrap=document.getElementById('box_flt_hi_wrap');
+  var loWrap=document.getElementById('box_flt_lo_wrap');
+  if(hiWrap) hiWrap.style.display=showHi?'':'none';
+  if(loWrap) loWrap.style.display=showLo?'':'none';
+  var checked=document.querySelector('input[name="box_flt"]:checked');
+  if(checked&&((checked.value==='range_hi'&&!showHi)||(checked.value==='range_lo'&&!showLo))){
+    var allRad=document.querySelector('input[name="box_flt"][value="all"]');
+    if(allRad) allRad.checked=true;
+  }
+  toggleRangeInputs();
 }
 function percentileSorted(sorted,p){
   var idx=(p/100)*(sorted.length-1);
@@ -6777,7 +6823,7 @@ function _specFromStats(selConds,freqToLabel){
   return {hi:hi,lo:lo};
 }
 function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
-    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi){
+    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
   var freqVals={},freqSet={},freqLabels={};
   BOX_DATA.forEach(function(cd){
     if(selTemps.indexOf(cd.temp)<0) return;
@@ -6789,6 +6835,7 @@ function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
         if(serActive&&selBoxSers.indexOf(d.s)<0) return;
         if(portActive&&selPorts.indexOf(d.p||'')<0) return;
         if(d.v>rhi) return;
+        if(d.v<rlo) return;
         if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
         if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return;}
         var gk=colId==='__port__'?(d.p||''):d.s;
@@ -6858,19 +6905,21 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var allPorts=getAllBoxPorts();var selPorts=getSelectedBoxPorts();
   var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yActive=yFlt&&yFlt.mode==='range'&&isFinite(yFlt.yhi);
+  var yActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
+  var yActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
   var kChanged=Math.abs(k-1.5)>0.001;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
   var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
   var passHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
   var passLo=passActive?LO_SPEC:null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+  var rlo=yActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
   var fr=getBoxFreqRange();
   var _bxGrpEl=document.getElementById('box_group_by');
   var _bxGrpId=_bxGrpEl?_bxGrpEl.value:'';
   if(_bxGrpId==='__port__'||_bxGrpId==='__serial__'){
     return buildPortSerialTraces(_bxGrpId,selBoxSers,selTemps,yFlt,fr,k,
-      serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi);
+      serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
   }
   var traces=[];
   var condIdxMap={};var ci=0;
@@ -6894,6 +6943,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
           if(serActive&&selBoxSers.indexOf(d.s)<0) return false;
           if(portActive&&selPorts.indexOf(d.p||'')<0) return false;
           if(d.v>rhi) return false;
+          if(d.v<rlo) return false;
           if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
           if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return false;}
           return true;
@@ -7040,7 +7090,8 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yFltActive=yFlt&&yFlt.mode==='range'&&isFinite(yFlt.yhi);
+  var yFltActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
+  var yFltActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
   var stPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
   var stPassLo=passActive?LO_SPEC:null;
   var fr=getBoxFreqRange();
@@ -7049,13 +7100,15 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
   var _gfActiveSt=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
   var _gfFocusSt=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
   var gfFocusActive=_gfActiveSt&&_gfFocusSt;
-  if(serActive||yFltActive||passActive||tempActive||gfFocusActive){
+  if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+    var rlo=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var fltLabel=gfFocusActive?'GF Focus':
-                 (serActive&&yFltActive)?'Serial+Y-filtered':
+                 (serActive&&(yFltActive||yFltActiveLo))?'Serial+Y-filtered':
                  serActive?'Serial-filtered':
                  passActive?'Passing only':
                  tempActive?'Temp-filtered':
+                 yFltActiveLo?'Y-filtered [lo='+rlo.toFixed(3)+']':
                  'Y-filtered [hi='+rhi.toFixed(3)+']';
     BOX_DATA.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
@@ -7065,7 +7118,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
           .filter(function(d){
             if(gfFocusActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp;if(!_boxIsInGf(_ck)) return false;}
-            return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi
+            return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
               &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi));
           });
         if(!detail.length) return;
@@ -7185,10 +7238,12 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yActive=yFlt&&yFlt.mode==='range'&&isFinite(yFlt.yhi);
+  var yActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
+  var yActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
   var olPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
   var olPassLo=passActive?LO_SPEC:null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+  var rlo=yActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
   var fr=getBoxFreqRange();
   var result=[];
   BOX_DATA.forEach(function(cd){
@@ -7198,7 +7253,7 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
       if(f.freq<fr.lo||f.freq>fr.hi) return;
       var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
       var detail=allDet.filter(function(d){
-        return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi
+        return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
           &&(!passActive||(olPassLo===null||d.v>=olPassLo)&&(olPassHi===null||d.v<=olPassHi));
       });
       if(detail.length<2) return;
@@ -7423,7 +7478,9 @@ function clearEverything(){
   /* Data filter */
   var allFlt=document.querySelector('input[name="box_flt"][value="all"]');
   if(allFlt)allFlt.checked=true;
-  toggleRangeInputs();
+  var dirRad=document.querySelector('input[name="box_tll_dir"][value="'+SPEC_DIRECTION+'"]');
+  if(dirRad)dirRad.checked=true;
+  updateBoxFilterLabels();
   /* IQR k */
   var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value='1.5';
   /* Checkboxes */
@@ -7686,7 +7743,9 @@ function saveState(){
     document.querySelectorAll('.'+col).forEach(function(c){_stSet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
   });
   var fltEl=document.querySelector('input[name="box_flt"]:checked');if(fltEl)_stSet('box_filter_mode',fltEl.value);
+  var dirEl=document.querySelector('input[name="box_tll_dir"]:checked');if(dirEl)_stSet('box_tll_dir',dirEl.value);
   var yhiEl=document.getElementById('box_flt_yhi');if(yhiEl)_stSet('box_filter_yhi',yhiEl.value);
+  var yloEl=document.getElementById('box_flt_ylo');if(yloEl)_stSet('box_filter_ylo',yloEl.value);
   var tllEl=document.getElementById('box_tll_hi');if(tllEl)_stSet('box_tll_hi',tllEl.value);
   var kEl=document.getElementById('box_iqr_k');if(kEl)_stSet('box_iqr_k',kEl.value);
 }
@@ -7704,9 +7763,13 @@ function loadState(){
     updateBadge(col);
   });
   if(typeof COND_DIMS!=='undefined'&&typeof _syncLfFromAllDims==='function') _syncLfFromAllDims();
+  var dm=_stGet('box_tll_dir');
+  if(dm){var dr=document.querySelector('input[name="box_tll_dir"][value="'+dm+'"]');if(dr)dr.checked=true;}
   var fm=_stGet('box_filter_mode');
-  if(fm){var fr=document.querySelector('input[name="box_flt"][value="'+fm+'"]');if(fr){fr.checked=true;if(typeof toggleRangeInputs==='function')toggleRangeInputs();}}
+  if(fm){var fr=document.querySelector('input[name="box_flt"][value="'+fm+'"]');if(fr){fr.checked=true;}}
+  updateBoxFilterLabels();
   var fyhi=_stGet('box_filter_yhi');var fyhiEl=document.getElementById('box_flt_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
+  var fylo=_stGet('box_filter_ylo');var fyloEl=document.getElementById('box_flt_ylo');if(fylo!==null&&fyloEl)fyloEl.value=fylo;
   var tll=_stGet('box_tll_hi');var tllEl=document.getElementById('box_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
   var iqr=_stGet('box_iqr_k');if(iqr!==null){var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value=iqr;}
 }
@@ -7798,6 +7861,8 @@ def _build_box_interactive_html(
     padb_field_prefix: str = '',
     padb_freq_field: str = '',
     x_unit: str = "MHz",
+    spec_dir_js: str = "both",
+    tll_selector_html: str = "",
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -7984,14 +8049,22 @@ def _build_box_interactive_html(
         ' onchange="toggleRangeInputs();update()">&nbsp;All&nbsp;data</label>\n'
         '  <label><input type="radio" name="box_flt" value="passing"'
         ' onchange="toggleRangeInputs();update()">&nbsp;Passing&nbsp;only</label>\n'
-        '  <label><input type="radio" name="box_flt" value="range"'
+        '  <label id="box_flt_hi_wrap"><input type="radio" name="box_flt" value="range_hi"'
         ' onchange="toggleRangeInputs();update()">&nbsp;Upper&nbsp;limit</label>\n'
-        '  <span id="box_flt_range_inputs" style="display:none;align-items:center;gap:4px">\n'
+        '  <span id="box_flt_range_hi_inputs" style="display:none;align-items:center;gap:4px">\n'
         f'    <input type="number" id="box_flt_yhi" placeholder="dBc limit" step="0.001"'
         f' value="{y_hi_val}" oninput="update()">\n'
         '    <small style="color:#666">(removes raw samples above limit before computing Q1/Q2/Q3/whiskers)</small>\n'
         '  </span>\n'
+        '  <label id="box_flt_lo_wrap"><input type="radio" name="box_flt" value="range_lo"'
+        ' onchange="toggleRangeInputs();update()">&nbsp;Lower&nbsp;limit</label>\n'
+        '  <span id="box_flt_range_lo_inputs" style="display:none;align-items:center;gap:4px">\n'
+        f'    <input type="number" id="box_flt_ylo" placeholder="min (dBm)" step="0.001"'
+        f' value="{y_lo_val}" oninput="update()">\n'
+        '    <small style="color:#666">(removes raw samples below limit before computing Q1/Q2/Q3/whiskers)</small>\n'
+        '  </span>\n'
         '  <span class="sep"></span>\n'
+        + tll_selector_html +
         '  <label title="Override TLL for Passing only filter and draw TLL line (bypasses Spec Hi)">'
         'TLL&nbsp;override:<input type="number" id="box_tll_hi" step="0.001" placeholder="auto"'
         ' style="width:74px" oninput="update()"></label>\n'
@@ -8036,6 +8109,7 @@ def _build_box_interactive_html(
         f"var BOX_FREQ_MAX={box_freq_max!r};",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
+        f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_UNIT={json.dumps(x_unit)};",
@@ -8133,6 +8207,38 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     y_lim = cfg.get("y_lim")
     lo_spec, hi_spec = _get_spec(df, cfg)
 
+    # Same rule as the summary view: a detected CSV limit always wins (no
+    # selector). With no CSV limit, always show the live TLL-direction
+    # selector, defaulting from job.json's "spec_direction" (or "both").
+    _has_spec = not (np.isnan(hi_spec) and np.isnan(lo_spec))
+    if _has_spec:
+        if not np.isnan(hi_spec) and not np.isnan(lo_spec):
+            box_spec_dir_js = "both"
+        elif not np.isnan(hi_spec):
+            box_spec_dir_js = "hi"
+        else:
+            box_spec_dir_js = "lo"
+        show_box_tll_selector = False
+    else:
+        _box_cfg_dir = cfg.get("spec_direction", "auto")
+        box_spec_dir_js = _box_cfg_dir if _box_cfg_dir in ("lo", "hi", "both", "none") else "both"
+        show_box_tll_selector = True
+
+    box_tll_selector_html = ""
+    if show_box_tll_selector:
+        box_tll_selector_html = (
+            '  <b>TLL&nbsp;display:</b>\n'
+            + ''.join(
+                f'  <label title="No spec limit is configured in this pod -- pick which side of '
+                f'the statistical tolerance band (TTL) matters for this measurement">'
+                f'<input type="radio" name="box_tll_dir" value="{val}"'
+                + (' checked' if box_spec_dir_js == val else '')
+                + f' onchange="updateBoxFilterLabels();update()"> {label}</label>\n'
+                for val, label in (("both", "Both"), ("hi", "Upper&nbsp;only"), ("lo", "Lower&nbsp;only"))
+            )
+            + '  <span class="sep"></span>\n'
+        )
+
     df = df.copy()
     if "Group" in df.columns and not df["Group"].isna().all():
         _serial_val = re.compile(r'^[A-Z]{2,3}\d{5,}$')
@@ -8188,6 +8294,14 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         df["_cond"] = df["Group"].map(_make_cond).fillna("All")
         df["_serial_id"] = df["Group"].map(_make_serial).fillna("unknown")
         df["_port"] = df["Group"].map(_make_port).fillna("")
+
+        # When serial is not embedded in the Group string (e.g. Serial Number is a separate
+        # CSV column), the fallback serial_id above is the whole group string, so every DUT
+        # in a group collapses onto one id. Override with the real Serial column.
+        if not serial_keys and "Serial" in df.columns:
+            valid = df["Serial"].str.strip().str.match(r'^[A-Z]{2,3}\d{5,}$')
+            if valid.any():
+                df["_serial_id"] = df["Serial"].str.strip().where(valid, df["_serial_id"])
     else:
         df["_cond"] = "All"
         df["_serial_id"] = "unknown"
@@ -8279,6 +8393,8 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         padb_field_prefix=padb_field_prefix,
         padb_freq_field=padb_freq_field,
         x_unit=x_unit,
+        spec_dir_js=box_spec_dir_js,
+        tll_selector_html=box_tll_selector_html,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -8596,6 +8712,7 @@ function buildTraces(active,excl){
   });
   var _selTemps=getSelTemps();
   var _sumParams=getSumParams();
+  var _tllDir=getTllDirection();
   active.forEach(function(cd,ci){
     var color=PALETTE[ci%PALETTE.length];
     var idxs=[];
@@ -8626,13 +8743,23 @@ function buildTraces(active,excl){
       hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>Mean: %{y:.2f}<extra></extra>'
     });
     /* TTL upper */
-    if(uttls.some(function(v){return v!==null&&v!==undefined;})){
+    if((_tllDir==='hi'||_tllDir==='both')&&uttls.some(function(v){return v!==null&&v!==undefined;})){
       var ttlLabel=_stats.uttl_is_estimate?' TTL↑ (est)':' TTL↑';
       traces.push({
         type:'scatter',x:freqs,y:uttls,mode:'lines',
         line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
         name:cd.condition+ttlLabel,legendgroup:cd.condition,showlegend:false,
         hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
+      });
+    }
+    /* TTL lower */
+    if((_tllDir==='lo'||_tllDir==='both')&&lttls.some(function(v){return v!==null&&v!==undefined;})){
+      var ttlLabelLo=_stats.uttl_is_estimate?' TTL↓ (est)':' TTL↓';
+      traces.push({
+        type:'scatter',x:freqs,y:lttls,mode:'lines',
+        line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
+        name:cd.condition+ttlLabelLo,legendgroup:cd.condition,showlegend:false,
+        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>'+ttlLabelLo.trim()+': %{y:.2f}<extra></extra>'
       });
     }
   });
@@ -8713,7 +8840,11 @@ function resetFilters(){
   document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
   var allRad=document.querySelector('input[name="sum_flt"][value="all"]');
   if(allRad){allRad.checked=true;toggleRangeInputs();}
+  var dirRad=document.querySelector('input[name="sum_tll_dir"][value="'+SPEC_DIRECTION+'"]');
+  if(dirRad)dirRad.checked=true;
+  updateSumFilterLabels();
   var yhi=document.getElementById('sum_yhi');if(yhi)yhi.value='';
+  var ylo=document.getElementById('sum_ylo');if(ylo)ylo.value='';
   var ec=document.getElementById('sum_show_excl_chk');if(ec)ec.checked=false;
   document.querySelectorAll('.sum_ser_chk').forEach(function(c){c.checked=true;});
   var aSer=document.getElementById('all_sum_ser');if(aSer){aSer.checked=true;aSer.indeterminate=false;}
@@ -8732,12 +8863,46 @@ function getDataFilter(){
   var mode='all';
   document.querySelectorAll('input[name="sum_flt"]').forEach(function(r){if(r.checked)mode=r.value;});
   var yhi=parseFloat(document.getElementById('sum_yhi').value);
-  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi};
+  var ylo=parseFloat(document.getElementById('sum_ylo').value);
+  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi,ylo:isNaN(ylo)?-Infinity:ylo};
+}
+/* ---- TLL display direction (upper/lower/both) ---- */
+function getTllDirection(){
+  var r=document.querySelector('input[name="sum_tll_dir"]:checked');
+  return r?r.value:SPEC_DIRECTION;
+}
+/* "Upper limit" alone doesn't make sense for a lower-spec-only measurement,
+   and a single input can't represent both bounds when direction is "both"
+   -- show only the range radio(s)/input(s) that match whichever side(s)
+   the TLL selector says actually matter, and relabel Passing-only to match. */
+function updateSumFilterLabels(){
+  var dir=getTllDirection();
+  var showHi=dir==='hi'||dir==='both';
+  var showLo=dir==='lo'||dir==='both';
+  var pLbl=document.getElementById('sum_passing_lbl');
+  if(pLbl){
+    if(dir==='lo') pLbl.innerHTML='Passing&nbsp;only&nbsp;(TTL&nbsp;&#8805;&nbsp;Spec)';
+    else if(dir==='hi') pLbl.innerHTML='Passing&nbsp;only&nbsp;(TTL&nbsp;&#8804;&nbsp;Spec)';
+    else pLbl.innerHTML='Passing&nbsp;only&nbsp;(TTL&nbsp;vs&nbsp;Spec)';
+  }
+  var hiWrap=document.getElementById('sum_flt_hi_wrap');
+  var loWrap=document.getElementById('sum_flt_lo_wrap');
+  if(hiWrap) hiWrap.style.display=showHi?'':'none';
+  if(loWrap) loWrap.style.display=showLo?'':'none';
+  var checked=document.querySelector('input[name="sum_flt"]:checked');
+  if(checked&&((checked.value==='range_hi'&&!showHi)||(checked.value==='range_lo'&&!showLo))){
+    var allRad=document.querySelector('input[name="sum_flt"][value="all"]');
+    if(allRad) allRad.checked=true;
+  }
+  toggleRangeInputs();
 }
 function toggleRangeInputs(){
-  var el=document.getElementById('sum_range_inputs');
-  if(el){var r=document.querySelector('input[name="sum_flt"][value="range"]');
-    el.style.display=(r&&r.checked)?'inline-flex':'none';}
+  var hiEl=document.getElementById('sum_range_hi_inputs');
+  var loEl=document.getElementById('sum_range_lo_inputs');
+  var hiChecked=document.querySelector('input[name="sum_flt"][value="range_hi"]:checked');
+  var loChecked=document.querySelector('input[name="sum_flt"][value="range_lo"]:checked');
+  if(hiEl) hiEl.style.display=hiChecked?'inline-flex':'none';
+  if(loEl) loEl.style.display=loChecked?'inline-flex':'none';
 }
 function applyDataFilter(active){
   var flt=getDataFilter();
@@ -8758,9 +8923,14 @@ function applyDataFilter(active){
         return uOk&&lOk;
       });
     }
-    if(flt.mode==='range'){
+    if(flt.mode==='range_hi'){
       return vis.some(function(i){
         return cd.max_data[i]<=flt.yhi;
+      });
+    }
+    if(flt.mode==='range_lo'){
+      return vis.some(function(i){
+        return cd.min_data[i]>=flt.ylo;
       });
     }
     return true;
@@ -8920,12 +9090,17 @@ function _buildCondRows(condList,gfLabel,selTemps,params){
       }
       var sHi=(cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:
               (cd.spec_hi!==undefined&&cd.spec_hi!==null?cd.spec_hi:null);
+      var sLo=(cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:
+              (cd.spec_lo!==undefined&&cd.spec_lo!==null?cd.spec_lo:null);
       var tUp=stats.uttl[fi];
+      var tLo=stats.lttl[fi];
       rows.push({
         condition:cd.condition,freq:f,n:tot_n,gf:gfLabel,
         mean:stats.mean[fi],min:stats.min_data[fi],max:stats.max_data[fi],
-        ttl_up:tUp,mu:params.mu,denv:params.denv,spec_hi:sHi,
+        ttl_up:tUp,ttl_lo:tLo,mu:params.mu,denv:params.denv,
+        spec_hi:sHi,spec_lo:sLo,
         margin_up:(sHi!==null&&tUp!==null)?sHi-tUp:null,
+        margin_lo:(sLo!==null&&tLo!==null)?tLo-sLo:null,
       });
     });
   });
@@ -8942,34 +9117,39 @@ function buildTable(){
     wrap.innerHTML='<p style="color:#888;font-size:12px;margin:4px 8px">No data in current view.</p>';
     return;
   }
+  var dir=getTllDirection();
+  var showHi=dir==='hi'||dir==='both';
+  var showLo=dir==='lo'||dir==='both';
   function fmt(v,d){return v===null||v===undefined?'—':Number(v).toFixed(d!==undefined?d:4);}
-  var cols=['Condition','Freq (MHz)','n','Mean','Min','Max',
-            'TTL↑','M.U.','ΔEnv','Spec Hi','Margin↑'];
+  var cols=['Condition','Freq (MHz)','n','Mean','Min','Max'];
+  if(showHi) cols=cols.concat(['TTL↑','Spec Hi','Margin↑']);
+  if(showLo) cols=cols.concat(['TTL↓','Spec Lo','Margin↓']);
+  cols=cols.concat(['M.U.','ΔEnv']);
   var th=cols.map(function(c){
     return '<th style="border:1px solid #ccc;padding:3px 8px;background:#f0f2f5;white-space:nowrap">'
            +c+'</th>';
   }).join('');
+  function td(v,d){
+    return '<td style="border:1px solid #eee;padding:2px 8px;text-align:right;white-space:nowrap">'
+           +fmt(v,d)+'</td>';
+  }
+  function tdL(v){
+    return '<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap">'+v+'</td>';
+  }
+  function marginTd(m){
+    var color=m===null?'':m>=0?'color:#006600;font-weight:bold':'color:#cc0000;font-weight:bold';
+    var str=m===null?'—':((m>=0?'+':'')+m.toFixed(4)+' '+(m>=0?'\u2714':'\u2718'));
+    return '<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap;'+color+'">'+str+'</td>';
+  }
   var trs=rows.map(function(r){
-    var fail=r.margin_up!==null&&r.margin_up<0;
-    var bg=fail?'background:#ffe8e8;border-left:3px solid #cc0000;':'';
-    function td(v,d){
-      return '<td style="border:1px solid #eee;padding:2px 8px;text-align:right;white-space:nowrap">'
-             +fmt(v,d)+'</td>';
-    }
-    function tdL(v){
-      return '<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap">'+v+'</td>';
-    }
-    var mColor=r.margin_up===null?'':r.margin_up>=0?'color:#006600;font-weight:bold':'color:#cc0000;font-weight:bold';
-    var mStr=r.margin_up===null?'—':((r.margin_up>=0?'+':'')+r.margin_up.toFixed(4)+' '
-              +(r.margin_up>=0?'\u2714':'\u2718'));
-    return '<tr style="'+bg+'">'
-      +tdL(r.condition)
-      +td(r.freq,4)+td(r.n,0)
-      +td(r.mean,4)+td(r.min,4)+td(r.max,4)
-      +td(r.ttl_up,4)+td(r.mu,4)+td(r.denv,4)
-      +td(r.spec_hi,4)
-      +'<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap;'+mColor+'">'+mStr+'</td>'
-      +'</tr>';
+    var failHi=showHi&&r.margin_up!==null&&r.margin_up<0;
+    var failLo=showLo&&r.margin_lo!==null&&r.margin_lo<0;
+    var bg=(failHi||failLo)?'background:#ffe8e8;border-left:3px solid #cc0000;':'';
+    var cells=tdL(r.condition)+td(r.freq,4)+td(r.n,0)+td(r.mean,4)+td(r.min,4)+td(r.max,4);
+    if(showHi) cells+=td(r.ttl_up,4)+td(r.spec_hi,4)+marginTd(r.margin_up);
+    if(showLo) cells+=td(r.ttl_lo,4)+td(r.spec_lo,4)+marginTd(r.margin_lo);
+    cells+=td(r.mu,4)+td(r.denv,4);
+    return '<tr style="'+bg+'">'+cells+'</tr>';
   });
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;font-size:12px">'
     +'<thead><tr>'+th+'</tr></thead>'
@@ -8988,15 +9168,22 @@ function exportTableCSV(){
     return a.freq-b.freq;
   });
   function fv(v,d){return v===null||v===undefined?'':Number(v).toFixed(d!==undefined?d:4);}
-  var hdrs=['Condition','GF_Status','Freq (MHz)','n','Mean','Min','Max',
-            'TTL Up','MU','DEnv','Spec Hi','Margin Up'];
+  var dir=getTllDirection();
+  var showHi=dir==='hi'||dir==='both';
+  var showLo=dir==='lo'||dir==='both';
+  var hdrs=['Condition','GF_Status','Freq (MHz)','n','Mean','Min','Max'];
+  if(showHi) hdrs=hdrs.concat(['TTL Up','Spec Hi','Margin Up']);
+  if(showLo) hdrs=hdrs.concat(['TTL Lo','Spec Lo','Margin Lo']);
+  hdrs=hdrs.concat(['MU','DEnv']);
   var lines=[hdrs.join(',')];
   rows.forEach(function(r){
     var cond='"'+String(r.condition).replace(/"/g,'""')+'"';
     var gf='"'+(r.gf||'')+'"';
-    lines.push([cond,gf,fv(r.freq),r.n,fv(r.mean),fv(r.min),fv(r.max),
-                fv(r.ttl_up),fv(r.mu),fv(r.denv),
-                fv(r.spec_hi),fv(r.margin_up)].join(','));
+    var vals=[cond,gf,fv(r.freq),r.n,fv(r.mean),fv(r.min),fv(r.max)];
+    if(showHi) vals=vals.concat([fv(r.ttl_up),fv(r.spec_hi),fv(r.margin_up)]);
+    if(showLo) vals=vals.concat([fv(r.ttl_lo),fv(r.spec_lo),fv(r.margin_lo)]);
+    vals=vals.concat([fv(r.mu),fv(r.denv)]);
+    lines.push(vals.join(','));
   });
   var blob=new Blob([lines.join('\r\n')],{type:'text/csv'});
   var a=document.createElement('a');
@@ -9029,7 +9216,9 @@ function saveState(){
     document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){_stSet('cond_'+col+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
   });
   var fltEl=document.querySelector('input[name="sum_flt"]:checked');if(fltEl)_stSet('sum_filter_mode',fltEl.value);
+  var dirEl=document.querySelector('input[name="sum_tll_dir"]:checked');if(dirEl)_stSet('sum_tll_dir',dirEl.value);
   var yhiEl=document.getElementById('sum_yhi');if(yhiEl)_stSet('sum_filter_yhi',yhiEl.value);
+  var yloEl=document.getElementById('sum_ylo');if(yloEl)_stSet('sum_filter_ylo',yloEl.value);
   var tllEl=document.getElementById('sum_tll_hi');if(tllEl)_stSet('sum_tll_hi',tllEl.value);
   var pEl=document.getElementById('sum_P');if(pEl)_stSet('sum_P',pEl.value);
   var cEl=document.getElementById('sum_C');if(cEl)_stSet('sum_C',cEl.value);
@@ -9052,7 +9241,10 @@ function loadState(){
   });
   var fm=_stGet('sum_filter_mode');
   if(fm){var fr=document.querySelector('input[name="sum_flt"][value="'+fm+'"]');if(fr){fr.checked=true;if(typeof toggleRangeInputs==='function')toggleRangeInputs();}}
+  var dm=_stGet('sum_tll_dir');
+  if(dm){var dr=document.querySelector('input[name="sum_tll_dir"][value="'+dm+'"]');if(dr)dr.checked=true;}
   var fyhi=_stGet('sum_filter_yhi');var fyhiEl=document.getElementById('sum_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
+  var fylo=_stGet('sum_filter_ylo');var fyloEl=document.getElementById('sum_ylo');if(fylo!==null&&fyloEl)fyloEl.value=fylo;
   var tll=_stGet('sum_tll_hi');var tllEl=document.getElementById('sum_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
   var sp=_stGet('sum_P');if(sp!==null){var pEl=document.getElementById('sum_P');if(pEl)pEl.value=sp;var lpEl=document.getElementById('lbl_sum_P');if(lpEl)lpEl.value=sp;}
   var sc=_stGet('sum_C');if(sc!==null){var cEl=document.getElementById('sum_C');if(cEl)cEl.value=sc;var lcEl=document.getElementById('lbl_sum_C');if(lcEl)lcEl.value=sc;}
@@ -9063,6 +9255,7 @@ function loadState(){
 
 _loadSumGlobalFilter();
 loadState();
+updateSumFilterLabels();
 var _sumInitActive=_getFilteredActive();
 Plotly.newPlot('plot',buildTraces(_sumInitActive,[]),buildLayout());
 document.getElementById('n_groups').textContent=_sumInitActive.length+' groups';
@@ -9097,6 +9290,43 @@ def _build_summary_html(
 
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
+
+    # Which side(s) of the TTL band to display. Rule (confirmed by user,
+    # 2026-08-04): if the CSV itself supplies a spec limit (Upper_Limit/
+    # Lower_Limit), that detected value always wins -- no selector, in all
+    # cases, even if job.json also sets "spec_direction". Only when the CSV
+    # has NO limit at all (e.g. MaxPower3.pod -- a lower-only guaranteed-
+    # power spec with Limits_YLimit=None) does the viewer get a live
+    # selector -- always shown in that case, defaulting to job.json's
+    # "spec_direction" if set (or "both" if not) rather than being hidden.
+    _has_spec = not (np.isnan(hi_spec) and np.isnan(lo_spec))
+    if _has_spec:
+        if not np.isnan(hi_spec) and not np.isnan(lo_spec):
+            spec_dir_js = "both"
+        elif not np.isnan(hi_spec):
+            spec_dir_js = "hi"
+        else:
+            spec_dir_js = "lo"
+        show_tll_selector = False
+    else:
+        _cfg_dir = cfg.get("spec_direction", "auto")
+        spec_dir_js = _cfg_dir if _cfg_dir in ("lo", "hi", "both", "none") else "both"
+        show_tll_selector = True
+
+    tll_selector_html = ""
+    if show_tll_selector:
+        tll_selector_html = (
+            '  <b>TLL&nbsp;display:</b>\n'
+            + ''.join(
+                f'  <label title="No spec limit is configured in this pod -- pick which side of '
+                f'the statistical tolerance band (TTL) matters for this measurement">'
+                f'<input type="radio" name="sum_tll_dir" value="{val}"'
+                + (' checked' if spec_dir_js == val else '')
+                + f' onchange="updateSumFilterLabels();update()"> {label}</label>\n'
+                for val, label in (("both", "Both"), ("hi", "Upper&nbsp;only"), ("lo", "Lower&nbsp;only"))
+            )
+            + '  <span class="sep"></span>\n'
+        )
 
     freq_step = max(round((freq_max - freq_min) / 1000, 4), 0.001)
 
@@ -9162,6 +9392,7 @@ def _build_summary_html(
         f"var SUM_ALL_SERIALS={json.dumps(all_sum_serials)};",
         f"var HI_SPEC={hi_js};",
         f"var LO_SPEC={lo_js};",
+        f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_LABEL={json.dumps(x_label)};",
         f"var X_UNIT={json.dumps(x_unit)};",
@@ -9290,14 +9521,22 @@ def _build_summary_html(
         + '  <label><input type="radio" name="sum_flt" value="all" checked'
         + ' onchange="toggleRangeInputs();update()"> All&nbsp;data</label>\n'
         + '  <label><input type="radio" name="sum_flt" value="passing"'
-        + ' onchange="toggleRangeInputs();update()"> Passing&nbsp;only&nbsp;(TTL&nbsp;&#8804;&nbsp;Spec)</label>\n'
-        + '  <label><input type="radio" name="sum_flt" value="range"'
+        + ' onchange="toggleRangeInputs();update()"> <span id="sum_passing_lbl">'
+        + 'Passing&nbsp;only&nbsp;(TTL&nbsp;&#8804;&nbsp;Spec)</span></label>\n'
+        + '  <label id="sum_flt_hi_wrap"><input type="radio" name="sum_flt" value="range_hi"'
         + ' onchange="toggleRangeInputs();update()"> Upper&nbsp;limit</label>\n'
-        + '  <span id="sum_range_inputs" style="display:none;align-items:center;gap:4px">\n'
+        + '  <span id="sum_range_hi_inputs" style="display:none;align-items:center;gap:4px">\n'
         + '    <input type="number" id="sum_yhi" placeholder="dBc limit" step="0.001" oninput="update()">\n'
         + '    <small style="color:#666">(hides conditions where max data exceeds limit)</small>\n'
         + '  </span>\n'
+        + '  <label id="sum_flt_lo_wrap"><input type="radio" name="sum_flt" value="range_lo"'
+        + ' onchange="toggleRangeInputs();update()"> Lower&nbsp;limit</label>\n'
+        + '  <span id="sum_range_lo_inputs" style="display:none;align-items:center;gap:4px">\n'
+        + '    <input type="number" id="sum_ylo" placeholder="min (dBm)" step="0.001" oninput="update()">\n'
+        + '    <small style="color:#666">(hides conditions where min data falls below limit)</small>\n'
+        + '  </span>\n'
         + '  <span class="sep"></span>\n'
+        + tll_selector_html
         + '  <label title="Override TLL for Passing only filter and draw TLL line">'
         + 'TLL&nbsp;override:<input type="number" id="sum_tll_hi" step="0.001" placeholder="auto"'
         + ' style="width:74px" oninput="update()"></label>\n'
