@@ -8,6 +8,13 @@ Use an existing one in `Data\`, or build a new analysis in the PADB-R.NET GUI an
 ## 2. Write a job.json
 Name it `*_job.json` (underscore before "job") if you ever want it schedulable — `padb_scheduler.py` only discovers that exact pattern.
 
+**Shortcut:** `padb_make_job.py` writes this file for you from the pod alone:
+```
+py C:\apps\padb\tools\padb_make_job.py YourPod.pod --module YourFolder
+```
+`--module` sets the publish subfolder name (required unless you add `--no-publish`); add `--min-date "8 weeks ago" --max-date today` to set a rolling date range instead of the pod's own baked-in dates. See `CLAUDE.md` → **`padb_make_job.py`** for every flag.
+
+Or write it by hand:
 ```json
 {
   "description": "SG6311A <Analysis> — Simple mode",
@@ -22,7 +29,7 @@ Name it `*_job.json` (underscore before "job") if you ever want it schedulable �
   "publish": { "destination": "\\\\srsnas01...\\SG6311A\\YourFolder" }
 }
 ```
-- `subex` (optional) — override extraction filters (`Device_MinDate`, `TestRun_RunStatus`, etc.).
+- `subex` (optional) — override extraction filters (`Device_MinDate`, `TestRun_RunStatus`, etc.). Date values accept relative sentinels — `"today"`, `"8 weeks ago"`, `"3 months ago"` — resolved to the real date every time the job runs, so a scheduled job never goes stale.
 - `publish` (optional) — omit entirely to keep results local only.
 - `secondary_plots`/`views` are ignored in this mode.
 - Every backslash in a Windows path must be doubled (`\\`) — a lone `\"` right before a closing quote is the #1 way to break the JSON.

@@ -10,13 +10,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import calendar
 import io
 import json
 import re
 import shutil
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # Locate padb_batch.py relative to this file's location
@@ -24,6 +25,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "PADBPython"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from padb_batch import PADBBatch
+import padb_config
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +65,49 @@ _LIST_FIELD_MAP = [
     ("run_labels",    "TestRun_RunLabel"),
 ]
 
+_RELATIVE_DATE_RE = re.compile(
+    r"^(\d+)\s+(day|days|week|weeks|month|months|year|years)\s+ago$", re.IGNORECASE
+)
+
+
+def _resolve_date_sentinel(value: str) -> str | None:
+    """
+    Resolve a subex date placeholder to PADB's YYYY-MM-DD format, evaluated
+    at the moment the job actually runs (not whenever job.json was written):
+
+        "today"        -> today's date
+        "4 weeks ago"   -> today minus 28 days
+        "10 days ago", "3 months ago", "1 year ago" -- same idea
+
+    Returns None if value doesn't match any supported placeholder; the
+    caller leaves non-matching values untouched (e.g. literal "2026-07-31").
+    """
+    stripped = value.strip().lower()
+    today = datetime.now().date()
+    if stripped == "today":
+        return today.isoformat()
+
+    m = _RELATIVE_DATE_RE.match(stripped)
+    if not m:
+        return None
+
+    n = int(m.group(1))
+    unit = m.group(2).rstrip("s")
+    if unit == "day":
+        result = today - timedelta(days=n)
+    elif unit == "week":
+        result = today - timedelta(weeks=n)
+    elif unit == "month":
+        month_index = today.month - 1 - n
+        year = today.year + month_index // 12
+        month = month_index % 12 + 1
+        day = min(today.day, calendar.monthrange(year, month)[1])
+        result = today.replace(year=year, month=month, day=day)
+    else:  # year
+        day = min(today.day, 28) if today.month == 2 and today.day == 29 else today.day
+        result = today.replace(year=today.year - n, day=day)
+    return result.isoformat()
+
 
 def load_job(job_path: Path) -> dict:
     """Load job.json, resolving relative paths against the job file location.
@@ -76,6 +121,11 @@ def load_job(job_path: Path) -> dict:
 
     These are merged into "subex" before any raw subex keys, so an explicit
     subex entry for the same key takes precedence.
+
+    Any subex value can also be a relative-date placeholder, resolved to
+    PADB's YYYY-MM-DD format at run time rather than baked in when the
+    job.json was written: "today", "4 weeks ago", "3 months ago", etc.
+    See _resolve_date_sentinel() for the full supported set.
     """
     with open(job_path, encoding="utf-8") as f:
         cfg = json.load(f)
@@ -90,7 +140,15 @@ def load_job(job_path: Path) -> dict:
     results_raw = cfg.get("results_dir", "results")
     cfg["_results_dir"] = (base / results_raw).resolve()
 
-    cfg.setdefault("padb_exe", r"C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe")
+    # Per-user defaults (padb_exe, padb_output_dir, padb_logs_dir) -- from
+    # padb_config.json if present, else derived from Path.home() so a job.json
+    # never has to hardcode a specific username. Only fills in keys this
+    # job.json omits -- existing job.json files that already specify these
+    # explicitly are unaffected.
+    _user_defaults = padb_config.load_defaults()
+    cfg.setdefault("padb_exe", _user_defaults["padb_exe"])
+    cfg.setdefault("padb_output_dir", _user_defaults["padb_output_dir"])
+    cfg.setdefault("padb_logs_dir", _user_defaults["padb_logs_dir"])
     cfg.setdefault("run_analytics", True)
     cfg.setdefault("padb_timeout", 600)
     cfg.setdefault("mode", "legacy")  # "legacy" (V1, default) | "simple" | "interactive"
@@ -104,6 +162,16 @@ def load_job(job_path: Path) -> dict:
     if list_overrides:
         merged = {**list_overrides, **cfg.get("subex", {})}
         cfg["subex"] = merged
+
+    # Resolve "today" / "N weeks ago"-style placeholders in subex to actual
+    # dates now, so the same job.json stays correct run after run.
+    subex = cfg.get("subex")
+    if subex:
+        for key, val in list(subex.items()):
+            if isinstance(val, str):
+                resolved = _resolve_date_sentinel(val)
+                if resolved is not None:
+                    subex[key] = resolved
 
     return cfg
 
@@ -170,8 +238,13 @@ def parse_pod_analytics(pod_path: Path) -> list[dict]:
 _SIMPLE_FORCE_KEYS = {"OutputConfig_OutputGraph": "1", "OutputConfig_GraphFormat": "png,pdf"}
 
 
+def _slugify_name(name: str) -> str:
+    return re.sub(r"[^\w]+", "_", name.strip()).strip("_")
+
+
 def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
-                  force_native_render: bool = False) -> None:
+                  force_native_render: bool = False,
+                  unique_output_filenames: bool = False) -> None:
     """
     Write a copy of the pod to dest_pod with [Extract] key=value lines
     patched from subex overrides. The original pod's relative paths (including
@@ -182,12 +255,44 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     OutputConfig_OutputGraph/OutputConfig_GraphFormat forced on (Simple mode
     needs PADB-R's own native renders; existing keys are replaced in place,
     missing ones are appended when the section ends). No-op when False.
+
+    When unique_output_filenames is True, every [PADBAnalyticN] section's
+    AnalyticName and OutputConfig_OutputFile are both forced to the same
+    slugified form of that section's own original AnalyticName -- guarantees
+    every analytic in the pod writes a uniquely-named, self-consistent CSV
+    without depending on whoever authored the pod to have kept
+    OutputConfig_OutputFile unique and matching AnalyticName by hand (e.g. the
+    Harmonics_and_Subharmonics pod has 13 of 19 analytics sharing one
+    OutputFile despite having 19 distinct AnalyticNames). No-op when False.
+
+    Callers that pass either flag should re-parse analytics from dest_pod
+    (not src_pod) afterward -- the analytics list downstream code uses for
+    file-collection stem-matching must reflect whatever this function
+    actually wrote, not the original pod.
+
+    Slugifying can itself introduce a new collision when two AnalyticNames
+    differ only by punctuation style (e.g. "Sub-Harmonics Summary 50MHz-20GHz"
+    vs "Sub-Harmonics_Summary_50MHz-20GHz" both slugify to the same string --
+    a real case in the Harmonics_and_Subharmonics pod). Any slug that isn't
+    unique after the first pass gets that analytic's own index appended, so
+    uniqueness is actually guaranteed, not just usually true.
     """
+    analytic_slugs: dict[int, str] = {}
+    if unique_output_filenames:
+        base_slugs = {a["index"]: _slugify_name(a["name"])
+                       for a in parse_pod_analytics(src_pod) if a.get("name")}
+        slug_counts: dict[str, int] = {}
+        for slug in base_slugs.values():
+            slug_counts[slug] = slug_counts.get(slug, 0) + 1
+        for index, slug in base_slugs.items():
+            analytic_slugs[index] = f"{slug}_{index}" if slug_counts[slug] > 1 else slug
+
     with open(src_pod, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
 
     in_extract = False
     in_analytic = False
+    current_analytic_index: int | None = None
     seen_force_keys: set[str] = set()
     out_lines: list[str] = []
 
@@ -202,16 +307,21 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
         if stripped.startswith("["):
             _flush_analytic_section()
             in_extract = (stripped.lower() == "[extract]")
-            in_analytic = bool(re.match(r"^\[PADBAnalytic\d+\]$", stripped))
+            m = re.match(r"^\[PADBAnalytic(\d+)\]$", stripped)
+            in_analytic = bool(m)
+            current_analytic_index = int(m.group(1)) if m else None
             seen_force_keys = set()
 
         if "=" in stripped:
             key = stripped.split("=", 1)[0].strip()
+            slug = analytic_slugs.get(current_analytic_index) if in_analytic else None
             if in_extract and key in subex:
                 line = f"{key}={subex[key]}\n"
             elif force_native_render and in_analytic and key in _SIMPLE_FORCE_KEYS:
                 line = f"{key}={_SIMPLE_FORCE_KEYS[key]}\n"
                 seen_force_keys.add(key)
+            elif slug and key in ("AnalyticName", "OutputConfig_OutputFile"):
+                line = f"{key}={slug}\n"
 
         out_lines.append(line)
 
@@ -248,6 +358,15 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) 
     Copy files written to padb_output_dir into results_padb, selecting only
     files whose stem matches a known analytic OutputFile or AnalyticName.
 
+    Before copying, clears any existing results_padb files for stems that
+    have fresh output this run -- otherwise every invocation (repeated real
+    runs of the same job) piles its collected files on top of the last, and
+    an analytic that legitimately paginates into many PNGs (one card per PNG
+    in Simple mode) accumulates stale duplicates from past runs indefinitely.
+    Stems with NO fresh match this run are left untouched -- e.g. a CSV
+    manually placed in results_padb because PADB never writes one for that
+    analytic (see the clock-spurs SummaryPlot gotcha in CLAUDE.md) survives.
+
     This replaces the previous timestamp-based sweep so that parallel PADB
     jobs writing to the same R-Plots directory do not cross-contaminate each
     other's results.
@@ -265,17 +384,30 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) 
         print(f"  WARNING: no analytic stems found -- skipping R-Plots collection")
         return
 
-    results_padb.mkdir(parents=True, exist_ok=True)
-    copied: list[str] = []
-    for f in output_dir.iterdir():
-        if not f.is_file():
-            continue
-        stem = f.stem  # e.g. "EP6_Closed_Loop_Phase_Noise_EFC_1"
-        if any(stem == s or stem.startswith(s + "_") for s in known_stems):
-            dest = results_padb / f.name
-            shutil.copy2(str(f), str(dest))
-            copied.append(f.name)
+    def _matched_stem(stem: str) -> str | None:
+        return next((s for s in known_stems if stem == s or stem.startswith(s + "_")), None)
 
+    results_padb.mkdir(parents=True, exist_ok=True)
+
+    fresh = [(f, _matched_stem(f.stem)) for f in output_dir.iterdir() if f.is_file()]
+    fresh = [(f, s) for f, s in fresh if s is not None]
+    active_stems = {s for _, s in fresh}
+
+    removed = [
+        f for f in results_padb.iterdir()
+        if f.is_file() and _matched_stem(f.stem) in active_stems
+    ]
+    for f in removed:
+        f.unlink()
+
+    copied: list[str] = []
+    for f, _ in fresh:
+        dest = results_padb / f.name
+        shutil.copy2(str(f), str(dest))
+        copied.append(f.name)
+
+    if removed:
+        print(f"  Cleared {len(removed)} stale file(s) from a previous run")
     if copied:
         print(f"  Collected {len(copied)} file(s) from {output_dir.name}/")
         for name in sorted(copied):
@@ -804,18 +936,22 @@ def main() -> None:
     print(f"POD         : {pod_path}")
     print(f"Results     : {results_dir}\n")
 
-    # Parse analytics from pod
-    analytics = parse_pod_analytics(pod_path)
+    # Create run pod copy with baked-in subex overrides
+    run_pod = results_dir / "_run.pod"
+    subex = cfg.get("subex", {})
+    unique_output_filenames = cfg.get("unique_output_filenames", False)
+    make_run_pod(pod_path, run_pod, subex, force_native_render=(mode == "simple"),
+                 unique_output_filenames=unique_output_filenames)
+    print(f"Run pod: {run_pod}\n")
+
+    # Parse analytics from the actual run pod, not the original -- reflects
+    # any AnalyticName/OutputConfig_OutputFile renaming make_run_pod() applied
+    analytics = parse_pod_analytics(run_pod)
     print(f"Analytics found in pod: {len(analytics)}")
     for a in analytics:
         title_hint = f"  ({a['main_title']})" if a.get("main_title") else ""
         print(f"  [{a['index']}] {_type_label(a['type']):14s}  {a.get('name', '')}{title_hint}")
-
-    # Create run pod copy with baked-in subex overrides
-    run_pod = results_dir / "_run.pod"
-    subex = cfg.get("subex", {})
-    make_run_pod(pod_path, run_pod, subex, force_native_render=(mode == "simple"))
-    print(f"\nRun pod: {run_pod}\n")
+    print()
 
     # Run PADB
     if not args.plots_only:

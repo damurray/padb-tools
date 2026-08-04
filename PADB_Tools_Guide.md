@@ -1,6 +1,6 @@
 # PADB Modern Analysis Tools — User Guide
 
-**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_scheduler.py`  
+**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_scheduler.py`, `padb_make_job.py`  
 **Location:** `C:\apps\padb\tools\`  
 **Purpose:** Automate PADB extraction from a `.pod` file, generate interactive self-contained HTML plots, and publish results to a shared drive.
 
@@ -228,6 +228,21 @@ Use `subex` for `[Extract]` fields not covered by the list keys above. Values mu
 If a `subex` key duplicates a list field (`run_datetimes`, `serial_nums`, `run_labels`), the explicit `subex` entry wins.
 
 The original `.pod` is never modified. A `_run.pod` copy is written to `results\` with all substitutions applied.
+
+#### Relative-date values
+
+Any `subex` value can be a placeholder instead of a literal date, resolved to PADB's `YYYY-MM-DD` format at the moment the job actually runs — this was a capability the old PADB::Simple tool had that this replacement was missing:
+
+```json
+"subex": {
+    "Device_MinDate": "8 weeks ago",
+    "Device_MaxDate": "today"
+}
+```
+
+Supported forms (case-insensitive): `"today"`, and `"N day(s) ago"` / `"N week(s) ago"` / `"N month(s) ago"` / `"N year(s) ago"` for any whole number N. Month/year math uses real calendar arithmetic, not a 30/365-day approximation. Anything that doesn't match one of these forms (a literal date, `"{All}"`, a quoted list) is left exactly as written — this is safe to use in any `subex` block unconditionally.
+
+This is most useful for recurring or scheduled jobs (see **Scheduling Overnight Runs** below) that should always cover "the last N weeks" rather than a fixed range that goes stale the day after you write the job.json.
 
 ---
 
@@ -475,6 +490,30 @@ Add `"TestRun_RunStatus": "{All}"` to `subex`. The PADB default filters to passi
 3. Check `run.log` for PADB-R.exe return code.
 4. Open the pod and confirm `OutputConfig_OutputCSV=True` for that analytic.
 5. If found but name doesn't match `csv` substring, switch to `csv_file` with the exact filename.
+
+---
+
+## Generating job.json Files (padb_make_job.py)
+
+For the common case — one job.json per `.pod`, following this project's standard template — `padb_make_job.py` writes it for you instead of hand-copying an existing job.json:
+
+```
+py padb_make_job.py MyMeasurement.pod --module MyModule
+py padb_make_job.py pod1.pod pod2.pod pod3.pod --module MyModule --min-date "8 weeks ago" --max-date today
+py padb_make_job.py MyMeasurement.pod --no-publish
+py padb_make_job.py MyMeasurement.pod --module MyModule --force
+```
+
+Accepts one or more `.pod` paths and writes a `<pod_stem>_job.json` next to each.
+
+| Flag | Effect |
+|---|---|
+| `--module NAME` | Subfolder under `--publish-root` for `publish.destination`. **Required unless `--no-publish` is given** — not auto-derived from the pod filename, so a new pod family never silently lands in the wrong network folder. |
+| `--mode` | `legacy` / `simple` / `interactive`. Default `simple`. |
+| `--min-date`, `--max-date` | Written into `subex` verbatim, including relative-date sentinels (`"today"`, `"8 weeks ago"`) — see **subex → Relative-date values** above. Omit both and no `subex` key is written at all, leaving the pod's own baked-in `[Extract]` date range exactly as-is. |
+| `--no-publish` | Omit the `publish` key entirely — local results only. |
+| `--force` | Overwrite an existing job.json (default: skip if the target already exists, so a manually-tuned job.json is never clobbered). |
+| `--padb-exe`, `--output-dir`, `--logs-dir`, `--publish-root` | Override the defaults for `padb_exe` / `padb_output_dir` / `padb_logs_dir` / the publish-root prefix, if yours differ from this machine's. |
 
 ---
 

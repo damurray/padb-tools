@@ -16,13 +16,16 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+sys.path.insert(0, str(Path(__file__).parent))
+import padb_config
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-DEFAULT_DATA_DIR = (
-    r"C:\Users\damurray\OneDrive - Keysight Technologies\Documents\Padb\Data"
-)
+# From padb_config.json if present, else derived from Path.home() -- never
+# hardcoded to one username.
+DEFAULT_DATA_DIR = padb_config.load_defaults()["data_dir"]
 PADB_RUN = r"C:\apps\padb\tools\padb_run.py"
 TASK_PREFIX = "PADB_"
 

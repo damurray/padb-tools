@@ -14,6 +14,7 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_v2.py` | V2 job runner — lighter driver for the new interactive plot set |
 | `padb_plots.py` | Plot library — all interactive HTML plot types (legacy/V1) |
 | `padb_simple.py` | Simple mode — literal extract-and-post gallery of PADB-R's own native PNG/PDF renders, no custom plotting. See `"mode": "simple"` below |
+| `padb_make_job.py` | Generates a job.json from a `.pod` file using this project's standard template — `py padb_make_job.py pod1.pod --module MiniMoab` |
 | `padb_scheduler.py` | tkinter GUI for managing Windows Task Scheduler entries |
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
 | `v1.0/` | Archive of the original V1.0 scripts |
@@ -142,6 +143,10 @@ Omit `"views"` from job.json to get automatic, data-driven view selection: Room-
 See `Quick_Start.md` for a full walkthrough and `PADB_Tools_Guide.md` for complete documentation.
 
 **`"mode"` key** (optional, default `"legacy"`): `"legacy"` runs the V1 plots above unchanged; `"simple"` produces a literal extract-and-post gallery of PADB-R's own native PNG/PDF renders instead (a modern `PADB::Simple` replacement — no custom plotting); `"interactive"` is a label documenting that this job feeds the V2 flow (`padb_v2.py`, run separately). See `CLAUDE.md` → **`mode` job.json key** for full details. Both `simple` and `interactive` also write `results_dir/HOW_TO_USE.txt`, a short guide to that tier's output.
+
+**`subex` date values can be relative**, resolved to the real current date every time the job runs rather than a fixed string baked in when you wrote the job.json: `"today"`, or `"8 weeks ago"` / `"3 months ago"` / `"1 year ago"` (any integer N). See `CLAUDE.md` → **`subex` relative-date sentinels**.
+
+**Generating job.json files**: `py padb_make_job.py MyMeasurement.pod --module MyModule` writes a job.json using this same template automatically — see `padb_make_job.py`'s own `--help` or `CLAUDE.md` → **`padb_make_job.py` — job.json generator**.
 
 ---
 

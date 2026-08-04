@@ -2,6 +2,8 @@
 
 Everything needed to go from a `.pod` file to published interactive HTML results.
 
+**This walkthrough covers the V1 pipeline** (`secondary_plots`, no `mode` key). If you just want a bare native-PADB-render gallery with no custom plotting (`"mode": "simple"`) or the richer interactive V2 suite (`"mode": "interactive"`), see `Simple_Mode_Cheatsheet.md` / `Interactive_Mode_Cheatsheet.md` instead — both are shorter and cover a `padb_make_job.py` shortcut that writes job.json for you.
+
 ---
 
 ## 1  One-time setup
@@ -51,6 +53,8 @@ If a CSV lands in `results\padb\` with an unexpected filename, use `csv_file` (e
 ---
 
 ## 3  Create job.json
+
+**Shortcut:** `py padb_make_job.py MyMeasurement.pod --module MyModule` writes a job.json from the pod alone (no `secondary_plots` — that's this doc's V1-specific piece, add it by hand after). See `CLAUDE.md` → **`padb_make_job.py`** for all flags.
 
 ```json
 {
@@ -123,6 +127,7 @@ Omit any of these keys to use the values baked into the pod.
 | PADB returns no data | Add `"TestRun_RunStatus": "{All}"` to `subex` — some pods default to passing runs only |
 | Need all dates | Set `Device_MinDate` far in the past, `Device_MaxDate` far in the future |
 | Override a list field explicitly | Add the raw key to `subex` — e.g. `"TestRun_SerialNum": "{All}"` — it takes precedence |
+| Want a rolling date window instead of a fixed range | Use a relative value: `"Device_MinDate": "8 weeks ago"`, `"Device_MaxDate": "today"` — resolved to the real date every time the job runs, not when you wrote the file |
 
 ### csv vs csv_file
 

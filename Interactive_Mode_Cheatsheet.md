@@ -18,6 +18,14 @@ Same schema as any `padb_run.py` job — no `mode` key needed (or set `"mode": "
 }
 ```
 
+**Shortcut:** `padb_make_job.py` can write this one too — pass `--mode interactive` explicitly (its default is `simple`, which would trigger the wrong dispatch for this workflow):
+```
+py C:\apps\padb\tools\padb_make_job.py YourPod.pod --module YourFolder --mode interactive
+```
+Add `--min-date "8 weeks ago" --max-date today` for a rolling extraction window instead of the pod's own baked-in dates (see `subex` note below).
+
+By hand, that's a `"subex"` block: `{"Device_MinDate": "8 weeks ago", "Device_MaxDate": "today"}` — relative-date values are resolved to the real date every time the job runs, not whenever the file was written.
+
 ## 2. Run the extraction
 ```
 py C:\apps\padb\tools\padb_run.py "C:\path\to\your_analysis_run_job.json"

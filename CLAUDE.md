@@ -141,6 +141,51 @@ Both `"simple"` and `"interactive"` also get a `results_dir/HOW_TO_USE.txt` writ
 
 ---
 
+## `subex` relative-date sentinels (added 2026-08-03)
+
+Any `subex` value can be a placeholder resolved to PADB's `YYYY-MM-DD` format at the moment the job actually *runs*, not whenever job.json was written — this is the capability the old PADB::Simple tool had that was missing here:
+
+```json
+"subex": {
+    "Device_MinDate": "8 weeks ago",
+    "Device_MaxDate": "today"
+}
+```
+
+Supported forms, matched case-insensitively (`_resolve_date_sentinel()`, `padb_run.py`): `"today"`, and `"N day(s) ago"` / `"N week(s) ago"` / `"N month(s) ago"` / `"N year(s) ago"` for any integer N. Month/year arithmetic is real calendar arithmetic (via `calendar.monthrange`), not a 30/365-day approximation. Resolution happens once, inside `load_job()`, right after the friendly list-field → subex merge — a literal date string (`"2026-07-31"`) or any other subex value (`"{All}"`, a quoted list) that doesn't match one of these patterns is returned unchanged, so this is safe to leave wired in unconditionally. Verified against real pods: `4 weeks ago`, `1 day ago`, `3 months ago`, `1 year ago`, and `today` all resolve correctly, and non-date subex values pass through untouched.
+
+Useful for recurring/scheduled jobs (`schtasks`/`padb_scheduler.py`) that should always pull "the last N weeks" rather than a range that goes stale the day after the job.json is written.
+
+---
+
+## `_collect_padb_outputs()` clears stale files before copying fresh ones (added 2026-08-03)
+
+`results_padb` (`results_dir/padb/`) used to accumulate forever — every real run's `_collect_padb_outputs()` call only ever copied newly-matched files *in*, never removed anything, so repeated runs of the same job piled up duplicate PNGs from past runs on top of the current ones. This bit Simple mode hard: a job run 3 times in one day had **273 PNG files** in `results_padb` for 2 analytics, most of them stale leftovers, producing a gallery with ~270 duplicate-looking cards instead of the correct handful.
+
+**Fix:** before copying, `_collect_padb_outputs()` now clears any existing `results_padb` file whose stem matches a known analytic stem **that also has fresh output this run** (`padb_run.py:246`). Stems with zero fresh matches in `padb_output_dir` this run are left untouched — this is the one case that had to be handled carefully: the clock-spurs job relies on a CSV manually placed in `results_padb` *forever*, specifically because PADB never writes a matching file to R-Plots for that analytic (see the Clock spurs gotcha below). A naive "delete everything matching a known stem" fix would silently wipe that workaround on the next real run; scoping the clear to "stems with fresh output this run" preserves it.
+
+Verified in production: a real re-run of `spectral_history_closein_job.json` logged `Cleared 286 stale file(s) from a previous run` and `Collected 14 file(s) from R-Plots/` — the correct count, matching what a single clean collection pass produces, with none of the historical bloat.
+
+---
+
+## `padb_make_job.py` — job.json generator (added 2026-08-03)
+
+Generates a `<pod_stem>_job.json` next to each given `.pod` file, using the same template every hand-written job.json in this project already follows (`mode`, `results_dir`, `padb_exe`, output/logs dirs, `publish.destination`).
+
+```
+py padb_make_job.py pod1.pod pod2.pod --module MiniMoab
+py padb_make_job.py pod1.pod --module VSWR --min-date "8 weeks ago" --max-date today
+py padb_make_job.py pod1.pod --no-publish          # local results only, no publish key
+py padb_make_job.py pod1.pod --module X --force     # overwrite an existing job.json
+```
+
+- `--module` names the subfolder under `--publish-root` (default the `PADB-Simple` root). **Required unless `--no-publish` is given** — deliberately not auto-derived from the pod filename, since guessing the wrong subfolder name has already happened twice in practice (`MiniMoab`, `ReferenceNominalSpecs` vs `Reference`) and silently publishing to the wrong place on a shared network location is a worse failure mode than a required flag.
+- `--min-date`/`--max-date` are written into `subex` verbatim (including sentinel strings like `"today"`/`"8 weeks ago"` — resolved later by `load_job()`, not by this script). Omit both and no `subex` key is written at all, leaving the pod's own baked-in `[Extract]` date range untouched — this was the specific design ask that prompted the script.
+- Skips a target file that already exists unless `--force` is passed — won't clobber a manually-tuned job.json.
+- All other defaults (`padb_exe`, `padb_output_dir`, `padb_logs_dir`, `padb_timeout=7200`) match this session's established values and are overridable via their own flags.
+
+---
+
 ## Auto view-selection (added 2026-07-22)
 
 `padb_v2.py`'s per-job-runner omits `"views"` from job.json entirely now to get automatic, data-driven defaults instead of hardcoding a list per pod:
