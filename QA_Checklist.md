@@ -250,7 +250,7 @@ Record these in a spreadsheet or use `qa_padb.py` which asserts the stat_summary
 ## Known limitations (not regressions)
 
 - NP TI is set to null when the serial filter is active — this is by design.
-- de_summary has no serial filter — pre-aggregated data, not per-DUT.
-- summary (V2) has no serial filter — data is pre-aggregated per condition in Python; use boxplot or stat_summary for per-serial analysis.
+- de_summary has no serial filter — the Environmental (Type=60) CSV is pre-aggregated across all DUTs by PADB itself before extraction, so there are no per-DUT rows to filter in the first place (not a code limitation — see CLAUDE.md).
+- summary (V2) gets a serial filter automatically whenever the source Type=90 CSV's Group column actually has a Serial Number key with 2+ distinct values (added 2026-08-05) — same mechanism as de_summary's own dormant serial-filter code, just without Type=60's structural constraint. Most existing Summary CSVs are still pre-aggregated across DUTs at the PADB level and won't show one; use boxplot or stat_summary if you need guaranteed per-serial analysis.
 - env_coverage TTU/TTL require Spec override inputs when the source CSV has null Upper_Limit/Lower_Limit columns.
 - env_coverage TTU/TTL lines may extend outside the visible Y range — the axis is scaled to UDE/LDE data only, not to TTU/TTL values.

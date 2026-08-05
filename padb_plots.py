@@ -9628,6 +9628,18 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
         if len(vals) >= 1:
             cond_keys.append(key)
 
+    # Serial Number is excluded above (it's not a "condition" to compare across),
+    # but expose it as its own filterable dimension whenever the CSV actually has
+    # it -- same fix already in place for de_summary. Records below are grouped by
+    # the whole Group string, so per-serial granularity is already retained; adding
+    # the key to cond_keys is enough for it to flow through the existing dim_vals/
+    # records "cond_keys" plumbing with no further special-casing.
+    serial_key = next((k for k in sorted(all_keys) if any(kw in k.lower() for kw in _serial_kws)), None)
+    if serial_key:
+        serial_vals = {kv[serial_key] for kv in group_kv.values() if serial_key in kv}
+        if len(serial_vals) > 1:
+            cond_keys.append(serial_key)
+
     # Collect distinct values per condition key
     dim_vals: dict[str, set] = {}
     for kv in group_kv.values():
