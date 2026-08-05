@@ -86,7 +86,7 @@ Opens a GUI that reads `*_job.json` files from a directory and manages Windows T
 py webapp\padb_web.py
 ```
 
-Opens a local web UI (`http://127.0.0.1:5000`, local use only) for two workflows: drop a `.pod` file to auto-generate its job.json, and select one or more job files to execute — PADB-R.exe runs are strictly serialized through a background queue, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. The jobs table filters by mode/name and shows whether each job is currently scheduled (Task Scheduler), when it last ran, and a link to its results gallery. See `CLAUDE.md` → **Web app** for details.
+Opens a local web UI (`http://127.0.0.1:5000`, local use only) for three workflows: drop a `.pod` file to auto-generate its job.json, select one or more job files to execute, and schedule/unschedule jobs in Windows Task Scheduler. PADB-R.exe runs are strictly serialized through a background queue, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. The jobs table filters by mode/name and shows each job's actual schedule cadence, when it last ran, and a link to its results gallery. See `CLAUDE.md` → **Web app** for details.
 
 ---
 

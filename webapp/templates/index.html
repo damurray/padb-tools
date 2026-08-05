@@ -66,6 +66,26 @@
       <label class="inline"><input type="checkbox" id="dryRunCheckbox"> Dry run (skip PADB-R.exe)</label>
       <button id="runSelectedBtn">Run Selected</button>
     </div>
+    <div class="toolbar">
+      <label>Schedule
+        <select id="scheduleType">
+          <option value="WEEKLY" selected>Weekly</option>
+          <option value="DAILY">Daily</option>
+        </select>
+      </label>
+      <span id="dayCheckboxes">
+        <label class="day"><input type="checkbox" value="MON" checked>Mon</label>
+        <label class="day"><input type="checkbox" value="TUE">Tue</label>
+        <label class="day"><input type="checkbox" value="WED" checked>Wed</label>
+        <label class="day"><input type="checkbox" value="THU">Thu</label>
+        <label class="day"><input type="checkbox" value="FRI" checked>Fri</label>
+        <label class="day"><input type="checkbox" value="SAT">Sat</label>
+        <label class="day"><input type="checkbox" value="SUN">Sun</label>
+      </span>
+      <label>at <input type="time" id="scheduleTime" value="02:00"></label>
+      <button id="scheduleSelectedBtn">Schedule Selected</button>
+      <button id="unscheduleSelectedBtn" class="secondary">Unschedule Selected</button>
+    </div>
     <div id="jobsTableWrap" class="scroll-box">
       <table id="jobsTable">
         <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th></tr></thead>

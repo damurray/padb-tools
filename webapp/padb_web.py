@@ -1,14 +1,15 @@
 """
 padb_web.py -- local web UI for padb-tools, Phase 1.
 
-Covers two of the seven features requested for the web app: (1) drop a
-.pod file to auto-generate its job.json, and (7) execute one or more job
-files -- plus a read-only preview of feature (2) (whether each job is
-currently scheduled in Task Scheduler). Every route shells out to the
-already-verified CLI scripts (padb_make_job.py, padb_make_v2_job.py,
-padb_run.py, padb_v2.py) via subprocess, or imports their pure functions
-directly (parse_pod_analytics, discover_all_padb_tasks), rather than
-reimplementing any of that logic -- this is a pure orchestration layer.
+Covers three of the seven features requested for the web app: (1) drop a
+.pod file to auto-generate its job.json, (2) schedule/unschedule jobs in
+Windows Task Scheduler, and (7) execute one or more job files. Every route
+shells out to the already-verified CLI scripts (padb_make_job.py,
+padb_make_v2_job.py, padb_run.py, padb_v2.py) via subprocess, or imports
+their pure functions directly (parse_pod_analytics, discover_all_padb_tasks,
+create_task, delete_task, query_task, format_schedule_summary) from
+padb_scheduler.py -- this is a pure orchestration layer, not a
+reimplementation of any of that logic.
 
     py webapp\\padb_web.py
 
@@ -42,7 +43,10 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import padb_config  # noqa: E402
 from padb_run import parse_pod_analytics  # noqa: E402
-from padb_scheduler import TASK_PREFIX, discover_all_padb_tasks  # noqa: E402
+from padb_scheduler import (  # noqa: E402
+    TASK_PREFIX, create_task, delete_task, discover_all_padb_tasks,
+    format_schedule_summary, query_task,
+)
 
 DEFAULTS = padb_config.load_defaults()
 DATA_DIR = Path(DEFAULTS["data_dir"])
@@ -287,6 +291,12 @@ def list_jobs():
         index_path = str(idx) if idx else None
         last_run = datetime.fromtimestamp(idx.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if idx else None
         task_name = TASK_PREFIX + p.stem
+        is_scheduled = task_name.upper() in scheduled_tasks
+        schedule_summary = ""
+        if is_scheduled:
+            info = query_task(task_name)
+            if info:
+                schedule_summary = format_schedule_summary(info)
         jobs.append({
             "path": str(p),
             "name": p.name,
@@ -296,9 +306,50 @@ def list_jobs():
             "index_path": index_path,
             "index_url": _result_url(index_path),
             "last_run": last_run,
-            "scheduled": task_name.upper() in scheduled_tasks,
+            "scheduled": is_scheduled,
+            "schedule_summary": schedule_summary,
         })
     return jsonify(jobs=jobs)
+
+
+@app.route("/api/schedule", methods=["POST"])
+def schedule_jobs():
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths") or []
+    schedule_type = (body.get("schedule_type") or "").upper()
+    days = body.get("days") or []
+    start_time = (body.get("start_time") or "").strip()
+
+    if not paths:
+        return jsonify(error="paths must be a non-empty list"), 400
+    if schedule_type not in ("DAILY", "WEEKLY"):
+        return jsonify(error="schedule_type must be DAILY or WEEKLY"), 400
+    if not start_time:
+        return jsonify(error="start_time (HH:MM) is required"), 400
+
+    results = []
+    for p in paths:
+        job_path = Path(p)
+        task_name = TASK_PREFIX + job_path.stem
+        ok, err = create_task(task_name, str(job_path), schedule_type, days, start_time)
+        results.append({"path": p, "task_name": task_name, "ok": ok, "error": err})
+    return jsonify(results=results)
+
+
+@app.route("/api/unschedule", methods=["POST"])
+def unschedule_jobs():
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths") or []
+    if not paths:
+        return jsonify(error="paths must be a non-empty list"), 400
+
+    results = []
+    for p in paths:
+        job_path = Path(p)
+        task_name = TASK_PREFIX + job_path.stem
+        ok, err = delete_task(task_name)
+        results.append({"path": p, "task_name": task_name, "ok": ok, "error": err})
+    return jsonify(results=results)
 
 
 @app.route("/api/execute-job", methods=["POST"])

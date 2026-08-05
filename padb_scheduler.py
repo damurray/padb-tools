@@ -68,7 +68,7 @@ def query_task(task_name: str) -> dict | None:
         schedule_type, days, start_time, status
     or None if the task does not exist.
     """
-    rc, stdout, stderr = _run_schtasks("/query", "/tn", task_name, "/fo", "LIST")
+    rc, stdout, stderr = _run_schtasks("/query", "/tn", task_name, "/fo", "LIST", "/v")
     if rc != 0:
         return None
     return _parse_list_output(stdout)

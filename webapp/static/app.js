@@ -130,12 +130,19 @@ function renderJobsTable() {
     const resultsCell = job.index_url
       ? `<a href="${job.index_url}" target="_blank" title="${job.index_path}">Open</a>`
       : "";
-    const scheduledCell = job.scheduled ? `<span class="sched-yes">&#10003;</span>` : "";
+    const scheduledCell = job.scheduled
+      ? `<span class="sched-yes">&#10003; ${job.schedule_summary || ""}</span>`
+      : "";
     tr.innerHTML += `<td class="wrap">${job.name}</td><td>${job.mode}</td>` +
       `<td class="wrap">${job.pod}</td><td class="wrap">${job.description}</td>` +
-      `<td>${scheduledCell}</td><td>${job.last_run || ""}</td><td>${resultsCell}</td>`;
+      `<td class="wrap">${scheduledCell}</td><td>${job.last_run || ""}</td><td>${resultsCell}</td>`;
     tbody.appendChild(tr);
   }
+}
+
+function selectedJobPaths() {
+  return [...document.querySelectorAll("#jobsTable tbody input[type=checkbox]:checked")]
+    .map(cb => cb.value);
 }
 
 document.getElementById("refreshJobsBtn").addEventListener("click", loadJobs);
@@ -143,8 +150,7 @@ document.getElementById("modeFilter").addEventListener("change", renderJobsTable
 document.getElementById("nameFilter").addEventListener("input", renderJobsTable);
 
 document.getElementById("runSelectedBtn").addEventListener("click", async () => {
-  const paths = [...document.querySelectorAll("#jobsTable tbody input[type=checkbox]:checked")]
-    .map(cb => cb.value);
+  const paths = selectedJobPaths();
   if (!paths.length) {
     alert("Select at least one job to run");
     return;
@@ -161,6 +167,78 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
     return;
   }
   for (const jobId of data.job_ids) startPolling(jobId);
+});
+
+// ---------------------------------------------------------------------------
+// Scheduler add/remove
+// ---------------------------------------------------------------------------
+
+function updateDayCheckboxVisibility() {
+  const isWeekly = document.getElementById("scheduleType").value === "WEEKLY";
+  document.getElementById("dayCheckboxes").style.display = isWeekly ? "" : "none";
+}
+document.getElementById("scheduleType").addEventListener("change", updateDayCheckboxVisibility);
+updateDayCheckboxVisibility();
+
+function reportScheduleFailures(results, verb) {
+  const failures = results.filter(r => !r.ok);
+  if (failures.length) {
+    alert(`${failures.length} job(s) failed to ${verb}:\n` +
+      failures.map(f => `${f.task_name}: ${f.error}`).join("\n"));
+  }
+}
+
+document.getElementById("scheduleSelectedBtn").addEventListener("click", async () => {
+  const paths = selectedJobPaths();
+  if (!paths.length) {
+    alert("Select at least one job to schedule");
+    return;
+  }
+  const scheduleType = document.getElementById("scheduleType").value;
+  const startTime = document.getElementById("scheduleTime").value;
+  if (!startTime) {
+    alert("Pick a start time");
+    return;
+  }
+  const days = scheduleType === "WEEKLY"
+    ? [...document.querySelectorAll("#dayCheckboxes input:checked")].map(cb => cb.value)
+    : [];
+  if (scheduleType === "WEEKLY" && !days.length) {
+    alert("Pick at least one day for a weekly schedule");
+    return;
+  }
+  const res = await fetch("/api/schedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths, schedule_type: scheduleType, days, start_time: startTime }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Schedule failed: " + data.error);
+    return;
+  }
+  reportScheduleFailures(data.results, "schedule");
+  loadJobs();
+});
+
+document.getElementById("unscheduleSelectedBtn").addEventListener("click", async () => {
+  const paths = selectedJobPaths();
+  if (!paths.length) {
+    alert("Select at least one job to unschedule");
+    return;
+  }
+  const res = await fetch("/api/unschedule", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Unschedule failed: " + data.error);
+    return;
+  }
+  reportScheduleFailures(data.results, "unschedule");
+  loadJobs();
 });
 
 // ---------------------------------------------------------------------------
