@@ -114,7 +114,7 @@ Omit `"views"` from job.json to get automatic, data-driven view selection: Room-
 | `boxplot` (V2) | Condition/temp/serial/port filter, Y-range, show points, outlier panel, GF, set-as-GF |
 | `distribution` (V2) | Spur type/temp/serial/port filter, delta vs absolute mode, freq sliders, delta summary table, state persistence |
 | `env_coverage` (V2) | P/C/MU/spec-override inputs, serial/port/temp filter, freq sliders, log X, stats table, CSV, GF |
-| `summary` (V2) | Condition filter (+ serial, when the CSV's Group data has one), show excluded, freq sliders, log X, GF |
+| `summary` (V2) | Condition filter (no serial dropdown — GF already recomputes per-DUT via embedded per-DUT means), show excluded, freq sliders, log X, GF |
 
 ---
 
