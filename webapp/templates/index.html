@@ -70,8 +70,16 @@
           <option value="interactive">interactive</option>
         </select>
       </label>
+      <label>Kind
+        <select id="kindFilter">
+          <option value="all">All</option>
+          <option value="run">Run jobs</option>
+          <option value="plot">Plot jobs</option>
+        </select>
+      </label>
       <label>Name <input type="text" id="nameFilter" placeholder="filter by name…"></label>
       <label class="inline"><input type="checkbox" id="dryRunCheckbox"> Dry run (skip PADB-R.exe)</label>
+      <button id="selectAllRunnableBtn" class="secondary">Select All Runnable</button>
       <button id="runSelectedBtn">Run Selected</button>
     </div>
     <div class="toolbar">

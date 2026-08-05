@@ -117,17 +117,20 @@ async function loadJobs() {
 
 function renderJobsTable() {
   const modeFilter = document.getElementById("modeFilter").value;
+  const kindFilter = document.getElementById("kindFilter").value;
   const nameFilter = document.getElementById("nameFilter").value.trim().toLowerCase();
   const tbody = document.querySelector("#jobsTable tbody");
   tbody.innerHTML = "";
   for (const job of allJobs) {
     if (modeFilter !== "all" && job.mode !== modeFilter) continue;
+    if (kindFilter !== "all" && job.kind !== kindFilter) continue;
     if (nameFilter && !job.name.toLowerCase().includes(nameFilter)) continue;
     const tr = document.createElement("tr");
     const td = document.createElement("td");
     const cb = document.createElement("input");
     cb.type = "checkbox";
     cb.value = job.path;
+    cb.dataset.kind = job.kind;
     td.appendChild(cb);
     tr.appendChild(td);
     const resultsCell = job.index_url
@@ -150,7 +153,13 @@ function selectedJobPaths() {
 
 document.getElementById("refreshJobsBtn").addEventListener("click", loadJobs);
 document.getElementById("modeFilter").addEventListener("change", renderJobsTable);
+document.getElementById("kindFilter").addEventListener("change", renderJobsTable);
 document.getElementById("nameFilter").addEventListener("input", renderJobsTable);
+
+document.getElementById("selectAllRunnableBtn").addEventListener("click", () => {
+  const boxes = document.querySelectorAll("#jobsTable tbody input[type=checkbox]");
+  for (const cb of boxes) cb.checked = cb.dataset.kind === "run";
+});
 
 document.getElementById("runSelectedBtn").addEventListener("click", async () => {
   const paths = selectedJobPaths();

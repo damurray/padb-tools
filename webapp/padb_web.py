@@ -112,6 +112,36 @@ def _job_index_path(job_dir: Path, cfg: dict) -> Path | None:
     return idx if idx.is_file() else None
 
 
+def _find_v2_siblings(job_path: Path, run_cfg: dict) -> list[Path]:
+    """Sibling *_v2_job.json plot jobs for a V2 run job (*_run_job.json). A
+    naive glob on "{stem}_*v2_job.json" isn't enough: one job's stem can be a
+    literal prefix of a different, unrelated pod's longer stem -- a real
+    case, "maxpower3" vs "MaxPower3_v2" -- which would otherwise make
+    maxpower3_run_job.json's sibling search also match MaxPower3_v2's own
+    plot jobs. Filtered by checking each candidate's own csv_path actually
+    points into *this* run job's results_dir, not just name-matches -- but
+    only when csv_path is actually set: older plot jobs use an "analytic"
+    key instead (padb_v2.py's own CSV-guessing fallback), and those have no
+    csv_path to check at all, so they're passed through unfiltered rather
+    than incorrectly excluded."""
+    name = job_path.name
+    if not name.endswith("_run_job.json"):
+        return []
+    stem = name[: -len("_run_job.json")]
+    run_results_dir = (run_cfg.get("results_dir") or "").lower()
+    siblings = []
+    for candidate in sorted(job_path.parent.glob(f"{stem}_*v2_job.json")):
+        try:
+            plot_cfg = json.loads(candidate.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        csv_path = plot_cfg.get("csv_path")
+        if csv_path and run_results_dir and run_results_dir not in csv_path.lower():
+            continue
+        siblings.append(candidate)
+    return siblings
+
+
 def _job_result_index_path(job_path: Path, cfg: dict) -> Path | None:
     """The results index a user actually cares about for this job. For a V2
     run job (*_run_job.json, mode=interactive), that's the merged gallery in
@@ -120,10 +150,8 @@ def _job_result_index_path(job_path: Path, cfg: dict) -> Path | None:
     design (padb_make_v2_job.py: "All plot jobs for one pod share one
     results_dir"). Falls back to the job's own index if no sibling has one
     yet (e.g. extraction ran but plots haven't been built)."""
-    name = job_path.name
-    if cfg.get("mode") == "interactive" and name.endswith("_run_job.json"):
-        stem = name[: -len("_run_job.json")]
-        for plot_job in sorted(job_path.parent.glob(f"{stem}_*v2_job.json")):
+    if cfg.get("mode") == "interactive" and job_path.name.endswith("_run_job.json"):
+        for plot_job in _find_v2_siblings(job_path, cfg):
             try:
                 plot_cfg = json.loads(plot_job.read_text(encoding="utf-8"))
             except (json.JSONDecodeError, OSError):
@@ -146,16 +174,12 @@ def _stream(cmd: list[str], job_id: str) -> int:
     return proc.returncode
 
 
-def _run_v2_siblings(job_path: Path, job_id: str) -> tuple[bool, str | None]:
+def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict) -> tuple[bool, str | None]:
     """After a V2 extraction job (*_run_job.json) succeeds, auto-run every
     sibling *_v2_job.json plot job -- completes the full V2 flow instead of
     leaving the plot-build step to be run by hand. Returns (ok, index_path)
     where index_path is the merged V2 results gallery, if one was written."""
-    name = job_path.name
-    if not name.endswith("_run_job.json"):
-        return True, None
-    stem = name[: -len("_run_job.json")]
-    siblings = sorted(job_path.parent.glob(f"{stem}_*v2_job.json"))
+    siblings = _find_v2_siblings(job_path, run_cfg)
     if not siblings:
         _append_log(job_id, "(no sibling *_v2_job.json plot jobs found to auto-run)")
         return True, None
@@ -195,7 +219,7 @@ def _worker() -> None:
             rc = _stream(cmd, job_id)
             ok = rc == 0
             if ok and cfg.get("mode") == "interactive" and not job.get("dry_run"):
-                ok, result_index = _run_v2_siblings(job_path, job_id)
+                ok, result_index = _run_v2_siblings(job_path, job_id, cfg)
             if result_index is None:
                 idx = _job_result_index_path(job_path, cfg)
                 result_index = str(idx) if idx else None
@@ -380,12 +404,19 @@ def list_jobs():
             info = query_task(task_name)
             if info:
                 schedule_summary = format_schedule_summary(info)
+        if "pod" in cfg:
+            kind = "run"
+        elif "csv_path" in cfg or "analytic" in cfg:
+            kind = "plot"
+        else:
+            kind = "unknown"
         jobs.append({
             "path": str(p),
             "name": p.name,
             "description": cfg.get("description", ""),
             "mode": cfg.get("mode", "legacy"),
             "pod": cfg.get("pod", ""),
+            "kind": kind,
             "index_path": index_path,
             "index_url": _result_url(index_path),
             "last_run": last_run,
