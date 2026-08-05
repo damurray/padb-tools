@@ -213,13 +213,20 @@ def _worker() -> None:
         result_index = None
         try:
             cfg = json.loads(job_path.read_text(encoding="utf-8"))
-            cmd = [sys.executable, str(TOOLS_DIR / "padb_run.py"), str(job_path)]
-            if job.get("dry_run"):
-                cmd.append("--dry-run")
-            rc = _stream(cmd, job_id)
-            ok = rc == 0
-            if ok and cfg.get("mode") == "interactive" and not job.get("dry_run"):
-                ok, result_index = _run_v2_siblings(job_path, job_id, cfg)
+            if "pod" in cfg:
+                cmd = [sys.executable, str(TOOLS_DIR / "padb_run.py"), str(job_path)]
+                if job.get("dry_run"):
+                    cmd.append("--dry-run")
+                rc = _stream(cmd, job_id)
+                ok = rc == 0
+                if ok and cfg.get("mode") == "interactive" and not job.get("dry_run"):
+                    ok, result_index = _run_v2_siblings(job_path, job_id, cfg)
+            else:
+                # V2 plot job (csv_path/analytic key, no pod) -- rebuilds HTML from an
+                # already-extracted CSV via padb_v2.py directly. No PADB-R.exe involved,
+                # so --dry-run has no equivalent here and is simply ignored.
+                rc = _stream([sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(job_path)], job_id)
+                ok = rc == 0
             if result_index is None:
                 idx = _job_result_index_path(job_path, cfg)
                 result_index = str(idx) if idx else None
