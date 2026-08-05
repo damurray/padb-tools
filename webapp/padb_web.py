@@ -212,9 +212,10 @@ def upload_pod():
     if not filename.lower().endswith(".pod"):
         return jsonify(error="Not a .pod file"), 400
     dest = DATA_DIR / filename
-    if dest.exists():
-        return jsonify(error=f"{filename} already exists in {DATA_DIR} -- "
-                              "rename it or remove the existing file first"), 409
+    # Overwriting an existing pod of the same name is fine -- this route only
+    # stages the pod for job generation, it doesn't create anything durable.
+    # padb_make_job.py/padb_make_v2_job.py already guard the thing that
+    # actually matters (not clobbering an existing job.json) behind --force.
     f.save(str(dest))
     try:
         analytics = parse_pod_analytics(dest)
