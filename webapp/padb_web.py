@@ -112,6 +112,28 @@ def _job_index_path(job_dir: Path, cfg: dict) -> Path | None:
     return idx if idx.is_file() else None
 
 
+def _job_result_index_path(job_path: Path, cfg: dict) -> Path | None:
+    """The results index a user actually cares about for this job. For a V2
+    run job (*_run_job.json, mode=interactive), that's the merged gallery in
+    the sibling plot jobs' shared results_dir, NOT the run job's own
+    extraction-summary page -- the two are different results_dir values by
+    design (padb_make_v2_job.py: "All plot jobs for one pod share one
+    results_dir"). Falls back to the job's own index if no sibling has one
+    yet (e.g. extraction ran but plots haven't been built)."""
+    name = job_path.name
+    if cfg.get("mode") == "interactive" and name.endswith("_run_job.json"):
+        stem = name[: -len("_run_job.json")]
+        for plot_job in sorted(job_path.parent.glob(f"{stem}_*v2_job.json")):
+            try:
+                plot_cfg = json.loads(plot_job.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                continue
+            idx = _job_index_path(plot_job.parent, plot_cfg)
+            if idx:
+                return idx
+    return _job_index_path(job_path.parent, cfg)
+
+
 def _stream(cmd: list[str], job_id: str) -> int:
     _append_log(job_id, f"$ {' '.join(cmd)}")
     proc = subprocess.Popen(
@@ -175,7 +197,7 @@ def _worker() -> None:
             if ok and cfg.get("mode") == "interactive" and not job.get("dry_run"):
                 ok, result_index = _run_v2_siblings(job_path, job_id)
             if result_index is None:
-                idx = _job_index_path(job_path.parent, cfg)
+                idx = _job_result_index_path(job_path, cfg)
                 result_index = str(idx) if idx else None
         except Exception as exc:  # keep the worker alive regardless of what a job does
             _append_log(job_id, f"ERROR: {exc}")
@@ -348,7 +370,7 @@ def list_jobs():
             cfg = json.loads(p.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             cfg = {}
-        idx = _job_index_path(p.parent, cfg)
+        idx = _job_result_index_path(p, cfg)
         index_path = str(idx) if idx else None
         last_run = datetime.fromtimestamp(idx.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if idx else None
         task_name = TASK_PREFIX + p.stem
