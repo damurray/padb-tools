@@ -26,7 +26,10 @@ import padb_config
 # From padb_config.json if present, else derived from Path.home() -- never
 # hardcoded to one username.
 DEFAULT_DATA_DIR = padb_config.load_defaults()["data_dir"]
-PADB_RUN = r"C:\apps\padb\tools\padb_run.py"
+# Derived from this file's own location, not hardcoded -- a scheduled task's
+# /tr command must keep working if this whole tools/ folder is copied
+# somewhere else (e.g. C:\temp\tools for a training setup).
+PADB_RUN = str(Path(__file__).parent / "padb_run.py")
 TASK_PREFIX = "PADB_"
 
 # Day abbreviations used by schtasks (both input and output)
