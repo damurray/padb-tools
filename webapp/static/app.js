@@ -53,6 +53,9 @@ async function uploadPod(file) {
   }
   document.getElementById("uploadResult").classList.remove("hidden");
   document.getElementById("generate-section").classList.remove("hidden");
+  const convertLog = document.getElementById("convertPodLog");
+  convertLog.textContent = "";
+  convertLog.classList.add("hidden");
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +245,74 @@ document.getElementById("unscheduleSelectedBtn").addEventListener("click", async
 });
 
 // ---------------------------------------------------------------------------
+// Site conversion
+// ---------------------------------------------------------------------------
+
+async function loadSites() {
+  const res = await fetch("/api/sites");
+  const data = await res.json();
+  for (const selId of ["convertPodSite", "convertJobSite"]) {
+    const sel = document.getElementById(selId);
+    sel.innerHTML = "";
+    for (const name of Object.keys(data.sites)) {
+      const opt = document.createElement("option");
+      opt.value = name;
+      opt.textContent = name;
+      sel.appendChild(opt);
+    }
+  }
+}
+
+document.getElementById("convertPodBtn").addEventListener("click", async () => {
+  if (!currentPodPath) {
+    alert("Drop a .pod file first");
+    return;
+  }
+  const targetSite = document.getElementById("convertPodSite").value;
+  const force = document.getElementById("convertPodForce").checked;
+  const res = await fetch("/api/convert-pod", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pod_path: currentPodPath, target_site: targetSite, force }),
+  });
+  const data = await res.json();
+  const logEl = document.getElementById("convertPodLog");
+  logEl.classList.remove("hidden");
+  if (!res.ok) {
+    logEl.textContent = "ERROR: " + data.error + (data.log ? "\n\n" + data.log : "");
+    return;
+  }
+  logEl.textContent = `Wrote ${data.dest_name}\n\n` + data.log;
+});
+
+document.getElementById("convertSelectedBtn").addEventListener("click", async () => {
+  const paths = selectedJobPaths();
+  if (!paths.length) {
+    alert("Select at least one job to convert");
+    return;
+  }
+  const targetSite = document.getElementById("convertJobSite").value;
+  const force = document.getElementById("convertJobForce").checked;
+  const res = await fetch("/api/convert-job", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths, target_site: targetSite, force }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Convert failed: " + data.error);
+    return;
+  }
+  const failures = data.results.filter(r => !r.ok);
+  const successes = data.results.filter(r => r.ok);
+  let msg = "";
+  if (successes.length) msg += `Converted:\n` + successes.map(s => s.dest_name).join("\n") + "\n";
+  if (failures.length) msg += `Failed:\n` + failures.map(f => `${f.path}: ${f.error}`).join("\n");
+  if (msg) alert(msg);
+  loadJobs();
+});
+
+// ---------------------------------------------------------------------------
 // Status polling
 // ---------------------------------------------------------------------------
 
@@ -299,3 +370,4 @@ async function poll(jobId) {
 // ---------------------------------------------------------------------------
 
 loadJobs();
+loadSites();

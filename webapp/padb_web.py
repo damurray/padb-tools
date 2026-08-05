@@ -1,14 +1,15 @@
 """
 padb_web.py -- local web UI for padb-tools, Phase 1.
 
-Covers three of the seven features requested for the web app: (1) drop a
+Covers four of the seven features requested for the web app: (1) drop a
 .pod file to auto-generate its job.json, (2) schedule/unschedule jobs in
-Windows Task Scheduler, and (7) execute one or more job files. Every route
-shells out to the already-verified CLI scripts (padb_make_job.py,
-padb_make_v2_job.py, padb_run.py, padb_v2.py) via subprocess, or imports
-their pure functions directly (parse_pod_analytics, discover_all_padb_tasks,
-create_task, delete_task, query_task, format_schedule_summary) from
-padb_scheduler.py -- this is a pure orchestration layer, not a
+Windows Task Scheduler, (3) convert a pod/job between database sites, and
+(7) execute one or more job files. Every route shells out to the
+already-verified CLI scripts (padb_make_job.py, padb_make_v2_job.py,
+padb_run.py, padb_v2.py) via subprocess, or imports pure functions directly
+from padb_scheduler.py (discover_all_padb_tasks, create_task, delete_task,
+query_task, format_schedule_summary) and padb_convert_site.py (load_sites,
+convert_pod, convert_job) -- this is a pure orchestration layer, not a
 reimplementation of any of that logic.
 
     py webapp\\padb_web.py
@@ -24,7 +25,9 @@ requests Flask is handling at once.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import queue
 import subprocess
@@ -42,6 +45,7 @@ TOOLS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
 import padb_config  # noqa: E402
+import padb_convert_site  # noqa: E402
 from padb_run import parse_pod_analytics  # noqa: E402
 from padb_scheduler import (  # noqa: E402
     TASK_PREFIX, create_task, delete_task, discover_all_padb_tasks,
@@ -230,6 +234,62 @@ def upload_pod():
             for a in analytics
         ],
     )
+
+
+@app.route("/api/sites")
+def list_sites():
+    sites = padb_convert_site.load_sites()
+    return jsonify(sites={name: cfg.get("suffix", "") for name, cfg in sites.items()})
+
+
+@app.route("/api/convert-pod", methods=["POST"])
+def convert_pod_route():
+    body = request.get_json(force=True) or {}
+    pod_path = body.get("pod_path")
+    target_site = body.get("target_site")
+    force = bool(body.get("force"))
+
+    if not pod_path or not Path(pod_path).exists():
+        return jsonify(error="pod_path missing or does not exist"), 400
+    sites = padb_convert_site.load_sites()
+    if target_site not in sites:
+        return jsonify(error=f"unknown site: {target_site}"), 400
+
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            dest = padb_convert_site.convert_pod(Path(pod_path).resolve(), target_site, sites, force=force)
+    except SystemExit as exc:
+        return jsonify(error=str(exc), log=buf.getvalue()), 400
+    return jsonify(dest_path=str(dest), dest_name=dest.name, log=buf.getvalue())
+
+
+@app.route("/api/convert-job", methods=["POST"])
+def convert_job_route():
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths") or []
+    target_site = body.get("target_site")
+    force = bool(body.get("force"))
+
+    if not paths:
+        return jsonify(error="paths must be a non-empty list"), 400
+    sites = padb_convert_site.load_sites()
+    if target_site not in sites:
+        return jsonify(error=f"unknown site: {target_site}"), 400
+
+    results = []
+    for p in paths:
+        job_path = Path(p).resolve()
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                dest = padb_convert_site.convert_job(job_path, target_site, sites, force=force)
+            results.append({"path": p, "ok": True, "dest_name": dest.name, "log": buf.getvalue()})
+        except SystemExit as exc:
+            results.append({"path": p, "ok": False, "error": str(exc), "log": buf.getvalue()})
+        except Exception as exc:
+            results.append({"path": p, "ok": False, "error": str(exc), "log": buf.getvalue()})
+    return jsonify(results=results)
 
 
 @app.route("/api/generate-job", methods=["POST"])

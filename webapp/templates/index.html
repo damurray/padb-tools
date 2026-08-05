@@ -24,6 +24,14 @@
         <thead><tr><th>#</th><th>Type</th><th>Name</th><th>Output File</th></tr></thead>
         <tbody></tbody>
       </table>
+      <div class="toolbar">
+        <label>Convert to
+          <select id="convertPodSite"></select>
+        </label>
+        <label class="inline"><input type="checkbox" id="convertPodForce"> Overwrite existing</label>
+        <button id="convertPodBtn">Convert Pod</button>
+      </div>
+      <pre id="convertPodLog" class="hidden"></pre>
     </div>
   </section>
 
@@ -85,6 +93,13 @@
       <label>at <input type="time" id="scheduleTime" value="02:00"></label>
       <button id="scheduleSelectedBtn">Schedule Selected</button>
       <button id="unscheduleSelectedBtn" class="secondary">Unschedule Selected</button>
+    </div>
+    <div class="toolbar">
+      <label>Convert to
+        <select id="convertJobSite"></select>
+      </label>
+      <label class="inline"><input type="checkbox" id="convertJobForce"> Overwrite existing</label>
+      <button id="convertSelectedBtn">Convert Selected</button>
     </div>
     <div id="jobsTableWrap" class="scroll-box">
       <table id="jobsTable">
