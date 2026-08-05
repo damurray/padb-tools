@@ -315,6 +315,29 @@ tkinter GUI that manages Windows Task Scheduler entries for every `*_job.json` f
 
 ---
 
+## Web app (webapp/padb_web.py) — Phase 1 (added 2026-08-05, refined same day)
+
+`py C:\apps\padb\tools\webapp\padb_web.py`
+
+Local Flask app (opens `http://127.0.0.1:5000` in the default browser). Local use only — the dev server is not meant to be reachable beyond 127.0.0.1. Every route shells out to the existing CLI scripts via `subprocess`, or imports their pure functions directly (`parse_pod_analytics()`, `discover_all_padb_tasks()`); nothing in `padb_run.py`/`padb_v2.py`/`padb_make_job.py`/`padb_make_v2_job.py`/`padb_scheduler.py` was changed to build this.
+
+Phase 1 covers two of the seven originally-requested features:
+
+- **Drop a `.pod` file** (drag-and-drop or click to choose) → saved into `padb_config.load_defaults()["data_dir"]` (same folder every CLI script already uses) → shows the parsed analytic list (`parse_pod_analytics()`) → fill in mode/module/dates → **Generate Job** calls `padb_make_job.py` (legacy/simple) or `padb_make_v2_job.py` (interactive) exactly as the CLI would, and shows the generated job.json content plus any `NOTE:`/`WARNING:` output verbatim. Rejects (doesn't overwrite) if a pod of that filename already exists in `data_dir`.
+- **Execute job(s)** — a jobs table (same `sorted(data_dir.glob("*_job.json"))` discovery pattern as `padb_scheduler.py`) with checkboxes and a **Run Selected** button. A single background worker thread + `queue.Queue` is the actual serialization point (PADB-R.exe must never run two instances concurrently) — Flask's dev server fielding concurrent requests does **not** by itself guarantee this; the queue does. For a `"mode": "interactive"` run job (`*_run_job.json`), once it succeeds the worker auto-globs and runs every sibling `*_v2_job.json` plot job in turn, completing the full V2 flow without a manual second step. A **Dry run** checkbox passes `--dry-run` through to `padb_run.py` — note this still runs the publish step if the job's existing results already have CSVs on disk (dry-run only skips the PADB-R.exe call itself, not publishing).
+- The status panel polls `GET /api/job-status/<id>` every ~2s per active job, showing queued/running/done/failed and a scrolling log tail, plus an **Open results** link once `result_index` is set (see below).
+
+**Jobs table columns** (Name, Mode, Pod, Description, Scheduled, Last Run, Results), each earning its keep:
+- **Mode / Name filters** above the table (dropdown + substring text box) — client-side filtering of the same fetched job list, no extra round-trip.
+- **Scheduled** — a green checkmark if `TASK_PREFIX + job_stem` exists in Task Scheduler, via `padb_scheduler.discover_all_padb_tasks()` (one `schtasks` call for the whole table, not one per job) — reuses that module's own detection logic rather than re-implementing it, so this column can never disagree with the Scheduler GUI. Read-only in Phase 1 — no add/remove from the web UI yet (that's feature #2, still unscoped).
+- **Last Run** — mtime of that job's `results_dir/index.html`, formatted `YYYY-MM-DD HH:MM`. Reflects the last *successful* run (index.html is only written on success), not the last attempt — a repeatedly-failing job shows a stale date rather than "just failed."
+- **Results** — a link to that job's `results_dir/index.html`, if it exists. Served through the app itself at `/results/<token>/<filename>` rather than a `file://` link — browsers silently block navigating an `http://` page to `file://`, which was a real bug here. `<token>` is a short hash of the results directory, registered in an in-memory `_RESULT_DIRS` dict the first time that directory is ever pointed at (resets on server restart, same as job/queue state); `send_from_directory` blocks path traversal outside it. Because the URL path mirrors the real directory structure, the generated gallery's own relative links between sibling plot HTML pages resolve correctly with no rewriting.
+- **Layout**: `body` max-width 1300px (bumped up from an arbitrary initial 900px). Name/Pod/Description wrap onto extra lines when long (row grows taller) rather than truncating or scrolling — tried per-cell horizontal scrollbars first, wrapping reads easier. Mode/Scheduled/Last Run/Results stay single-line since they're never long enough to need it. The table itself sits in a `max-height: 320px` scrolling box (sticky header) so a long job list doesn't push "Running Jobs" off-screen.
+
+Deliberately out of scope for Phase 1 (not started): scheduler add/remove from the web UI (search/filter and read-only Scheduled status *are* done — see above), site conversion via the UI, the guided "what do you want to do?" wizard, the tutorial walkthrough dropdown, and the doc viewer.
+
+---
+
 ## Implemented plot types
 
 | Function | Source | Interactive? |

@@ -3,4 +3,5 @@ __pycache__/
 *_backup_*.py
 *.csv
 *.html
+!webapp/templates/*.html
 *.pdf

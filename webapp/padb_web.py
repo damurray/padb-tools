@@ -1,0 +1,354 @@
+"""
+padb_web.py -- local web UI for padb-tools, Phase 1.
+
+Covers two of the seven features requested for the web app: (1) drop a
+.pod file to auto-generate its job.json, and (7) execute one or more job
+files -- plus a read-only preview of feature (2) (whether each job is
+currently scheduled in Task Scheduler). Every route shells out to the
+already-verified CLI scripts (padb_make_job.py, padb_make_v2_job.py,
+padb_run.py, padb_v2.py) via subprocess, or imports their pure functions
+directly (parse_pod_analytics, discover_all_padb_tasks), rather than
+reimplementing any of that logic -- this is a pure orchestration layer.
+
+    py webapp\\padb_web.py
+
+Opens http://127.0.0.1:5000 in the default browser. Local use only: the
+Flask dev server here is not meant to be reachable beyond 127.0.0.1.
+
+PADB-R.exe is a WinForms app that must run in a real desktop session and
+two instances running concurrently interfere with each other. The single
+background worker thread + queue.Queue below is the actual serialization
+point -- it guarantees jobs run one at a time regardless of how many HTTP
+requests Flask is handling at once.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import queue
+import subprocess
+import sys
+import threading
+import time
+import webbrowser
+from datetime import datetime
+from pathlib import Path
+
+from flask import Flask, abort, jsonify, render_template, request, send_from_directory
+from werkzeug.utils import secure_filename
+
+TOOLS_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(TOOLS_DIR))
+
+import padb_config  # noqa: E402
+from padb_run import parse_pod_analytics  # noqa: E402
+from padb_scheduler import TASK_PREFIX, discover_all_padb_tasks  # noqa: E402
+
+DEFAULTS = padb_config.load_defaults()
+DATA_DIR = Path(DEFAULTS["data_dir"])
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+app = Flask(__name__)
+
+# ---------------------------------------------------------------------------
+# Result file serving -- browsers block navigating a rendered http:// page to
+# a file:// link (silently, with no console error), so result HTML is served
+# through the app itself instead. Each result directory we've ever pointed at
+# gets a short token; /results/<token>/<filename> serves any file within that
+# one directory (send_from_directory blocks path traversal outside it), and
+# because the URL path itself mirrors the directory structure, the generated
+# gallery's own relative links between sibling plot HTML files resolve
+# correctly in the browser without any rewriting.
+# ---------------------------------------------------------------------------
+_RESULT_DIRS: dict[str, str] = {}
+_result_dirs_lock = threading.Lock()
+
+
+def _result_url(index_path: str | None) -> str | None:
+    if not index_path:
+        return None
+    idx = Path(index_path)
+    token = hashlib.sha1(str(idx.parent).encode("utf-8")).hexdigest()[:16]
+    with _result_dirs_lock:
+        _RESULT_DIRS[token] = str(idx.parent)
+    return f"/results/{token}/{idx.name}"
+
+# ---------------------------------------------------------------------------
+# Execution queue
+# ---------------------------------------------------------------------------
+_job_queue: "queue.Queue[str]" = queue.Queue()
+_jobs: dict[str, dict] = {}
+_jobs_lock = threading.Lock()
+_next_id = 0
+_id_lock = threading.Lock()
+
+
+def _new_job_id() -> str:
+    global _next_id
+    with _id_lock:
+        _next_id += 1
+        return str(_next_id)
+
+
+def _append_log(job_id: str, line: str) -> None:
+    with _jobs_lock:
+        _jobs[job_id]["log"].append(line)
+
+
+def _job_index_path(job_dir: Path, cfg: dict) -> Path | None:
+    """Path to that job's results_dir/index.html, if it exists on disk."""
+    results_dir = cfg.get("results_dir")
+    if not results_dir:
+        return None
+    idx = job_dir / results_dir / "index.html"
+    return idx if idx.is_file() else None
+
+
+def _stream(cmd: list[str], job_id: str) -> int:
+    _append_log(job_id, f"$ {' '.join(cmd)}")
+    proc = subprocess.Popen(
+        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, cwd=str(TOOLS_DIR),
+    )
+    for line in proc.stdout:  # type: ignore[union-attr]
+        _append_log(job_id, line.rstrip("\n"))
+    proc.wait()
+    return proc.returncode
+
+
+def _run_v2_siblings(job_path: Path, job_id: str) -> tuple[bool, str | None]:
+    """After a V2 extraction job (*_run_job.json) succeeds, auto-run every
+    sibling *_v2_job.json plot job -- completes the full V2 flow instead of
+    leaving the plot-build step to be run by hand. Returns (ok, index_path)
+    where index_path is the merged V2 results gallery, if one was written."""
+    name = job_path.name
+    if not name.endswith("_run_job.json"):
+        return True, None
+    stem = name[: -len("_run_job.json")]
+    siblings = sorted(job_path.parent.glob(f"{stem}_*v2_job.json"))
+    if not siblings:
+        _append_log(job_id, "(no sibling *_v2_job.json plot jobs found to auto-run)")
+        return True, None
+    ok = True
+    result_index = None
+    for plot_job in siblings:
+        _append_log(job_id, f"\n--- Building plots: {plot_job.name} ---")
+        rc = _stream([sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(plot_job)], job_id)
+        if rc != 0:
+            ok = False
+            continue
+        try:
+            plot_cfg = json.loads(plot_job.read_text(encoding="utf-8"))
+            idx = _job_index_path(plot_job.parent, plot_cfg)
+            if idx:
+                result_index = str(idx)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return ok, result_index
+
+
+def _worker() -> None:
+    while True:
+        job_id = _job_queue.get()
+        with _jobs_lock:
+            job = _jobs[job_id]
+            job["status"] = "running"
+            job["started"] = time.monotonic()
+        job_path = Path(job["path"])
+        ok = False
+        result_index = None
+        try:
+            cfg = json.loads(job_path.read_text(encoding="utf-8"))
+            cmd = [sys.executable, str(TOOLS_DIR / "padb_run.py"), str(job_path)]
+            if job.get("dry_run"):
+                cmd.append("--dry-run")
+            rc = _stream(cmd, job_id)
+            ok = rc == 0
+            if ok and cfg.get("mode") == "interactive" and not job.get("dry_run"):
+                ok, result_index = _run_v2_siblings(job_path, job_id)
+            if result_index is None:
+                idx = _job_index_path(job_path.parent, cfg)
+                result_index = str(idx) if idx else None
+        except Exception as exc:  # keep the worker alive regardless of what a job does
+            _append_log(job_id, f"ERROR: {exc}")
+            ok = False
+        with _jobs_lock:
+            job["status"] = "done" if ok else "failed"
+            job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
+            job["result_index"] = result_index
+        _job_queue.task_done()
+
+
+threading.Thread(target=_worker, daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/results/<token>/<path:filename>")
+def serve_result(token, filename):
+    dir_path = _RESULT_DIRS.get(token)
+    if not dir_path:
+        abort(404)
+    return send_from_directory(dir_path, filename)
+
+
+@app.route("/api/upload-pod", methods=["POST"])
+def upload_pod():
+    f = request.files.get("pod")
+    if not f or not f.filename:
+        return jsonify(error="No file provided"), 400
+    filename = secure_filename(f.filename)
+    if not filename.lower().endswith(".pod"):
+        return jsonify(error="Not a .pod file"), 400
+    dest = DATA_DIR / filename
+    if dest.exists():
+        return jsonify(error=f"{filename} already exists in {DATA_DIR} -- "
+                              "rename it or remove the existing file first"), 409
+    f.save(str(dest))
+    try:
+        analytics = parse_pod_analytics(dest)
+    except Exception as exc:
+        return jsonify(error=f"Saved but could not parse: {exc}"), 500
+    return jsonify(
+        pod_path=str(dest),
+        pod_name=dest.name,
+        analytics=[
+            {"index": a["index"], "type": a["type"], "name": a["name"],
+             "output_file": a["output_file"]}
+            for a in analytics
+        ],
+    )
+
+
+@app.route("/api/generate-job", methods=["POST"])
+def generate_job():
+    body = request.get_json(force=True) or {}
+    pod_path = body.get("pod_path")
+    mode = body.get("mode", "simple")
+    module = (body.get("module") or "").strip()
+    min_date = (body.get("min_date") or "").strip()
+    max_date = (body.get("max_date") or "").strip()
+    force = bool(body.get("force"))
+
+    if not pod_path or not Path(pod_path).exists():
+        return jsonify(error="pod_path missing or does not exist"), 400
+    if mode not in ("legacy", "simple", "interactive"):
+        return jsonify(error=f"invalid mode: {mode}"), 400
+
+    script = "padb_make_v2_job.py" if mode == "interactive" else "padb_make_job.py"
+    cmd = [sys.executable, str(TOOLS_DIR / script), pod_path]
+    if mode != "interactive":
+        cmd += ["--mode", mode]
+    if module:
+        cmd += ["--module", module]
+    else:
+        cmd += ["--no-publish"]
+    if min_date:
+        cmd += ["--min-date", min_date]
+    if max_date:
+        cmd += ["--max-date", max_date]
+    if force:
+        cmd += ["--force"]
+
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(TOOLS_DIR))
+
+    stem = Path(pod_path).stem
+    pod_dir = Path(pod_path).parent
+    if mode == "interactive":
+        candidates = [pod_dir / f"{stem}_run_job.json"] + sorted(pod_dir.glob(f"{stem}_*v2_job.json"))
+    else:
+        candidates = [pod_dir / f"{stem}_job.json"]
+
+    jobs = []
+    for p in candidates:
+        if p.exists():
+            jobs.append({"path": str(p), "name": p.name, "content": p.read_text(encoding="utf-8")})
+
+    return jsonify(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode, jobs=jobs)
+
+
+@app.route("/api/jobs")
+def list_jobs():
+    scheduled_tasks = {t.upper() for t in discover_all_padb_tasks()}
+    jobs = []
+    for p in sorted(DATA_DIR.glob("*_job.json")):
+        try:
+            cfg = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+        idx = _job_index_path(p.parent, cfg)
+        index_path = str(idx) if idx else None
+        last_run = datetime.fromtimestamp(idx.stat().st_mtime).strftime("%Y-%m-%d %H:%M") if idx else None
+        task_name = TASK_PREFIX + p.stem
+        jobs.append({
+            "path": str(p),
+            "name": p.name,
+            "description": cfg.get("description", ""),
+            "mode": cfg.get("mode", "legacy"),
+            "pod": cfg.get("pod", ""),
+            "index_path": index_path,
+            "index_url": _result_url(index_path),
+            "last_run": last_run,
+            "scheduled": task_name.upper() in scheduled_tasks,
+        })
+    return jsonify(jobs=jobs)
+
+
+@app.route("/api/execute-job", methods=["POST"])
+def execute_job():
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths") or []
+    dry_run = bool(body.get("dry_run"))
+    if not paths:
+        return jsonify(error="paths must be a non-empty list"), 400
+
+    job_ids = []
+    for p in paths:
+        job_path = Path(p)
+        if not job_path.exists():
+            return jsonify(error=f"job not found: {p}"), 400
+        job_id = _new_job_id()
+        with _jobs_lock:
+            _jobs[job_id] = {
+                "status": "queued", "path": str(job_path), "name": job_path.name,
+                "log": [], "started": None, "elapsed_s": 0, "dry_run": dry_run,
+                "result_index": None,
+            }
+        _job_queue.put(job_id)
+        job_ids.append(job_id)
+    return jsonify(job_ids=job_ids)
+
+
+@app.route("/api/job-status/<job_id>")
+def job_status(job_id):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify(error="unknown job_id"), 404
+        elapsed = job["elapsed_s"]
+        if job["status"] == "running" and job["started"] is not None:
+            elapsed = round(time.monotonic() - job["started"], 1)
+        result_index = job.get("result_index")
+        return jsonify(
+            status=job["status"], name=job["name"], elapsed_s=elapsed,
+            log_tail="\n".join(job["log"][-200:]),
+            result_index=result_index,
+            result_index_url=_result_url(result_index),
+        )
+
+
+def main() -> None:
+    url = "http://127.0.0.1:5000"
+    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    app.run(host="127.0.0.1", port=5000, threaded=True, debug=False)
+
+
+if __name__ == "__main__":
+    main()

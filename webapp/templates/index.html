@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>padb-tools</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<header>
+  <h1>padb-tools</h1>
+  <p class="subtitle">Local web UI &mdash; drop a pod, generate a job, run it.</p>
+</header>
+
+<main>
+  <section id="upload-section">
+    <h2>1. Drop a .pod file</h2>
+    <div id="dropzone">
+      <p>Drag a <code>.pod</code> file here, or click to choose one</p>
+      <input type="file" id="fileInput" accept=".pod" hidden>
+    </div>
+    <div id="uploadResult" class="panel hidden">
+      <h3 id="uploadPodName"></h3>
+      <table id="analyticsTable">
+        <thead><tr><th>#</th><th>Type</th><th>Name</th><th>Output File</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="generate-section" class="hidden">
+    <h2>2. Generate a job.json</h2>
+    <form id="generateForm">
+      <label>Mode
+        <select id="modeSelect">
+          <option value="simple">simple</option>
+          <option value="legacy">legacy</option>
+          <option value="interactive">interactive (V2)</option>
+        </select>
+      </label>
+      <label>Module <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = --no-publish)"></label>
+      <label>Min date <input type="text" id="minDateInput" placeholder='e.g. "8 weeks ago" (optional)'></label>
+      <label>Max date <input type="text" id="maxDateInput" placeholder='e.g. "today" (optional)'></label>
+      <label><input type="checkbox" id="forceCheckbox"> Overwrite existing job file(s)</label>
+      <button type="submit">Generate Job</button>
+    </form>
+    <div id="generateResult" class="panel hidden">
+      <h3>Output</h3>
+      <pre id="generateStdout"></pre>
+      <div id="generatedJobs"></div>
+    </div>
+  </section>
+
+  <section id="jobs-section">
+    <h2>3. Jobs</h2>
+    <div class="toolbar">
+      <button id="refreshJobsBtn">Refresh</button>
+      <label>Mode
+        <select id="modeFilter">
+          <option value="all">All</option>
+          <option value="legacy">legacy</option>
+          <option value="simple">simple</option>
+          <option value="interactive">interactive</option>
+        </select>
+      </label>
+      <label>Name <input type="text" id="nameFilter" placeholder="filter by name…"></label>
+      <label class="inline"><input type="checkbox" id="dryRunCheckbox"> Dry run (skip PADB-R.exe)</label>
+      <button id="runSelectedBtn">Run Selected</button>
+    </div>
+    <div id="jobsTableWrap" class="scroll-box">
+      <table id="jobsTable">
+        <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="status-section">
+    <h2>4. Running Jobs</h2>
+    <p class="hint">PADB-R.exe runs are strictly serialized &mdash; only one job runs at a time, others wait as "queued."</p>
+    <div id="statusPanels"></div>
+  </section>
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
