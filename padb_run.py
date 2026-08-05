@@ -235,6 +235,14 @@ def parse_pod_analytics(pod_path: Path) -> list[dict]:
 # Simple mode needs PADB-R's own native PNG/PDF rendering turned on per analytic.
 _SIMPLE_FORCE_KEYS = {"OutputConfig_OutputGraph": "1", "OutputConfig_GraphFormat": "png,pdf"}
 
+# Legacy/Interactive never consume native PNG/PDF renders (padb_plots.py and
+# padb_v2.py build their own HTML from the CSV) -- if a pod was previously
+# tuned for Simple mode and still has OutputConfig_OutputGraph=1 left over,
+# PADB-R silently re-renders a full native gallery on every run anyway,
+# wasting real render time and leaving confusing PNG/PDF files sitting next
+# to the CSVs a viewer might mistake for the actual result.
+_DISABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "0"}
+
 
 def _slugify_name(name: str) -> str:
     return re.sub(r"[^\w]+", "_", name.strip()).strip("_")
@@ -242,6 +250,7 @@ def _slugify_name(name: str) -> str:
 
 def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
                   force_native_render: bool = False,
+                  disable_native_render: bool = False,
                   unique_output_filenames: bool = False,
                   force_output_csv: bool = False) -> None:
     """
@@ -254,6 +263,14 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     OutputConfig_OutputGraph/OutputConfig_GraphFormat forced on (Simple mode
     needs PADB-R's own native renders; existing keys are replaced in place,
     missing ones are appended when the section ends). No-op when False.
+
+    When disable_native_render is True (Legacy/Interactive mode), every
+    [PADBAnalyticN] section instead gets OutputConfig_OutputGraph forced to
+    "0" -- neither pipeline ever reads a native render, so a pod left over
+    from Simple-mode tuning (OutputConfig_OutputGraph=1 still set) would
+    otherwise silently re-render a full native PNG/PDF gallery on every run
+    for nothing. Mutually exclusive with force_native_render -- callers pass
+    at most one based on the job's own mode.
 
     When unique_output_filenames is True, every [PADBAnalyticN] section's
     AnalyticName and OutputConfig_OutputFile are both forced to the same
@@ -305,6 +322,12 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     if force_output_csv:
         csv_force_indices = {a["index"] for a in src_analytics if a.get("type") == 80}
 
+    render_force_keys = (
+        _SIMPLE_FORCE_KEYS if force_native_render
+        else _DISABLE_RENDER_KEYS if disable_native_render
+        else None
+    )
+
     with open(src_pod, encoding="utf-8", errors="replace") as f:
         lines = f.readlines()
 
@@ -315,8 +338,8 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     out_lines: list[str] = []
 
     def _flush_analytic_section() -> None:
-        if force_native_render and in_analytic:
-            for key, val in _SIMPLE_FORCE_KEYS.items():
+        if render_force_keys is not None and in_analytic:
+            for key, val in render_force_keys.items():
                 if key not in seen_force_keys:
                     out_lines.append(f"{key}={val}\n")
         if (force_output_csv and in_analytic and current_analytic_index in csv_force_indices
@@ -338,8 +361,8 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
             slug = analytic_slugs.get(current_analytic_index) if in_analytic else None
             if in_extract and key in subex:
                 line = f"{key}={subex[key]}\n"
-            elif force_native_render and in_analytic and key in _SIMPLE_FORCE_KEYS:
-                line = f"{key}={_SIMPLE_FORCE_KEYS[key]}\n"
+            elif render_force_keys is not None and in_analytic and key in render_force_keys:
+                line = f"{key}={render_force_keys[key]}\n"
                 seen_force_keys.add(key)
             elif (force_output_csv and in_analytic and current_analytic_index in csv_force_indices
                   and key == "OutputConfig_OutputCSV"):
@@ -973,6 +996,7 @@ def main() -> None:
     unique_output_filenames = cfg.get("unique_output_filenames", False)
     force_output_csv = cfg.get("force_output_csv", False)
     make_run_pod(pod_path, run_pod, subex, force_native_render=(mode == "simple"),
+                 disable_native_render=(mode != "simple"),
                  unique_output_filenames=unique_output_filenames,
                  force_output_csv=force_output_csv)
     print(f"Run pod: {run_pod}\n")
