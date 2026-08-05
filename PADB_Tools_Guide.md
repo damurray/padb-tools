@@ -789,6 +789,39 @@ What it does and doesn't decide for you:
 
 ---
 
+## Converting Between Database Sites (padb_convert_site.py)
+
+Some tests run against more than one PADB database — e.g. the same test pulling production data from Santa Rosa vs. a remote site's own database (AMC2/Malaysia). Comparing a real pod from each site shows the only genuine differences live in `[Extract]`: `Device_Server` and `Device_Database`. Everything else — including every `AnalyticName` and `OutputConfig_OutputFile` — is identical, which means running both site variants writes identically-named CSVs. If either is ever pointed at a shared results/publish location, one silently overwrites the other.
+
+**Site registry** — `padb_sites.json`, next to the script:
+
+```json
+{
+  "SantaRosa": { "suffix": "", "Device_Server": "PADB ORACLE SR", "Device_Database": "V2_GALLEON" },
+  "AMC2":      { "suffix": "-AMC2", "Device_Server": "PADB ORACLE AMC2", "Device_Database": "GALLEON_1" }
+}
+```
+
+Exactly one site must have `"suffix": ""` — that's the *primary* site (Santa Rosa), whose analytic names are the canonical, unsuffixed ones every other site's names disambiguate against. Add a new site here — no code changes — when a third location comes online.
+
+**Converting a pod:**
+```
+py padb_convert_site.py --pod MyPod.pod --to AMC2
+```
+Detects the source site from the pod's live `Device_Server`/`Device_Database` (errors clearly, never guesses, if it matches no registered site). Writes a new pod — the source is never touched — swapping `Device_Server`/`Device_Database` to the target site's values, and appending that site's suffix to every `AnalyticName` (space-separated: `"Leveled Linear"` → `"Leveled Linear AMC2"`) and `OutputConfig_OutputFile` (underscore-separated: `"..._Linear"` → `"..._Linear_AMC2"`). Converting *to* the primary site strips a recognized suffix back off instead. Verified round-trip: Santa Rosa → AMC2 → Santa Rosa reproduces the original pod byte-for-byte (aside from `SaoFile`/`LastUpdated`).
+
+**`.sao` files cannot be converted.** They're a binary PADB format — version-tagged, with encoded DUT serial numbers specific to the DUTs run at that site. A Santa Rosa `.sao` is meaningless against AMC2 hardware. The tool points the converted pod's `SaoFile=` at the expected new filename and prints an explicit `WARNING:` that you still need to supply a real `.sao` extracted at the target site before the pod can actually run.
+
+**Converting a job.json:**
+```
+py padb_convert_site.py --job my_run_job.json --to AMC2
+```
+Repoints `"pod"`, and substitutes the old pod stem for the new one everywhere it appears — `results_dir`, `publish`/`publish_to`, `description`. Auto-generates the companion converted pod first if it doesn't already exist (prints when it does this). For a V2 run job (`"mode": "interactive"`), also prints a reminder to re-run `padb_make_v2_job.py` against the new pod for the plot-job side, rather than re-deriving a `csv_path` prediction a second time.
+
+`--force` overwrites an existing output file; without it, an existing converted pod/job is left alone and skipped — same convention as every other generator in this repo. `--list-sites` prints the registry. See `CLAUDE.md` → **`padb_convert_site.py`** for the full design rationale.
+
+---
+
 ## Limitations and Known Issues
 
 - **No serial filter for de_summary.** The Environmental CSV is pre-aggregated across all DUTs; per-DUT data is not available in this file format.

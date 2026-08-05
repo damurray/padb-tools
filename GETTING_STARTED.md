@@ -23,6 +23,7 @@ You're looking at this because you've been handed a `.pod` file and need interac
 | "Just give me the exact steps to run Interactive/V2 mode, one page, nothing else" | `Interactive_Mode_Cheatsheet.md` |
 | "I just want a job.json generated from a pod, not written by hand" | `padb_make_job.py` (Simple/Legacy/Interactive extract job) — see `CLAUDE.md` → **`padb_make_job.py`** |
 | "I want the full Interactive/V2 job set generated from a pod, not hand-written" | `padb_make_v2_job.py` — see `CLAUDE.md` → **`padb_make_v2_job.py`** |
+| "I have the same test pulling from a different site's database (e.g. Santa Rosa vs. AMC2/Malaysia) and need a matching pod/job.json" | `padb_convert_site.py` — see `PADB_Tools_Guide.md` → **Converting Between Database Sites** |
 | "I'm using Claude Code and want the tool's architecture/gotchas loaded automatically" | `CLAUDE.md` (auto-loaded) or type `/padb-tools` |
 | "I'm new, where do I even start" | You're reading it |
 

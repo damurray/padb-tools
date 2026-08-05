@@ -20,8 +20,6 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-# Locate padb_batch.py relative to this file's location
-sys.path.insert(0, str(Path(__file__).parent.parent / "PADBPython"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from padb_batch import PADBBatch

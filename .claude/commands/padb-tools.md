@@ -44,6 +44,7 @@ Two pipelines: **V1** (`padb_run.py` + `padb_plots.py`, one job.json) and **V2**
 11. **Publishing.** V2 jobs with no `publish_to` key publish to a default network location automatically (`\\srsnas01...\SG6311A\padb-tools-results\<results_dir>`). Set `"publish_to": ""` explicitly if you're not ready to publish yet.
 12. **`OutputConfig_OutputCSV=False` on a Type=80 analytic.** Presents identically to a `TestRun_RunStatus`/date-range problem (0 CSVs, exit 0) but is a different cause — PADB still renders native PNG/PDF in `results\padb\` and can take real time doing so; it just never writes a CSV. Fix with `"force_output_csv": true` in job.json (`padb_make_v2_job.py` sets this automatically when detected).
 13. **Generated job.json path length.** `padb_make_job.py`/`padb_make_v2_job.py` print a `WARNING:` if a generated path reaches 220+ characters (Windows `MAX_PATH` is 260) — shorten `--module`, or move the pod to a shallower directory before regenerating.
+14. **Same test, different site's database.** If a pod pulls from a different PADB Oracle database (e.g. AMC2/Malaysia vs. Santa Rosa), don't hand-edit `Device_Server`/`Device_Database` — use `padb_convert_site.py --pod MyPod.pod --to AMC2`. It also disambiguates `AnalyticName`/`OutputConfig_OutputFile` per site, since two site-variant pods of the same test otherwise write identically-named CSVs. See `PADB_Tools_Guide.md` → **Converting Between Database Sites**.
 
 ---
 

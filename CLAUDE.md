@@ -258,6 +258,18 @@ Key design decisions, each deliberate:
 
 ---
 
+## `padb_convert_site.py` — convert a pod/job.json between database sites (added 2026-08-05)
+
+Malaysia (AMC2) production ramp-up surfaced a new axis of variation: the *same* test, pulling from a *different* PADB Oracle database. Comparing a real Santa Rosa pod against a hand-made AMC2 variant of the same test (`MaxPowerTutorial1.pod` vs `MaxPowerTutorial1-AMC2.pod`) showed the only genuine differences live in `[Extract]`: `Device_Server` (`"PADB ORACLE SR"` vs `"PADB ORACLE AMC2"`) and `Device_Database` (`"V2_GALLEON"` vs `"GALLEON_1"`). Everything else — every `AnalyticName`, every `OutputConfig_OutputFile` — is identical between the two, which means running both pods writes identically-named CSVs. No collision *within* one pod (the existing `unique_output_filenames` case) — a collision *across* two site-variant pods of conceptually the same test, if either is ever run into a shared location.
+
+- **Site registry**: `padb_sites.json`, next to the script — `{"SiteName": {"suffix": "...", "Device_Server": "...", "Device_Database": "..."}}`. Exactly one site must have `"suffix": ""` — that's the *primary* site (Santa Rosa); its analytic names are the canonical, unsuffixed ones everything else disambiguates against. Add a new site here (no code changes) when a third location shows up.
+- **`--pod <file> --to <site>`**: detects the source site by matching the pod's live `Device_Server`/`Device_Database` against the registry (raises clearly, never guesses, if it matches none — same defensive-throw convention as the spec functions). Writes a new pod (never touches the source): swaps `Device_Server`/`Device_Database`, and for every analytic, appends the target site's suffix to `AnalyticName` (space-separated, e.g. `"Leveled Linear"` → `"Leveled Linear AMC2"`) and `OutputConfig_OutputFile` (underscore-separated, e.g. `"..._Linear"` → `"..._Linear_AMC2"`) — or strips a known suffix back off when converting *to* the primary site. Verified round-trip byte-identical (Santa Rosa → AMC2 → Santa Rosa reproduces the original pod exactly, apart from `SaoFile`/`LastUpdated`).
+- **`.sao` files can't be converted.** They're a binary PADB format (version-tagged, with encoded DUT serial numbers) — a Santa Rosa `.sao` is meaningless against AMC2 hardware. The tool points `SaoFile=` at the expected new filename and prints an explicit `WARNING:` that a real `.sao` extracted at the target site still needs to be supplied before the converted pod can run.
+- **`--job <job.json> --to <site>`**: repoints `"pod"`, and substitutes the old pod stem for the new one everywhere it appears in `results_dir`, `publish`/`publish_to`, and `description`. Auto-creates the companion converted pod via the same logic above if it doesn't exist yet (prints when it does this — no silent side effects). For a V2 run job (`"mode": "interactive"`) it also prints a reminder to re-run `padb_make_v2_job.py` against the new pod for the plot-job side, rather than hand-patching a `csv_path` prediction a second time.
+- **Never overwrites an existing output file** without `--force` — same convention as every other generator in this repo.
+
+---
+
 ## Auto view-selection (added 2026-07-22)
 
 `padb_v2.py`'s per-job-runner omits `"views"` from job.json entirely now to get automatic, data-driven defaults instead of hardcoding a list per pod:

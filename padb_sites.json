@@ -1,0 +1,12 @@
+{
+  "SantaRosa": {
+    "suffix": "",
+    "Device_Server": "PADB ORACLE SR",
+    "Device_Database": "V2_GALLEON"
+  },
+  "AMC2": {
+    "suffix": "-AMC2",
+    "Device_Server": "PADB ORACLE AMC2",
+    "Device_Database": "GALLEON_1"
+  }
+}
