@@ -30,11 +30,9 @@ The shared `Padb\Data` folder most of us use day-to-day is genuinely busy (100+ 
 
 ## 3. Get the tutorial pods
 
-Ask the trainer for these 6 files (3 pods + their `.sao` companions) and drop them straight into `C:\temp\data`:
+The 3 tutorial pods (+ their `.sao` companions) ship inside `tools\tutorial\` — already there from step 2, no need to ask anyone for files. Just copy them into your sandbox:
 
-- [ ] `MaxPowerTutorial1.pod` / `.sao`
-- [ ] `MaxPowerTutorial2.pod` / `.sao`
-- [ ] `MaxPowerTutorial3.pod` / `.sao`
+- [ ] Copy everything from `C:\temp\tools\tutorial\` into `C:\temp\data`
 
 ## 4. Launch the web app once, to confirm it all works
 
@@ -55,3 +53,5 @@ This opens `http://127.0.0.1:5000` in your browser. Confirm:
 | Tutorial 3 | `/padb-tools` | `MaxPowerTutorial3.pod` | Open Claude Code in `C:\temp\tools`, ask it questions about the pod via `/padb-tools` — no web app needed for this one |
 
 If steps 1–4 above are done, you're ready to follow along live for all three.
+
+**AMC2 variants**: `tutorial\` also includes `-AMC2` versions of each pod (Malaysia site) — used only if we demo the site-conversion feature (Convert Selected / Convert Pod). Not needed for the core 3 tutorials above.
