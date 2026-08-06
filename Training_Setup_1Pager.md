@@ -32,6 +32,8 @@ The shared `Padb\Data` folder most of us use day-to-day is genuinely busy (100+ 
 
 The 3 tutorial pods (+ their `.sao` companions) ship inside `tools\tutorial\` — already there from step 2, no need to ask anyone for files. Just copy them into your sandbox:
 
+> **Note on `.sao` files**: not required to generate data/plots through our tools — `padb_run.py` extracts via Oracle regardless (`.sao` is PADB's own *output*, written/refreshed after extraction, never read as an input by our pipeline). They're only needed if you want to open a pod **directly in PADB-R.exe's own GUI** to inspect it outside our tooling.
+
 - [ ] Copy everything from `C:\temp\tools\tutorial\` into `C:\temp\data`
 
 ## 4. Launch the web app once, to confirm it all works
