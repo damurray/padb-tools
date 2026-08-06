@@ -580,42 +580,49 @@ add_bullets(s, [
 ], size=18)
 
 # ---------------------------------------------------------------------------
-# 19. Tutorial 1 — Step 1: generate the job.json
+# 19. Tutorial 1 — Step 1: drop & generate (GUI)
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 1 — PADB Simple", "Step 1 — Generate the job.json", 19)
-add_bullets(s, ["From the Data folder, one command:"], top=1.85, height=0.4, size=19)
-add_code(s, [
-    "py padb_make_job.py MaxPowerTutorial1.pod --module Tutorial --mode simple",
-], top=2.3, height=0.55, size=15)
-add_bullets(s, ["Writes MaxPowerTutorial1_job.json next to the pod:"], top=3.05, height=0.4, size=18)
-add_code(s, [
-    "{",
-    '  "description": "SG6311A MaxPowerTutorial1 — Simple mode",',
-    '  "pod": "MaxPowerTutorial1.pod",',
-    '  "mode": "simple",',
-    '  "results_dir": "MaxPowerTutorial1_simple_results",',
-    '  "publish": { "destination":',
-    '    "...\\\\PADB-Simple\\\\Tutorial\\\\MaxPowerTutorial1" }',
-    "}",
-], top=3.5, height=2.5, size=13.5)
+s = content_slide("Tutorial 1 — PADB Simple", "Step 1 — Drop the Pod, Generate the Job", 19)
+add_image(s, f"{IMG_DIR}/t1_step1.png", left=0.6, top=1.7, width=7.6)
+tb = s.shapes.add_textbox(Inches(8.5), Inches(2.0), Inches(4.3), Inches(4.5))
+tf = tb.text_frame
+tf.word_wrap = True
+for i, txt in enumerate([
+    "py webapp\\padb_web.py",
+    "Drag MaxPowerTutorial1.pod onto the page",
+    "Analytics parse instantly — no extraction needed to preview them",
+    "Mode: simple, Module: Tutorial",
+    "Click Generate Job — writes MaxPowerTutorial1_job.json next to the pod",
+]):
+    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+    r = p.add_run()
+    r.text = txt
+    r.font.size = Pt(15 if i else 14)
+    r.font.bold = (i == 0)
+    r.font.color.rgb = NAVY if i == 0 else GRAY
+    p.space_after = Pt(10)
 
 # ---------------------------------------------------------------------------
-# 20. Tutorial 1 — Step 2: run it
+# 20. Tutorial 1 — Step 2: run it (GUI)
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 1 — PADB Simple", "Step 2 — Run It (Real PADB-R.exe)", 20)
-add_code(s, ["py padb_run.py MaxPowerTutorial1_job.json"], top=1.85, height=0.55, size=15)
-add_bullets(s, ["What actually happened, this run:"], top=2.6, height=0.4, size=18)
-add_code(s, [
-    "Analytics found in pod: 6",
-    "  [1] Scatter        Unleveled Log",
-    "  [2] Scatter        Leveled Log   ...(4 Scatter total)",
-    "  [5] SummaryPlot    Summary_Leveled_Linear",
-    "  [6] Environmental  Environmental_Leveled_Linear",
-    "PADB completed in 107.1s, return code: 0",
-    "CSVs found: 6",
-    "Publishing to ...\\\\PADB-Simple\\\\Tutorial\\\\MaxPowerTutorial1 ...",
-    "Published OK.",
-], top=3.0, height=3.35, size=14)
+s = content_slide("Tutorial 1 — PADB Simple", "Step 2 — Check the Box, Run It", 20)
+add_image(s, f"{IMG_DIR}/t1_step2.png", left=0.6, top=1.7, width=8.6)
+tb = s.shapes.add_textbox(Inches(9.5), Inches(2.0), Inches(3.3), Inches(4.5))
+tf = tb.text_frame
+tf.word_wrap = True
+for i, txt in enumerate([
+    "Check the job's row, click Run Selected",
+    "Real PADB-R.exe runs — the queue serializes it, so it's safe even if others are running jobs too",
+    "Status panel streams the live log",
+    "\"done\" + Open results link when it finishes — 107.1s, this run",
+]):
+    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+    r = p.add_run()
+    r.text = txt
+    r.font.size = Pt(15 if i == 0 else 14)
+    r.font.bold = (i == 0)
+    r.font.color.rgb = NAVY if i == 0 else GRAY
+    p.space_after = Pt(10)
 
 # ---------------------------------------------------------------------------
 # 21. Tutorial 1 — the result
@@ -657,62 +664,48 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 23. Tutorial 2 — Step 1: generate both job files
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 2 — PADB Interactive", "Step 1 — Generate Both Job Files", 23)
-add_bullets(s, ["One command generates the run job AND one plot job per analytic:"],
-            top=1.85, height=0.4, size=18)
-add_code(s, ["py padb_make_v2_job.py MaxPowerTutorial2.pod --module Tutorial"],
-         top=2.3, height=0.55, size=15)
-add_bullets(s, ["Output:"], top=3.05, height=0.4, size=18)
-add_code(s, [
-    "Wrote MaxPowerTutorial2_run_job.json",
-    "Wrote MaxPowerTutorial2_Leveled_Linear_v2_job.json",
-    "  (csv_path PREDICTED -- verify after running the extraction job)",
-    "Wrote MaxPowerTutorial2_Unleveled_Linear_v2_job.json",
-    "  (csv_path PREDICTED -- verify after running the extraction job)",
-], top=3.5, height=1.9, size=14)
-add_bullets(s, [
-    "Three files total: 1 run job (extraction) + 2 plot jobs (one per analytic)",
-], top=5.55, height=0.5, size=17)
+s = content_slide("Tutorial 2 — PADB Interactive", "Step 1 — Drop the Pod, Generate the Job", 23)
+add_image(s, f"{IMG_DIR}/t2_step1.png", left=0.6, top=1.7, width=7.6)
+tb = s.shapes.add_textbox(Inches(8.5), Inches(2.0), Inches(4.3), Inches(4.5))
+tf = tb.text_frame
+tf.word_wrap = True
+for i, txt in enumerate([
+    "Same drop, different mode",
+    "Mode: interactive (V2), Module: Tutorial",
+    "One click, three files: 1 run job (extraction) + 1 plot job per analytic",
+    "csv_path in each plot job is PREDICTED — padb_v2.py verifies it against the real CSV once the run job has actually extracted",
+]):
+    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+    r = p.add_run()
+    r.text = txt
+    r.font.size = Pt(15 if i == 0 else 14)
+    r.font.bold = (i == 0)
+    r.font.color.rgb = NAVY if i == 0 else GRAY
+    p.space_after = Pt(10)
 
 # ---------------------------------------------------------------------------
-# 24. Tutorial 2 — Step 2: run the extraction
+# 24. Tutorial 2 — Step 2: select just the run job
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 2 — PADB Interactive", "Step 2 — Run the Extraction", 24)
-add_code(s, ["py padb_run.py MaxPowerTutorial2_run_job.json"], top=1.85, height=0.55, size=15)
-add_bullets(s, ["What actually happened, this run:"], top=2.6, height=0.4, size=18)
-add_code(s, [
-    "Analytics found in pod: 2",
-    "  [1] Scatter  Leveled Linear",
-    "  [2] Scatter  Unleveled Linear",
-    "PADB completed in 122.7s, return code: 0",
-    "CSVs found: 2",
-    "  Scatter_Max_Power_Leveled_Linear.csv",
-    "  Scatter_Max_Power_Unleveled_Linear.csv",
-], top=3.0, height=2.75, size=14.5)
+s = content_slide("Tutorial 2 — PADB Interactive", "Step 2 — Select Just the Run Job", 24)
 add_bullets(s, [
-    "CSVs land in MaxPowerTutorial2_run_results\\padb\\ — padb_v2.py reads from here next",
-], top=5.9, height=0.5, size=16.5)
+    "Three rows appear — the run job and both plot jobs. Check only the run job:",
+], top=1.75, height=0.5, size=17)
+add_image(s, f"{IMG_DIR}/t2_step2_top.png", left=0.6, top=2.35, width=12.1)
+add_bullets(s, [
+    "You never need to check the plot-job rows yourself for a fresh dataset — the run job finds and runs them automatically once extraction succeeds",
+], top=6.05, height=0.7, size=15.5)
 
 # ---------------------------------------------------------------------------
-# 25. Tutorial 2 — Step 3: build the plots
+# 25. Tutorial 2 — Step 3: one click, extraction + all plots
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 2 — PADB Interactive", "Step 3 — Build the Plots", 25)
-add_bullets(s, ["Run padb_v2.py once per plot job (no PADB-R.exe involved — fast):"],
-            top=1.85, height=0.4, size=18)
-add_code(s, [
-    "py padb_v2.py MaxPowerTutorial2_Leveled_Linear_v2_job.json",
-    "py padb_v2.py MaxPowerTutorial2_Unleveled_Linear_v2_job.json",
-], top=2.3, height=1.0, size=14.5)
-add_bullets(s, ["Each renders all six views and publishes:"], top=3.5, height=0.4, size=18)
-add_code(s, [
-    "Rendering Scatter, Statistical Summary, Box Plots,",
-    "  Distribution, Environmental Coverage, Summary",
-    "Published 7 file(s) -> ...\\\\PADB-Interactive\\\\Tutorial\\\\MaxPowerTutorial2",
-    "Published 13 file(s) -> ...\\\\PADB-Interactive\\\\Tutorial\\\\MaxPowerTutorial2",
-], top=3.95, height=1.9, size=14)
+s = content_slide("Tutorial 2 — PADB Interactive", "Step 3 — One Click: Extract AND Build Plots", 25)
 add_bullets(s, [
-    "Both analytics share one results folder and one combined index.html",
-], top=6.0, height=0.5, size=16.5)
+    "Click Run Selected once. Real PADB-R.exe extraction, then both plot jobs build automatically — no second step:",
+], top=1.65, height=0.5, size=15.5)
+add_image(s, f"{IMG_DIR}/t2_step2_bottom.png", left=2.15, top=2.2, width=9.0)
+add_bullets(s, [
+    "3 temperatures (Room, 20°C, 30°C) — padb_v2.py auto-detects multi-temp data and builds the full six-view suite, no \"views\" key needed",
+], top=6.35, height=0.7, size=13.5)
 
 # ---------------------------------------------------------------------------
 # 26. Tutorial 2 — the result: combined gallery
