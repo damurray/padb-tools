@@ -2049,6 +2049,12 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     _abs_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Serial"]
     if port_col:
         _abs_cols.append(port_col)
+    # Spec/Uncertainty carried through per-point (not just Upper_Limit/Lower_Limit)
+    # for the same reason as the other 5 views' segment tab-through: Limit is spec
+    # adjusted per-unit by measurement uncertainty, so it isn't frequency-piecewise-
+    # constant, while raw Spec is. See "Spec-limit segment tab-through" in CLAUDE.md.
+    _dist_spec_cols = [c for c in ("Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo") if c in df.columns]
+    _abs_cols += _dist_spec_cols
 
     raw_abs: list = []
     for spur in spur_types:
@@ -2065,6 +2071,10 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                 "p":  [str(x) for x in t_df[port_col]] if port_col else [""] * len(t_df),
                 "hi": [None if pd.isna(x) else round(float(x), 2) for x in t_df["Upper_Limit"]],
                 "lo": [None if pd.isna(x) else round(float(x), 2) for x in t_df["Lower_Limit"]],
+                **{
+                    c.lower(): [None if pd.isna(x) else round(float(x), 2) for x in t_df[c]]
+                    for c in _dist_spec_cols
+                },
             })
         raw_abs.append(row)
 
@@ -2093,6 +2103,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
 
     constants = "\n".join([
         f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var X_UNIT={json.dumps(x_unit)};",
         f"var SPUR_TYPES={json.dumps(spur_types)};",
         f"var SPUR_COLORS={json.dumps(spur_colors)};",
         f"var TEMPS={json.dumps(temps_present)};",
@@ -2367,6 +2378,118 @@ function jsKde(vals,nPts){
   return {x:xs,y:ys,n:n};
 }
 
+/* Group a sorted {x,y} spec-point array into contiguous frequency segments of
+   constant value -- shared verbatim with the scatter/boxplot/stat_summary/
+   summary/env_coverage views. */
+function getSpecSegments(points){
+  if(!points||!points.length) return [];
+  var segs=[],cur=null;
+  points.forEach(function(p){
+    var v=Math.round(p.y*100)/100;
+    if(!cur||v!==cur.value){
+      cur={lo:p.x,hi:p.x,value:v};
+      segs.push(cur);
+    } else {
+      cur.hi=p.x;
+    }
+  });
+  return segs;
+}
+/* ---- spec-segment tab navigation ---- */
+var _specSegments=[],_segIdx=-1;
+var SEG_KEY_FIELDS={limit:['hi','lo'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
+var _segKey=null;
+function _defaultSegKey(){
+  var has=function(field){
+    return (RAW_ABS||[]).some(function(bySpur){
+      return (bySpur||[]).some(function(byTemp){
+        return byTemp&&byTemp[field]&&byTemp[field].some(function(v){return v!=null;});
+      });
+    });
+  };
+  if(has('spec_hi')||has('spec_lo')) return 'spec';
+  if(has('hi')||has('lo')) return 'limit';
+  if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
+  return 'spec';
+}
+function segKeyChange(){
+  _segKey=document.getElementById('segKeySel').value;
+  _recomputeSpecSegments();
+}
+function _segLabelText(seg,i,n){
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+}
+function segTab(dir){
+  if(!_specSegments.length) return;
+  _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  var seg=_specSegments[_segIdx];
+  var s1=document.getElementById('dist_freq_lo'),s2=document.getElementById('dist_freq_hi');
+  s1.value=seg.lo;s2.value=seg.hi;
+  /* Write the exact values straight to the text boxes, not the slider's
+     (possibly step-snapped) .value -- see setFreqBand's identical fix in
+     the scatter/distribution-histogram views. */
+  document.getElementById('dist_freq_lo_txt').value=seg.lo.toFixed(3);
+  document.getElementById('dist_freq_hi_txt').value=seg.hi.toFixed(3);
+  update();
+}
+/* Recompute segments from the SpurType/serial/port-filtered raw points across
+   every (SpurType, Temperature) bucket in RAW_ABS, ignoring dist_freq_lo/
+   dist_freq_hi themselves (that's what segTab moves). No GF exists in this
+   view (delta-env/KDE has no per-DUT exclusion mechanism), so only the
+   SpurType/serial/port filters apply -- same ones update() itself uses for
+   its own freq/serial-triggered raw recompute. */
+function _recomputeSpecSegments(){
+  if(_segKey===null){
+    _segKey=_defaultSegKey();
+    var sel=document.getElementById('segKeySel');
+    if(sel) sel.value=_segKey;
+  }
+  var fields=SEG_KEY_FIELDS[_segKey]||SEG_KEY_FIELDS.spec;
+  var hiField=fields[0],loField=fields[1];
+  var spurs=getSelSpurIdxs();
+  var selSer=getSelSerials(),selPor=getSelPorts();
+  var hiPts={},loPts={};
+  spurs.forEach(function(si){
+    (RAW_ABS[si]||[]).forEach(function(raw){
+      if(!raw) return;
+      for(var i=0;i<raw.f.length;i++){
+        var ser=raw.s?raw.s[i]:'',port=raw.p?raw.p[i]:'';
+        if(!selSer.has(ser)) continue;
+        if(PORTS.length&&!selPor.has(port)) continue;
+        var f=raw.f[i];
+        var hiV=raw[hiField]?raw[hiField][i]:null;
+        var loV=raw[loField]?raw[loField][i]:null;
+        if(hiV!=null&&!isNaN(Number(hiV))){
+          var v=Number(hiV);
+          if(!(f in hiPts)||v<hiPts[f]) hiPts[f]=v;
+        }
+        if(loV!=null&&!isNaN(Number(loV))){
+          var v2=Number(loV);
+          if(!(f in loPts)||v2>loPts[f]) loPts[f]=v2;
+        }
+      }
+    });
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
+  var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
+  var points=hiPoints.length?hiPoints:loPoints;
+  _specSegments=getSpecSegments(points);
+  var bar=document.getElementById('segTabBar');
+  if(!bar) return;
+  if(_specSegments.length<2){bar.style.display='none';return;}
+  bar.style.display='';
+  var loTxt=document.getElementById('dist_freq_lo_txt');
+  var loV3=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('dist_freq_lo').value);
+  _segIdx=0;
+  for(var i=0;i<_specSegments.length;i++){if(loV3>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  var seg=_specSegments[_segIdx];
+  document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
+  document.getElementById('segTabPrev').disabled=(_segIdx===0);
+  document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
+}
+
 /* ---- main KDE plot update ---- */
 function update(){
   _distUpdateBadge('spur');
@@ -2497,6 +2620,7 @@ function update(){
   Plotly.react('kde_plot',traces,layout,{responsive:true});
   updateDeltaTable();
   updateTiTable();
+  _recomputeSpecSegments();
   saveState();
 }
 
@@ -2799,6 +2923,17 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         f'<input type="text" id="dist_freq_hi_txt" value="{dist_freq_max:.1f}"'
         f' style="width:55px;font-size:12px;border:1px solid #bbb;border-radius:3px;padding:1px 3px"'
         f' onchange="freqDistTxtChange(\'hi\')" onkeydown="freqDistKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>\n'
+        '  <div class="sep"></div>\n'
+        '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '    <option value="spec">Spec</option>\n'
+        '    <option value="limit">Limit</option>\n'
+        '    <option value="uncertainty">Uncertainty</option>\n'
+        '  </select></label>\n'
+        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '    <button class="sel-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '    <button class="sel-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '  </span>\n'
         '  <div class="sep"></div>\n'
         '  <label>P:&nbsp;<select id="dist_P" onchange="update()" oninput="update()">'
         '<option value="0.80">80%</option>'
