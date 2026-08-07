@@ -320,17 +320,31 @@ function getSpecMask(dataArr){
    many total distinct values that produces. Values are rounded to 2 decimals
    before comparing, so float noise from CSV round-tripping can't fracture one
    real segment into several spurious ones. */
-function getSpecSegments(points){
-  if(!points||!points.length) return [];
-  var segs=[],cur=null;
-  points.forEach(function(p){
-    var v=Math.round(p.y*100)/100;
-    if(!cur||v!==cur.value){
-      cur={lo:p.x,hi:p.x,value:v};
+/* Merge Upper and Lower into one segment list, splitting wherever EITHER
+   side changes value -- a plain hi-else-lo pick would silently drop any
+   transition unique to the side not chosen (asymmetric two-sided specs,
+   where Upper and Lower don't step at the same frequencies). */
+function getSpecSegments(hiPoints,loPoints){
+  hiPoints=hiPoints||[];loPoints=loPoints||[];
+  if(!hiPoints.length&&!loPoints.length) return [];
+  var hiMap={},loMap={};
+  hiPoints.forEach(function(p){hiMap[p.x]=Math.round(p.y*100)/100;});
+  loPoints.forEach(function(p){loMap[p.x]=Math.round(p.y*100)/100;});
+  var freqSet={};
+  Object.keys(hiMap).forEach(function(f){freqSet[f]=1;});
+  Object.keys(loMap).forEach(function(f){freqSet[f]=1;});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var segs=[],cur=null,lastHi=null,lastLo=null;
+  freqs.forEach(function(f){
+    var hv=hiMap.hasOwnProperty(f)?hiMap[f]:lastHi;
+    var lv=loMap.hasOwnProperty(f)?loMap[f]:lastLo;
+    if(!cur||hv!==cur.hiValue||lv!==cur.loValue){
+      cur={lo:f,hi:f,hiValue:hv,loValue:lv};
       segs.push(cur);
     } else {
-      cur.hi=p.x;
+      cur.hi=f;
     }
+    lastHi=hv;lastLo=lv;
   });
   return segs;
 }
@@ -379,12 +393,12 @@ function buildTraces(filtered){
   var _mask=getSpecMask(filtered);
   if(_mask.isMask){
     if(_mask.hi.length) traces.push({
-      type:'scatter',mode:'lines',
+      type:'scatter',mode:(_mask.hi.length<2?'markers':'lines'),
       x:_mask.hi.map(function(p){return p.x;}),y:_mask.hi.map(function(p){return p.y;}),
       line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Hi)',
       hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
     if(_mask.lo.length) traces.push({
-      type:'scatter',mode:'lines',
+      type:'scatter',mode:(_mask.lo.length<2?'markers':'lines'),
       x:_mask.lo.map(function(p){return p.x;}),y:_mask.lo.map(function(p){return p.y;}),
       line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Lo)',
       hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
@@ -698,7 +712,10 @@ function segKeyChange(){
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+  var parts=[];
+  if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
+  if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -741,8 +758,7 @@ function _recomputeSpecSegments(){
     return true;
   });
   var mask=getSpecMaskByKey(groupFiltered,_segKey);
-  var points=mask.hi.length?mask.hi:mask.lo;
-  _specSegments=getSpecSegments(points);
+  _specSegments=getSpecSegments(mask.hi,mask.lo);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -1175,6 +1191,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
         '<div class="ctrl-bar">\n'
+        f'  {panels_html}\n'
+        '  <div class="sep"></div>\n'
         f'  <label>Group&nbsp;by:<select id="groupby" onchange="update()">{grp_opts}</select></label>\n'
         '  <label>Sort:<select id="sortby" onchange="update()">\n'
         '    <option value="name_asc">Name A&#8594;Z</option>\n'
@@ -1183,8 +1201,6 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '    <option value="median_asc">Median low&#8594;high</option>\n'
         '    <option value="median_desc">Median high&#8594;low</option>\n'
         '  </select></label>\n'
-        '  <div class="sep"></div>\n'
-        f'  {panels_html}\n'
         '  <div class="sep"></div>\n'
         f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
@@ -1554,17 +1570,31 @@ function getSpecMask(dataArr){
 }
 /* Group a sorted {x,y} spec-point array into contiguous frequency segments of
    constant value -- shared verbatim with the scatter view's copy. */
-function getSpecSegments(points){
-  if(!points||!points.length) return [];
-  var segs=[],cur=null;
-  points.forEach(function(p){
-    var v=Math.round(p.y*100)/100;
-    if(!cur||v!==cur.value){
-      cur={lo:p.x,hi:p.x,value:v};
+/* Merge Upper and Lower into one segment list, splitting wherever EITHER
+   side changes value -- a plain hi-else-lo pick would silently drop any
+   transition unique to the side not chosen (asymmetric two-sided specs,
+   where Upper and Lower don't step at the same frequencies). */
+function getSpecSegments(hiPoints,loPoints){
+  hiPoints=hiPoints||[];loPoints=loPoints||[];
+  if(!hiPoints.length&&!loPoints.length) return [];
+  var hiMap={},loMap={};
+  hiPoints.forEach(function(p){hiMap[p.x]=Math.round(p.y*100)/100;});
+  loPoints.forEach(function(p){loMap[p.x]=Math.round(p.y*100)/100;});
+  var freqSet={};
+  Object.keys(hiMap).forEach(function(f){freqSet[f]=1;});
+  Object.keys(loMap).forEach(function(f){freqSet[f]=1;});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var segs=[],cur=null,lastHi=null,lastLo=null;
+  freqs.forEach(function(f){
+    var hv=hiMap.hasOwnProperty(f)?hiMap[f]:lastHi;
+    var lv=loMap.hasOwnProperty(f)?loMap[f]:lastLo;
+    if(!cur||hv!==cur.hiValue||lv!==cur.loValue){
+      cur={lo:f,hi:f,hiValue:hv,loValue:lv};
       segs.push(cur);
     } else {
-      cur.hi=p.x;
+      cur.hi=f;
     }
+    lastHi=hv;lastLo=lv;
   });
   return segs;
 }
@@ -1612,7 +1642,10 @@ function segKeyChange(){
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' MHz, value: '+seg.value+')';
+  var parts=[];
+  if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
+  if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' MHz, '+(parts.join(', ')||'no value')+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -1642,8 +1675,7 @@ function _recomputeSpecSegments(){
     return true;
   });
   var mask=getSpecMaskByKey(groupFiltered,_segKey);
-  var points=mask.hi.length?mask.hi:mask.lo;
-  _specSegments=getSpecSegments(points);
+  _specSegments=getSpecSegments(mask.hi,mask.lo);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -1907,10 +1939,17 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     non_room_temps = [t for t in temps_present if t != "Room"]
 
     all_serials = sorted(str(s) for s in df["Serial"].dropna().unique())
-    port_col = "_grp_Port" if "_grp_Port" in df.columns else None
-    all_ports = sorted(str(p) for p in df[port_col].dropna().unique()) if port_col else []
 
-    # SpurType — use pre-parsed column if available, else HarmonicNumber, else regex on Group string
+    # SpurType/Port — use pre-parsed _grp_* column if available, else regex on
+    # the raw Group string. _load_scatter_csv (the loader that produces the df
+    # this function receives) never builds generic _grp_* columns, so relying
+    # on "_grp_Port" alone silently produced an all-empty-string port for
+    # every point: any specific port selection then filtered every point out
+    # of the live recompute (a real bug, not synthetic-data-specific --
+    # affects any real pod with a genuine Port dimension), while "no
+    # selection"/"all selected" happened to look fine only because that case
+    # falls back to the server-precomputed KDE, bypassing port filtering
+    # entirely. SpurType already had this fallback pattern; Port never did.
     df = df.copy()
     if "_grp_SpurType" in df.columns:
         df["_spur"] = df["_grp_SpurType"].fillna("").astype(str)
@@ -1928,6 +1967,17 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
             return m.group(1).strip() if m else ""
         df["_spur"] = df["Group"].fillna("").astype(str).apply(_extr_spur)
 
+    if "_grp_Port" in df.columns:
+        df["_port"] = df["_grp_Port"].fillna("").astype(str)
+    else:
+        _port_re_dist = re.compile(r"Port:\s*(.+?)(?:\s{2,}|$)", re.IGNORECASE)
+        def _extr_port(g):
+            m = _port_re_dist.search(g)
+            return m.group(1).strip() if m else ""
+        df["_port"] = df["Group"].fillna("").astype(str).apply(_extr_port)
+    port_col = "_port"
+    all_ports = sorted(str(p) for p in df[port_col].dropna().unique() if str(p).strip())
+
     spur_types = sorted(s for s in df["_spur"].unique() if s)
     if not spur_types:
         spur_types = ["(all)"]
@@ -1935,12 +1985,9 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
 
     # Port per serial (used in delta table)
     dut_port_map: dict = {}
-    if port_col:
-        for serial in all_serials:
-            pts = df[df["Serial"] == serial][port_col].dropna().unique()
-            dut_port_map[serial] = str(pts[0]) if len(pts) == 1 else ""
-    else:
-        dut_port_map = {s: "" for s in all_serials}
+    for serial in all_serials:
+        pts = df[df["Serial"] == serial][port_col].dropna().unique()
+        dut_port_map[serial] = str(pts[0]) if len(pts) == 1 else ""
 
     _pal = ["#2196F3", "#F44336", "#4CAF50", "#FF9800", "#9C27B0",
             "#00BCD4", "#795548", "#E91E63", "#8BC34A", "#607D8B"]
@@ -2381,17 +2428,31 @@ function jsKde(vals,nPts){
 /* Group a sorted {x,y} spec-point array into contiguous frequency segments of
    constant value -- shared verbatim with the scatter/boxplot/stat_summary/
    summary/env_coverage views. */
-function getSpecSegments(points){
-  if(!points||!points.length) return [];
-  var segs=[],cur=null;
-  points.forEach(function(p){
-    var v=Math.round(p.y*100)/100;
-    if(!cur||v!==cur.value){
-      cur={lo:p.x,hi:p.x,value:v};
+/* Merge Upper and Lower into one segment list, splitting wherever EITHER
+   side changes value -- a plain hi-else-lo pick would silently drop any
+   transition unique to the side not chosen (asymmetric two-sided specs,
+   where Upper and Lower don't step at the same frequencies). */
+function getSpecSegments(hiPoints,loPoints){
+  hiPoints=hiPoints||[];loPoints=loPoints||[];
+  if(!hiPoints.length&&!loPoints.length) return [];
+  var hiMap={},loMap={};
+  hiPoints.forEach(function(p){hiMap[p.x]=Math.round(p.y*100)/100;});
+  loPoints.forEach(function(p){loMap[p.x]=Math.round(p.y*100)/100;});
+  var freqSet={};
+  Object.keys(hiMap).forEach(function(f){freqSet[f]=1;});
+  Object.keys(loMap).forEach(function(f){freqSet[f]=1;});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var segs=[],cur=null,lastHi=null,lastLo=null;
+  freqs.forEach(function(f){
+    var hv=hiMap.hasOwnProperty(f)?hiMap[f]:lastHi;
+    var lv=loMap.hasOwnProperty(f)?loMap[f]:lastLo;
+    if(!cur||hv!==cur.hiValue||lv!==cur.loValue){
+      cur={lo:f,hi:f,hiValue:hv,loValue:lv};
       segs.push(cur);
     } else {
-      cur.hi=p.x;
+      cur.hi=f;
     }
+    lastHi=hv;lastLo=lv;
   });
   return segs;
 }
@@ -2417,7 +2478,10 @@ function segKeyChange(){
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+  var parts=[];
+  if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
+  if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -2474,8 +2538,7 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  var points=hiPoints.length?hiPoints:loPoints;
-  _specSegments=getSpecSegments(points);
+  _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -2773,17 +2836,27 @@ function updateTiTable(){
   var fr=getFreqRange();
   var freqFlt=(typeof DIST_FREQ_MIN!=='undefined')&&(fr.lo>DIST_FREQ_MIN+0.09||fr.hi<DIST_FREQ_MAX-0.09);
   /* Build per-DUT delta accumulator (raw deltas per DUT per temp, then averaged to one value per DUT) */
+  var allPorts2=PORTS||[];
+  var portFlt=allPorts2.length>1&&selPor.size<allPorts2.length;
   var dutAcc={};
   selSpurIdxs.forEach(function(si){
     selNrIdxs.forEach(function(di){
       var temp=NON_ROOM_TEMPS[di];
       var raw=RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di];
-      if(freqFlt&&raw&&raw.s&&raw.s.length){
+      /* Port filtering needs the raw per-point path even with no freq
+         filter: DUT_PORT_MAP/DUT_DELTA's "port" is a per-SERIAL map, which
+         is ambiguous ("") whenever one serial legitimately has readings
+         under more than one port (a common real scenario, not just this
+         QA dataset) -- that ambiguity previously made port selection a
+         silent no-op unless a freq filter also happened to be active,
+         which is what forced the raw-iteration path that reads the
+         correct per-row raw.p[i] instead. Found 2026-08-08, real bug. */
+      if((freqFlt||portFlt)&&raw&&raw.s&&raw.s.length){
         for(var i=0;i<raw.f.length;i++){
-          if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
+          if(freqFlt&&(raw.f[i]<fr.lo||raw.f[i]>fr.hi)) continue;
           var ser=raw.s[i],dv=raw.d[i];
           if(!selSer.has(ser)) continue;
-          var port=DUT_PORT_MAP&&DUT_PORT_MAP[ser]||'';
+          var port=raw.p?raw.p[i]:'';
           if(selPor.size&&port&&!selPor.has(port)) continue;
           if(!dutAcc[ser]) dutAcc[ser]={by_temp:{}};
           if(!dutAcc[ser].by_temp[temp]) dutAcc[ser].by_temp[temp]=[];
@@ -3908,16 +3981,19 @@ function saveCSV(withExcluded){
       freq_stats:(cd.freq_stats||[]).filter(function(fs){return fs.freq>=fLo&&fs.freq<=fHi;})
     });
   });
-  /* Apply serial + GF filtering consistent with the current plot state */
+  /* Apply serial + port + GF filtering consistent with the current plot state */
   var allSers=getAllSerials();var selSers=getSelectedSerials();
   var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var allPorts=getSsPorts();var selPorts=getSelSsPorts();
+  var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
   var hasGf=_gfExcluded&&_gfExcluded.size>0;
-  if(serFlt||hasGf){
+  if(serFlt||portFlt||hasGf){
     var activeSers=serFlt?selSers:allSers;
+    var activePorts=portFlt?selPorts:allPorts;
     conds=conds.map(function(cd){
       var nfs=[];
       (cd.freq_stats||[]).forEach(function(fs){
-        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq);if(r) nfs.push(r);
+        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq,undefined,activePorts);if(r) nfs.push(r);
       });
       return Object.assign({},cd,{freq_stats:nfs});
     });
@@ -4052,7 +4128,7 @@ function buildTraces(conds,params){
     var ti_line_x=freqs.concat([null]).concat(freqs.slice());
     var ti_line_y=ti_ups.concat([null]).concat(ti_los.slice());
     traces.push({
-      type:'scatter',x:ti_line_x,y:ti_line_y,mode:'lines',
+      type:'scatter',x:ti_line_x,y:ti_line_y,mode:(freqs.length<2?'markers':'lines'),
       line:{color:color,dash:'dash',width:1},
       name:cd.condition+' TI↑↓',legendgroup:cd.condition,showlegend:false,
       hoverinfo:'skip'
@@ -4186,12 +4262,13 @@ function buildTraces(conds,params){
     tllFyUp.push(tllUpByFreq[f]!==undefined?tllUpByFreq[f]:null);
     tllFyLo.push(tllLoByFreq[f]!==undefined?tllLoByFreq[f]:null);
   });
+  var _tllPtMode=tllFx.length<2?'markers':'lines';
   if(tllFyUp.some(function(v){return v!==null;}))
-    traces.push({type:'scatter',x:tllFx,y:tllFyUp,mode:'lines',connectgaps:false,
+    traces.push({type:'scatter',x:tllFx,y:tllFyUp,mode:_tllPtMode,connectgaps:false,
       line:{color:'darkorange',dash:'dashdot',width:2},
       name:'TLL↑',hovertemplate:'TLL↑: %{y:.4f}<extra></extra>'});
   if(tllFyLo.some(function(v){return v!==null;}))
-    traces.push({type:'scatter',x:tllFx,y:tllFyLo,mode:'lines',connectgaps:false,
+    traces.push({type:'scatter',x:tllFx,y:tllFyLo,mode:_tllPtMode,connectgaps:false,
       line:{color:'darkorange',dash:'dashdot',width:2},
       name:'TLL↓',hovertemplate:'TLL↓: %{y:.4f}<extra></extra>'});
   return traces;
@@ -4301,11 +4378,12 @@ function _isStatGfExcl(serial,cond,freq){
   /* Coarse match: DUT serial + condition WITHOUT temperature or frequency */
   return _gfCoarseExcluded.has((serial||'unknown')+'||'+_condKeyForStat(cond));
 }
-function recomputeFreqStat(fs,selSers,cond,freq,applyGf){
+function recomputeFreqStat(fs,selSers,cond,freq,applyGf,selPorts){
   var f=freq!==undefined?freq:(fs.freq||0);
   var c=cond||'';
   var dv=(fs.dut_vals||[]).filter(function(d){
     if(selSers.indexOf(d.s)<0) return false;
+    if(selPorts&&selPorts.length&&selPorts.indexOf(d.p||'')<0) return false;
     if(applyGf===false) return true;
     var _excl=_isStatGfExcl(d.s,c,f);
     return _statGfFocusMode?_excl:!_excl;
@@ -4583,17 +4661,31 @@ function freqKeyDown(e,which){
 }
 /* Group a sorted {x,y} spec-point array into contiguous frequency segments of
    constant value -- shared verbatim with the scatter/distribution/boxplot views. */
-function getSpecSegments(points){
-  if(!points||!points.length) return [];
-  var segs=[],cur=null;
-  points.forEach(function(p){
-    var v=Math.round(p.y*100)/100;
-    if(!cur||v!==cur.value){
-      cur={lo:p.x,hi:p.x,value:v};
+/* Merge Upper and Lower into one segment list, splitting wherever EITHER
+   side changes value -- a plain hi-else-lo pick would silently drop any
+   transition unique to the side not chosen (asymmetric two-sided specs,
+   where Upper and Lower don't step at the same frequencies). */
+function getSpecSegments(hiPoints,loPoints){
+  hiPoints=hiPoints||[];loPoints=loPoints||[];
+  if(!hiPoints.length&&!loPoints.length) return [];
+  var hiMap={},loMap={};
+  hiPoints.forEach(function(p){hiMap[p.x]=Math.round(p.y*100)/100;});
+  loPoints.forEach(function(p){loMap[p.x]=Math.round(p.y*100)/100;});
+  var freqSet={};
+  Object.keys(hiMap).forEach(function(f){freqSet[f]=1;});
+  Object.keys(loMap).forEach(function(f){freqSet[f]=1;});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var segs=[],cur=null,lastHi=null,lastLo=null;
+  freqs.forEach(function(f){
+    var hv=hiMap.hasOwnProperty(f)?hiMap[f]:lastHi;
+    var lv=loMap.hasOwnProperty(f)?loMap[f]:lastLo;
+    if(!cur||hv!==cur.hiValue||lv!==cur.loValue){
+      cur={lo:f,hi:f,hiValue:hv,loValue:lv};
       segs.push(cur);
     } else {
-      cur.hi=p.x;
+      cur.hi=f;
     }
+    lastHi=hv;lastLo=lv;
   });
   return segs;
 }
@@ -4619,7 +4711,10 @@ function segKeyChange(){
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+  var parts=[];
+  if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
+  if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -4678,8 +4773,7 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  var points=hiPoints.length?hiPoints:loPoints;
-  _specSegments=getSpecSegments(points);
+  _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -4712,10 +4806,16 @@ function update(){
   /* If all serials deselected treat as all-selected to avoid blank plot */
   if(selSers.length===0&&allSers.length>0) selSers=allSers.slice();
   var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  /* Port filter used to only dim "Show points" markers, never touch the
+     actual mean/quantile/TI numbers -- selecting just one port silently
+     kept showing the all-ports statistics (found 2026-08-08, real bug,
+     reported as "Port dropdown accepts changes but isn't applied"). */
+  var selPorts=getSelSsPorts();var allPorts=getSsPorts();
+  var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
   var gfToggle=document.getElementById('stat_gf_chk');
   var gfEnabled=gfToggle?gfToggle.checked:true;
   var hasGf=gfEnabled&&_gfExcluded&&_gfExcluded.size>0;
-  if(serFlt||hasGf){
+  if(serFlt||portFlt||hasGf){
     var activeSers;
     if(serFlt){
       activeSers=selSers;
@@ -4725,10 +4825,11 @@ function update(){
       conds.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){(fs.dut_vals||[]).forEach(function(d){if(d.s!=null)_ads.add(d.s);});});});
       activeSers=_ads.size?Array.from(_ads):allSers;
     }
+    var activePorts=portFlt?selPorts:allPorts;
     conds=conds.map(function(cd){
       var nfs=[];
       (cd.freq_stats||[]).forEach(function(fs){
-        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq,hasGf);if(r) nfs.push(r);
+        var r=recomputeFreqStat(fs,activeSers,cd.condition,fs.freq,hasGf,activePorts);if(r) nfs.push(r);
       });
       return Object.assign({},cd,{freq_stats:nfs});
     });
@@ -5312,9 +5413,10 @@ function buildTraces(selConds,exclConds){
     var freqs=idxs.map(function(j){return cd.freqs[j];});
     var ude=idxs.map(function(j){return cd.ude[j];});
     var neg_lde=idxs.map(function(j){return -cd.lde[j];});
-    traces.push({type:'scatter',x:freqs,y:ude,mode:'lines',
+    var _exclPtMode=freqs.length<2?'markers':'lines';
+    traces.push({type:'scatter',x:freqs,y:ude,mode:_exclPtMode,
       line:{color:'rgba(190,190,190,0.55)',width:0.8},showlegend:false,hoverinfo:'skip'});
-    traces.push({type:'scatter',x:freqs,y:neg_lde,mode:'lines',
+    traces.push({type:'scatter',x:freqs,y:neg_lde,mode:_exclPtMode,
       fill:'tonexty',fillcolor:'rgba(200,200,200,0.09)',
       line:{color:'rgba(190,190,190,0.55)',width:0.8},
       name:cd.condition,showlegend:false,
@@ -5341,26 +5443,27 @@ function buildTraces(selConds,exclConds){
         lines.push('TTL: ['+cd.ttl[j].toFixed(4)+', '+cd.ttu[j].toFixed(4)+']');
       return lines.join('<br>');
     });
+    var _selPtMode=freqs.length<2?'markers':'lines';
     /* UDE upper — fill reference, hover suppressed */
-    traces.push({type:'scatter',x:freqs,y:ude,mode:'lines',
+    traces.push({type:'scatter',x:freqs,y:ude,mode:_selPtMode,
       line:{color:color,width:1.5},
       name:cd.condition+' UDE',legendgroup:cd.condition,showlegend:false,
       hoverinfo:'skip'});
     /* -LDE lower + fill to create env contribution band */
-    traces.push({type:'scatter',x:freqs,y:neg_lde,mode:'lines',
+    traces.push({type:'scatter',x:freqs,y:neg_lde,mode:_selPtMode,
       fill:'tonexty',fillcolor:hexAlpha(color,0.18),
       line:{color:color,width:1.5},
       name:cd.condition,legendgroup:cd.condition,showlegend:true,
       text:hov,hovertemplate:'%{text}<extra></extra>'});
     /* TTL dashed lines */
     if(ttu.some(function(v){return v!==null;})){
-      traces.push({type:'scatter',x:freqs,y:ttu,mode:'lines',
+      traces.push({type:'scatter',x:freqs,y:ttu,mode:_selPtMode,
         line:{color:color,dash:'dot',width:1},
         name:cd.condition+' TTL↑',legendgroup:cd.condition,showlegend:false,
         hoverinfo:'skip'});
     }
     if(ttl.some(function(v){return v!==null;})){
-      traces.push({type:'scatter',x:freqs,y:ttl,mode:'lines',
+      traces.push({type:'scatter',x:freqs,y:ttl,mode:_selPtMode,
         line:{color:color,dash:'dot',width:1},
         name:cd.condition+' TTL↓',legendgroup:cd.condition,showlegend:false,
         hoverinfo:'skip'});
@@ -5376,16 +5479,17 @@ function buildTraces(selConds,exclConds){
     []).filter(function(v){return v!==null;});
   if(!xAll.length) xAll=[ENV_FREQ_MIN,ENV_FREQ_MAX];
   var xMin=Math.min.apply(null,xAll),xMax=Math.max.apply(null,xAll);
-  if(spec_lo!==null) traces.push({type:'scatter',x:[xMin,xMax],y:[spec_lo,spec_lo],mode:'lines',
+  var _refPtMode=xMin===xMax?'markers':'lines';
+  if(spec_lo!==null) traces.push({type:'scatter',x:[xMin,xMax],y:[spec_lo,spec_lo],mode:_refPtMode,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
     hovertemplate:'Spec Lo: '+spec_lo.toFixed(4)+'<extra></extra>'});
-  if(spec_hi!==null) traces.push({type:'scatter',x:[xMin,xMax],y:[spec_hi,spec_hi],mode:'lines',
+  if(spec_hi!==null) traces.push({type:'scatter',x:[xMin,xMax],y:[spec_hi,spec_hi],mode:_refPtMode,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: '+spec_hi.toFixed(4)+'<extra></extra>'});
   /* Manual TLL override line */
   var envFlt=getEnvDataFilter();
   if(envFlt.tll_hi!==null&&envFlt.tll_hi!==undefined) traces.push({type:'scatter',x:[xMin,xMax],y:[envFlt.tll_hi,envFlt.tll_hi],
-    mode:'lines',line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
+    mode:_refPtMode,line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
     hovertemplate:'TLL↑ (manual): '+envFlt.tll_hi.toFixed(4)+'<extra></extra>'});
   return traces;
 }
@@ -5623,10 +5727,20 @@ function _poolEcConditions(recs,label){
   recs.forEach(function(r){(r.freqs||[]).forEach(function(f){freqSet[f]=true;});});
   var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
   var duts={};
+  /* The same physical DUT can appear in more than one of the recs being
+     pooled here -- e.g. when a Group-text field that varies by frequency
+     within one DUT's own sweep (Upper Spec/Upper Uncertainty, not just
+     SpurType) is itself a Group By dimension, that DUT's row set splits
+     into several fragmented sub-conditions, each covering a different
+     subset of frequencies. A later rec's dutKey previously OVERWROTE an
+     earlier rec's entry outright, silently discarding whichever
+     frequencies the earlier rec had covered -- found 2026-08-08 via a real
+     blank env_coverage plot after Group By. Fix: merge per-frequency,
+     taking whichever rec actually has a non-null value at each index. */
   recs.forEach(function(r){
+    var origFreqs=r.freqs||[];
     Object.keys(r.duts||{}).forEach(function(k){
       var d=r.duts[k];
-      var origFreqs=r.freqs||[];
       var room=freqs.map(function(f){var idx=origFreqs.indexOf(f);return idx>=0?d.room[idx]:null;});
       var deltas={};
       Object.keys(d.deltas||{}).forEach(function(t){
@@ -5636,7 +5750,22 @@ function _poolEcConditions(recs,label){
       Object.keys(d.spec||{}).forEach(function(sk){
         spec[sk]=freqs.map(function(f){var idx=origFreqs.indexOf(f);return idx>=0?d.spec[sk][idx]:null;});
       });
-      duts[k]={serial:d.serial,port:d.port,gf_key:d.gf_key,room:room,deltas:deltas,spec:spec};
+      var existing=duts[k];
+      if(!existing){
+        duts[k]={serial:d.serial,port:d.port,gf_key:d.gf_key,room:room,deltas:deltas,spec:spec};
+        return;
+      }
+      existing.room=existing.room.map(function(v,i){return v!=null?v:room[i];});
+      Object.keys(deltas).forEach(function(t){
+        existing.deltas[t]=existing.deltas[t]
+          ? existing.deltas[t].map(function(v,i){return v!=null?v:deltas[t][i];})
+          : deltas[t];
+      });
+      Object.keys(spec).forEach(function(sk){
+        existing.spec[sk]=existing.spec[sk]
+          ? existing.spec[sk].map(function(v,i){return v!=null?v:spec[sk][i];})
+          : spec[sk];
+      });
     });
   });
   var specHi=null,specLo=null;
@@ -5808,7 +5937,10 @@ function getActiveDuts(cd){
   return result;
 }
 /* Delta DUTs: serial+GF filter only — port filter excluded so delta TI uses the full
-   port population, matching the room TI policy (allDuts ignores port filter too). */
+   port population regardless of which port you're currently viewing. computeStats()
+   uses this SAME function for Room too (not a separate allDuts list anymore), so
+   Room TI and delta TI always share one DUT population -- see the premise in
+   computeStats()'s own comment. */
 function getDeltaDuts(cd){
   var selSers=getSelectedSerials();var allSers=getAllSerials();
   var serFlt=allSers.length>1&&selSers.length<allSers.length;
@@ -5832,19 +5964,30 @@ function hexAlpha(hex,a){
 }
 function computeStats(cd,params,fr,selTemps){
   var activeDuts=getActiveDuts(cd);
-  /* Room TI and delta TI both use port-filter-agnostic DUT lists so that selecting a
-     single port does not collapse n below the TI threshold. Room uses allDuts; delta uses
-     getDeltaDuts (serial+GF only, no port filter). activeDuts (full filter) is reserved for
-     future per-port display. */
+  /* Room TI and delta TI are computed from the SAME DUT population (getDeltaDuts:
+     serial+GF filtered, port-agnostic) -- added 2026-08-08. Premise: UDE/LDE is a
+     per-DUT delta (nonRoom - Room), so the Room population being compared against
+     it must be the exact same DUTs, or the "Room TI vs ΔEnv" comparison isn't
+     isolating temperature as the only degree of freedom -- you'd be comparing one
+     population's Room noise against a *different* population's temperature delta.
+     Before this, Room used every DUT in the condition (ignoring serial/GF filters
+     entirely) while delta respected them, so deselecting a serial via the Serial
+     filter would shrink delta's n but leave Room's n unchanged -- a real reported
+     inconsistency, not by design (only the *port* exemption below was ever
+     documented intent). Port stays exempted for both, unchanged: selecting a
+     single port isn't isolating a different DUT population for comparison
+     purposes the way a serial deselection is, and narrowing to one port
+     shouldn't collapse either TI's n just because of which port you're viewing.
+     activeDuts (full filter, including port) is reserved for future per-port
+     display, not used in this function's math. */
   var deltaDuts=getDeltaDuts(cd);
-  var allDuts=Object.keys(cd.duts).map(function(k){return [k,cd.duts[k]];});
   var freqs=[],room_lo=[],room_hi=[],ude=[],lde=[],room_means=[],room_ns=[],delta_ns=[];
   for(var j=0;j<cd.freqs.length;j++){
     var f=cd.freqs[j];
     if(f<fr.lo||f>fr.hi) continue;
     freqs.push(f);
     var roomVals=[];
-    allDuts.forEach(function(sd){var v=sd[1].room[j];if(v!==null&&v!==undefined)roomVals.push(v);});
+    deltaDuts.forEach(function(sd){var v=sd[1].room[j];if(v!==null&&v!==undefined)roomVals.push(v);});
     var n_r=roomVals.length;
     room_means.push(n_r?_vecMean(roomVals):null);
     room_ns.push(n_r);
@@ -5891,9 +6034,10 @@ function buildTraces(selConds,exclConds){
     var st=computeStats(cd,params,fr,selTemps);
     if(!st.ude.some(function(v){return v!==null;})) return;
     var neg_lde=st.lde.map(function(v){return v!==null?-v:null;});
-    traces.push({type:'scatter',x:st.freqs,y:st.ude,mode:'lines',
+    var _exclPtMode=st.freqs.length<2?'markers':'lines';
+    traces.push({type:'scatter',x:st.freqs,y:st.ude,mode:_exclPtMode,
       line:{color:'rgba(190,190,190,0.5)',width:0.8},showlegend:false,hoverinfo:'skip'});
-    traces.push({type:'scatter',x:st.freqs,y:neg_lde,mode:'lines',
+    traces.push({type:'scatter',x:st.freqs,y:neg_lde,mode:_exclPtMode,
       fill:'tonexty',fillcolor:'rgba(200,200,200,0.07)',
       line:{color:'rgba(190,190,190,0.5)',width:0.8},
       name:cd.condition,showlegend:false,hoverinfo:'skip'});
@@ -5902,6 +6046,7 @@ function buildTraces(selConds,exclConds){
     var color=PALETTE[ci%PALETTE.length];
     var st=computeStats(cd,params,fr,selTemps);
     if(!st.freqs.length) return;
+    var _selPtMode=st.freqs.length<2?'markers':'lines';
     /* Accumulate range-relevant y values */
     st.ude.forEach(function(v){if(v!==null)yVals.push(v);});
     st.lde.forEach(function(v){if(v!==null)yVals.push(-v);});
@@ -5917,33 +6062,33 @@ function buildTraces(selConds,exclConds){
       return lines.join('<br>');
     });
     if(st.room_hi.some(function(v){return v!==null;})){
-      traces.push({type:'scatter',x:st.freqs,y:st.room_hi,mode:'lines',
+      traces.push({type:'scatter',x:st.freqs,y:st.room_hi,mode:_selPtMode,
         line:{color:color,width:0.8,dash:'dash'},
         name:cd.condition+' Room↑',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
-      traces.push({type:'scatter',x:st.freqs,y:st.room_lo,mode:'lines',
+      traces.push({type:'scatter',x:st.freqs,y:st.room_lo,mode:_selPtMode,
         fill:'tonexty',fillcolor:hexAlpha(color,0.12),
         line:{color:color,width:0.8,dash:'dash'},
         name:cd.condition+' Room TI',legendgroup:cd.condition,showlegend:true,hoverinfo:'skip'});
     }
     var neg_lde=st.lde.map(function(v){return v!==null?-v:null;});
     if(st.ude.some(function(v){return v!==null;})){
-      traces.push({type:'scatter',x:st.freqs,y:st.ude,mode:'lines',
+      traces.push({type:'scatter',x:st.freqs,y:st.ude,mode:_selPtMode,
         line:{color:color,width:2},
         name:cd.condition+' UDE',legendgroup:cd.condition,showlegend:false,
         text:hov,hovertemplate:'%{text}<extra></extra>'});
-      traces.push({type:'scatter',x:st.freqs,y:neg_lde,mode:'lines',
+      traces.push({type:'scatter',x:st.freqs,y:neg_lde,mode:_selPtMode,
         fill:'tonexty',fillcolor:hexAlpha(color,0.22),
         line:{color:color,width:2},
         name:cd.condition,legendgroup:cd.condition,showlegend:true,
         text:hov,hovertemplate:'%{text}<extra></extra>'});
     }
     if(st.ttu.some(function(v){return v!==null;})){
-      traces.push({type:'scatter',x:st.freqs,y:st.ttu,mode:'lines',
+      traces.push({type:'scatter',x:st.freqs,y:st.ttu,mode:_selPtMode,
         line:{color:color,dash:'dot',width:1.5},
         name:cd.condition+' TTU',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
     }
     if(st.ttl.some(function(v){return v!==null;})){
-      traces.push({type:'scatter',x:st.freqs,y:st.ttl,mode:'lines',
+      traces.push({type:'scatter',x:st.freqs,y:st.ttl,mode:_selPtMode,
         line:{color:color,dash:'dot',width:1.5},
         name:cd.condition+' TTL',legendgroup:cd.condition,showlegend:false,hoverinfo:'skip'});
     }
@@ -6119,17 +6264,31 @@ function updateSummaryBar(selConds){
 /* Group a sorted {x,y} spec-point array into contiguous frequency segments of
    constant value -- shared verbatim with the scatter/distribution/boxplot/
    stat_summary/summary views. */
-function getSpecSegments(points){
-  if(!points||!points.length) return [];
-  var segs=[],cur=null;
-  points.forEach(function(p){
-    var v=Math.round(p.y*100)/100;
-    if(!cur||v!==cur.value){
-      cur={lo:p.x,hi:p.x,value:v};
+/* Merge Upper and Lower into one segment list, splitting wherever EITHER
+   side changes value -- a plain hi-else-lo pick would silently drop any
+   transition unique to the side not chosen (asymmetric two-sided specs,
+   where Upper and Lower don't step at the same frequencies). */
+function getSpecSegments(hiPoints,loPoints){
+  hiPoints=hiPoints||[];loPoints=loPoints||[];
+  if(!hiPoints.length&&!loPoints.length) return [];
+  var hiMap={},loMap={};
+  hiPoints.forEach(function(p){hiMap[p.x]=Math.round(p.y*100)/100;});
+  loPoints.forEach(function(p){loMap[p.x]=Math.round(p.y*100)/100;});
+  var freqSet={};
+  Object.keys(hiMap).forEach(function(f){freqSet[f]=1;});
+  Object.keys(loMap).forEach(function(f){freqSet[f]=1;});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var segs=[],cur=null,lastHi=null,lastLo=null;
+  freqs.forEach(function(f){
+    var hv=hiMap.hasOwnProperty(f)?hiMap[f]:lastHi;
+    var lv=loMap.hasOwnProperty(f)?loMap[f]:lastLo;
+    if(!cur||hv!==cur.hiValue||lv!==cur.loValue){
+      cur={lo:f,hi:f,hiValue:hv,loValue:lv};
       segs.push(cur);
     } else {
-      cur.hi=p.x;
+      cur.hi=f;
     }
+    lastHi=hv;lastLo=lv;
   });
   return segs;
 }
@@ -6155,7 +6314,10 @@ function segKeyChange(){
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+EC_X_UNIT+', value: '+seg.value+')';
+  var parts=[];
+  if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
+  if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+EC_X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -6213,8 +6375,7 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  var points=hiPoints.length?hiPoints:loPoints;
-  _specSegments=getSpecSegments(points);
+  _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -7990,16 +8151,16 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
     if(hv!==undefined){hiX.push(fl);hiY.push(hv);}
     if(lv!==undefined){loX.push(fl);loY.push(lv);}
   });
-  if(loX.length) traces.push({type:'scatter',mode:'lines',x:loX,y:loY,
+  if(loX.length) traces.push({type:'scatter',mode:(loX.length<2?'markers':'lines'),x:loX,y:loY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
     hovertemplate:'Spec Lo: %{y:.4f}<extra></extra>'});
-  if(hiX.length) traces.push({type:'scatter',mode:'lines',x:hiX,y:hiY,
+  if(hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
   /* Manual TLL override line */
   if(yFlt&&yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined&&_specOrder.length){
     var tllX=[_specOrder[0],_specOrder[_specOrder.length-1]];
-    traces.push({type:'scatter',mode:'lines',x:tllX,y:[yFlt.tll_hi,yFlt.tll_hi],
+    traces.push({type:'scatter',mode:(_specOrder.length<2?'markers':'lines'),x:tllX,y:[yFlt.tll_hi,yFlt.tll_hi],
       line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
       hovertemplate:'TLL↑ (manual): '+yFlt.tll_hi.toFixed(4)+'<extra></extra>'});
   }
@@ -8754,17 +8915,31 @@ function copyResultsPath(){
 }
 /* Group a sorted {x,y} spec-point array into contiguous frequency segments of
    constant value -- shared verbatim with the scatter/distribution views. */
-function getSpecSegments(points){
-  if(!points||!points.length) return [];
-  var segs=[],cur=null;
-  points.forEach(function(p){
-    var v=Math.round(p.y*100)/100;
-    if(!cur||v!==cur.value){
-      cur={lo:p.x,hi:p.x,value:v};
+/* Merge Upper and Lower into one segment list, splitting wherever EITHER
+   side changes value -- a plain hi-else-lo pick would silently drop any
+   transition unique to the side not chosen (asymmetric two-sided specs,
+   where Upper and Lower don't step at the same frequencies). */
+function getSpecSegments(hiPoints,loPoints){
+  hiPoints=hiPoints||[];loPoints=loPoints||[];
+  if(!hiPoints.length&&!loPoints.length) return [];
+  var hiMap={},loMap={};
+  hiPoints.forEach(function(p){hiMap[p.x]=Math.round(p.y*100)/100;});
+  loPoints.forEach(function(p){loMap[p.x]=Math.round(p.y*100)/100;});
+  var freqSet={};
+  Object.keys(hiMap).forEach(function(f){freqSet[f]=1;});
+  Object.keys(loMap).forEach(function(f){freqSet[f]=1;});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var segs=[],cur=null,lastHi=null,lastLo=null;
+  freqs.forEach(function(f){
+    var hv=hiMap.hasOwnProperty(f)?hiMap[f]:lastHi;
+    var lv=loMap.hasOwnProperty(f)?loMap[f]:lastLo;
+    if(!cur||hv!==cur.hiValue||lv!==cur.loValue){
+      cur={lo:f,hi:f,hiValue:hv,loValue:lv};
       segs.push(cur);
     } else {
-      cur.hi=p.x;
+      cur.hi=f;
     }
+    lastHi=hv;lastLo=lv;
   });
   return segs;
 }
@@ -8790,7 +8965,10 @@ function segKeyChange(){
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+  var parts=[];
+  if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
+  if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -8847,8 +9025,7 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  var points=hiPoints.length?hiPoints:loPoints;
-  _specSegments=getSpecSegments(points);
+  _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -9898,7 +10075,7 @@ function buildTraces(active,excl){
       hoverinfo:'skip'
     });
     traces.push({
-      type:'scatter',x:freqs,y:means,mode:'lines',
+      type:'scatter',x:freqs,y:means,mode:(freqs.length<2?'markers':'lines'),
       line:{color:'rgba(170,170,170,0.55)',width:1.2},
       name:cd.condition+' (excl)',legendgroup:cd.condition+'_excl',showlegend:false,
       hovertemplate:'<b>'+cd.condition+'</b> (excluded)<br>Freq: %{x:.4f} MHz<br>Mean: %{y:.2f}<extra></extra>'
@@ -9929,9 +10106,10 @@ function buildTraces(active,excl){
       showlegend:false,name:cd.condition,legendgroup:cd.condition,
       hoverinfo:'skip'
     });
+    var _actPtMode=freqs.length<2?'markers':'lines';
     /* mean line */
     traces.push({
-      type:'scatter',x:freqs,y:means,mode:'lines',
+      type:'scatter',x:freqs,y:means,mode:_actPtMode,
       line:{color:color,width:2},
       name:cd.condition,legendgroup:cd.condition,
       hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>Mean: %{y:.2f}<extra></extra>'
@@ -9940,7 +10118,7 @@ function buildTraces(active,excl){
     if((_tllDir==='hi'||_tllDir==='both')&&uttls.some(function(v){return v!==null&&v!==undefined;})){
       var ttlLabel=_stats.uttl_is_estimate?' TTL↑ (est)':' TTL↑';
       traces.push({
-        type:'scatter',x:freqs,y:uttls,mode:'lines',
+        type:'scatter',x:freqs,y:uttls,mode:_actPtMode,
         line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
         name:cd.condition+ttlLabel,legendgroup:cd.condition,showlegend:false,
         hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
@@ -9950,7 +10128,7 @@ function buildTraces(active,excl){
     if((_tllDir==='lo'||_tllDir==='both')&&lttls.some(function(v){return v!==null&&v!==undefined;})){
       var ttlLabelLo=_stats.uttl_is_estimate?' TTL↓ (est)':' TTL↓';
       traces.push({
-        type:'scatter',x:freqs,y:lttls,mode:'lines',
+        type:'scatter',x:freqs,y:lttls,mode:_actPtMode,
         line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
         name:cd.condition+ttlLabelLo,legendgroup:cd.condition,showlegend:false,
         hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>'+ttlLabelLo.trim()+': %{y:.2f}<extra></extra>'
@@ -9982,13 +10160,13 @@ function buildTraces(active,excl){
   var loRanges=buildSpecRanges('spec_lo_list',LO_SPEC);
   Object.keys(hiRanges).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
     var r=hiRanges[v];
-    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
+    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:(r.fMin===r.fMax?'markers':'lines'),
       line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi '+v,
       hovertemplate:'Spec Hi: '+v.toFixed(4)+'<extra></extra>'});
   });
   Object.keys(loRanges).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
     var r=loRanges[v];
-    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:'lines',
+    traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:(r.fMin===r.fMax?'markers':'lines'),
       line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
       hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
   });
@@ -9996,7 +10174,7 @@ function buildTraces(active,excl){
   var _sumPar=getSumParams();
   if(_sumPar.tll_hi_override!==null&&isFinite(fLo)&&isFinite(fHi))
     traces.push({type:'scatter',x:[fLo,fHi],y:[_sumPar.tll_hi_override,_sumPar.tll_hi_override],
-      mode:'lines',line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
+      mode:(fLo===fHi?'markers':'lines'),line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
       hovertemplate:'TLL↑ (manual): '+_sumPar.tll_hi_override.toFixed(4)+'<extra></extra>'});
   return traces;
 }
@@ -10471,17 +10649,31 @@ function exportTableCSV(){
 /* Group a sorted {x,y} spec-point array into contiguous frequency segments of
    constant value -- shared verbatim with the scatter/distribution/boxplot/
    stat_summary views. */
-function getSpecSegments(points){
-  if(!points||!points.length) return [];
-  var segs=[],cur=null;
-  points.forEach(function(p){
-    var v=Math.round(p.y*100)/100;
-    if(!cur||v!==cur.value){
-      cur={lo:p.x,hi:p.x,value:v};
+/* Merge Upper and Lower into one segment list, splitting wherever EITHER
+   side changes value -- a plain hi-else-lo pick would silently drop any
+   transition unique to the side not chosen (asymmetric two-sided specs,
+   where Upper and Lower don't step at the same frequencies). */
+function getSpecSegments(hiPoints,loPoints){
+  hiPoints=hiPoints||[];loPoints=loPoints||[];
+  if(!hiPoints.length&&!loPoints.length) return [];
+  var hiMap={},loMap={};
+  hiPoints.forEach(function(p){hiMap[p.x]=Math.round(p.y*100)/100;});
+  loPoints.forEach(function(p){loMap[p.x]=Math.round(p.y*100)/100;});
+  var freqSet={};
+  Object.keys(hiMap).forEach(function(f){freqSet[f]=1;});
+  Object.keys(loMap).forEach(function(f){freqSet[f]=1;});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var segs=[],cur=null,lastHi=null,lastLo=null;
+  freqs.forEach(function(f){
+    var hv=hiMap.hasOwnProperty(f)?hiMap[f]:lastHi;
+    var lv=loMap.hasOwnProperty(f)?loMap[f]:lastLo;
+    if(!cur||hv!==cur.hiValue||lv!==cur.loValue){
+      cur={lo:f,hi:f,hiValue:hv,loValue:lv};
       segs.push(cur);
     } else {
-      cur.hi=p.x;
+      cur.hi=f;
     }
+    lastHi=hv;lastLo=lv;
   });
   return segs;
 }
@@ -10503,7 +10695,10 @@ function segKeyChange(){
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+  var parts=[];
+  if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
+  if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -10577,8 +10772,7 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  var points=hiPoints.length?hiPoints:loPoints;
-  _specSegments=getSpecSegments(points);
+  _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}

@@ -749,9 +749,108 @@ _hl.line.width = Pt(2.25)
 _hl.shadow.inherit = False
 
 # ---------------------------------------------------------------------------
+# 27b. Interactive deep dive — the six views at a glance
+# ---------------------------------------------------------------------------
+s = content_slide("PADB Interactive — Deep Dive", "The Six Views at a Glance", 28)
+grid = [
+    ("t2_view_scatter.png", "Scatter — raw per-measurement, all temps"),
+    ("t2_view_boxplot.png", "Boxplot — box stats per condition/temperature"),
+    ("t2_view_stat_summary.png", "Stat Summary — room-temp per-DUT population stats"),
+    ("t2_view_summary.png", "Summary — all-temp NP-TI summary"),
+    ("t2_view_env_coverage.png", "Env Coverage — carrier-power stability vs. temperature"),
+    ("t2_view_distribution.png", "Distribution — multi-temp Delta-Env KDE (Harmonics pod)"),
+]
+gw, gx0, gy0, gpx, gpy = 3.6, 0.6, 1.65, 0.2, 0.4
+img_h = gw * (950 / 1600)
+for i, (fname, cap) in enumerate(grid):
+    r, c = divmod(i, 3)
+    left = gx0 + c * (gw + gpx)
+    top = gy0 + r * (img_h + gpy)
+    add_image(s, f"{IMG_DIR}/{fname}", left=left, top=top, width=gw)
+    tb = s.shapes.add_textbox(Inches(left), Inches(top + img_h + 0.05), Inches(gw), Inches(0.5))
+    tf = tb.text_frame
+    tf.word_wrap = True
+    p = tf.paragraphs[0]
+    p.text = cap
+    p.font.size = Pt(11)
+    p.font.color.rgb = GRAY
+
+# ---------------------------------------------------------------------------
+# 27c. Interactive deep dive — segment tab-through
+# ---------------------------------------------------------------------------
+s = content_slide("PADB Interactive — Deep Dive", "Segment Tab-Through — Jump Between Spec Bands", 29)
+add_image(s, f"{IMG_DIR}/deepdive_segment_tabs.png", left=0.55, top=1.7, width=8.0)
+tb = s.shapes.add_textbox(Inches(8.85), Inches(2.0), Inches(4.0), Inches(4.8))
+tf = tb.text_frame
+tf.word_wrap = True
+for i, txt in enumerate([
+    "ClockSpurs_PADBToolTest.pod",
+    "A real 5-level spec staircase per SpurType",
+    "\"Segment by\": Spec / Limit / Uncertainty",
+    "Prev / Next jump the freq window to each contiguous spec band",
+    "Isolate one SpurType first (dropdown, top-left) — segments are per-selection",
+    "Respects the Global Filter and serial/port filters: exclude a DUT and its own spec/limit/uncertainty contribution drops too",
+    "All six views: scatter, boxplot, distribution already had this; stat_summary, summary, env_coverage, and the real Delta-Env distribution view all got it this session",
+]):
+    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+    r = p.add_run()
+    r.text = txt
+    r.font.size = Pt(15 if i == 0 else 13.5)
+    r.font.bold = (i == 0)
+    r.font.color.rgb = NAVY if i == 0 else GRAY
+    p.space_after = Pt(9)
+
+# ---------------------------------------------------------------------------
+# 27d. Interactive deep dive — Group By (stat_summary)
+# ---------------------------------------------------------------------------
+s = content_slide("PADB Interactive — Deep Dive", "Group By — Collapsing Fragmented Conditions", 30)
+add_image(s, f"{IMG_DIR}/deepdive_groupby_stat_summary.png", left=0.55, top=1.7, width=8.4)
+tb = s.shapes.add_textbox(Inches(9.2), Inches(2.0), Inches(3.65), Inches(4.8))
+tf = tb.text_frame
+tf.word_wrap = True
+for i, txt in enumerate([
+    "Stat Summary — Group by: SpurType",
+    "This pod's per-unit Group text fragments into 151 near-duplicate conditions",
+    "Group by collapses them to the 5 real spur types — one legend entry, one spec line each",
+    "Mean/min/max/quantiles pool exactly per DUT — a DUT's data falls under exactly one condition per dimension",
+    "NP-TI / spec take the worst case across the collapsed conditions",
+    "Same dropdown added to Summary and Env Coverage this session",
+]):
+    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+    r = p.add_run()
+    r.text = txt
+    r.font.size = Pt(15 if i == 0 else 13.5)
+    r.font.bold = (i == 0)
+    r.font.color.rgb = NAVY if i == 0 else GRAY
+    p.space_after = Pt(9)
+
+# ---------------------------------------------------------------------------
+# 27e. Interactive deep dive — Group By + segment tabs (env_coverage)
+# ---------------------------------------------------------------------------
+s = content_slide("PADB Interactive — Deep Dive", "Environmental Coverage — Group By + Segment Tabs", 31)
+add_image(s, f"{IMG_DIR}/deepdive_groupby_env_coverage.png", left=0.55, top=1.7, width=8.4)
+tb = s.shapes.add_textbox(Inches(9.2), Inches(2.0), Inches(3.65), Inches(4.8))
+tf = tb.text_frame
+tf.word_wrap = True
+for i, txt in enumerate([
+    "Env Coverage — Group by: SpurType, Segment by: Spec",
+    "Before this session: one flat spec value per condition, no per-frequency tracking at all",
+    "Now: per-frequency Upper/Lower Limit, Spec, and Uncertainty tracked and segment-tabbable, same as every other view",
+    "UDE/LDE/TTU/TTL recompute exactly on every Group By change — already derived from raw per-DUT data on each call",
+    "GF toggle (top-right) still applies per-DUT exclusions the same way",
+]):
+    p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
+    r = p.add_run()
+    r.text = txt
+    r.font.size = Pt(15 if i == 0 else 13.5)
+    r.font.bold = (i == 0)
+    r.font.color.rgb = NAVY if i == 0 else GRAY
+    p.space_after = Pt(9)
+
+# ---------------------------------------------------------------------------
 # 28. Tutorial 3 intro — /padb-tools
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 3 — /padb-tools", "What It Is, When to Use It", 28)
+s = content_slide("Tutorial 3 — /padb-tools", "What It Is, When to Use It", 32)
 add_bullets(s, [
     "A Claude Code command scoped to this repo (.claude/commands/padb-tools.md)",
     "Surfaces a condensed index of the tool's architecture, gotchas, and a",
@@ -765,7 +864,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 29. Tutorial 3 — what it actually returns
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 3 — /padb-tools", "What It Actually Tells You", 29)
+s = content_slide("Tutorial 3 — /padb-tools", "What It Actually Tells You", 33)
 add_bullets(s, [
     "A few of the 13 new-pod checklist items it surfaces immediately:",
     ("TestRun_RunStatus — exit 0 but no CSV? Check the pod's default 'P'-only filter", 1),
@@ -779,7 +878,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30. Tutorial 3 — worked example
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 3 — /padb-tools", "Worked Example: MaxPowerTutorial3.pod", 30)
+s = content_slide("Tutorial 3 — /padb-tools", "Worked Example: MaxPowerTutorial3.pod", 34)
 add_bullets(s, [
     "You've just been handed MaxPowerTutorial3.pod — 2 analytics, never run before",
     "Open Claude Code with your working directory inside the padb-tools repo",
@@ -793,7 +892,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30b. Site conversion — the problem
 # ---------------------------------------------------------------------------
-s = content_slide("Multi-Site Testing", "Same Test, Different Database", 31)
+s = content_slide("Multi-Site Testing", "Same Test, Different Database", 35)
 add_bullets(s, [
     "Malaysia (AMC2) production ramp-up: the same test now also pulls from",
     ("AMC2's own PADB Oracle database, not just Santa Rosa's", 1),
@@ -809,7 +908,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30c. Site conversion — converting a pod
 # ---------------------------------------------------------------------------
-s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Pod", 32)
+s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Pod", 36)
 add_bullets(s, ["Site registry lives in padb_sites.json — add a new site there, no code changes:"],
             top=1.75, height=0.4, size=16)
 add_code(s, [
@@ -832,7 +931,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30d. Site conversion — converting a job
 # ---------------------------------------------------------------------------
-s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Job", 33)
+s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Job", 37)
 add_code(s, [
     "py padb_convert_site.py --job my_run_job.json --to AMC2",
 ], top=1.85, height=0.55, size=14.5)
@@ -890,7 +989,7 @@ p.font.color.rgb = ACCENT
 # ---------------------------------------------------------------------------
 # 33. Appendix — getting the code
 # ---------------------------------------------------------------------------
-s = content_slide("Appendix", "Getting the Code", 35)
+s = content_slide("Appendix", "Getting the Code", 39)
 add_bullets(s, [
     "This repo isn't on a company-wide share by default — copy it from:",
 ], top=1.85, height=0.4, size=19)
@@ -911,7 +1010,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 34. Appendix — first commands to verify
 # ---------------------------------------------------------------------------
-s = content_slide("Appendix", "First Commands to Verify Your Setup", 36)
+s = content_slide("Appendix", "First Commands to Verify Your Setup", 40)
 add_bullets(s, ["From inside the tools folder, confirm everything imports cleanly:"],
             top=1.85, height=0.4, size=18)
 add_code(s, ['py -c "import padb_run, padb_v2, padb_config"'], top=2.3, height=0.55, size=14.5)

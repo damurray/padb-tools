@@ -45,8 +45,31 @@ HARMONICS = [2, 3]
 PORTS = ["RF1", "RF2"]
 TEMPS = {"Room": 0.0, "0.0 Deg C": -1.5, "55.0 Deg C": +2.0}
 FREQS = [100.0, 200.0, 300.0, 400.0, 500.0]
-SPEC_HI = -50.0
-SPEC_LO = -110.0
+
+# Frequency-dependent Upper/Lower Limit, deliberately breaking at DIFFERENT
+# frequencies (asymmetric two-sided) so segment-tab-through has real,
+# distinct bands to detect end-to-end -- this dataset used to have a flat
+# constant spec (SPEC_HI/SPEC_LO for every row), so no QA check ever
+# exercised the segment-tab feature at all (found 2026-08-07: the
+# "Segment by" dropdown rendered, but the Prev/Next bar correctly stayed
+# hidden since there was only ever 1 segment). Upper Spec/Upper Uncertainty
+# are added as Group grouping items (one-sided only, matching the common
+# real-pod case) with their own independent breakpoints, so all three
+# "Segment by" options (Spec/Limit/Uncertainty) have real data to segment.
+def _synth_upper_limit(freq: float) -> float:
+    return -50.0 if freq <= 300.0 else -45.0
+
+
+def _synth_lower_limit(freq: float) -> float:
+    return -110.0 if freq <= 200.0 else -105.0
+
+
+def _synth_upper_spec(freq: float) -> float:
+    return -48.0 if freq <= 100.0 else -43.0
+
+
+def _synth_upper_uncertainty(freq: float) -> float:
+    return 2.0 if freq <= 400.0 else 3.0
 
 
 def _synth_value(harmonic: int, port: str, serial_idx: int, temp_offset: float, freq: float) -> float:
@@ -67,19 +90,21 @@ def make_synthetic_csv(path: Path) -> None:
         for harmonic in HARMONICS:
             for port in PORTS:
                 for serial_idx, serial in enumerate(SERIALS):
-                    group = (
-                        f"HarmonicNumber: {harmonic}  Port: {port}"
-                        f"  Serial Number: {serial}"
-                    )
                     for freq in FREQS:
                         val = _synth_value(harmonic, port, serial_idx, temp_offset, freq)
+                        group = (
+                            f"HarmonicNumber: {harmonic}  Port: {port}"
+                            f"  Serial Number: {serial}"
+                            f"  Upper Spec (<=): {_synth_upper_spec(freq)}"
+                            f"  Upper Uncertainty (<=): {_synth_upper_uncertainty(freq)}"
+                        )
                         rows.append({
                             "Test Step": temp_label,
                             "Frequency (MHz)": freq,
                             "Power (dBc)": round(val, 6),
                             "Group": group,
-                            "Upper Limit": SPEC_HI,
-                            "Lower Limit": SPEC_LO,
+                            "Upper Limit": _synth_upper_limit(freq),
+                            "Lower Limit": _synth_lower_limit(freq),
                         })
     pd.DataFrame(rows).to_csv(path, index=False)
 
@@ -146,6 +171,16 @@ def _extract_js_var(html: str, var_name: str):
 
 def _has_id(html: str, id_: str) -> bool:
     return f'id="{id_}"' in html or f"id='{id_}'" in html
+
+
+def _distinct_field_values(records: list[dict], field: str) -> set:
+    """Collect every non-null value of `field` across a flat list of
+    per-point dicts (vals_detail / dut_vals entries) -- used to confirm a
+    view's embedded spec/limit/uncertainty data actually varies by
+    frequency (>=2 distinct values), not just that the field is present.
+    A field that's always the same single value can't produce more than
+    one segment-tab band regardless of how the merge logic works."""
+    return {r[field] for r in records if r.get(field) is not None}
 
 
 def _has_class(html: str, cls: str) -> bool:
@@ -218,6 +253,15 @@ def test_stat_summary(path: Path) -> None:
           len(dut_vals) == len(SERIALS),
           f"got {len(dut_vals)}")
 
+    # Segment-tab-through coverage (added 2026-08-07) -- see the matching
+    # note in test_boxplot for why this checks "varies", not just "present".
+    all_dut_vals = [d for c in stat_data for f in c.get("freq_stats", [])
+                     for d in f.get("dut_vals", [])]
+    for field in ("upper_limit", "lower_limit", "spec_hi", "unc_hi"):
+        n = len(_distinct_field_values(all_dut_vals, field))
+        check(f"stat_summary: {field} varies by frequency (segment-tab coverage)",
+              n >= 2, f"got {n} distinct value(s)")
+
 
 def test_boxplot(path: Path) -> None:
     print(f"\n[boxplot]")
@@ -248,6 +292,20 @@ def test_boxplot(path: Path) -> None:
     )
     check("boxplot: vals_detail present (show points data)", has_vals)
 
+    # Segment-tab-through coverage (added 2026-08-07): confirm the embedded
+    # per-point spec/limit/uncertainty fields actually vary by frequency, so
+    # the "Segment by" Prev/Next bar has real bands to show, not just a
+    # flat spec collapsing to one segment. Deliberately asymmetric
+    # Upper/Lower Limit breakpoints (see _synth_upper_limit/_synth_lower_limit)
+    # also exercise the 2026-08-07 asymmetric-two-sided merge fix end-to-end
+    # against a real generated page, not just qa_js_segments.py's isolated harness.
+    all_vals = [d for cd in box_data for fs in cd.get("freq_stats", [])
+                for d in fs.get("vals_detail", [])]
+    for field in ("upper_limit", "lower_limit", "spec_hi", "unc_hi"):
+        n = len(_distinct_field_values(all_vals, field))
+        check(f"boxplot: {field} varies by frequency (segment-tab coverage)",
+              n >= 2, f"got {n} distinct value(s)")
+
 
 def test_distribution(path: Path) -> None:
     print(f"\n[distribution]")
@@ -255,6 +313,26 @@ def test_distribution(path: Path) -> None:
     check("distribution: file non-empty", len(html) > 5_000)
     check("distribution: show_excl_chk control", _has_id(html, "show_excl_chk"))
     check("distribution: CONDS data present", "var CONDS" in html or "CONDS=" in html)
+
+    # Segment-tab-through coverage (added 2026-08-07) -- this is the real V2
+    # "distribution" tile (_build_env_distribution_html, padb_v2.py's
+    # render_distribution), which only got the segment-tab feature a full
+    # day after the other 5 views (CLAUDE.md: "Real gap found and fixed a
+    # day later"). RAW_ABS[spurIdx][tempIdx] carries hi/lo/spec_hi/spec_lo/
+    # unc_hi/unc_lo as PARALLEL ARRAYS per point, not scalar per-record
+    # fields like boxplot/stat_summary, so it needs its own flattening here
+    # rather than reusing _distinct_field_values.
+    raw_abs = _extract_js_var(html, "RAW_ABS")
+    check("distribution: RAW_ABS parseable", raw_abs is not None)
+    if raw_abs:
+        for field in ("hi", "lo", "spec_hi", "unc_hi"):
+            vals = {
+                v for by_spur in raw_abs for by_temp in (by_spur or [])
+                for v in (by_temp or {}).get(field, []) or []
+                if v is not None
+            }
+            check(f"distribution: {field} varies by frequency (segment-tab coverage)",
+                  len(vals) >= 2, f"got {len(vals)} distinct value(s)")
 
 
 def test_summary(path: Path) -> None:
