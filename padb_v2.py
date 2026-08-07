@@ -461,6 +461,34 @@ def render_summary(
                     for v in row_s
                 ])
 
+        # Per-DUT Limit/Spec/Uncertainty per frequency, same [freq_idx][dut_idx]
+        # shape as dut_vals, so client-side segment detection can respect GF's
+        # per-DUT exclusion -- excluding a DUT must also drop its own
+        # spec/limit/uncertainty contribution at that frequency, not just its
+        # measured value. Aggregated with min/max (tightest-wins), not mean --
+        # unlike the measured Value, these should be constant per (freq, DUT);
+        # mean would silently average together a genuine data conflict (e.g. a
+        # datapak error recording two different spec values for the same
+        # DUT/frequency) into a meaningless number.
+        dut_spec_vals: dict[str, list] = {}
+        if _ser_col:
+            for _col in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"):
+                if _col not in cdf.columns:
+                    continue
+                _agg = "min" if _col in ("Upper_Limit", "Spec_Hi", "Unc_Hi") else "max"
+                _sfm_spec = (
+                    cdf[["Frequency_MHz", _ser_col, _col]]
+                    .dropna(subset=[_col])
+                    .groupby(["Frequency_MHz", _ser_col], sort=False)[_col]
+                    .agg(_agg)
+                    .unstack(level=_ser_col)
+                    .reindex(index=all_freqs, columns=dut_serials)
+                )
+                dut_spec_vals[_col.lower()] = [
+                    [round(float(v), 6) if pd.notna(v) else None for v in _sfm_spec.loc[freq]]
+                    for freq in all_freqs
+                ]
+
         # cond_keys: label -> value for each condition dimension
         cond_keys_dict = {}
         for col in cond_cols:
@@ -486,6 +514,7 @@ def render_summary(
             "temps":            temps_in_cond,
             "dut_info":         dut_info,
             "dut_vals":         dut_vals,
+            "dut_spec_vals":    dut_spec_vals,
         })
 
         if np.isnan(hi_spec_global) and g_hi is not None:

@@ -151,6 +151,8 @@ This produces: a serial filter with individual DUT checkboxes, three condition f
 
 **Interactive filter panels** appear for any Group string condition key with 2+ distinct values — there is no upper cap in `stat_summary`'s builder (see §3 above); keep cardinality low (under ~20) for a usable UI, not because higher counts are dropped.
 
+**Spec-limit segment tab-through** (added 2026-08-06): a "Segment by" selector (Spec / Limit / Uncertainty) plus Prev/Next buttons let you jump the frequency range directly to each contiguous band of a frequency-varying spec. **This only works fully if the pod's extraction was configured to include the `Upper Spec`/`Lower Spec` and/or `Upper Uncertainty`/`Lower Uncertainty` grouping items** — most existing pods only have the default `Upper Limit`/`Lower Limit`, which is spec adjusted per-unit by measurement uncertainty and is *not* reliably frequency-piecewise-constant (it fragments into more, noisier segments, or fails to reveal band structure at all). To add these: open the pod in PADB-R.exe, add `Upper Spec`/`Lower Spec` (and optionally `Upper Uncertainty`/`Lower Uncertainty`) as extraction grouping items on the Type=80 analytic, and re-save. Without them, "Segment by: Spec/Uncertainty" will show zero segments and the Prev/Next bar stays hidden — falls back to "Limit" automatically if that's the only one with data.
+
 ---
 
 ### `distribution`
@@ -158,6 +160,8 @@ This produces: a serial filter with individual DUT checkboxes, three condition f
 **Minimum:** Frequency column + Value column.
 
 No Group parsing. All measurements pooled into a single histogram. Spec lines from `Lower Limit` / `Upper Limit`.
+
+Has the same spec-limit segment tab-through control as `accuracy_vs_freq` (identical "Segment by" requirement above).
 
 ---
 
@@ -202,6 +206,10 @@ Requires `"freq_bands"` in job.json. Spec limits from `Lower Limit` / `Upper Lim
 
 **Show points** embeds per-DUT values as `dut_vals: [{s: serial, v: value}]` in each `freq_stats` entry. This requires the serial identification step above — without a serial source, all DUTs are merged and individual point overlay is not meaningful.
 
+**Spec-limit segment tab-through** (added 2026-08-06): same "Segment by" (Spec/Limit/Uncertainty) + Prev/Next control as `accuracy_vs_freq`/`distribution`/`stat_boxplot` — same requirement that the pod's extraction include `Upper Spec`/`Lower Spec` and/or `Upper Uncertainty`/`Lower Uncertainty` grouping items. Respects GF and the serial filter, same reasoning as `stat_boxplot` below.
+
+**"Group by" (added 2026-08-06):** when a Group string has many condition keys (e.g. a per-unit-varying `Upper Limit`), "condition" is the full combination of all of them, which can fragment into a large number of near-duplicate traces. A "Group by" dropdown lets you collapse on one dimension alone (e.g. "SpurType") instead — mean/std/quantiles recompute exactly from the pooled per-DUT values; DEnv and spec take the worst case (max/tightest) across the collapsed conditions rather than a true recompute; Shapiro normality isn't recomputed at all for pooled groups (shows as "Non-normal" red, a visible cue it's approximate). See "Group by" in `CLAUDE.md` for the full reasoning.
+
 ---
 
 ### `stat_boxplot`
@@ -217,6 +225,16 @@ Serial Number: US65080401  OA State: 3  AlcState: TRUE  Temp: 25
 ```
 
 This produces: serial filter, OA State and AlcState condition filter dropdowns, and separate box traces for each temperature.
+
+**Spec-limit segment tab-through** (added 2026-08-06): same "Segment by" (Spec/Limit/Uncertainty) + Prev/Next control as `accuracy_vs_freq`/`distribution` — same requirement that the pod's extraction include `Upper Spec`/`Lower Spec` and/or `Upper Uncertainty`/`Lower Uncertainty` grouping items for "Spec"/"Uncertainty" to find anything. Segment detection here also respects the Global Filter (GF) and the serial/port filters — a DUT excluded via GF has its spec/limit/uncertainty contribution dropped too, not just its measured value, so isolating a clean SpurType/cohort (e.g. to work around a datapak error affecting a few units) cleans up the segment boundaries live.
+
+---
+
+### `summary` and `env_coverage` (V2 only, `padb_v2.py`)
+
+Same "Segment by" (Spec/Limit/Uncertainty) + Prev/Next control and same `Upper Spec`/`Lower Spec`/`Upper Uncertainty`/`Lower Uncertainty` grouping-item requirement as the views above (added 2026-08-06). Both respect GF and the serial filter per-DUT, same reasoning as `stat_boxplot`. See "Spec-limit segment tab-through" in `CLAUDE.md` for exactly how each view's own data shape (2D `dut_vals` arrays for `summary`, per-DUT `room`/`spec` arrays for `env_coverage`) threads these fields through.
+
+Both also have the same "Group by" dropdown as `stat_summary` (added 2026-08-06), for the same reason (collapsing fragmented per-unit conditions to one real dimension). `env_coverage`'s recompute is fully exact — its UDE/LDE/TTU/TTL are already computed client-side from raw per-DUT data on every call, so pooling the underlying DUTs needs no separate re-aggregation math. `summary`'s mean/min/max are exact; NP TI (`uttl`/`lttl`) and spec take the worst case across the collapsed conditions. See "Group by" in `CLAUDE.md` for the full reasoning.
 
 ---
 

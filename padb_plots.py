@@ -190,9 +190,15 @@ function freqKeyDown(e,which){
 }
 function setFreqBand(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-  s1.value=Math.max(parseFloat(s1.min),lo);
-  s2.value=Math.min(parseFloat(s2.max),hi);
-  syncFreq();update();
+  var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
+  s1.value=loV;s2.value=hiV;
+  /* Set text boxes directly from the intended values, not the slider's
+     (possibly step-snapped) .value -- see freqTxtChange's identical fix. */
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  update();
 }
 
 /* ---------- save filtered CSV ---------- */
@@ -274,13 +280,19 @@ function applyFilters(data){
    line instead of a cluttered stack of full-width lines at every rounded value. */
 function getSpecMask(dataArr){
   var hiPts={},loPts={};
+  /* Prefer the raw Spec_Hi/Spec_Lo (frequency-piecewise-constant) over the
+     derived Upper_Limit/Lower_Limit (spec adjusted per-unit by M.U./DEnv/guard,
+     so it isn't) when the extraction included those grouping items. Falls back
+     to Upper_Limit/Lower_Limit -- most existing pods only selected those. */
   dataArr.forEach(function(r){
-    if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit))){
-      var f=r.Frequency_MHz,v=Number(r.Upper_Limit);
+    var hiV=(r.Spec_Hi!==null&&r.Spec_Hi!==undefined&&r.Spec_Hi!=='')?r.Spec_Hi:r.Upper_Limit;
+    var loV=(r.Spec_Lo!==null&&r.Spec_Lo!==undefined&&r.Spec_Lo!=='')?r.Spec_Lo:r.Lower_Limit;
+    if(hiV!==null&&hiV!==undefined&&hiV!==''&&!isNaN(Number(hiV))){
+      var f=r.Frequency_MHz,v=Number(hiV);
       if(!(f in hiPts)||v<hiPts[f]) hiPts[f]=v;
     }
-    if(r.Lower_Limit!==null&&r.Lower_Limit!==undefined&&r.Lower_Limit!==''&&!isNaN(Number(r.Lower_Limit))){
-      var f=r.Frequency_MHz,v=Number(r.Lower_Limit);
+    if(loV!==null&&loV!==undefined&&loV!==''&&!isNaN(Number(loV))){
+      var f=r.Frequency_MHz,v=Number(loV);
       if(!(f in loPts)||v>loPts[f]) loPts[f]=v;
     }
   });
@@ -294,6 +306,33 @@ function getSpecMask(dataArr){
     hi:hiFreqs.map(function(f){return {x:f,y:hiPts[f]};}),
     lo:loFreqs.map(function(f){return {x:f,y:loPts[f]};})
   };
+}
+
+/* Group a sorted {x,y} spec-point array (from getSpecMask's hi/lo) into
+   contiguous frequency segments of constant value -- e.g. an NPI->Production
+   spec transition ("9kHz-8MHz: -20dBc, 8MHz-1.5GHz: -30dBc, ..."). Independent
+   of getSpecMask's isMask/">3 distinct values" heuristic on purpose: that
+   threshold exists to decide a *rendering* question (dashed full-width lines
+   vs. a stepped mask line) and is tuned to tolerate a few dBc of MU-rounding
+   noise around one nominal value. A genuine 2-3 segment spec transition would
+   never trip it, but should still be tab-able -- segment detection only cares
+   whether the value actually changes between consecutive frequencies, not how
+   many total distinct values that produces. Values are rounded to 2 decimals
+   before comparing, so float noise from CSV round-tripping can't fracture one
+   real segment into several spurious ones. */
+function getSpecSegments(points){
+  if(!points||!points.length) return [];
+  var segs=[],cur=null;
+  points.forEach(function(p){
+    var v=Math.round(p.y*100)/100;
+    if(!cur||v!==cur.value){
+      cur={lo:p.x,hi:p.x,value:v};
+      segs.push(cur);
+    } else {
+      cur.hi=p.x;
+    }
+  });
+  return segs;
 }
 function buildTraces(filtered){
   var groupCol=document.getElementById('groupby').value;
@@ -583,6 +622,7 @@ function update(){
   var filtered=applyFilters(DATA);
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
+  _recomputeSpecSegments();
   saveState();
 }
 
@@ -614,10 +654,120 @@ function loadState(){
   });
 }
 
+/* ---- spec-segment tab navigation ---- */
+var _specSegments=[],_segIdx=-1;
+var SEG_KEY_FIELDS={limit:['Upper_Limit','Lower_Limit'],spec:['Spec_Hi','Spec_Lo'],uncertainty:['Unc_Hi','Unc_Lo']};
+var _segKey=null;
+/* Which field pair the segment tabs use is a user-facing choice (Limit/Spec/
+   Uncertainty), unlike getSpecMask()'s own automatic Spec-preferred-else-Limit
+   blend used for the plotted dashed reference line -- kept as a separate
+   function so this selector can't disturb that existing rendering. No
+   fallback: picking a key the pod's extraction never selected legitimately
+   produces zero segments (bar hides), which is itself informative. */
+function getSpecMaskByKey(dataArr,key){
+  var fields=SEG_KEY_FIELDS[key]||SEG_KEY_FIELDS.spec;
+  var hiField=fields[0],loField=fields[1];
+  var hiPts={},loPts={};
+  dataArr.forEach(function(r){
+    var hiV=r[hiField],loV=r[loField];
+    if(hiV!==null&&hiV!==undefined&&hiV!==''&&!isNaN(Number(hiV))){
+      var f=r.Frequency_MHz,v=Number(hiV);
+      if(!(f in hiPts)||v<hiPts[f]) hiPts[f]=v;
+    }
+    if(loV!==null&&loV!==undefined&&loV!==''&&!isNaN(Number(loV))){
+      var f=r.Frequency_MHz,v=Number(loV);
+      if(!(f in loPts)||v>loPts[f]) loPts[f]=v;
+    }
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  return {
+    hi:hiFreqs.map(function(f){return {x:f,y:hiPts[f]};}),
+    lo:loFreqs.map(function(f){return {x:f,y:loPts[f]};})
+  };
+}
+function _defaultSegKey(){
+  var has=function(field){return DATA.some(function(r){return r[field]!=null&&r[field]!==''&&!isNaN(Number(r[field]));});};
+  if(has('Spec_Hi')||has('Spec_Lo')) return 'spec';
+  if(has('Upper_Limit')||has('Lower_Limit')) return 'limit';
+  if(has('Unc_Hi')||has('Unc_Lo')) return 'uncertainty';
+  return 'spec';
+}
+function segKeyChange(){
+  _segKey=document.getElementById('segKeySel').value;
+  _recomputeSpecSegments();
+}
+function _segLabelText(seg,i,n){
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+}
+function segTab(dir){
+  if(!_specSegments.length) return;
+  _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  var seg=_specSegments[_segIdx];
+  setFreqBand(seg.lo,seg.hi);
+}
+/* Recompute segments from the group/temp/GF-filtered data but ignoring the
+   freq_lo/freq_hi range itself (those are what segTab moves) -- otherwise
+   tabbing to segment N would immediately narrow the data to just that segment
+   and getSpecMaskByKey would only ever see one value, collapsing _specSegments
+   back to length 1 on the very next recompute. Re-run on every update() (not
+   just page load) so switching a group filter (e.g. isolating one SpurType out
+   of several that share overlapping frequencies with different specs) cleans
+   the segment list up live, instead of staying stuck with whatever the full
+   unfiltered dataset produced. */
+function _recomputeSpecSegments(){
+  if(_segKey===null){
+    _segKey=_defaultSegKey();
+    var sel=document.getElementById('segKeySel');
+    if(sel) sel.value=_segKey;
+  }
+  var selTemps=getSelectedTemps();
+  var gfChk=document.getElementById('gf_chk');
+  var applyGf=gfChk&&gfChk.checked&&_gfParsed&&_gfParsed.size>0;
+  var selections={};
+  GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
+  var groupFiltered=DATA.filter(function(r){
+    if(selTemps){
+      var t=String(r.Test_Step===null||r.Test_Step===undefined?'':r.Test_Step);
+      if(selTemps.indexOf(t)<0) return false;
+    }
+    if(applyGf){var _inGf=_isInGfFull(r);var _gfFcs=document.getElementById('gf_focus_chk')&&document.getElementById('gf_focus_chk').checked;if(_gfFcs?!_inGf:_inGf) return false;}
+    for(var col in selections){
+      var allowed=selections[col];
+      if(!allowed.length) return false;
+      var v=String(r[col]===null||r[col]===undefined?'':r[col]);
+      if(allowed.indexOf(v)<0) return false;
+    }
+    return true;
+  });
+  var mask=getSpecMaskByKey(groupFiltered,_segKey);
+  var points=mask.hi.length?mask.hi:mask.lo;
+  _specSegments=getSpecSegments(points);
+  var bar=document.getElementById('segTabBar');
+  if(!bar) return;
+  if(_specSegments.length<2){bar.style.display='none';return;}
+  bar.style.display='';
+  /* Read the exact freq from the text box, not the range slider's own .value --
+     browsers silently snap programmatic .value assignment to the nearest
+     `step` (same root cause fixed in setFreqBand), which for a wide freq
+     range (a coarse step) could snap loV away from the just-tabbed-to
+     segment's real boundary and make the index lookup below match the wrong
+     segment (or none) -- symptom: Prev/Next appears to get stuck. */
+  var loTxt=document.getElementById('freq_lo_txt');
+  var loV=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  _segIdx=0;
+  for(var i=0;i<_specSegments.length;i++){if(loV>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  var seg=_specSegments[_segIdx];
+  document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
+  document.getElementById('segTabPrev').disabled=(_segIdx===0);
+  document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
+}
+
 _loadGlobalFilter();
 loadState();
 var _initData=applyFilters(DATA);
 Plotly.newPlot('plot',buildTraces(_initData),buildLayout(_initData));
+_recomputeSpecSegments();
 document.getElementById('n_points').textContent=_initData.length.toLocaleString()+' pts';
 """
 
@@ -634,11 +784,27 @@ def _sfloat(v):
         return np.nan
 
 
+def _extract_group_field(group_series: pd.Series, field_label: str) -> tuple[pd.Series, pd.Series]:
+    """
+    Pull 'Upper <field_label> (<=): value' / 'Lower <field_label> (>=): value' out of a
+    PADB Group description string, when the extraction was configured to include those
+    grouping items. Used for 'Spec' (raw nominal spec -- frequency-piecewise-constant)
+    and 'Uncertainty' (confirmed against real data: Upper Limit -101.35 == Upper Spec
+    -100.00 minus Upper Uncertainty 1.35, i.e. Uncertainty is M.U.+DEnv combined).
+    Distinct from Upper_Limit/Lower_Limit, which PADB derives as spec adjusted by that
+    per-unit uncertainty and guard band, so it generally isn't frequency-piecewise-constant.
+    """
+    hi = group_series.str.extract(rf'Upper {field_label}\s*\([^)]*\):\s*(-?[\d.]+)', expand=False)
+    lo = group_series.str.extract(rf'Lower {field_label}\s*\([^)]*\):\s*(-?[\d.]+)', expand=False)
+    return pd.to_numeric(hi, errors="coerce"), pd.to_numeric(lo, errors="coerce")
+
+
 def _load_scatter_csv(csv_path: Path) -> pd.DataFrame:
     """
     Load a PADB ScatterPlot (Type=80) CSV.
     Returns DataFrame with standardised columns:
-        Frequency_MHz, Value, Serial, Station, Lower_Limit, Upper_Limit, Group
+        Frequency_MHz, Value, Serial, Station, Lower_Limit, Upper_Limit,
+        Spec_Hi, Spec_Lo, Unc_Hi, Unc_Lo, Group
     """
     df = pd.read_csv(csv_path, dtype=str)
     df.columns = df.columns.str.strip()
@@ -676,6 +842,12 @@ def _load_scatter_csv(csv_path: Path) -> pd.DataFrame:
     out["Lower_Limit"]   = df[lo_col].map(_sfloat)   if lo_col  else np.nan
     out["Upper_Limit"]   = df[hi_col].map(_sfloat)   if hi_col  else np.nan
     out["Group"]         = df[group_col].str.strip()  if group_col else ""
+    if group_col:
+        out["Spec_Hi"], out["Spec_Lo"] = _extract_group_field(df[group_col], "Spec")
+        out["Unc_Hi"], out["Unc_Lo"]   = _extract_group_field(df[group_col], "Uncertainty")
+    else:
+        out["Spec_Hi"] = out["Spec_Lo"] = np.nan
+        out["Unc_Hi"] = out["Unc_Lo"] = np.nan
     test_step_col = next((col_lower[k] for k in col_lower if k == "test step"), None)
     out["Test_Step"]     = df[test_step_col].str.strip() if test_step_col else ""
     out["_val_col_name"] = val_col or "Value"
@@ -852,14 +1024,26 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     filter_cols = [(c, l) for c, l in group_cols if not (c == "Test_Step" and show_env_bar)]
 
     # Columns available for hover tooltip (group dims + spec limits)
+    has_spec = (("Spec_Hi" in df.columns and df["Spec_Hi"].notna().any())
+                or ("Spec_Lo" in df.columns and df["Spec_Lo"].notna().any()))
     hover_col_list = list(group_cols)
-    if "Upper_Limit" in df.columns and df["Upper_Limit"].notna().any():
-        hover_col_list.append(("Upper_Limit", "Spec Hi"))
-    if "Lower_Limit" in df.columns and df["Lower_Limit"].notna().any():
-        hover_col_list.append(("Lower_Limit", "Spec Lo"))
+    if has_spec:
+        if "Spec_Hi" in df.columns and df["Spec_Hi"].notna().any():
+            hover_col_list.append(("Spec_Hi", "Spec Hi"))
+        if "Spec_Lo" in df.columns and df["Spec_Lo"].notna().any():
+            hover_col_list.append(("Spec_Lo", "Spec Lo"))
+        if "Upper_Limit" in df.columns and df["Upper_Limit"].notna().any():
+            hover_col_list.append(("Upper_Limit", "Limit Hi"))
+        if "Lower_Limit" in df.columns and df["Lower_Limit"].notna().any():
+            hover_col_list.append(("Lower_Limit", "Limit Lo"))
+    else:
+        if "Upper_Limit" in df.columns and df["Upper_Limit"].notna().any():
+            hover_col_list.append(("Upper_Limit", "Spec Hi"))
+        if "Lower_Limit" in df.columns and df["Lower_Limit"].notna().any():
+            hover_col_list.append(("Lower_Limit", "Spec Lo"))
 
     # Columns to embed as JSON
-    json_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit"] + [c for c, _ in group_cols]
+    json_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"] + [c for c, _ in group_cols]
     json_cols = [c for c in json_cols if c in df.columns]
     records = json.loads(df[json_cols].to_json(orient="records"))
 
@@ -1019,6 +1203,17 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
         f'{band_section_html}'
         '  <div class="sep"></div>\n'
+        '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '    <option value="spec">Spec</option>\n'
+        '    <option value="limit">Limit</option>\n'
+        '    <option value="uncertainty">Uncertainty</option>\n'
+        '  </select></label>\n'
+        '  <div id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '    <button class="reset-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '  </div>\n'
+        '  <div class="sep"></div>\n'
         f'  {hover_panel_html}\n'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
@@ -1155,7 +1350,7 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         return
 
     group_cols = _detect_group_cols(df)
-    json_cols  = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit"] + [c for c, _ in group_cols]
+    json_cols  = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"] + [c for c, _ in group_cols]
     json_cols  = [c for c in json_cols if c in df.columns]
     records    = json.loads(df[json_cols].to_json(orient="records"))
 
@@ -1301,10 +1496,12 @@ function freqKeyDown(e,which){
 }
 function setFreqBand(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-  s1.value=Math.max(parseFloat(s1.min),lo);
-  s2.value=Math.min(parseFloat(s2.max),hi);
-  document.getElementById('freq_lo_txt').value=parseFloat(s1.value).toFixed(3);
-  document.getElementById('freq_hi_txt').value=parseFloat(s2.value).toFixed(3);
+  var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
+  s1.value=loV;s2.value=hiV;
+  /* Set text boxes directly from the intended values, not the slider's
+     (possibly step-snapped) .value -- see freqTxtChange's identical fix. */
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
   update();
 }
 function applyFilters(data){
@@ -1323,6 +1520,147 @@ function applyFilters(data){
     }
     return true;
   });
+}
+/* Detect a genuinely frequency-varying spec vs. a constant spec with only
+   sub-dBc MU-adjustment noise -- shared verbatim with the scatter view's copy
+   (padb_plots.py _AV_FREQ_JS). Prefers Spec_Hi/Spec_Lo (raw, frequency-
+   piecewise-constant) over Upper_Limit/Lower_Limit (spec adjusted per-unit by
+   M.U./DEnv/guard, so it isn't) when the extraction included those grouping
+   items; falls back to Upper_Limit/Lower_Limit otherwise. */
+function getSpecMask(dataArr){
+  var hiPts={},loPts={};
+  dataArr.forEach(function(r){
+    var hiV=(r.Spec_Hi!==null&&r.Spec_Hi!==undefined&&r.Spec_Hi!=='')?r.Spec_Hi:r.Upper_Limit;
+    var loV=(r.Spec_Lo!==null&&r.Spec_Lo!==undefined&&r.Spec_Lo!=='')?r.Spec_Lo:r.Lower_Limit;
+    if(hiV!==null&&hiV!==undefined&&hiV!==''&&!isNaN(Number(hiV))){
+      var f=r.Frequency_MHz,v=Number(hiV);
+      if(!(f in hiPts)||v<hiPts[f]) hiPts[f]=v;
+    }
+    if(loV!==null&&loV!==undefined&&loV!==''&&!isNaN(Number(loV))){
+      var f=r.Frequency_MHz,v=Number(loV);
+      if(!(f in loPts)||v>loPts[f]) loPts[f]=v;
+    }
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  var hiRounded={};hiFreqs.forEach(function(f){hiRounded[Math.round(hiPts[f])]=1;});
+  var loRounded={};loFreqs.forEach(function(f){loRounded[Math.round(loPts[f])]=1;});
+  var isMask=Object.keys(hiRounded).length>3||Object.keys(loRounded).length>3;
+  return {
+    isMask:isMask,
+    hi:hiFreqs.map(function(f){return {x:f,y:hiPts[f]};}),
+    lo:loFreqs.map(function(f){return {x:f,y:loPts[f]};})
+  };
+}
+/* Group a sorted {x,y} spec-point array into contiguous frequency segments of
+   constant value -- shared verbatim with the scatter view's copy. */
+function getSpecSegments(points){
+  if(!points||!points.length) return [];
+  var segs=[],cur=null;
+  points.forEach(function(p){
+    var v=Math.round(p.y*100)/100;
+    if(!cur||v!==cur.value){
+      cur={lo:p.x,hi:p.x,value:v};
+      segs.push(cur);
+    } else {
+      cur.hi=p.x;
+    }
+  });
+  return segs;
+}
+/* ---- spec-segment tab navigation ---- */
+var _specSegments=[],_segIdx=-1;
+var SEG_KEY_FIELDS={limit:['Upper_Limit','Lower_Limit'],spec:['Spec_Hi','Spec_Lo'],uncertainty:['Unc_Hi','Unc_Lo']};
+var _segKey=null;
+/* Which field pair the segment tabs use is a user-facing choice (Limit/Spec/
+   Uncertainty), unlike getSpecMask()'s own automatic Spec-preferred-else-Limit
+   blend used for the plotted dashed reference line -- kept as a separate
+   function so this selector can't disturb that existing rendering. No
+   fallback: picking a key the pod's extraction never selected legitimately
+   produces zero segments (bar hides), which is itself informative. */
+function getSpecMaskByKey(dataArr,key){
+  var fields=SEG_KEY_FIELDS[key]||SEG_KEY_FIELDS.spec;
+  var hiField=fields[0],loField=fields[1];
+  var hiPts={},loPts={};
+  dataArr.forEach(function(r){
+    var hiV=r[hiField],loV=r[loField];
+    if(hiV!==null&&hiV!==undefined&&hiV!==''&&!isNaN(Number(hiV))){
+      var f=r.Frequency_MHz,v=Number(hiV);
+      if(!(f in hiPts)||v<hiPts[f]) hiPts[f]=v;
+    }
+    if(loV!==null&&loV!==undefined&&loV!==''&&!isNaN(Number(loV))){
+      var f=r.Frequency_MHz,v=Number(loV);
+      if(!(f in loPts)||v>loPts[f]) loPts[f]=v;
+    }
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  return {
+    hi:hiFreqs.map(function(f){return {x:f,y:hiPts[f]};}),
+    lo:loFreqs.map(function(f){return {x:f,y:loPts[f]};})
+  };
+}
+function _defaultSegKey(){
+  var has=function(field){return DATA.some(function(r){return r[field]!=null&&r[field]!==''&&!isNaN(Number(r[field]));});};
+  if(has('Spec_Hi')||has('Spec_Lo')) return 'spec';
+  if(has('Upper_Limit')||has('Lower_Limit')) return 'limit';
+  if(has('Unc_Hi')||has('Unc_Lo')) return 'uncertainty';
+  return 'spec';
+}
+function segKeyChange(){
+  _segKey=document.getElementById('segKeySel').value;
+  _recomputeSpecSegments();
+}
+function _segLabelText(seg,i,n){
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' MHz, value: '+seg.value+')';
+}
+function segTab(dir){
+  if(!_specSegments.length) return;
+  _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  var seg=_specSegments[_segIdx];
+  setFreqBand(seg.lo,seg.hi);
+}
+/* Recompute segments from the group-filtered data but ignoring the
+   freq_lo/freq_hi range itself (that's what segTab moves) -- see the scatter
+   view's identical reasoning. Re-run on every update() so isolating a group
+   (e.g. one SpurType) cleans the segment list up live. */
+function _recomputeSpecSegments(){
+  if(_segKey===null){
+    _segKey=_defaultSegKey();
+    var sel=document.getElementById('segKeySel');
+    if(sel) sel.value=_segKey;
+  }
+  var selections={};
+  GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
+  var groupFiltered=DATA.filter(function(r){
+    for(var col in selections){
+      var allowed=selections[col];
+      if(!allowed.length) return false;
+      var v=String(r[col]===null||r[col]===undefined?'':r[col]);
+      if(allowed.indexOf(v)<0) return false;
+    }
+    return true;
+  });
+  var mask=getSpecMaskByKey(groupFiltered,_segKey);
+  var points=mask.hi.length?mask.hi:mask.lo;
+  _specSegments=getSpecSegments(points);
+  var bar=document.getElementById('segTabBar');
+  if(!bar) return;
+  if(_specSegments.length<2){bar.style.display='none';return;}
+  bar.style.display='';
+  /* Read the exact freq from the text box, not the range slider's own .value --
+     browsers silently snap programmatic .value assignment to the nearest
+     `step`, which for a wide freq range (a coarse step) could snap loV away
+     from the just-tabbed-to segment's real boundary and make the index
+     lookup below match the wrong segment -- symptom: Prev/Next gets stuck. */
+  var loTxt=document.getElementById('freq_lo_txt');
+  var loV=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  _segIdx=0;
+  for(var i=0;i<_specSegments.length;i++){if(loV>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  var seg=_specSegments[_segIdx];
+  document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
+  document.getElementById('segTabPrev').disabled=(_segIdx===0);
+  document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
 }
 function applyPassOnly(data){
   var passOnly=document.getElementById('pass_only').checked;
@@ -1346,10 +1684,12 @@ function update(){
   var hiSpecs={},loSpecs={};
   groupFiltered.forEach(function(r){
     if(r.Frequency_MHz<=freqLo) return;
-    if(r.Upper_Limit!=null&&!isNaN(Number(r.Upper_Limit)))
-      hiSpecs[Math.round(Number(r.Upper_Limit)*100)/100]=true;
-    if(r.Lower_Limit!=null&&!isNaN(Number(r.Lower_Limit)))
-      loSpecs[Math.round(Number(r.Lower_Limit)*100)/100]=true;
+    var hiV=(r.Spec_Hi!==null&&r.Spec_Hi!==undefined&&r.Spec_Hi!=='')?r.Spec_Hi:r.Upper_Limit;
+    var loV=(r.Spec_Lo!==null&&r.Spec_Lo!==undefined&&r.Spec_Lo!=='')?r.Spec_Lo:r.Lower_Limit;
+    if(hiV!=null&&!isNaN(Number(hiV)))
+      hiSpecs[Math.round(Number(hiV)*100)/100]=true;
+    if(loV!=null&&!isNaN(Number(loV)))
+      loSpecs[Math.round(Number(loV)*100)/100]=true;
   });
   if(!Object.keys(hiSpecs).length&&HI_SPEC!==null) hiSpecs[Math.round(HI_SPEC*100)/100]=true;
   if(!Object.keys(loSpecs).length&&LO_SPEC!==null) loSpecs[Math.round(LO_SPEC*100)/100]=true;
@@ -1371,6 +1711,7 @@ function update(){
   };
   Plotly.react('plot',[{type:'histogram',x:values,nbinsx:60,marker:{color:'steelblue',opacity:0.7},name:'Data'}],layout);
   updateDistStats(values);
+  _recomputeSpecSegments();
   saveState();
 }
 function mean(arr){var s=0;for(var i=0;i<arr.length;i++)s+=arr[i];return arr.length?s/arr.length:NaN;}
@@ -1466,6 +1807,17 @@ update();
         f' onchange="freqTxtChange(\'hi\')"'
         f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
         f'{band_section_html}'
+        '  <div class="sep"></div>\n'
+        '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '    <option value="spec">Spec</option>\n'
+        '    <option value="limit">Limit</option>\n'
+        '    <option value="uncertainty">Uncertainty</option>\n'
+        '  </select></label>\n'
+        '  <div id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '    <button class="reset-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '  </div>\n'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         '  <span id="n_points"></span>\n'
@@ -2817,6 +3169,12 @@ def _load_scatter_for_stats(csv_path: Path, x_col: str | None = None) -> pd.Data
     out["Group"]         = df_raw[group_col].str.strip()   if group_col   else ""
     out["Upper_Limit"]   = _parse_limit(df_raw[hi_col]) if hi_col else np.nan
     out["Lower_Limit"]   = _parse_limit(df_raw[lo_col]) if lo_col else np.nan
+    if group_col:
+        out["Spec_Hi"], out["Spec_Lo"] = _extract_group_field(df_raw[group_col], "Spec")
+        out["Unc_Hi"], out["Unc_Lo"]   = _extract_group_field(df_raw[group_col], "Uncertainty")
+    else:
+        out["Spec_Hi"] = out["Spec_Lo"] = np.nan
+        out["Unc_Hi"] = out["Unc_Lo"] = np.nan
     out["_val_col_name"] = val_col or "Value"
     out["_freq_col_name"] = freq_col or "Frequency"
 
@@ -3027,9 +3385,17 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         room_df = cdf[cdf["Temperature"] == "Room"]
         all_freqs = sorted(cdf["Frequency_MHz"].dropna().unique())
 
-        # Per-DUT means at Room for each frequency (n = DUT count, not measurement count)
+        # Per-DUT means at Room for each frequency (n = DUT count, not measurement count).
+        # Limit/Spec/Uncertainty are carried through per-DUT (not just one representative
+        # value per freq, as spec_by_freq below does) so client-side segment detection can
+        # respect GF's per-DUT exclusion -- excluding a DUT must also drop its own
+        # spec/limit/uncertainty contribution at that frequency, not just its measured value.
+        _room_dut_agg = {"Value": ("Value", "mean"), "_port": ("_port", "first")}
+        for _c in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"):
+            if _c in room_df.columns:
+                _room_dut_agg[_c] = (_c, "first")
         room_dut = (room_df.groupby(["_serial_id", "Frequency_MHz"])
-                    .agg(Value=("Value", "mean"), _port=("_port", "first"))
+                    .agg(**_room_dut_agg)
                     .reset_index())
         # Per-DUT means at each temp for DEnv
         temp_dut: dict[str, pd.DataFrame] = {}
@@ -3057,11 +3423,17 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
             spec_by_freq[freq] = (sl, su)
 
         freq_stats = []
+        _spec_cols = [c for c in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo") if c in room_dut.columns]
+
+        def _rn(v):
+            return None if pd.isna(v) else round(float(v), 6)
+
         for freq in all_freqs:
             _fdf = room_dut[room_dut["Frequency_MHz"] == freq].dropna(subset=["Value"])
             dut_vals  = _fdf["Value"].values
             dut_sers  = _fdf["_serial_id"].values if "_serial_id" in _fdf.columns else ["unknown"] * len(_fdf)
             dut_ports = _fdf["_port"].values if "_port" in _fdf.columns else [""] * len(_fdf)
+            dut_spec_rows = _fdf[_spec_cols].to_dict("records") if _spec_cols else [{}] * len(_fdf)
             n = len(dut_vals)
             if n == 0:
                 continue
@@ -3110,8 +3482,11 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
                  for v, ser, prt in zip(dut_vals, dut_sers, dut_ports) if v < lo_w or v > hi_w],
                 key=lambda x: x["v"])
             outliers = [d["v"] for d in outlier_det]
-            dut_detail = [{"s": str(ser), "p": str(prt), "v": round(float(v), 6)}
-                          for ser, prt, v in zip(dut_sers, dut_ports, dut_vals)]
+            dut_detail = [
+                {"s": str(ser), "p": str(prt), "v": round(float(v), 6),
+                 **{c.lower(): _rn(row.get(c)) for c in _spec_cols}}
+                for ser, prt, v, row in zip(dut_sers, dut_ports, dut_vals, dut_spec_rows)
+            ]
             spec_lo, spec_up = spec_by_freq[freq]
             _P = cfg.get("proportion", 0.90)
             _C = cfg.get("confidence", 0.90)
@@ -3254,6 +3629,79 @@ function getActiveConditions(){
     });
   });
 }
+/* Pool multiple original conditions' freq_stats at one shared frequency into a
+   single recomputed entry -- mean/std/quantiles/outliers are recomputed exactly
+   from the pooled dut_vals (same math as recomputeFreqStat). DEnv and spec are
+   worst-case (max/tightest) across the pooled conditions, not truly recomputed
+   -- Shapiro normality and NP TI are NOT recomputable client-side without the
+   non-Room per-DUT raw values (only Room dut_vals are embedded in the JSON),
+   so they're explicitly dropped rather than silently wrong; the normality dot
+   renders red ("grouped" doesn't match "Normal"/"Marginal") as a visible cue
+   that this is an approximation, not a real Shapiro result. */
+function _poolFreqStats(fsList,freq){
+  var dv=[];
+  fsList.forEach(function(fs){(fs.dut_vals||[]).forEach(function(d){dv.push(d);});});
+  var n=dv.length;
+  var denvUp=0,denvLo=0,specHi=null,specLo=null;
+  fsList.forEach(function(fs){
+    if(fs.denv_up>denvUp) denvUp=fs.denv_up;
+    if(fs.denv_lo>denvLo) denvLo=fs.denv_lo;
+    if(fs.spec_up!=null&&(specHi===null||fs.spec_up<specHi)) specHi=fs.spec_up;
+    if(fs.spec_lo!=null&&(specLo===null||fs.spec_lo>specLo)) specLo=fs.spec_lo;
+  });
+  if(!n) return {freq:freq,n:0,mean:0,s:0,q1:0,q2:0,q3:0,lo_w:0,hi_w:0,
+    outliers:[],outlier_detail:[],dut_vals:[],W:1,p:1,norm:'grouped',
+    denv_up:denvUp,denv_lo:denvLo,denv_by_temp:{},spec_up:specHi,spec_lo:specLo,
+    np_ti_lo:null,np_ti_up:null};
+  var vals=dv.map(function(d){return d.v;});
+  var mean=0;vals.forEach(function(v){mean+=v;});mean/=n;
+  var ss=0;vals.forEach(function(v){ss+=(v-mean)*(v-mean);});
+  var s=n>1?Math.sqrt(ss/(n-1)):0;
+  var sorted=vals.slice().sort(function(a,b){return a-b;});
+  function pct(p){var i=(p/100)*(n-1),lo=Math.floor(i);return lo+1<n?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo];}
+  var q1=pct(25),q2=pct(50),q3=pct(75),iqr=q3-q1;
+  var loF=q1-1.5*iqr,hiF=q3+1.5*iqr;
+  var outDet=dv.filter(function(d){return d.v<loF||d.v>hiF;});
+  return {freq:freq,n:n,mean:mean,s:s,q1:q1,q2:q2,q3:q3,
+    lo_w:Math.max(sorted[0],loF),hi_w:Math.min(sorted[n-1],hiF),
+    outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),
+    dut_vals:dv,W:1,p:1,norm:'grouped',
+    denv_up:denvUp,denv_lo:denvLo,denv_by_temp:{},
+    spec_up:specHi,spec_lo:specLo,np_ti_lo:null,np_ti_up:null};
+}
+/* Regroup the active (filter-checkbox-passed) conditions by a single COND_DIMS
+   value, pooling every matching condition's freq_stats at each shared
+   frequency -- e.g. "Group by: SpurType" collapses dozens of conditions that
+   differ only in per-unit Upper Limit/Uncertainty text into one trace per
+   real SpurType. No-op (returns getActiveConditions() unchanged) when the
+   selector is at its default "Condition" value. */
+function getGroupedConditions(){
+  var active=getActiveConditions();
+  var gbEl=document.getElementById('statGroupBySel');
+  var gbCol=gbEl?gbEl.value:'';
+  if(!gbCol) return active;
+  var dim=(COND_DIMS||[]).filter(function(d){return d.col_id===gbCol;})[0];
+  if(!dim) return active;
+  var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+  var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+  var groups={},order=[];
+  active.forEach(function(cd){
+    var m=cd.condition.match(re);
+    var val=m?m[1].trim():'(none)';
+    if(!groups[val]){groups[val]={freqMap:{}};order.push(val);}
+    (cd.freq_stats||[]).forEach(function(fs){
+      var f=fs.freq;
+      if(!groups[val].freqMap[f]) groups[val].freqMap[f]=[];
+      groups[val].freqMap[f].push(fs);
+    });
+  });
+  return order.sort().map(function(val){
+    var g=groups[val];
+    var freq_stats=Object.keys(g.freqMap).map(Number).sort(function(a,b){return a-b;})
+      .map(function(f){return _poolFreqStats(g.freqMap[f],f);});
+    return {condition:dim.label+': '+val,freq_stats:freq_stats,temps_present:TEMPS_PRESENT||[]};
+  });
+}
 
 /* ---- environmental step selection ---- */
 function getSelectedTemps(){
@@ -3317,7 +3765,7 @@ function saveCSV(withExcluded){
   /* Temporarily bypass global filter when withExcluded=true */
   var savedGf=_gfExcluded;
   if(withExcluded) _gfExcluded=null;
-  var conds=getActiveConditions();
+  var conds=getGroupedConditions();
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
   conds=conds.map(function(cd){
@@ -3825,7 +4273,7 @@ function toggleStatPanel(){
   if(!el||!btn) return;
   if(el.style.display==='none'){
     el.style.display='';btn.textContent='&#9660; Statistics Table';
-    var conds=getActiveConditions();var params=getParams();
+    var conds=getGroupedConditions();var params=getParams();
     updateStatPanel(conds,params);
   } else {
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
@@ -3998,10 +4446,122 @@ function freqKeyDown(e,which){
   else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
   else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
 }
+/* Group a sorted {x,y} spec-point array into contiguous frequency segments of
+   constant value -- shared verbatim with the scatter/distribution/boxplot views. */
+function getSpecSegments(points){
+  if(!points||!points.length) return [];
+  var segs=[],cur=null;
+  points.forEach(function(p){
+    var v=Math.round(p.y*100)/100;
+    if(!cur||v!==cur.value){
+      cur={lo:p.x,hi:p.x,value:v};
+      segs.push(cur);
+    } else {
+      cur.hi=p.x;
+    }
+  });
+  return segs;
+}
+/* ---- spec-segment tab navigation ---- */
+var _specSegments=[],_segIdx=-1;
+var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
+var _segKey=null;
+function _defaultSegKey(){
+  var has=function(field){
+    return STAT_DATA.some(function(cd){
+      return (cd.freq_stats||[]).some(function(fs){
+        return (fs.dut_vals||[]).some(function(d){return d[field]!=null;});
+      });
+    });
+  };
+  if(has('spec_hi')||has('spec_lo')) return 'spec';
+  if(has('upper_limit')||has('lower_limit')) return 'limit';
+  if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
+  return 'spec';
+}
+function segKeyChange(){
+  _segKey=document.getElementById('segKeySel').value;
+  _recomputeSpecSegments();
+}
+function _segLabelText(seg,i,n){
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+}
+function segTab(dir){
+  if(!_specSegments.length) return;
+  _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  var seg=_specSegments[_segIdx];
+  var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+  s1.value=seg.lo;s2.value=seg.hi;
+  /* Write the exact values straight to the text boxes, not the slider's
+     (possibly step-snapped) .value -- see setFreqBand's identical fix in
+     the scatter/distribution views. */
+  document.getElementById('freq_lo_txt').value=seg.lo.toFixed(3);
+  document.getElementById('freq_hi_txt').value=seg.hi.toFixed(3);
+  update();
+}
+/* Recompute segments from the condition/serial/GF-filtered dut_vals points,
+   ignoring freq_lo/freq_hi themselves (that's what segTab moves) -- see the
+   scatter view's identical reasoning. GF excludes specific DUT measurements;
+   excluding one must also drop that DUT's own spec/limit/uncertainty
+   contribution at that frequency, which is why dut_vals (not one
+   representative value per freq_stats entry) carries these fields -- see
+   _aggregate_stat_data (padb_plots.py). */
+function _recomputeSpecSegments(){
+  if(_segKey===null){
+    _segKey=_defaultSegKey();
+    var sel=document.getElementById('segKeySel');
+    if(sel) sel.value=_segKey;
+  }
+  var fields=SEG_KEY_FIELDS[_segKey]||SEG_KEY_FIELDS.spec;
+  var hiField=fields[0],loField=fields[1];
+  var conds=getGroupedConditions();
+  var selSers=getSelectedSerials(),allSers=getAllSerials();
+  if(selSers.length===0&&allSers.length>0) selSers=allSers.slice();
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var gfToggle=document.getElementById('stat_gf_chk');
+  var gfEnabled=gfToggle?gfToggle.checked:true;
+  var hasGf=gfEnabled&&_gfExcluded&&_gfExcluded.size>0;
+  var hiPts={},loPts={};
+  conds.forEach(function(cd){
+    (cd.freq_stats||[]).forEach(function(fs){
+      (fs.dut_vals||[]).forEach(function(d){
+        if(serFlt&&selSers.indexOf(d.s)<0) return;
+        if(hasGf){var _excl=_isStatGfExcl(d.s,cd.condition,fs.freq);if(_statGfFocusMode?!_excl:_excl) return;}
+        var hiV=d[hiField],loV=d[loField];
+        if(hiV!=null&&!isNaN(Number(hiV))){
+          var v=Number(hiV);
+          if(!(fs.freq in hiPts)||v<hiPts[fs.freq]) hiPts[fs.freq]=v;
+        }
+        if(loV!=null&&!isNaN(Number(loV))){
+          var v=Number(loV);
+          if(!(fs.freq in loPts)||v>loPts[fs.freq]) loPts[fs.freq]=v;
+        }
+      });
+    });
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
+  var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
+  var points=hiPoints.length?hiPoints:loPoints;
+  _specSegments=getSpecSegments(points);
+  var bar=document.getElementById('segTabBar');
+  if(!bar) return;
+  if(_specSegments.length<2){bar.style.display='none';return;}
+  bar.style.display='';
+  var loTxt=document.getElementById('freq_lo_txt');
+  var loV2=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  _segIdx=0;
+  for(var i=0;i<_specSegments.length;i++){if(loV2>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  var seg=_specSegments[_segIdx];
+  document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
+  document.getElementById('segTabPrev').disabled=(_segIdx===0);
+  document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
+}
 
 /* ---- main update ---- */
 function update(){
-  var conds=getActiveConditions();
+  var conds=getGroupedConditions();
   var fLoTxt=document.getElementById('freq_lo_txt'),fHiTxt=document.getElementById('freq_hi_txt');
   var fLo=fLoTxt&&fLoTxt.value!==''?parseFloat(fLoTxt.value):parseFloat(document.getElementById('freq_lo').value);
   var fHi=fHiTxt&&fHiTxt.value!==''?parseFloat(fHiTxt.value):parseFloat(document.getElementById('freq_hi').value);
@@ -4065,6 +4625,7 @@ function update(){
       }
     }
   }
+  _recomputeSpecSegments();
   saveState();
 }
 
@@ -4119,6 +4680,7 @@ _loadStatGlobalFilter();
 loadState();
 updateFilterLabel();
 Plotly.newPlot('plot',buildTraces(getActiveConditions(),getParams()),buildLayout(getActiveConditions(),getParams()),{responsive:true});
+_recomputeSpecSegments();
 /* END */
 
 """
@@ -4384,15 +4946,35 @@ def _build_stat_summary_html(
             f'<hr class="fdiv">{port_items_ss}</div></div>'
         )
 
+    group_by_opts = '<option value="">Condition</option>\n' + "\n".join(
+        f'<option value="{dim["col_id"]}">{dim["label"]}</option>' for dim in cond_dims
+    )
+    group_by_html = (
+        f'<label>Group&nbsp;by:<select id="statGroupBySel" onchange="update()">\n{group_by_opts}\n</select></label>'
+        if cond_dims else ""
+    )
+
     ctrl_bar = (
         '<div class="ctrl-bar">\n'
         + (f'  {panels_html}\n  {sep}\n' if panels_html else '')
+        + (f'  {group_by_html}\n  {sep}\n' if group_by_html else '')
         + (f'  {serial_panel_html}\n' if serial_panel_html else '')
         + (f'  {port_panel_html_ss}\n  {sep}\n' if port_panel_html_ss else
            (f'  {sep}\n' if serial_panel_html else ''))
         + f'  {freq_lo_html}\n'
         + f'  {freq_hi_html}\n'
         + f'  {log_x_html}\n'
+        + f'  {sep}\n'
+        + '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '    <option value="spec">Spec</option>\n'
+        '    <option value="limit">Limit</option>\n'
+        '    <option value="uncertainty">Uncertainty</option>\n'
+        '  </select></label>\n'
+        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '  </span>\n'
         + '</div>\n'
     )
 
@@ -4873,6 +5455,62 @@ function getSelectedConds(){
     });
   });
 }
+/* Regroup checkbox-filtered conditions by a single COND_DIMS value, pooling
+   every matching condition's DUTs into one virtual condition -- e.g.
+   "Group by: SpurType" collapses dozens of conditions that differ only in
+   per-unit Upper Limit/Uncertainty text into one trace per real SpurType.
+   Unlike stat_summary/summary, this is an EXACT recompute, not an
+   approximation: UDE/LDE/TTU/TTL are already computed client-side from raw
+   per-DUT room/delta arrays by computeStats() on every call, so pooling the
+   underlying DUTs and letting computeStats() run as normal is exactly
+   correct -- no separate re-aggregation math needed here. spec_hi/spec_lo
+   still take the tightest value across constituents, same as the original
+   per-condition computation already does (a single mode() value, not a true
+   per-frequency spec either). No-op when the selector is at its default
+   "Condition" value. */
+function getGroupedConditions(){
+  var active=getSelectedConds();
+  var gbEl=document.getElementById('ecGroupBySel');
+  var gbCol=gbEl?gbEl.value:'';
+  if(!gbCol) return active;
+  var dim=(COND_DIMS||[]).filter(function(d){return d.col===gbCol;})[0];
+  if(!dim) return active;
+  var groups={},order=[];
+  active.forEach(function(cd){
+    var val=(cd.cond_keys&&cd.cond_keys[dim.col]!==undefined)?cd.cond_keys[dim.col]:'';
+    if(!groups[val]){groups[val]=[];order.push(val);}
+    groups[val].push(cd);
+  });
+  return order.sort().map(function(val){return _poolEcConditions(groups[val],dim.label+': '+val);});
+}
+function _poolEcConditions(recs,label){
+  var freqSet={};
+  recs.forEach(function(r){(r.freqs||[]).forEach(function(f){freqSet[f]=true;});});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var duts={};
+  recs.forEach(function(r){
+    Object.keys(r.duts||{}).forEach(function(k){
+      var d=r.duts[k];
+      var origFreqs=r.freqs||[];
+      var room=freqs.map(function(f){var idx=origFreqs.indexOf(f);return idx>=0?d.room[idx]:null;});
+      var deltas={};
+      Object.keys(d.deltas||{}).forEach(function(t){
+        deltas[t]=freqs.map(function(f){var idx=origFreqs.indexOf(f);return idx>=0?d.deltas[t][idx]:null;});
+      });
+      var spec={};
+      Object.keys(d.spec||{}).forEach(function(sk){
+        spec[sk]=freqs.map(function(f){var idx=origFreqs.indexOf(f);return idx>=0?d.spec[sk][idx]:null;});
+      });
+      duts[k]={serial:d.serial,port:d.port,gf_key:d.gf_key,room:room,deltas:deltas,spec:spec};
+    });
+  });
+  var specHi=null,specLo=null;
+  recs.forEach(function(r){
+    if(r.spec_hi!=null&&(specHi===null||r.spec_hi<specHi)) specHi=r.spec_hi;
+    if(r.spec_lo!=null&&(specLo===null||r.spec_lo>specLo)) specLo=r.spec_lo;
+  });
+  return {condition:label,cond_keys:{},freqs:freqs,spec_hi:specHi,spec_lo:specLo,duts:duts};
+}
 function getFreqRange(){
   var loTxt=document.getElementById('ec_freq_lo_txt'),hiTxt=document.getElementById('ec_freq_hi_txt');
   var lo=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('ec_freq_lo').value);
@@ -5292,12 +5930,12 @@ function toggleStatsPanel(){
   if(!el||!btn) return;
   if(el.style.display==='none'||el.style.display===''){
     el.style.display='block';btn.textContent='▼ Statistics';
-    updateStatsTable(getSelectedConds());
+    updateStatsTable(getGroupedConditions());
     el.scrollIntoView({behavior:'smooth',block:'nearest'});
   }else{el.style.display='none';btn.textContent='▶ Statistics';}
 }
 function saveCSV(){
-  var selConds=getSelectedConds();
+  var selConds=getGroupedConditions();
   var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
   var hdrs=['Condition','Freq_'+EC_X_UNIT,'UDE','LDE','TTU','TTL','Room_mean','Room_n','DeltaEnv_n','Spec_hi','Spec_lo'];
   var rows=[hdrs.join(',')];
@@ -5343,15 +5981,134 @@ function updateSummaryBar(selConds){
     +'<span class="smry-val">'+minTtl.toFixed(4)+'</span></span>');
   el.innerHTML=parts.join('');
 }
+/* Group a sorted {x,y} spec-point array into contiguous frequency segments of
+   constant value -- shared verbatim with the scatter/distribution/boxplot/
+   stat_summary/summary views. */
+function getSpecSegments(points){
+  if(!points||!points.length) return [];
+  var segs=[],cur=null;
+  points.forEach(function(p){
+    var v=Math.round(p.y*100)/100;
+    if(!cur||v!==cur.value){
+      cur={lo:p.x,hi:p.x,value:v};
+      segs.push(cur);
+    } else {
+      cur.hi=p.x;
+    }
+  });
+  return segs;
+}
+/* ---- spec-segment tab navigation ---- */
+var _specSegments=[],_segIdx=-1;
+var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
+var _segKey=null;
+function _defaultSegKey(){
+  var has=function(field){
+    return ENV_DATA.some(function(cd){
+      return Object.keys(cd.duts||{}).some(function(k){
+        var s=cd.duts[k].spec;return s&&s[field]&&s[field].some(function(v){return v!=null;});
+      });
+    });
+  };
+  if(has('spec_hi')||has('spec_lo')) return 'spec';
+  if(has('upper_limit')||has('lower_limit')) return 'limit';
+  if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
+  return 'spec';
+}
+function segKeyChange(){
+  _segKey=document.getElementById('segKeySel').value;
+  _recomputeSpecSegments();
+}
+function _segLabelText(seg,i,n){
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+EC_X_UNIT+', value: '+seg.value+')';
+}
+function segTab(dir){
+  if(!_specSegments.length) return;
+  _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  var seg=_specSegments[_segIdx];
+  var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
+  s1.value=seg.lo;s2.value=seg.hi;
+  /* Write the exact values straight to the text boxes, not the slider's
+     (possibly step-snapped) .value -- see setFreqBand's identical fix in
+     the scatter/distribution views. */
+  document.getElementById('ec_freq_lo_txt').value=seg.lo.toFixed(3);
+  document.getElementById('ec_freq_hi_txt').value=seg.hi.toFixed(3);
+  update();
+}
+/* Recompute segments from the condition/serial/port/GF-filtered per-DUT spec
+   values, ignoring ec_freq_lo/ec_freq_hi themselves (that's what segTab
+   moves) -- see the scatter view's identical reasoning. Reuses getActiveDuts
+   exactly, so the same serial/port/GF filtering as the actual plot applies. */
+function _recomputeSpecSegments(){
+  if(_segKey===null){
+    _segKey=_defaultSegKey();
+    var sel=document.getElementById('segKeySel');
+    if(sel) sel.value=_segKey;
+  }
+  var fields=SEG_KEY_FIELDS[_segKey]||SEG_KEY_FIELDS.spec;
+  var hiField=fields[0],loField=fields[1];
+  var conds=getGroupedConditions();
+  var hiPts={},loPts={};
+  conds.forEach(function(cd){
+    var freqs=cd.freqs||[];
+    getActiveDuts(cd).forEach(function(pair){
+      var dut=pair[1];
+      var spec=dut.spec;
+      if(!spec) return;
+      var hiRow=spec[hiField],loRow=spec[loField];
+      freqs.forEach(function(freq,fi){
+        if(hiRow){
+          var hiV=hiRow[fi];
+          if(hiV!=null&&!isNaN(Number(hiV))){
+            var v=Number(hiV);
+            if(!(freq in hiPts)||v<hiPts[freq]) hiPts[freq]=v;
+          }
+        }
+        if(loRow){
+          var loV=loRow[fi];
+          if(loV!=null&&!isNaN(Number(loV))){
+            var v2=Number(loV);
+            if(!(freq in loPts)||v2>loPts[freq]) loPts[freq]=v2;
+          }
+        }
+      });
+    });
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
+  var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
+  var points=hiPoints.length?hiPoints:loPoints;
+  _specSegments=getSpecSegments(points);
+  var bar=document.getElementById('segTabBar');
+  if(!bar) return;
+  if(_specSegments.length<2){bar.style.display='none';return;}
+  bar.style.display='';
+  var loTxt=document.getElementById('ec_freq_lo_txt');
+  var loV3=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('ec_freq_lo').value);
+  _segIdx=0;
+  for(var i=0;i<_specSegments.length;i++){if(loV3>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  var seg=_specSegments[_segIdx];
+  document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
+  document.getElementById('segTabPrev').disabled=(_segIdx===0);
+  document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
+}
 function update(){
-  var selConds=getSelectedConds();
+  var selConds=getGroupedConditions();
   var showExcl=document.getElementById('ec_show_excl');
   showExcl=showExcl?showExcl.checked:false;
-  var exclConds=showExcl?ENV_DATA.filter(function(cd){return selConds.indexOf(cd)<0;}):[];
+  /* "Show excluded" compares against real ENV_DATA entries by identity, which
+     doesn't mean anything once Group By is pooling synthetic virtual
+     conditions -- skip it in that case rather than have it show everything
+     as "excluded". */
+  var gbActive=document.getElementById('ecGroupBySel')&&document.getElementById('ecGroupBySel').value;
+  var _rawSel=gbActive?null:getSelectedConds();
+  var exclConds=(showExcl&&!gbActive)?ENV_DATA.filter(function(cd){return _rawSel.indexOf(cd)<0;}):[];
   var _r=buildTraces(selConds,exclConds);
   Plotly.react('plot',_r.traces,buildLayout(_r.yRange));
   updateStatsTable(selConds);
   updateSummaryBar(selConds);
+  _recomputeSpecSegments();
   saveState();
 }
 
@@ -5406,6 +6163,7 @@ loadState();
 var _ir=buildTraces(getSelectedConds(),[]);
 Plotly.newPlot('plot',_ir.traces,buildLayout(_ir.yRange),{responsive:true,scrollZoom:true});
 updateSummaryBar(getSelectedConds());
+_recomputeSpecSegments();
 """
 
 
@@ -5517,6 +6275,23 @@ def _aggregate_env_coverage_data(df: pd.DataFrame, cfg: dict) -> tuple:
                     index="Group", columns="Frequency_MHz", values="Value", aggfunc="first"
                 )
 
+        # Per-DUT, per-frequency Limit/Spec/Uncertainty pivots, same shape as
+        # room_pivot, so client-side segment detection can respect GF's
+        # per-DUT exclusion -- excluding a DUT must also drop its own
+        # spec/limit/uncertainty contribution at that frequency, not just its
+        # measured value. min/max (tightest-wins), not first/mean -- these
+        # should be constant per (freq, DUT); a duplicate-row data conflict
+        # (e.g. a datapak error) should resolve to the stricter value, not an
+        # arbitrary "first seen" or a meaningless average.
+        spec_pivots: dict = {}
+        for _col, _agg in (("Upper_Limit", "min"), ("Lower_Limit", "max"),
+                           ("Spec_Hi", "min"), ("Spec_Lo", "max"),
+                           ("Unc_Hi", "min"), ("Unc_Lo", "max")):
+            if _col in sc_df.columns:
+                _p = sc_df.pivot_table(index="Group", columns="Frequency_MHz", values=_col, aggfunc=_agg)
+                if len(_p):
+                    spec_pivots[_col] = _p
+
         # Build per-DUT data
         duts: dict = {}
         groups_in_sc = sc_df["Group"].dropna().unique()
@@ -5569,7 +6344,17 @@ def _aggregate_env_coverage_data(df: pd.DataFrame, cfg: dict) -> tuple:
                 if any(v is not None for v in d_vals):
                     dut_deltas[temp] = d_vals
 
-            duts[dut_key] = {"serial": serial, "port": port_val, "gf_key": gf_key, "room": room_vals, "deltas": dut_deltas}
+            dut_spec: dict = {}
+            for _col, _p in spec_pivots.items():
+                if grp in _p.index:
+                    _vals = [None] * n_f
+                    for f, idx in freq_idx.items():
+                        if f in _p.columns:
+                            _vals[idx] = _safe(_p.at[grp, f])
+                    dut_spec[_col.lower()] = _vals
+
+            duts[dut_key] = {"serial": serial, "port": port_val, "gf_key": gf_key, "room": room_vals,
+                              "deltas": dut_deltas, "spec": dut_spec}
 
         hi_vals = sc_df["Upper_Limit"].dropna()
         lo_vals = sc_df["Lower_Limit"].dropna()
@@ -5696,6 +6481,14 @@ def _build_env_coverage_html(
         )
     panels_html = "\n  ".join(panels)
 
+    group_by_opts = '<option value="">Condition</option>\n' + "\n".join(
+        f'<option value="{dim["col"]}">{dim["label"]}</option>' for dim in cond_dims
+    )
+    group_by_html = (
+        f'<label>Group&nbsp;by:<select id="ecGroupBySel" onchange="update()">\n{group_by_opts}\n</select></label>'
+        if cond_dims else ""
+    )
+
     if all_serials and len(all_serials) > 1:
         ser_items = "".join(
             f'<label class="fitem"><input type="checkbox" class="ec_ser_chk" value="{s}"'
@@ -5773,10 +6566,22 @@ def _build_env_coverage_html(
     ctrl_bar = (
         '<div class="ctrl-bar">\n'
         + (f'  {_combined_panels_html}\n  {sep}\n' if _combined_panels_html else '')
+        + (f'  {group_by_html}\n  {sep}\n' if group_by_html else '')
         + f'  {freq_lo_html}\n'
         + f'  {freq_hi_html}\n'
         + f'  {sep}\n'
         + f'  {log_x_html}\n'
+        + f'  {sep}\n'
+        + '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '    <option value="spec">Spec</option>\n'
+        '    <option value="limit">Limit</option>\n'
+        '    <option value="uncertainty">Uncertainty</option>\n'
+        '  </select></label>\n'
+        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '  </span>\n'
         + f'  {sep}\n'
         + f'  <label title="Show non-selected conditions as dim gray bands">'
         + f'<input type="checkbox" id="ec_show_excl" onchange="update()">'
@@ -7450,6 +8255,14 @@ function selAllBoxLf(on){
   document.querySelectorAll('.box_cond_lf_chk').forEach(function(c){c.checked=on;});
   update();
 }
+function toggleBoxLfPanel(){
+  var p=document.getElementById('box_lf_panel');
+  var btn=document.getElementById('box_lf_toggle_btn');
+  if(!p) return;
+  var collapsed=(p.style.display==='none');
+  p.style.display=collapsed?'':'none';
+  if(btn) btn.textContent=(collapsed?'▾':'▶')+' '+(collapsed?'Hide':'Show')+' manual filter list';
+}
 
 /* ---- Clear everything ---- */
 function clearEverything(){
@@ -7714,9 +8527,205 @@ function exportGfCsv(){
     });
     var blob=new Blob(['﻿'+rows.join('\r\n')],{type:'text/csv;charset=utf-8;'});
     var url=URL.createObjectURL(blob);
-    var a=document.createElement('a');a.href=url;a.download='global_filter.csv';
+    var a=document.createElement('a');a.href=url;a.download=_gfCsvFilename();
     document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
   }catch(e){alert('Export failed: '+e);}
+}
+/* Browsers save downloads to their configured downloads folder, not this
+   results folder -- a page can't override that. Naming the file after this
+   results folder (rather than a bare "global_filter.csv") at least makes it
+   obvious which dataset a wandering copy belongs to once it's saved. */
+function _gfCsvFilename(){
+  if(!RESULTS_DIR_PATH) return 'global_filter.csv';
+  var base=RESULTS_DIR_PATH.replace(/[\\/]+$/,'').split(/[\\/]/).pop();
+  return base?'global_filter_'+base+'.csv':'global_filter.csv';
+}
+/* Minimal CSV line splitter honoring quoted fields (matches exportGfCsv's own
+   esc() quoting: doubled "" for a literal quote inside a quoted field). */
+function _splitGfCsvLine(line){
+  var out=[],cur='',inQ=false;
+  for(var i=0;i<line.length;i++){
+    var c=line[i];
+    if(inQ){
+      if(c==='"'){ if(line[i+1]==='"'){cur+='"';i++;} else inQ=false; }
+      else cur+=c;
+    } else if(c==='"'){ inQ=true; }
+    else if(c===','){ out.push(cur);cur=''; }
+    else cur+=c;
+  }
+  out.push(cur);
+  return out;
+}
+/* Import a GF CSV in exportGfCsv's own format (Serial,Condition,Temperature,
+   Start_Freq,Stop_Freq,N_Points) and merge it into the current global filter.
+   The runtime exclusion check (_boxIsInGf, via _loadBoxGlobalFilter's
+   coarsening) only ever matches on (serial, condition, temperature) -- the
+   frequency columns are display-only in the export, dropped at match time --
+   so re-forming a raw "serial||condKey||temp||freq" key per row (any
+   placeholder frequency) reconstructs an exclusion functionally identical to
+   the original, even though the exact original frequency points aren't
+   individually recoverable from the summarised range. No filesystem check
+   for an existing file gates this button: a static HTML page opened via
+   file:// has no API to probe the results folder ahead of time, and since
+   this is just a native file-picker trigger, clicking it costs nothing if
+   there's nothing to import -- the browser's own dialog simply shows an
+   empty/no-CSV folder. */
+function importGfCsv(fileInput){
+  var file=fileInput.files&&fileInput.files[0];
+  if(!file) return;
+  var reader=new FileReader();
+  reader.onload=function(e){
+    try{
+      var text=String(e.target.result).replace(/^﻿/,'');
+      var lines=text.split(/\r\n|\n/).filter(function(l){return l.trim().length;});
+      if(lines.length<2){alert('No filter rows found in that file.');fileInput.value='';return;}
+      var keys=[];
+      lines.slice(1).forEach(function(line){
+        var f=_splitGfCsvLine(line);
+        if(f.length<3||!f[0]) return;
+        var ser=f[0],cond=f[1]||'',temp=f[2]||'';
+        var isManual=(temp==='All'||temp==='');
+        var useTemp=isManual?'manual':temp;
+        var useFreq=isManual?'0':(f[3]||'0');
+        keys.push(ser+'||'+cond+'||'+useTemp+'||'+useFreq);
+      });
+      if(!keys.length){alert('No filter rows found in that file.');fileInput.value='';return;}
+      _mergeGf(keys);
+      alert('Imported '+keys.length+' global-filter entr'+(keys.length===1?'y':'ies')+'.');
+    }catch(err){alert('Import failed: '+err.message);}
+    fileInput.value='';
+  };
+  reader.readAsText(file);
+}
+/* No browser API lets a page choose where its own save-file or open-file
+   dialog starts -- that's the browser's/OS's call, not script's, for good
+   security reasons. Closest practical fix: put the exact results folder path
+   (baked in at HTML-generation time, so it's guaranteed to match this
+   dataset) one click away to copy, so pasting it into the dialog's address
+   bar gets you there in two keystrokes instead of hunting for it. */
+function copyResultsPath(){
+  if(!RESULTS_DIR_PATH){alert('No results folder path available for this file.');return;}
+  function done(){
+    var btn=document.getElementById('box_copy_path_btn');
+    if(btn){var orig=btn.textContent;btn.textContent='Copied!';setTimeout(function(){btn.textContent=orig;},1500);}
+  }
+  if(navigator.clipboard){
+    navigator.clipboard.writeText(RESULTS_DIR_PATH).then(done);
+  } else {
+    var ta=document.createElement('textarea');ta.value=RESULTS_DIR_PATH;
+    document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
+    done();
+  }
+}
+/* Group a sorted {x,y} spec-point array into contiguous frequency segments of
+   constant value -- shared verbatim with the scatter/distribution views. */
+function getSpecSegments(points){
+  if(!points||!points.length) return [];
+  var segs=[],cur=null;
+  points.forEach(function(p){
+    var v=Math.round(p.y*100)/100;
+    if(!cur||v!==cur.value){
+      cur={lo:p.x,hi:p.x,value:v};
+      segs.push(cur);
+    } else {
+      cur.hi=p.x;
+    }
+  });
+  return segs;
+}
+/* ---- spec-segment tab navigation ---- */
+var _specSegments=[],_segIdx=-1;
+var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
+var _segKey=null;
+function _defaultSegKey(){
+  var has=function(field){
+    return BOX_DATA.some(function(cd){
+      return (cd.freq_stats||[]).some(function(f){
+        return (f.vals_detail||[]).some(function(d){return d[field]!=null;});
+      });
+    });
+  };
+  if(has('spec_hi')||has('spec_lo')) return 'spec';
+  if(has('upper_limit')||has('lower_limit')) return 'limit';
+  if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
+  return 'spec';
+}
+function segKeyChange(){
+  _segKey=document.getElementById('segKeySel').value;
+  _recomputeSpecSegments();
+}
+function _segLabelText(seg,i,n){
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+}
+function segTab(dir){
+  if(!_specSegments.length) return;
+  _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  var seg=_specSegments[_segIdx];
+  document.getElementById('box_freq_lo').value=seg.lo.toFixed(3);
+  document.getElementById('box_freq_hi').value=seg.hi.toFixed(3);
+  update();
+}
+/* Recompute segments from the condition/temp/serial/port/GF-filtered
+   vals_detail points, ignoring box_freq_lo/box_freq_hi themselves (that's
+   what segTab moves) -- see the scatter view's identical reasoning. GF
+   excludes specific DUT measurements; excluding one must also drop that
+   DUT's own spec/limit/uncertainty contribution at that frequency, which is
+   why vals_detail (not one representative value per freq_stats entry)
+   carries these fields -- see _aggregate_box_data_by_temp (padb_plots.py). */
+function _recomputeSpecSegments(){
+  if(_segKey===null){
+    _segKey=_defaultSegKey();
+    var sel=document.getElementById('segKeySel');
+    if(sel) sel.value=_segKey;
+  }
+  var fields=SEG_KEY_FIELDS[_segKey]||SEG_KEY_FIELDS.spec;
+  var hiField=fields[0],loField=fields[1];
+  var selConds=getSelectedConds(),selTemps=getSelectedTemps();
+  var allSers=getAllBoxSerials(),selBoxSers=getSelectedBoxSerials();
+  var serActive=allSers.length>1&&selBoxSers.length<allSers.length;
+  var allPorts=getAllBoxPorts(),selPorts=getSelectedBoxPorts();
+  var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
+  var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
+  var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var hiPts={},loPts={};
+  BOX_DATA.forEach(function(cd){
+    if(selConds.indexOf(cd.condition)<0) return;
+    if(selTemps.indexOf(cd.temp)<0) return;
+    (cd.freq_stats||[]).forEach(function(f){
+      (f.vals_detail||[]).forEach(function(d){
+        if(serActive&&selBoxSers.indexOf(d.s)<0) return;
+        if(portActive&&selPorts.indexOf(d.p||'')<0) return;
+        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return;}
+        var hiV=d[hiField],loV=d[loField];
+        if(hiV!=null&&!isNaN(Number(hiV))){
+          var v=Number(hiV);
+          if(!(f.freq in hiPts)||v<hiPts[f.freq]) hiPts[f.freq]=v;
+        }
+        if(loV!=null&&!isNaN(Number(loV))){
+          var v=Number(loV);
+          if(!(f.freq in loPts)||v>loPts[f.freq]) loPts[f.freq]=v;
+        }
+      });
+    });
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
+  var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
+  var points=hiPoints.length?hiPoints:loPoints;
+  _specSegments=getSpecSegments(points);
+  var bar=document.getElementById('segTabBar');
+  if(!bar) return;
+  if(_specSegments.length<2){bar.style.display='none';return;}
+  bar.style.display='';
+  var loTxt=document.getElementById('box_freq_lo');
+  var loV2=loTxt?parseFloat(loTxt.value):NaN;
+  _segIdx=0;
+  for(var i=0;i<_specSegments.length;i++){if(loV2>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  var seg=_specSegments[_segIdx];
+  document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
+  document.getElementById('segTabPrev').disabled=(_segIdx===0);
+  document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
 }
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
@@ -7725,6 +8734,7 @@ function update(){
   updateStatsTable(selConds,yFlt,selBoxSers,selTemps);
   updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
   updateDeltaOutlierPanel(selConds,selTemps,selBoxSers);
+  _recomputeSpecSegments();
   saveState();
 }
 window.addEventListener('storage',function(e){
@@ -7780,6 +8790,7 @@ function loadState(){
   BOX_DATA.forEach(function(cd){if(allConds.indexOf(cd.condition)<0) allConds.push(cd.condition);});
   Plotly.newPlot('plot',buildBoxTraces(allConds,TEMPS_PRESENT,{mode:'all'},getAllBoxSerials()),buildLayout({mode:'all'}),{responsive:true,scrollZoom:true});
   _updateBoxGfStatus();
+  _recomputeSpecSegments();
 })();
 """
 
@@ -7815,24 +8826,32 @@ def _aggregate_box_data_by_temp(df: pd.DataFrame, x_unit: str = "MHz") -> list:
 
     has_ser = "_serial_id" in df.columns
     has_port = "_port" in df.columns
+    # Carry per-point Limit/Spec/Uncertainty through to vals_detail (not just a
+    # single representative value per freq) so client-side segment detection can
+    # respect GF's per-DUT exclusion -- excluding a DUT must also exclude its
+    # spec/limit/uncertainty contribution, not just its measured value.
+    spec_cols = [c for c in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo") if c in df.columns]
+
+    def _rn(v):
+        return None if pd.isna(v) else round(float(v), 6)
+
     results: list = []
     for cond, cdf in df.groupby("_cond", sort=True):
         for temp, tdf in cdf.groupby("Temperature"):
             freq_stats = []
             for freq in sorted_freqs:
-                if has_ser:
-                    cols = ["Value", "_serial_id"] + (["_port"] if has_port else [])
-                    _fdf = tdf.loc[tdf["Frequency_MHz"] == freq, cols].dropna(subset=["Value"])
-                    vals = _fdf["Value"].tolist()
-                    vals_detail = [
-                        {"s": str(row["_serial_id"]),
-                         "p": str(row["_port"]) if has_port else "",
-                         "v": round(float(row["Value"]), 6)}
-                        for _, row in _fdf.iterrows()
-                    ]
-                else:
-                    vals = tdf.loc[tdf["Frequency_MHz"] == freq, "Value"].dropna().tolist()
-                    vals_detail = [{"s": "unknown", "p": "", "v": round(float(v), 6)} for v in vals]
+                cols = ["Value"] + (["_serial_id"] if has_ser else []) + (["_port"] if has_port else []) + spec_cols
+                _fdf = tdf.loc[tdf["Frequency_MHz"] == freq, cols].dropna(subset=["Value"])
+                vals = _fdf["Value"].tolist()
+                vals_detail = [
+                    {
+                        "s": str(row["_serial_id"]) if has_ser else "unknown",
+                        "p": str(row["_port"]) if has_port else "",
+                        "v": round(float(row["Value"]), 6),
+                        **{c.lower(): _rn(row[c]) for c in spec_cols},
+                    }
+                    for _, row in _fdf.iterrows()
+                ]
                 if not vals:
                     continue
                 s = _box_stats(vals)
@@ -7858,6 +8877,7 @@ def _build_box_interactive_html(
     box_freq_min: float = 0.0, box_freq_max: float = 1.0,
     box_cond_spur=None, spur_orders_box=None,
     results_dir: str = '',
+    results_dir_abs_path: str = '',
     padb_field_prefix: str = '',
     padb_freq_field: str = '',
     x_unit: str = "MHz",
@@ -8096,6 +9116,17 @@ def _build_box_interactive_html(
         f' value="{box_freq_max:.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
+        '  <span class="sep"></span>\n'
+        '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '    <option value="spec">Spec</option>\n'
+        '    <option value="limit">Limit</option>\n'
+        '    <option value="uncertainty">Uncertainty</option>\n'
+        '  </select></label>\n'
+        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '  </span>\n'
         f'  {_csv_btn("saveBoxCSV")}\n'
         '</div>\n'
     )
@@ -8122,6 +9153,7 @@ def _build_box_interactive_html(
         f"var STATE_KEY='padb_{results_dir}';",
         f"var PADB_FIELD_PREFIX={json.dumps(padb_field_prefix)};",
         f"var PADB_FREQ_FIELD={json.dumps(padb_freq_field)};",
+        f"var RESULTS_DIR_PATH={json.dumps(results_dir_abs_path)};",
     ])
 
     return (
@@ -8131,17 +9163,25 @@ def _build_box_interactive_html(
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
         + (
-            '<div class="box_lf_bar">\n'
-            + f'<span style="font-weight:600;color:#444;margin-right:4px">{box_lf_primary_label}:</span>\n'
-            + f'<input type="hidden" id="box_lf_primary_col" value="{box_lf_primary_col}">\n'
-            + f'<select id="box_harm_sel" style="font-size:12px;padding:1px 4px;border:1px solid #bbb;border-radius:3px" onchange="updateBoxHarmonic()">\n'
-            + box_lf_opts + "\n</select>\n"
-            + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;margin-left:6px" onclick="selAllBoxLf(true)">All</button>\n'
-            + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff" onclick="selAllBoxLf(false)">None</button>\n'
-            + '</div>\n'
-            + (('<div class="box_lf_panel">\n' + box_lf_rows + '</div>\n') if box_lf_rows else "")
-            if (harm_orders_box or spur_orders_box) else
-            (('<div class="box_lf_panel">\n' + box_lf_rows + '</div>\n') if box_lf_rows else "")
+            (
+                (
+                    '<div class="box_lf_bar">\n'
+                    + f'<span style="font-weight:600;color:#444;margin-right:4px">{box_lf_primary_label}:</span>\n'
+                    + f'<input type="hidden" id="box_lf_primary_col" value="{box_lf_primary_col}">\n'
+                    + f'<select id="box_harm_sel" style="font-size:12px;padding:1px 4px;border:1px solid #bbb;border-radius:3px" onchange="updateBoxHarmonic()">\n'
+                    + box_lf_opts + "\n</select>\n"
+                    + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;margin-left:6px" onclick="selAllBoxLf(true)">All</button>\n'
+                    + '<button style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff" onclick="selAllBoxLf(false)">None</button>\n'
+                    if (harm_orders_box or spur_orders_box) else
+                    '<div class="box_lf_bar">\n'
+                )
+                + '<button id="box_lf_toggle_btn"'
+                ' title="The list below is only needed for complex per-condition filtering -- the dropdown/All/None buttons (when shown) handle the common cases"'
+                ' style="font-size:11px;padding:1px 7px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;margin-left:6px"'
+                ' onclick="toggleBoxLfPanel()">&#9656; Show manual filter list</button>\n'
+                + '</div>\n'
+                + '<div class="box_lf_panel" id="box_lf_panel" style="display:none">\n' + box_lf_rows + '</div>\n'
+            ) if box_lf_rows else ""
         )
         + ctrl_bar + env_bar + filter_bar
         + '<div id="plot"></div>\n'
@@ -8154,24 +9194,36 @@ def _build_box_interactive_html(
         ' onclick="toggleDeltaPanel()">&#9658; Delta Outlier Detail</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
-        ' title="Set currently selected conditions + serials as the global exclusion filter"'
+        ' title="Set currently selected conditions + serials as the global exclusion filter -- adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)"'
         ' onclick="setFilterAsGf()">Set filter as GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_gf_btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
-        ' title="Set IQR outlier points as the global exclusion filter"'
+        ' title="Set IQR outlier points as the global exclusion filter -- adds to the existing filter, doesn\'t replace it"'
         ' onclick="applyGlobalFilter()">Set outliers as GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_delta_gf_btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
+        ' title="Set delta-outlier points as the global exclusion filter -- adds to the existing filter, doesn\'t replace it"'
         ' onclick="applyDeltaGlobalFilter()">Set delta outliers as GF</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' onclick="clearGlobalFilter()">Clear global filter</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#f0fff4;border-color:#080;color:#060"'
+        ' title="Saves to your browser\'s download folder, not this results folder -- browsers don\'t let a page choose that. Use Copy results path below to navigate there in the save dialog."'
         ' onclick="exportGfCsv()">Export GF CSV</button>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#f0fff4;border-color:#080;color:#060"'
+        ' title="Import a previously-exported GF CSV (or one you hand-edit) and merge its rows into the current global filter. Use Copy results path below to jump to this results folder in the open-file dialog."'
+        ' onclick="document.getElementById(\'gfCsvFileInput\').click()">Import GF CSV</button>\n'
+        '  <input type="file" id="gfCsvFileInput" accept=".csv" style="display:none"'
+        ' onchange="importGfCsv(this)">\n'
+        + '  <button class="toggle-btn" id="box_copy_path_btn"'
+        ' style="background:#f5f5f5;border-color:#888;color:#333"'
+        ' title="Copy this results folder\'s full path -- paste it into the save/open dialog\'s address bar so the exported/imported GF CSV is guaranteed to live alongside the data it matches"'
+        ' onclick="copyResultsPath()">Copy results path</button>\n'
         + '  <button class="toggle-btn" id="box_padb_flt_btn"'
         ' style="background:#f0fff4;border-color:#080;color:#060"'
-        ' title="Copy \'Serial Number\' NOT IN {...} expression to clipboard"'
+        ' title="Under development -- copies a best-effort \'Serial Number\' NOT IN {...} expression; may not exactly match PADB\'s own filter syntax"'
         ' onclick="copyPadbFilter()">Copy PADB Filter</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
@@ -8390,6 +9442,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         box_cond_spur=box_cond_spur,
         spur_orders_box=spur_orders_box,
         results_dir=cfg.get('results_dir', ''),
+        results_dir_abs_path=str(output_html.parent.resolve()),
         padb_field_prefix=padb_field_prefix,
         padb_freq_field=padb_freq_field,
         x_unit=x_unit,
@@ -8494,9 +9547,15 @@ function freqKeyDown(e,which){
 }
 function setFreqBand(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-  s1.value=Math.max(parseFloat(s1.min),lo);
-  s2.value=Math.min(parseFloat(s2.max),hi);
-  syncFreq();update();
+  var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
+  s1.value=loV;s2.value=hiV;
+  /* Set text boxes directly from the intended values, not the slider's
+     (possibly step-snapped) .value -- see freqTxtChange's identical fix. */
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  update();
 }
 
 /* ---- active groups ---- */
@@ -9047,8 +10106,91 @@ function _sumSerFromCond(cond){
   return m?m[1]:null;
 }
 /* ---- filtered active helper (useGf defaults to sum_gf_chk state) ---- */
+/* Regroup checkbox-filtered records by a single COND_DIMS value, pooling every
+   matching record at each shared frequency -- e.g. "Group by: SpurType"
+   collapses dozens of records that differ only in per-unit Upper Limit/
+   Uncertainty text into one virtual record per real SpurType. No-op when the
+   selector is at its default "Condition" value. */
+function getGroupedConditions(){
+  var active=getActive();
+  var gbEl=document.getElementById('sumGroupBySel');
+  var gbCol=gbEl?gbEl.value:'';
+  if(!gbCol) return active;
+  var dim=(COND_DIMS||[]).filter(function(d){return d.col===gbCol;})[0];
+  if(!dim) return active;
+  var groups={},order=[];
+  active.forEach(function(cd){
+    var val=(cd.cond_keys&&cd.cond_keys[dim.col]!==undefined)?cd.cond_keys[dim.col]:'';
+    if(!groups[val]){groups[val]=[];order.push(val);}
+    groups[val].push(cd);
+  });
+  return order.sort().map(function(val){return _poolSumRecords(groups[val],dim.label+': '+val);});
+}
+/* Pool multiple original records sharing one Group-by dimension value into a
+   single virtual record with the identical shape getSumCondData()/
+   buildTraces() already expect. mean/min/max are recomputed exactly (each DUT
+   contributes to exactly one constituent record, since "condition" here is
+   the full key combination, so pooling per-DUT values is mathematically the
+   correct group mean/min/max, not an approximation). uttl/lttl (NP TI) and
+   spec_hi/spec_lo are worst-case (max/tightest) across the constituent
+   records instead of a true recompute -- a real NP TI needs the pooled
+   population's own order statistics, which by_temp's precomputed per-temp
+   breakdown doesn't cleanly support once records are merged; same
+   worst-case-across-contributors approximation as stat_summary's DEnv. */
+function _poolSumRecords(recs,label){
+  var freqSet={};
+  recs.forEach(function(r){(r.freqs||[]).forEach(function(f){freqSet[f]=true;});});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var serIdx={},dut_info=[];
+  recs.forEach(function(r){
+    (r.dut_info||[]).forEach(function(di){
+      if(serIdx[di.s]===undefined){serIdx[di.s]=dut_info.length;dut_info.push({s:di.s});}
+    });
+  });
+  var nDuts=dut_info.length;
+  var specFields={};
+  recs.forEach(function(r){Object.keys(r.dut_spec_vals||{}).forEach(function(k){specFields[k]=true;});});
+  var dut_spec_vals={};
+  Object.keys(specFields).forEach(function(k){
+    dut_spec_vals[k]=freqs.map(function(){return new Array(nDuts).fill(null);});
+  });
+  var dut_vals=freqs.map(function(){return new Array(nDuts).fill(null);});
+  var mean=[],min_data=[],max_data=[],uttl=[],lttl=[],spec_hi_list=[],spec_lo_list=[];
+  freqs.forEach(function(f,fi){
+    var pooledVals=[],mn=null,mx=null,ut=null,lt=null,sh=null,sl=null;
+    recs.forEach(function(r){
+      var rfi=(r.freqs||[]).indexOf(f);
+      if(rfi<0) return;
+      (r.dut_info||[]).forEach(function(di,dIdx){
+        var v=(r.dut_vals&&r.dut_vals[rfi])?r.dut_vals[rfi][dIdx]:null;
+        var gIdx=serIdx[di.s];
+        if(v!=null){dut_vals[fi][gIdx]=v;pooledVals.push(v);}
+        Object.keys(specFields).forEach(function(k){
+          var arr=(r.dut_spec_vals&&r.dut_spec_vals[k])?r.dut_spec_vals[k][rfi]:null;
+          var sv=arr?arr[dIdx]:null;
+          if(sv!=null) dut_spec_vals[k][fi][gIdx]=sv;
+        });
+      });
+      if(r.min_data&&r.min_data[rfi]!=null){if(mn===null||r.min_data[rfi]<mn)mn=r.min_data[rfi];}
+      if(r.max_data&&r.max_data[rfi]!=null){if(mx===null||r.max_data[rfi]>mx)mx=r.max_data[rfi];}
+      if(r.uttl&&r.uttl[rfi]!=null){if(ut===null||r.uttl[rfi]>ut)ut=r.uttl[rfi];}
+      if(r.lttl&&r.lttl[rfi]!=null){if(lt===null||r.lttl[rfi]<lt)lt=r.lttl[rfi];}
+      if(r.spec_hi_list&&r.spec_hi_list[rfi]!=null){if(sh===null||r.spec_hi_list[rfi]<sh)sh=r.spec_hi_list[rfi];}
+      if(r.spec_lo_list&&r.spec_lo_list[rfi]!=null){if(sl===null||r.spec_lo_list[rfi]>sl)sl=r.spec_lo_list[rfi];}
+    });
+    mean.push(pooledVals.length?pooledVals.reduce(function(a,b){return a+b;},0)/pooledVals.length:null);
+    min_data.push(mn);max_data.push(mx);uttl.push(ut);lttl.push(lt);
+    spec_hi_list.push(sh);spec_lo_list.push(sl);
+  });
+  var shVals=spec_hi_list.filter(function(v){return v!=null;});
+  var slVals=spec_lo_list.filter(function(v){return v!=null;});
+  return {condition:label,cond_keys:{},freqs:freqs,mean:mean,min_data:min_data,max_data:max_data,
+    uttl:uttl,lttl:lttl,uttl_is_estimate:true,spec_hi:shVals.length?shVals[0]:null,spec_lo:slVals.length?slVals[0]:null,
+    spec_hi_list:spec_hi_list,spec_lo_list:spec_lo_list,by_temp:null,temps:[],
+    dut_info:dut_info,dut_vals:dut_vals,dut_spec_vals:dut_spec_vals};
+}
 function _getFilteredActive(useGf){
-  var active=applyDataFilter(getActive());
+  var active=applyDataFilter(getGroupedConditions());
   if(useGf===undefined){var t=document.getElementById('sum_gf_chk');useGf=!t||t.checked;}
   if(useGf&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size){
     /* Summary conditions are always aggregate (render_summary strips serial from cond_cols).
@@ -9191,6 +10333,130 @@ function exportTableCSV(){
   a.download=(typeof TITLE!=='undefined'?TITLE.replace(/[^\w-]/g,'_'):'summary')+'_table.csv';
   document.body.appendChild(a);a.click();document.body.removeChild(a);
 }
+/* Group a sorted {x,y} spec-point array into contiguous frequency segments of
+   constant value -- shared verbatim with the scatter/distribution/boxplot/
+   stat_summary views. */
+function getSpecSegments(points){
+  if(!points||!points.length) return [];
+  var segs=[],cur=null;
+  points.forEach(function(p){
+    var v=Math.round(p.y*100)/100;
+    if(!cur||v!==cur.value){
+      cur={lo:p.x,hi:p.x,value:v};
+      segs.push(cur);
+    } else {
+      cur.hi=p.x;
+    }
+  });
+  return segs;
+}
+/* ---- spec-segment tab navigation ---- */
+var _specSegments=[],_segIdx=-1;
+var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
+var _segKey=null;
+function _defaultSegKey(){
+  var has=function(field){
+    return DATA.some(function(cd){return cd.dut_spec_vals&&cd.dut_spec_vals[field]&&cd.dut_spec_vals[field].length;});
+  };
+  if(has('spec_hi')||has('spec_lo')) return 'spec';
+  if(has('upper_limit')||has('lower_limit')) return 'limit';
+  if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
+  return 'spec';
+}
+function segKeyChange(){
+  _segKey=document.getElementById('segKeySel').value;
+  _recomputeSpecSegments();
+}
+function _segLabelText(seg,i,n){
+  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', value: '+seg.value+')';
+}
+function segTab(dir){
+  if(!_specSegments.length) return;
+  _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  var seg=_specSegments[_segIdx];
+  setFreqBand(seg.lo,seg.hi);
+}
+/* Per-DUT inclusion for one condition, mirroring getSumCondData's identical
+   serial-filter + GF logic (kept separate rather than refactored into a
+   shared helper, to avoid risking that already-working function). */
+function _sumInclDutIdxs(cd){
+  var selSers=getSumSelectedSerials(),allSers=getSumAllSerials();
+  if(selSers.length===0&&allSers.length>0) selSers=allSers.slice();
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var gfEl=document.getElementById('sum_gf_chk');
+  var gfOn=!gfEl||gfEl.checked;
+  var idxs=[];
+  if(!cd.dut_info||!cd.dut_info.length) return idxs;
+  var coarseKey=(gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size)?_sumCoarseCondKey(cd.condition):null;
+  var gfMode=localStorage.getItem('padb_v2_gf_mode')||'exclude';
+  cd.dut_info.forEach(function(di,idx){
+    if(serFlt&&selSers.indexOf(di.s)<0) return;
+    if(coarseKey!==null){
+      var inGf=_sumGfCoarseExcluded.has(di.s+'||'+coarseKey);
+      if(gfMode==='focus'?!inGf:inGf) return;
+    }
+    idxs.push(idx);
+  });
+  return idxs;
+}
+/* Recompute segments from the condition/serial/GF-filtered per-DUT spec
+   values, ignoring freq_lo/freq_hi themselves (that's what segTab moves) --
+   see the scatter view's identical reasoning. dut_spec_vals is
+   [field][freq_idx][dut_idx], parallel to dut_vals -- see render_summary()
+   (padb_v2.py). */
+function _recomputeSpecSegments(){
+  if(_segKey===null){
+    _segKey=_defaultSegKey();
+    var sel=document.getElementById('segKeySel');
+    if(sel) sel.value=_segKey;
+  }
+  var fields=SEG_KEY_FIELDS[_segKey]||SEG_KEY_FIELDS.spec;
+  var hiField=fields[0],loField=fields[1];
+  var conds=getGroupedConditions();
+  var hiPts={},loPts={};
+  conds.forEach(function(cd){
+    if(!cd.dut_spec_vals) return;
+    var hiRows=cd.dut_spec_vals[hiField],loRows=cd.dut_spec_vals[loField];
+    if(!hiRows&&!loRows) return;
+    var idxs=_sumInclDutIdxs(cd);
+    (cd.freqs||[]).forEach(function(freq,fi){
+      idxs.forEach(function(di){
+        if(hiRows){
+          var hiV=hiRows[fi]?hiRows[fi][di]:null;
+          if(hiV!=null&&!isNaN(Number(hiV))){
+            var v=Number(hiV);
+            if(!(freq in hiPts)||v<hiPts[freq]) hiPts[freq]=v;
+          }
+        }
+        if(loRows){
+          var loV=loRows[fi]?loRows[fi][di]:null;
+          if(loV!=null&&!isNaN(Number(loV))){
+            var v2=Number(loV);
+            if(!(freq in loPts)||v2>loPts[freq]) loPts[freq]=v2;
+          }
+        }
+      });
+    });
+  });
+  var hiFreqs=Object.keys(hiPts).map(Number).sort(function(a,b){return a-b;});
+  var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
+  var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
+  var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
+  var points=hiPoints.length?hiPoints:loPoints;
+  _specSegments=getSpecSegments(points);
+  var bar=document.getElementById('segTabBar');
+  if(!bar) return;
+  if(_specSegments.length<2){bar.style.display='none';return;}
+  bar.style.display='';
+  var loTxt=document.getElementById('freq_lo_txt');
+  var loV3=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  _segIdx=0;
+  for(var i=0;i<_specSegments.length;i++){if(loV3>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  var seg=_specSegments[_segIdx];
+  document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
+  document.getElementById('segTabPrev').disabled=(_segIdx===0);
+  document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
+}
 /* ---- main update ---- */
 function update(){
   var active=_getFilteredActive();
@@ -9200,6 +10466,7 @@ function update(){
   var excl=showExcl?DATA.filter(function(cd){return active.indexOf(cd)<0;}):[];
   Plotly.react('plot',buildTraces(active,excl),buildLayout());
   var rb=document.getElementById('sum_refresh_table_btn');if(rb)rb.textContent='Refresh table (stale)';
+  _recomputeSpecSegments();
   saveState();
 }
 
@@ -9260,6 +10527,7 @@ var _sumInitActive=_getFilteredActive();
 Plotly.newPlot('plot',buildTraces(_sumInitActive,[]),buildLayout());
 document.getElementById('n_groups').textContent=_sumInitActive.length+' groups';
 buildTable();
+_recomputeSpecSegments();
 """
 
 
@@ -9348,6 +10616,14 @@ def _build_summary_html(
             f'<hr class="fdiv">{items}</div></div>'
         )
     panels_html = "\n  ".join(panels)
+
+    group_by_opts = '<option value="">Condition</option>\n' + "\n".join(
+        f'<option value="{dim["col"]}">{dim["label"]}</option>' for dim in cond_dims
+    )
+    group_by_html = (
+        f'<label>Group&nbsp;by:<select id="sumGroupBySel" onchange="update()">\n{group_by_opts}\n</select></label>'
+        if cond_dims else ""
+    )
 
     # Build serial filter panel from all unique serials across all records
     all_sum_serials = sorted(set(
@@ -9494,6 +10770,7 @@ def _build_summary_html(
         "</head>\n<body>\n"
         '<div class="ctrl-bar">\n'
         + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
+        + (f'  {group_by_html}\n  {sep}\n' if group_by_html else "")
         + (f'  {ser_panel_html}\n  {sep}\n' if ser_panel_html else "")
         + f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
@@ -9511,6 +10788,17 @@ def _build_summary_html(
         + (" checked" if log_x else "")
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
         + band_section_html
+        + f'  {sep}\n'
+        + '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '    <option value="spec">Spec</option>\n'
+        '    <option value="limit">Limit</option>\n'
+        '    <option value="uncertainty">Uncertainty</option>\n'
+        '  </select></label>\n'
+        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '    <button class="reset-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '  </span>\n'
         + f'  {sep}\n'
         + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         + '  <span id="n_groups"></span>\n'

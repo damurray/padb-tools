@@ -19,7 +19,7 @@ One page. Do this *before* the session so you can follow along live through all 
 
 The shared `Padb\Data` folder most of us use day-to-day is genuinely busy (100+ pods/jobs) — not a good place to learn on. Set up an isolated sandbox instead:
 
-- [ ] Copy the whole `tools` folder to **`C:\temp\tools`** (a plain folder copy — no install step)
+- [ ] Copy the whole `tools` folder to **`C:\temp\tools`** (a plain folder copy — no install step)  tools location: \\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\padb-tools\tools
 - [ ] Create an empty folder: **`C:\temp\data`**
 - [ ] Create (or edit) this file — note it's always in this *exact* location regardless of where you put `tools`:
   `%USERPROFILE%\OneDrive - Keysight Technologies\Documents\Padb\padb_config.json`
@@ -56,4 +56,4 @@ This opens `http://127.0.0.1:5000` in your browser. Confirm:
 
 If steps 1–4 above are done, you're ready to follow along live for all three.
 
-**AMC2 variants**: `tutorial\` also includes `-AMC2` versions of each pod (Malaysia site) — used only if we demo the site-conversion feature (Convert Selected / Convert Pod). Not needed for the core 3 tutorials above.
+**AMC2 variants**: `tutorial\` also includes `-AMC2` versions of each pod (Malaysia site) — used only if we demo the site-conversion feature (Convert Selected / Convert Pod). Not needed for the core 3 tutorials above if AMC users have access to Santa Rosa PADB data.
