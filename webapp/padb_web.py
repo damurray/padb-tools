@@ -421,7 +421,7 @@ def list_jobs():
             "path": str(p),
             "name": p.name,
             "description": cfg.get("description", ""),
-            "mode": cfg.get("mode", "legacy"),
+            "mode": cfg.get("mode", "legacy" if kind == "run" else "v2 plot"),
             "pod": cfg.get("pod", ""),
             "kind": kind,
             "index_path": index_path,
