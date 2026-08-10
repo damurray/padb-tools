@@ -271,6 +271,9 @@ def render_env_coverage(
 
     k_table = _pp._build_k_table()
     env_data, cond_dims, non_room_temps, all_serials, all_ports = _pp._aggregate_env_coverage_data(df, cfg)
+    help_panel_html = _pp._build_help_panel_html(
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+    )
 
     all_freqs = sorted(set(f for cd in env_data for f in cd["freqs"] if f is not None))
     freq_min = float(min(all_freqs)) if all_freqs else 0.0
@@ -307,6 +310,7 @@ def render_env_coverage(
         results_dir=cfg.get("results_dir", ""),
         x_label=cfg.get("x_label", "Frequency (MHz)"),
         x_unit=cfg.get("x_unit", "MHz"),
+        help_panel_html=help_panel_html,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -371,6 +375,10 @@ def render_summary(
         vals   = sorted(str(v) for v in df[col].dropna().unique() if str(v).strip())
         if len(vals) > 1:
             cond_dims.append({"col": label, "col_id": col_id, "label": label, "vals": vals})
+
+    help_panel_html = _pp._build_help_panel_html(
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+    )
 
     # Identify serial column so per-DUT means can be embedded for GF support
     _ser_col = next(
@@ -532,6 +540,7 @@ def render_summary(
         hi_spec=hi_spec_global, lo_spec=lo_spec_global,
         freq_min=freq_min, freq_max=freq_max, freq_vals=freq_vals,
         temps_all=temps_all,
+        help_panel_html=help_panel_html,
     )
 
 

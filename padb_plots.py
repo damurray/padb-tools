@@ -376,7 +376,7 @@ function buildTraces(filtered){
     var customdata=sorted.map(function(r){
       return HOVER_COLS.map(function(hc){var v=r[hc[0]];return (v===null||v===undefined)?'':v;});
     });
-    var tmpl='<b>'+key+'</b><br>Freq: %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f}';
+    var tmpl='<b>'+key+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f}';
     HOVER_COLS.forEach(function(hc,i){
       if(hoverSel.indexOf(hc[0])>=0) tmpl+='<br>'+hc[1]+': %{customdata['+i+']}';
     });
@@ -669,7 +669,7 @@ function loadState(){
 }
 
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
 var SEG_KEY_FIELDS={limit:['Upper_Limit','Lower_Limit'],spec:['Spec_Hi','Spec_Lo'],uncertainty:['Unc_Hi','Unc_Lo']};
 var _segKey=null;
 /* Which field pair the segment tabs use is a user-facing choice (Limit/Spec/
@@ -720,6 +720,7 @@ function _segLabelText(seg,i,n){
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   setFreqBand(seg.lo,seg.hi);
 }
@@ -768,11 +769,23 @@ function _recomputeSpecSegments(){
      `step` (same root cause fixed in setFreqBand), which for a wide freq
      range (a coarse step) could snap loV away from the just-tabbed-to
      segment's real boundary and make the index lookup below match the wrong
-     segment (or none) -- symptom: Prev/Next appears to get stuck. */
+     segment (or none) -- symptom: Prev/Next appears to get stuck.
+     Second precision issue found 2026-08-10 on a real instrument sweep (not
+     round synthetic numbers): the text box itself is only ever written with
+     3 decimals (.toFixed(3), see setFreqBand), so a segment boundary needing
+     more precision (e.g. 10.107422) never satisfies loV>=seg.lo once loV has
+     been truncated to "10.107" -- the lookup silently stuck on segment 0
+     forever, symptom identical to the slider-snap bug above. Fixed by
+     rounding the segment boundary to the same 3 decimals before comparing,
+     so both sides of the comparison use the same precision the text box
+     itself is limited to. */
   var loTxt=document.getElementById('freq_lo_txt');
   var loV=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  if(_segIdxPinned){_segIdxPinned=false;_segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx));}
+  else{
   _segIdx=0;
-  for(var i=0;i<_specSegments.length;i++){if(loV>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  for(var i=0;i<_specSegments.length;i++){if(loV>=parseFloat(_specSegments[i].lo.toFixed(3))-1e-9){_segIdx=i;}}
+  }
   var seg=_specSegments[_segIdx];
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
@@ -998,6 +1011,22 @@ def _detect_group_cols(df: pd.DataFrame) -> list[tuple[str, str]]:
     return result
 
 
+def _short_x_label(x_label: str) -> str:
+    """Prefix used in 'Freq min/max'-style control labels, derived from the
+    full x_label (e.g. "Amplitude (dBm)" -> "Amplitude"). Found 2026-08-10:
+    every "Freq min:"/"Freq max:" control across all 6+ views was a hardcoded
+    literal string, completely independent of the x_label/x_unit job.json
+    override -- a pod whose real x-axis is Amplitude (not Frequency) got the
+    correct unit suffix and slider range, but the label text still said
+    "Freq", which is actively misleading, not just inconsistent. Preserves
+    the original literal "Freq" wording for the default "Frequency (MHz)"
+    case rather than changing every existing pod's label to "Frequency"
+    as an unrelated side effect of this fix.
+    """
+    short = x_label.split(" (")[0].strip() if x_label else "Freq"
+    return "Freq" if short == "Frequency" else short
+
+
 def _checkbox_panel(col: str, label: str, vals: list[str]) -> str:
     """Build a collapsible checkbox-dropdown filter widget for one dimension."""
     items = "".join(
@@ -1013,6 +1042,118 @@ def _checkbox_panel(col: str, label: str, vals: list[str]) -> str:
         f'<label class="fitem fall"><input type="checkbox" id="all_{col}"'
         f' checked onchange="toggleAll(\'{col}\')"><b>Select&nbsp;all</b></label>'
         f'<hr class="fdiv">{items}</div></div>'
+    )
+
+
+def _build_help_panel_html(
+    df: pd.DataFrame, dims: list[tuple[str, str]],
+    has_group_by: bool = True, has_segment_by: bool = True,
+    btn_class: str = "filter-btn", panel_class: str = "filter-panel",
+    toggle_fn: str = "togglePanel", panel_id: str = "panel_help",
+    wrap_class: str = "filter-wrap",
+) -> str:
+    """Build a collapsible "Help" filter-panel button explaining the ctrl-bar
+    controls, plus a dynamic check for inverted Upper/Lower Spec or Limit rows
+    (Upper < Lower, backwards from the usual convention) -- the concrete root
+    cause of "why do I see extra/tiny segments" reports found 2026-08-10.
+
+    Not every view has the same controls or filter-widget CSS/JS, so this is
+    parameterized rather than a single hardcoded snippet: `has_group_by`/
+    `has_segment_by` drop the matching bullet when a view has no such control
+    (e.g. `distribution` has no "Group by"), and `btn_class`/`panel_class`/
+    `toggle_fn`/`panel_id` let a view plug in its own filter-widget naming
+    (e.g. `distribution` uses `dist-filter-btn`/`dist-filter-panel`/
+    `toggleDistPanel`/`dist_panel_help` instead of the `filter-btn`/
+    `filter-panel`/`togglePanel`/`panel_help` convention scatter, boxplot,
+    stat_summary, env_coverage, and summary all share).
+
+    That investigation started from a wrong hypothesis (a sparse secondary
+    condition, e.g. "Amplitude (dBm): 0", being pooled with the real sweep via
+    tightest-wins). A naive row-share heuristic ("flag any filter value below
+    X% of rows") was tried first and rejected: it false-flagged every normal
+    high-cardinality dimension (Serial with 17 roughly-even DUTs, Limit with
+    17 distinct per-unit values) while missing the real cause, since the
+    culprit condition ("Amplitude (dBm): 0") actually covers 100% of
+    frequencies, not a sparse few. Direct row inspection found the real
+    pattern: one single Serial Number's entire dataset (all frequencies, all
+    Amplitude values) had Upper Spec < Lower Spec throughout -- a per-DUT
+    data-entry/labeling issue in the pod, not a pooling artifact. This check
+    is the direct, targeted version of that finding: it flags exactly the
+    inverted rows and names which dimension values they're concentrated in,
+    rather than guessing from row-share alone. Per the NPI-anomaly precedent,
+    this is reported as a factual pod data-quality finding, not assumed to be
+    a padb-tools bug.
+
+    dims: (df_column_name, display_label) pairs -- same shape as
+    _detect_group_cols()'s return value -- used to name which condition
+    values the inverted rows fall under. Reuses the filter-btn/filter-panel/
+    togglePanel('id') machinery already present in every view -- no new JS.
+    """
+    n_total = len(df)
+    inv_mask = pd.Series(False, index=df.index)
+    if "Spec_Hi" in df.columns and "Spec_Lo" in df.columns:
+        inv_mask |= (df["Spec_Hi"].notna() & df["Spec_Lo"].notna()
+                     & (df["Spec_Hi"] < df["Spec_Lo"]))
+    if "Upper_Limit" in df.columns and "Lower_Limit" in df.columns:
+        inv_mask |= (df["Upper_Limit"].notna() & df["Lower_Limit"].notna()
+                     & (df["Upper_Limit"] < df["Lower_Limit"]))
+    n_inverted = int(inv_mask.sum())
+    inv_html = ""
+    if n_inverted and n_total:
+        culprit_dims = list(dims)
+        if "Serial" in df.columns and not any(c == "Serial" for c, _ in dims):
+            culprit_dims.append(("Serial", "Serial"))
+        culprits = []
+        for col, label in culprit_dims:
+            if col not in df.columns:
+                continue
+            vc = df.loc[inv_mask, col].astype(str).replace({"": pd.NA}).dropna().value_counts()
+            for val, cnt in vc.items():
+                if cnt == n_inverted or cnt >= 0.9 * n_inverted:
+                    culprits.append(f"{label}&nbsp;=&nbsp;{val}&nbsp;({cnt:,}&nbsp;rows)")
+        culprit_txt = ", ".join(culprits[:6]) if culprits else "no single dimension value accounts for most of them"
+        inv_html = (
+            '<p style="margin:6px 0 2px;color:#c00;font-weight:600">'
+            f'&#9888;&nbsp;{n_inverted:,} of {n_total:,} rows ({100 * n_inverted / n_total:.1f}%) '
+            'have Upper Spec/Limit &lt; Lower Spec/Limit &mdash; backwards from the usual '
+            'convention. This is very likely a pod data-entry issue for the affected condition, '
+            'not a padb-tools bug (same as prior NPI-era anomalies -- factual finding, not an '
+            'assumed fix). If segments/traces look fragmented or contain unexpected extra bands, '
+            'this is the most likely cause.</p>'
+            f'<p style="margin:2px 0 6px;font-size:12px">Concentrated in: {culprit_txt}. '
+            'Try unchecking that value in its filter dropdown above.</p>'
+        )
+    bullets = [
+        '<li><b>Filter dropdowns</b> (buttons above) &mdash; uncheck values to '
+        'exclude matching rows from every chart, segment, and statistic on '
+        'this page.</li>'
+    ]
+    if has_group_by:
+        bullets.append(
+            '<li><b>Group by</b> &mdash; picks which dimension separates traces/'
+            'boxes. Every other dimension gets pooled together (tightest-wins '
+            'for spec/limit values) unless you filter it out above.</li>'
+        )
+    if has_segment_by:
+        bullets.append(
+            '<li><b>Segment by</b> &mdash; splits the x-axis into contiguous '
+            'bands of constant Spec/Limit/Uncertainty. A dimension that is '
+            'neither filtered nor grouped can still pool into these segments, '
+            'producing extra or oddly narrow bands.</li>'
+        )
+    body = (
+        '<b>Controls on this page</b>'
+        f'<ul style="margin:4px 0 8px 18px;padding:0">{"".join(bullets)}</ul>'
+        f'{inv_html}'
+    )
+    toggle_id = panel_id.removeprefix("panel_").removeprefix("dist_panel_")
+    return (
+        f'<div class="{wrap_class}">'
+        f'<button class="{btn_class}" onclick="{toggle_fn}(\'{toggle_id}\')">'
+        '&#9432;&nbsp;Help</button>'
+        f'<div class="{panel_class}" id="{panel_id}" '
+        'style="min-width:340px;max-width:480px;font-size:12px;line-height:1.5">'
+        f'{body}</div></div>'
     )
 
 
@@ -1104,6 +1245,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'<hr class="fdiv">{hover_items}</div></div>'
     ) if hover_col_list else ""
 
+    help_panel_html = _build_help_panel_html(df, group_cols)
+
     # Frequency band preset buttons
     freq_bands = cfg.get("freq_bands", [])
     band_btns_html = ""
@@ -1123,6 +1266,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var HI_SPEC={hi_js};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_LABEL={json.dumps(x_label)};",
+        f"var X_SHORT_LABEL={json.dumps(_short_x_label(x_label))};",
         f"var X_UNIT={json.dumps(x_unit)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var LOG_X={'true' if log_x else 'false'};",
@@ -1202,13 +1346,13 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '    <option value="median_desc">Median high&#8594;low</option>\n'
         '  </select></label>\n'
         '  <div class="sep"></div>\n'
-        f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
+        f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
         f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
-        f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
+        f'  <label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
@@ -1231,6 +1375,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '  </div>\n'
         '  <div class="sep"></div>\n'
         f'  {hover_panel_html}\n'
+        f'  {help_panel_html}\n'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         f'  {_csv_btn("saveCSV")}\n'
@@ -1599,7 +1744,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
 var SEG_KEY_FIELDS={limit:['Upper_Limit','Lower_Limit'],spec:['Spec_Hi','Spec_Lo'],uncertainty:['Unc_Hi','Unc_Lo']};
 var _segKey=null;
 /* Which field pair the segment tabs use is a user-facing choice (Limit/Spec/
@@ -1650,6 +1795,7 @@ function _segLabelText(seg,i,n){
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   setFreqBand(seg.lo,seg.hi);
 }
@@ -1687,8 +1833,11 @@ function _recomputeSpecSegments(){
      lookup below match the wrong segment -- symptom: Prev/Next gets stuck. */
   var loTxt=document.getElementById('freq_lo_txt');
   var loV=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  if(_segIdxPinned){_segIdxPinned=false;_segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx));}
+  else{
   _segIdx=0;
-  for(var i=0;i<_specSegments.length;i++){if(loV>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  for(var i=0;i<_specSegments.length;i++){if(loV>=parseFloat(_specSegments[i].lo.toFixed(3))-1e-9){_segIdx=i;}}
+  }
   var seg=_specSegments[_segIdx];
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
@@ -1883,6 +2032,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         )
 
     x_unit = cfg.get("x_unit", "MHz")
+    x_label = cfg.get("x_label", "Frequency (MHz)")
 
     # -------------------------------------------------------------------------
     # 0.  KDE helpers
@@ -2254,6 +2404,13 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     spur_panel_html  = _filter_panel("spur", "Spur Type", spur_types) if len(spur_types) > 1 else ""
     ser_panel_html   = _filter_panel("ser", "Serial", all_serials, "update")
     port_panel_html  = _filter_panel("port", "Port", all_ports, "update") if all_ports else ""
+    help_panel_html = _build_help_panel_html(
+        df, [("_spur", "Spur Type"), ("_port", "Port"), ("Serial", "Serial")],
+        has_group_by=False,
+        btn_class="dist-filter-btn", panel_class="dist-filter-panel",
+        toggle_fn="toggleDistPanel", panel_id="dist_panel_help",
+        wrap_class="dist-filter-wrap",
+    )
 
     # -------------------------------------------------------------------------
     # 9.  JavaScript (raw string — no f-string interpolation)
@@ -2457,7 +2614,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
 var SEG_KEY_FIELDS={limit:['hi','lo'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -2486,6 +2643,7 @@ function _segLabelText(seg,i,n){
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   var s1=document.getElementById('dist_freq_lo'),s2=document.getElementById('dist_freq_hi');
   s1.value=seg.lo;s2.value=seg.hi;
@@ -2545,8 +2703,11 @@ function _recomputeSpecSegments(){
   bar.style.display='';
   var loTxt=document.getElementById('dist_freq_lo_txt');
   var loV3=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('dist_freq_lo').value);
+  if(_segIdxPinned){_segIdxPinned=false;_segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx));}
+  else{
   _segIdx=0;
-  for(var i=0;i<_specSegments.length;i++){if(loV3>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  for(var i=0;i<_specSegments.length;i++){if(loV3>=parseFloat(_specSegments[i].lo.toFixed(3))-1e-9){_segIdx=i;}}
+  }
   var seg=_specSegments[_segIdx];
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
@@ -2975,6 +3136,7 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         + (spur_panel_html + "\n" if spur_panel_html else "")
         + ser_panel_html + "\n"
         + (port_panel_html + "\n" if port_panel_html else "")
+        + help_panel_html + "\n"
         + '<button class="sel-btn" style="margin-left:6px" onclick="resetView()">Reset</button>\n'
         + "</div>\n"
         + '<div class="ctrl-bar">\n'
@@ -2984,13 +3146,13 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         '  <label><input type="radio" name="view_mode" value="delta"'
         ' checked onchange="update()">&nbsp;ΔTemp</label>\n'
         '  <div class="sep"></div>\n'
-        + f'  <label>Freq&nbsp;min:<input type="range" id="dist_freq_lo"'
+        + f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="dist_freq_lo"'
         f' min="{dist_freq_min:.1f}" max="{dist_freq_max:.1f}" value="{dist_freq_min:.1f}"'
         f' step="0.1" style="width:100px" oninput="syncFreqDist()" onchange="update()">'
         f'<input type="text" id="dist_freq_lo_txt" value="{dist_freq_min:.1f}"'
         f' style="width:55px;font-size:12px;border:1px solid #bbb;border-radius:3px;padding:1px 3px"'
         f' onchange="freqDistTxtChange(\'lo\')" onkeydown="freqDistKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
-        f'  <label>Freq&nbsp;max:<input type="range" id="dist_freq_hi"'
+        f'  <label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="dist_freq_hi"'
         f' min="{dist_freq_min:.1f}" max="{dist_freq_max:.1f}" value="{dist_freq_max:.1f}"'
         f' step="0.1" style="width:100px" oninput="syncFreqDist()" onchange="update()">'
         f'<input type="text" id="dist_freq_hi_txt" value="{dist_freq_max:.1f}"'
@@ -4690,7 +4852,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -4719,6 +4881,7 @@ function _segLabelText(seg,i,n){
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
   s1.value=seg.lo;s2.value=seg.hi;
@@ -4780,8 +4943,11 @@ function _recomputeSpecSegments(){
   bar.style.display='';
   var loTxt=document.getElementById('freq_lo_txt');
   var loV2=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  if(_segIdxPinned){_segIdxPinned=false;_segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx));}
+  else{
   _segIdx=0;
-  for(var i=0;i<_specSegments.length;i++){if(loV2>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  for(var i=0;i<_specSegments.length;i++){if(loV2>=parseFloat(_specSegments[i].lo.toFixed(3))-1e-9){_segIdx=i;}}
+  }
   var seg=_specSegments[_segIdx];
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
@@ -5006,6 +5172,10 @@ def _build_stat_summary_html(
             col_id = re.sub(r'\W+', '_', key)  # "OA State" → "OA_State"
             cond_dims.append({"col": key, "col_id": col_id, "label": key, "vals": vals})
 
+    help_panel_html = _build_help_panel_html(
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+    )
+
     # Build checkbox filter panels
     panels: list[str] = []
     for dim in cond_dims:
@@ -5129,14 +5299,14 @@ def _build_stat_summary_html(
     sep = '<div class="sep"></div>'
 
     freq_lo_html = (
-        f'<label>Freq&nbsp;min:<input type="range" id="freq_lo"'
+        f'<label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>'
     )
     freq_hi_html = (
-        f'<label>Freq&nbsp;max:<input type="range" id="freq_hi"'
+        f'<label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
@@ -5211,6 +5381,7 @@ def _build_stat_summary_html(
         '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
         '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
         '  </span>\n'
+        + f'  {sep}\n  {help_panel_html}\n'
         + '</div>\n'
     )
 
@@ -6293,7 +6464,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -6322,6 +6493,7 @@ function _segLabelText(seg,i,n){
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
   s1.value=seg.lo;s2.value=seg.hi;
@@ -6382,8 +6554,11 @@ function _recomputeSpecSegments(){
   bar.style.display='';
   var loTxt=document.getElementById('ec_freq_lo_txt');
   var loV3=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('ec_freq_lo').value);
+  if(_segIdxPinned){_segIdxPinned=false;_segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx));}
+  else{
   _segIdx=0;
-  for(var i=0;i<_specSegments.length;i++){if(loV3>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  for(var i=0;i<_specSegments.length;i++){if(loV3>=parseFloat(_specSegments[i].lo.toFixed(3))-1e-9){_segIdx=i;}}
+  }
   var seg=_specSegments[_segIdx];
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
@@ -6697,6 +6872,7 @@ def _build_env_coverage_html(
     results_dir: str = '',
     x_label: str = "Frequency (MHz)",
     x_unit: str = "MHz",
+    help_panel_html: str = "",
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -6831,14 +7007,14 @@ def _build_env_coverage_html(
     sep = '<div class="sep"></div>'
 
     freq_lo_html = (
-        f'<label>Freq&nbsp;min:<input type="range" id="ec_freq_lo"'
+        f'<label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="ec_freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="ec_freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>'
     )
     freq_hi_html = (
-        f'<label>Freq&nbsp;max:<input type="range" id="ec_freq_hi"'
+        f'<label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="ec_freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
         f'<input class="freq-txt" id="ec_freq_hi_txt" type="text" value="{freq_max:.3f}"'
@@ -6882,6 +7058,7 @@ def _build_env_coverage_html(
         + f'  <label title="Show non-selected conditions as dim gray bands">'
         + f'<input type="checkbox" id="ec_show_excl" onchange="update()">'
         + f'&nbsp;Show&nbsp;excluded</label>\n'
+        + f'  {help_panel_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + f'  <button class="stat-btn" id="ec_stat_btn" onclick="toggleStatsPanel()">&#9658;&nbsp;Statistics</button>\n'
         + f'  <button class="gf-toggle-btn" id="ec_gf_toggle_btn" onclick="toggleEcGf()">GF:&nbsp;ON</button>\n'
@@ -7975,7 +8152,7 @@ function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
       mean:fs_arr.map(function(f){return f.mean;}),
       boxpoints:false,name:gk,legendgroup:gk,showlegend:true,
       marker:{color:color,opacity:0.7},line:{color:color,width:2},whiskerwidth:0.6,
-      hovertemplate:'<b>'+gk+'</b><br>Freq: %{x}<br>Q1: %{q1:.4f}<br>Median: %{median:.4f}<br>'+
+      hovertemplate:'<b>'+gk+'</b><br>'+X_SHORT_LABEL+': %{x}<br>Q1: %{q1:.4f}<br>Median: %{median:.4f}<br>'+
         'Q3: %{q3:.4f}<br>Whiskers: [%{lowerfence:.4f}, %{upperfence:.4f}]<extra></extra>',
     });
     if(isShowPoints()){
@@ -8096,7 +8273,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
       line:{color:color,width:2},
       whiskerwidth:0.6,
       opacity:cd.temp==='Room'?0.85:0.65,
-      hovertemplate:'<b>'+name+'</b><br>Freq: %{x}<br>Q1: %{q1:.4f}<br>Median: %{median:.4f}<br>'+
+      hovertemplate:'<b>'+name+'</b><br>'+X_SHORT_LABEL+': %{x}<br>Q1: %{q1:.4f}<br>Median: %{median:.4f}<br>'+
         'Q3: %{q3:.4f}<br>Whiskers: [%{lowerfence:.4f}, %{upperfence:.4f}]<extra></extra>',
     });
     if(isShowPoints()){
@@ -8944,7 +9121,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -8973,6 +9150,7 @@ function _segLabelText(seg,i,n){
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   document.getElementById('box_freq_lo').value=seg.lo.toFixed(3);
   document.getElementById('box_freq_hi').value=seg.hi.toFixed(3);
@@ -9032,8 +9210,11 @@ function _recomputeSpecSegments(){
   bar.style.display='';
   var loTxt=document.getElementById('box_freq_lo');
   var loV2=loTxt?parseFloat(loTxt.value):NaN;
+  if(_segIdxPinned){_segIdxPinned=false;_segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx));}
+  else{
   _segIdx=0;
-  for(var i=0;i<_specSegments.length;i++){if(loV2>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  for(var i=0;i<_specSegments.length;i++){if(loV2>=parseFloat(_specSegments[i].lo.toFixed(3))-1e-9){_segIdx=i;}}
+  }
   var seg=_specSegments[_segIdx];
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
@@ -9193,8 +9374,10 @@ def _build_box_interactive_html(
     padb_field_prefix: str = '',
     padb_freq_field: str = '',
     x_unit: str = "MHz",
+    x_label: str = "Frequency (MHz)",
     spec_dir_js: str = "both",
     tll_selector_html: str = "",
+    help_panel_html: str = "",
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -9420,11 +9603,11 @@ def _build_box_interactive_html(
         '<input type="checkbox" id="box_excl_denv_chk" onchange="update()">'
         '&nbsp;&#916;Env&nbsp;temps</label>\n'
         '  <span class="sep"></span>\n'
-        f'  <label>Freq&thinsp;min&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_lo"'
+        f'  <label>{_short_x_label(x_label)}&thinsp;min&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_lo"'
         f' value="{box_freq_min:.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
-        f'  <label>Freq&thinsp;max&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_hi"'
+        f'  <label>{_short_x_label(x_label)}&thinsp;max&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_hi"'
         f' value="{box_freq_max:.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
@@ -9439,6 +9622,7 @@ def _build_box_interactive_html(
         '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
         '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
         '  </span>\n'
+        f'  {help_panel_html}\n'
         f'  {_csv_btn("saveBoxCSV")}\n'
         '</div>\n'
     )
@@ -9456,6 +9640,7 @@ def _build_box_interactive_html(
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_UNIT={json.dumps(x_unit)};",
+        f"var X_SHORT_LABEL={json.dumps(_short_x_label(x_label))};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var TEMPS_PRESENT={json.dumps(all_temps)};",
         f"var PALETTE={json.dumps(palette)};",
@@ -9561,6 +9746,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     title = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
     x_unit = cfg.get("x_unit", "MHz")
+    x_label = cfg.get("x_label", "Frequency (MHz)")
     padb_field_prefix = df["_val_col_name"].iloc[0] if len(df) else ""
     # Expand short CSV column name to full PADB path: "Name (units)" → "Name-->Name (units)"
     if padb_field_prefix and "-->" not in padb_field_prefix:
@@ -9702,6 +9888,9 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         {"col": key, "col_id": re.sub(r"\W+", "_", key), "label": key, "vals": _sort_numeric(v)}
         for key, v in sorted(dim_vals.items()) if len(v) > 1
     ]
+    help_panel_html = _build_help_panel_html(
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+    )
 
     # Harmonic extraction for longform panel
     _harm_re_box = re.compile(r'HarmonicNumber:\s*(\S+)', re.IGNORECASE)
@@ -9758,8 +9947,10 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         padb_field_prefix=padb_field_prefix,
         padb_freq_field=padb_freq_field,
         x_unit=x_unit,
+        x_label=x_label,
         spec_dir_js=box_spec_dir_js,
         tll_selector_html=box_tll_selector_html,
+        help_panel_html=help_panel_html,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -10078,7 +10269,7 @@ function buildTraces(active,excl){
       type:'scatter',x:freqs,y:means,mode:(freqs.length<2?'markers':'lines'),
       line:{color:'rgba(170,170,170,0.55)',width:1.2},
       name:cd.condition+' (excl)',legendgroup:cd.condition+'_excl',showlegend:false,
-      hovertemplate:'<b>'+cd.condition+'</b> (excluded)<br>Freq: %{x:.4f} MHz<br>Mean: %{y:.2f}<extra></extra>'
+      hovertemplate:'<b>'+cd.condition+'</b> (excluded)<br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>Mean: %{y:.2f}<extra></extra>'
     });
   });
   var _selTemps=getSelTemps();
@@ -10112,7 +10303,7 @@ function buildTraces(active,excl){
       type:'scatter',x:freqs,y:means,mode:_actPtMode,
       line:{color:color,width:2},
       name:cd.condition,legendgroup:cd.condition,
-      hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>Mean: %{y:.2f}<extra></extra>'
+      hovertemplate:'<b>'+cd.condition+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>Mean: %{y:.2f}<extra></extra>'
     });
     /* TTL upper */
     if((_tllDir==='hi'||_tllDir==='both')&&uttls.some(function(v){return v!==null&&v!==undefined;})){
@@ -10121,7 +10312,7 @@ function buildTraces(active,excl){
         type:'scatter',x:freqs,y:uttls,mode:_actPtMode,
         line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
         name:cd.condition+ttlLabel,legendgroup:cd.condition,showlegend:false,
-        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
+        hovertemplate:'<b>'+cd.condition+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
       });
     }
     /* TTL lower */
@@ -10131,7 +10322,7 @@ function buildTraces(active,excl){
         type:'scatter',x:freqs,y:lttls,mode:_actPtMode,
         line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
         name:cd.condition+ttlLabelLo,legendgroup:cd.condition,showlegend:false,
-        hovertemplate:'<b>'+cd.condition+'</b><br>Freq: %{x:.4f} MHz<br>'+ttlLabelLo.trim()+': %{y:.2f}<extra></extra>'
+        hovertemplate:'<b>'+cd.condition+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+ttlLabelLo.trim()+': %{y:.2f}<extra></extra>'
       });
     }
   });
@@ -10678,7 +10869,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -10703,6 +10894,7 @@ function _segLabelText(seg,i,n){
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
+  _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   setFreqBand(seg.lo,seg.hi);
 }
@@ -10779,8 +10971,11 @@ function _recomputeSpecSegments(){
   bar.style.display='';
   var loTxt=document.getElementById('freq_lo_txt');
   var loV3=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  if(_segIdxPinned){_segIdxPinned=false;_segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx));}
+  else{
   _segIdx=0;
-  for(var i=0;i<_specSegments.length;i++){if(loV3>=_specSegments[i].lo-1e-9){_segIdx=i;}}
+  for(var i=0;i<_specSegments.length;i++){if(loV3>=parseFloat(_specSegments[i].lo.toFixed(3))-1e-9){_segIdx=i;}}
+  }
   var seg=_specSegments[_segIdx];
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
@@ -10872,6 +11067,7 @@ def _build_summary_html(
     freq_max: float,
     freq_vals: list,
     temps_all: list = [],
+    help_panel_html: str = "",
 ) -> None:
     """Assemble and write the interactive summary-plot HTML from pre-built records."""
     title   = cfg.get("title", output_html.stem)
@@ -11000,6 +11196,7 @@ def _build_summary_html(
         f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_LABEL={json.dumps(x_label)};",
+        f"var X_SHORT_LABEL={json.dumps(_short_x_label(x_label))};",
         f"var X_UNIT={json.dumps(x_unit)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var TITLE={json.dumps(title)};",
@@ -11101,13 +11298,13 @@ def _build_summary_html(
         + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
         + (f'  {group_by_html}\n  {sep}\n' if group_by_html else "")
         + (f'  {ser_panel_html}\n  {sep}\n' if ser_panel_html else "")
-        + f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
+        + f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
         f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
-        f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
+        f'  <label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
         f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
@@ -11129,6 +11326,7 @@ def _build_summary_html(
         '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
         '  </span>\n'
         + f'  {sep}\n'
+        + f'  {help_panel_html}\n'
         + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         + '  <span id="n_groups"></span>\n'
         + "</div>\n"

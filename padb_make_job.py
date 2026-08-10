@@ -22,6 +22,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import padb_config
+from padb_simple import parse_pod_sections
 
 # Personal defaults come from padb_config.json if present, else values
 # derived from Path.home() (see padb_config.py) -- never hardcoded to one
@@ -40,8 +41,16 @@ def make_job_cfg(
     padb_exe: str, output_dir: str, logs_dir: str, publish_root: str | None,
 ) -> dict:
     stem = pod_path.stem
+    # Device_Device names the actual instrument family this pod's data came from
+    # (e.g. "M9484C", "SG6311A") -- read it instead of assuming one project's
+    # instrument. Found 2026-08-10: this was hardcoded "SG6311A" regardless of
+    # the pod's real Device_Device, so a non-SG6311A pod (an MCS extraction on
+    # M9484C) got mislabeled throughout its own generated page.
+    device_raw = parse_pod_sections(pod_path).get("Extract", {}).get("Device_Device", "")
+    device_prefix = device_raw.strip().strip("'\"")
+    desc_stem = f"{device_prefix} {stem}" if device_prefix else stem
     cfg = {
-        "description": f"SG6311A {stem} — {mode.capitalize()} mode",
+        "description": f"{desc_stem} — {mode.capitalize()} mode",
         "pod": pod_path.name,
         "mode": mode,
         "padb_exe": padb_exe,

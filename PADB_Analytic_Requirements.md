@@ -426,3 +426,54 @@ If the analytic has spec limits configured, they appear automatically as `Lower 
 - [ ] Spec limits configured in the analytic if available (optional — can be entered manually in the HTML)
 - [ ] `OutputConfig_OutputCSV=True` on each analytic
 - [ ] `OutputConfig_OutputFile=` filename stem matches the analytic name (words in the same order, spaces → underscores); or use `csv_file` in the job JSON to specify the path explicitly
+
+---
+
+## 8. PADB Simple Mode — Corner Cases and Gotchas
+
+Your summary is correct: Simple mode (`padb_simple.py`) does zero custom plotting or aggregation. It runs PADB-R.exe with native rendering forced on, then wraps whatever PNG/PDF/CSV/txt/pod/sao files land in `results_padb` into one browsable `index.html` — one card per native PNG, a metadata table per analytic, download links for the rest. No filters, no statistics, no per-DUT logic. Verified directly against `padb_simple.py` and `padb_run.py` (line citations below) rather than assumed.
+
+### Native rendering is forced — the pod's own `OutputConfig_OutputGraph`/`GraphFormat` don't matter
+
+`make_run_pod(..., force_native_render=(mode == "simple"))` (`padb_run.py:998`) unconditionally writes `OutputConfig_OutputGraph=1` and `OutputConfig_GraphFormat=png,pdf` into every `[PADBAnalyticN]` section of the runtime `_run.pod` copy (`_SIMPLE_FORCE_KEYS`, `padb_run.py:236`) — overwriting whatever the source pod had. **You don't need to check or fix this setting yourself for Simple mode; it's handled automatically.** If PADB-R still doesn't produce a PNG for some other reason, the gallery shows an explicit "Native graph not found for this analytic" card rather than failing silently or erroring (`padb_simple.py:162-171`).
+
+### Analytic type doesn't matter
+
+`padb_simple.py` has no Type=80/60/90-conditional logic at all — `_type_label()` only affects the card's displayed name. Every analytic in your pod, regardless of type, is discovered and rendered the same way.
+
+### Real gap: `OutputConfig_OutputFile` collisions are not detected — directly relevant to a multi-analytic pod
+
+File-to-analytic matching is pure filename-stem globbing (`_analytic_files()`, `padb_simple.py:110-118`, reusing `padb_run._analytic_stems()`). **There is no collision detection in Simple mode** (unlike V2, which has `unique_output_filenames` for this exact problem). If two analytics in your amplitude-accuracy pod share one `OutputConfig_OutputFile`, both cards glob-match and display the *same* PNG/PDF/CSV — whichever one actually survived on disk — with no error, no warning, no visual indication anything is wrong. This is the single most likely gotcha for a pod with multiple analysis objects: **give every analytic a distinct `OutputConfig_OutputFile`**, or use `padb_make_job.py`'s automatic `unique_output_filenames` handling when generating the job (it applies regardless of mode).
+
+### `--plots-only` does not regenerate native renders
+
+`--plots-only` skips the actual `run_padb()` call entirely (`padb_run.py:1014-1016`, mode-independent). For V2, that's fine — `padb_v2.py` rebuilds its plots from the already-extracted CSV. For Simple mode, the PNG/PDF *are* PADB-R's own native output; there is no code path that regenerates them without a real PADB-R.exe run. `--plots-only` on a Simple-mode job just rebuilds `index.html` from whatever renders already exist in `results_padb` from the last real run — it will not pick up a pod edit or produce anything new.
+
+### No cap on card count or path length
+
+Nothing in `padb_simple.py`/`padb_run.py` limits how many PNGs one analytic can contribute (each gets its own card, `padb_simple.py:173-187`), and no `warn_if_path_long()`-style check runs for Simple mode's collected files (that guard only exists in the job generators). An analytic configured with heavy pagination will produce a correspondingly long, unbounded gallery page — not a bug, just worth expecting if any of your amplitude-accuracy analytics paginate into many plots.
+
+### Card and file ordering — not "largest first"
+
+Cards render in pod order (the order analytics appear in the pod file); multiple PNGs within one analytic sort **alphabetically** by filename (`sorted(found.values())`, `padb_simple.py:118`), not by file size. (One of this repo's own training-slide scripts claims "largest first" — that's wrong, contradicted by the actual code.)
+
+### Metadata table reflects effective (post-`subex`) settings — this one is *not* a gotcha
+
+The metadata table is built from `_run.pod` (`padb_simple.py:144-145`), the runtime copy — and `make_run_pod()` writes any `subex` overrides (e.g. `Device_MinDate`/`Device_MaxDate` from `--min-date`/`--max-date`) directly into its `[Extract]` section (`padb_run.py:362-363`). So if you're wondering whether the metadata table might show stale, pre-override values from the original pod: it doesn't. It correctly reflects what actually ran.
+
+### Subtle: a failed analytic can silently show a *stale* render from a previous run
+
+`_collect_padb_outputs()` only clears old `results_padb` files for stems that have **fresh** output in this run; stems with no fresh match are left untouched by design (`padb_run.py:404-420`, existing docstring explains this is deliberate — it's what lets a CSV manually placed for an analytic PADB never writes one for survive). The side effect: if one analytic in a multi-analytic run fails to render for some unrelated reason (a real PADB-R.exe issue on that specific analytic), its card will silently show whatever PNG/PDF is left over from an *earlier* successful run instead of an empty/error card — indistinguishable from a fresh, correct result. Worth a quick sanity check (e.g. a mtime glance at `results_padb`) after any run where you suspect one analytic might have had trouble, especially the first time you run a new multi-analytic pod.
+
+---
+
+## 9. Pre-flight CSV check (`padb_csv_check.py`, added 2026-08-10)
+
+Before running `padb_v2.py` on a freshly-extracted CSV — especially for a complex, multi-analytic pod — run:
+
+```
+py padb_csv_check.py <csv_path>
+py padb_csv_check.py <csv_path> --x-col "Exact Column Name"   # test a specific x-axis column
+```
+
+It calls the exact same column-detection function `padb_v2.py` itself uses and reports, before you wait through a build: whether the x-axis/value columns actually resolved correctly (and flags a likely-wrong pick if some other numeric column has *more* distinct values than the one that got chosen as x-axis — the table in section 7 explains why this happens), any numeric column that's present but currently invisible everywhere in the tool (a real second swept dimension, silently pooled), the real row-count drop rate from missing Frequency/Value, `Group` cardinality (with a heads-up before a 2,000+-condition analytic costs you 19 minutes finding out the slow way), and whether Serial/Port/Limit/Spec/Uncertainty grouping items are actually present. Exit code 1 if anything's worth a second look.

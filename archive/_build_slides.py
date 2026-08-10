@@ -634,7 +634,7 @@ tf = tb.text_frame
 tf.word_wrap = True
 for i, txt in enumerate([
     "results_dir\\index.html",
-    "One card per native PNG, largest first",
+    "One card per native PNG, in pod/analytic order",
     "Metadata table (collapsed) shows the pod's own extraction settings",
     "Download links for .sao / .pod / .txt / .csv",
     "Zero custom code involved — this is exactly what PADB-R rendered",

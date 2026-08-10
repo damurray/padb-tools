@@ -146,6 +146,17 @@ def main() -> None:
 
     analytics = parse_pod_analytics(pod_path)
     sections = parse_pod_sections(pod_path)
+    # Device_Device names the actual instrument family this pod's data came from
+    # (e.g. "M9484C", "SG6311A") -- read it instead of assuming one project's
+    # instrument. Found 2026-08-10: every title/filename here was hardcoded
+    # "SG6311A" regardless of the pod's real Device_Device, so a non-SG6311A pod
+    # (an MCS extraction on M9484C) got mislabeled throughout its own output.
+    _device_raw = sections.get("Extract", {}).get("Device_Device", "")
+    device_prefix = _device_raw.strip().strip("'\"")
+
+    def _dev_tag(text: str) -> str:
+        return f"{device_prefix} {text}" if device_prefix else text
+
     scatter_analytics = [a for a in analytics if a.get("type") == 80]
     if not scatter_analytics:
         parser.error(f"No Type=80 Scatter analytics found in {pod_path.name} -- "
@@ -159,7 +170,7 @@ def main() -> None:
 
     # -- shared extraction job --
     run_job = {
-        "description": f"SG6311A {stem} — extract step",
+        "description": _dev_tag(f"{stem} — extract step"),
         "pod": pod_path.name,
         "mode": "interactive",
         "padb_exe": padb_exe,
@@ -205,12 +216,12 @@ def main() -> None:
         predicted_csv = pod_path.parent / run_results_dir / "padb" / f"{csv_stem}.csv"
 
         plot_job = {
-            "description": f"SG6311A {name}",
-            "title_prefix": f"SG6311A {name}",
+            "description": _dev_tag(name),
+            "title_prefix": _dev_tag(name),
             "y_label": _y_label(sections, a["index"]),
             "csv_path": str(predicted_csv),
             "results_dir": plot_results_dir,
-            "index_title": f"SG6311A {stem}",
+            "index_title": _dev_tag(stem),
             "spec_direction": args.spec_direction,
         }
         if publish_root and args.module:
