@@ -168,10 +168,16 @@ def _stream(cmd: list[str], job_id: str) -> int:
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, cwd=str(TOOLS_DIR),
     )
-    for line in proc.stdout:  # type: ignore[union-attr]
-        _append_log(job_id, line.rstrip("\n"))
-    proc.wait()
-    return proc.returncode
+    with _jobs_lock:
+        _jobs[job_id]["proc"] = proc
+    try:
+        for line in proc.stdout:  # type: ignore[union-attr]
+            _append_log(job_id, line.rstrip("\n"))
+        proc.wait()
+        return proc.returncode
+    finally:
+        with _jobs_lock:
+            _jobs[job_id]["proc"] = None
 
 
 def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict) -> tuple[bool, str | None]:
@@ -206,6 +212,13 @@ def _worker() -> None:
         job_id = _job_queue.get()
         with _jobs_lock:
             job = _jobs[job_id]
+            if job.get("cancel_requested"):
+                # Aborted while still queued -- never actually launched, so
+                # there's no process to kill, just skip straight to the
+                # terminal state.
+                job["status"] = "cancelled"
+                _job_queue.task_done()
+                continue
             job["status"] = "running"
             job["started"] = time.monotonic()
         job_path = Path(job["path"])
@@ -234,7 +247,7 @@ def _worker() -> None:
             _append_log(job_id, f"ERROR: {exc}")
             ok = False
         with _jobs_lock:
-            job["status"] = "done" if ok else "failed"
+            job["status"] = "cancelled" if job.get("cancel_requested") else ("done" if ok else "failed")
             job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
             job["result_index"] = result_index
         _job_queue.task_done()
@@ -392,6 +405,14 @@ def generate_job():
     return jsonify(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode, jobs=jobs)
 
 
+def _job_kind(cfg: dict) -> str:
+    if "pod" in cfg:
+        return "run"
+    if "csv_path" in cfg or "analytic" in cfg:
+        return "plot"
+    return "unknown"
+
+
 @app.route("/api/jobs")
 def list_jobs():
     scheduled_tasks = {t.upper() for t in discover_all_padb_tasks()}
@@ -411,12 +432,7 @@ def list_jobs():
             info = query_task(task_name)
             if info:
                 schedule_summary = format_schedule_summary(info)
-        if "pod" in cfg:
-            kind = "run"
-        elif "csv_path" in cfg or "analytic" in cfg:
-            kind = "plot"
-        else:
-            kind = "unknown"
+        kind = _job_kind(cfg)
         jobs.append({
             "path": str(p),
             "name": p.name,
@@ -481,6 +497,23 @@ def execute_job():
     if not paths:
         return jsonify(error="paths must be a non-empty list"), 400
 
+    # Run/extraction jobs must execute before plot jobs regardless of
+    # selection order -- a plot job reads the CSV a run job just produced
+    # (or refreshed), so queuing a stale-relative-to-selection plot job
+    # ahead of its own run job would build from an old or missing CSV.
+    # Table order in the UI is alphabetical (see list_jobs()'s sorted glob),
+    # which does NOT guarantee "<stem>_run_job.json" sorts before that same
+    # pod's "<stem>_<analytic>_v2_job.json" siblings -- e.g. an analytic
+    # name starting before "run" alphabetically. Stable sort so relative
+    # order within each group (run vs. plot) is otherwise preserved.
+    def _kind_rank(p: str) -> int:
+        try:
+            cfg = json.loads(Path(p).read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+        return 0 if _job_kind(cfg) == "run" else 1
+    paths = sorted(paths, key=_kind_rank)
+
     job_ids = []
     for p in paths:
         job_path = Path(p)
@@ -491,11 +524,39 @@ def execute_job():
             _jobs[job_id] = {
                 "status": "queued", "path": str(job_path), "name": job_path.name,
                 "log": [], "started": None, "elapsed_s": 0, "dry_run": dry_run,
-                "result_index": None,
+                "result_index": None, "proc": None, "cancel_requested": False,
             }
         _job_queue.put(job_id)
         job_ids.append(job_id)
     return jsonify(job_ids=job_ids)
+
+
+@app.route("/api/job-abort/<job_id>", methods=["POST"])
+def job_abort(job_id):
+    with _jobs_lock:
+        job = _jobs.get(job_id)
+        if job is None:
+            return jsonify(error="unknown job_id"), 404
+        if job["status"] not in ("queued", "running"):
+            return jsonify(error=f"job is already {job['status']}, nothing to abort"), 400
+        job["cancel_requested"] = True
+        proc = job.get("proc")
+    if proc is not None and proc.poll() is None:
+        # taskkill /T kills the whole process tree, not just the immediate
+        # python.exe child -- necessary because PADB-R.exe runs as a
+        # grandchild (padb_run.py -> padb_batch.py's subprocess.run), and a
+        # plain proc.terminate() would only kill the python wrapper, leaving
+        # PADB-R.exe orphaned and still running. Two PADB-R.exe instances
+        # running concurrently interfere with each other (see module
+        # docstring), so an orphan here would corrupt the *next* queued job,
+        # not just fail to actually stop this one.
+        subprocess.run(
+            ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+            capture_output=True, text=True,
+        )
+    # If still queued (never dequeued yet), _worker() checks cancel_requested
+    # itself and skips straight to "cancelled" without launching anything.
+    return jsonify(ok=True)
 
 
 @app.route("/api/job-status/<job_id>")

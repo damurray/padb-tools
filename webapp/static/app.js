@@ -332,7 +332,8 @@ function ensureStatusCard(jobId) {
     card.className = "status-card";
     card.id = "status-" + jobId;
     card.innerHTML = `<h4></h4><span class="badge"></span><span class="elapsed"></span>` +
-      `<span class="results-link"></span><pre class="logtail"></pre>`;
+      `<span class="results-link"></span><button class="abort-btn">Abort</button><pre class="logtail"></pre>`;
+    card.querySelector(".abort-btn").addEventListener("click", () => abortJob(jobId));
     document.getElementById("statusPanels").prepend(card);
   }
   return card;
@@ -343,6 +344,13 @@ function startPolling(jobId) {
   activePolls.add(jobId);
   ensureStatusCard(jobId);
   poll(jobId);
+}
+
+async function abortJob(jobId) {
+  if (!confirm("Abort this job? A running PADB-R.exe extraction will be killed immediately.")) return;
+  const res = await fetch(`/api/job-abort/${jobId}`, { method: "POST" });
+  const data = await res.json();
+  if (!res.ok) alert("Abort failed: " + data.error);
 }
 
 async function poll(jobId) {
@@ -362,11 +370,14 @@ async function poll(jobId) {
   resultsLink.innerHTML = data.result_index_url
     ? `  <a href="${data.result_index_url}" target="_blank" title="${data.result_index}">Open results</a>`
     : "";
+  const abortBtn = card.querySelector(".abort-btn");
+  const active = data.status === "queued" || data.status === "running";
+  abortBtn.style.display = active ? "" : "none";
   const logEl = card.querySelector(".logtail");
   logEl.textContent = data.log_tail;
   logEl.scrollTop = logEl.scrollHeight;
 
-  if (data.status === "queued" || data.status === "running") {
+  if (active) {
     setTimeout(() => poll(jobId), 2000);
   } else {
     activePolls.delete(jobId);
