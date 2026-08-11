@@ -184,20 +184,22 @@ Each scheduled run produces a `padb_run_YYYYMMDD_HHMMSS.log` in the results dire
 | `population_envelope` | Type=80 Scatter | — | Min/max/P5-P95/median bands + TI bounds across all serials |
 | `empirical_cdf` | Type=80 Scatter | — | eCDF per serial — read pass yield directly |
 | `spec_derivation` | Type=80 Scatter | — | Per-band TI + margin to spec (for datasheet derivation) |
-| `stat_summary` | Type=80 Scatter | Condition filter, freq sliders, serial filter, TI/NP-TI toggle, show points, show excluded, stats table, log X, CSV export | Per-frequency statistics: mean, TI bounds, NP-TI bounds, pass/fail markers |
-| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, show points, stats table, log X, CSV export | Box-and-whisker per condition × temperature with outlier hover |
+| `stat_summary` | Type=80 Scatter | Condition/Group-by filter, freq sliders, serial filter, Segment-by tab-through, TI/NP-TI toggle, show points, show excluded, stats table, log X, CSV export | Per-frequency statistics: mean, TI bounds, NP-TI bounds, pass/fail markers |
+| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, TLL selector, dual Upper/Lower data-filter radios, Segment-by tab-through, show points, GF (set/export/import/copy), stats table, log X, CSV export | Box-and-whisker per condition × temperature with outlier hover |
 | `de_summary` | Type=60 Environmental | Condition filter, show excluded, freq sliders, stats table, log X, CSV export | UDE/LDE environmental contribution band + estimated TTL per condition |
 
 **V2 pipeline only** (run via `padb_v2.py`; two-step: `padb_run.py` extracts CSVs, then `padb_v2.py` builds HTML):
 
 | type | Interactive controls | What it shows |
 |---|---|---|
-| `scatter` | Condition/serial/port/temp filter, freq sliders, log X, GF | Raw measurements vs frequency across all temperatures |
-| `stat_summary` | Condition/serial filter, TI/NP-TI, show points/excluded, freq sliders, stats table, CSV, GF | Per-frequency Room TI statistics |
-| `boxplot` | Condition/temp/serial/port filter, Y-range, show points, outlier panel, GF, set-as-GF | Box-and-whisker per condition × temperature with outlier identification |
-| `distribution` | Spur type/temp/serial/port filter, delta vs absolute mode, freq sliders, delta summary table | KDE curves per spur type for delta-from-room temperature distributions |
-| `env_coverage` | P/C/MU/spec-override inputs, serial/port/temp filter, freq sliders, stats table, CSV, GF | UDE/LDE ΔEnv TI bands + Room TI band + TTU/TTL spec margin lines per condition |
-| `summary` | Condition filter (no serial), show excluded, freq sliders, log X, GF | All-temperature Min/Max/NP-TI bands + mean line per condition |
+| `scatter` | Condition/serial/port/temp filter, Segment-by tab-through, freq sliders, log X, GF | Raw measurements vs frequency across all temperatures |
+| `stat_summary` | Condition/Group-by/serial filter, TI/NP-TI, show points/excluded, Segment-by tab-through, freq sliders, stats table, CSV, GF | Per-frequency Room TI statistics |
+| `boxplot` | Condition/temp/serial/port filter, Y-range, Segment-by tab-through, show points, GF (set/export/import/copy) | Box-and-whisker per condition × temperature with outlier identification |
+| `distribution` | Spur type/temp/serial/port filter, delta vs absolute mode, Segment-by tab-through, freq sliders, delta summary table | KDE curves per spur type for delta-from-room temperature distributions |
+| `env_coverage` | P/C/MU/spec-override inputs, serial/port/temp/Group-by filter, Segment-by tab-through, freq sliders, stats table, CSV, GF | UDE/LDE ΔEnv TI bands + Room TI band + TTU/TTL spec margin lines per condition |
+| `summary` | Condition/Group-by filter (no serial dropdown), show excluded, Segment-by tab-through, freq sliders, log X, GF | All-temperature Min/Max/NP-TI bands + mean line per condition |
+
+Every V2 view (plus the real `distribution`) also has a collapsible ⓘ **Help** panel explaining these controls and flagging inverted Upper/Lower Limit or Spec rows — see `PADB_Tools_Guide.md` → **In-Page Help Panel**. Run `padb_csv_check.py <csv_path>` between Steps 4 and 5 below to catch the same class of issue from the command line first.
 
 ---
 
@@ -208,6 +210,9 @@ Each scheduled run produces a `padb_run_YYYYMMDD_HHMMSS.log` in the results dire
 | `proportion` | `0.90` | Tolerance interval proportion (fraction of population) |
 | `confidence` | `0.90` | Confidence that the TI captures the stated proportion |
 | `y_lim` | auto | `[min, max]` for Y axis |
+| `spec_direction` | `"auto"` | `"lo"` / `"hi"` / `"both"` / `"none"` / `"auto"`. A real `Lower Limit`/`Upper Limit` column in the CSV always wins regardless of this key — it only sets the default when the CSV has no limit at all (e.g. a guaranteed-minimum-power pod with no configured spec). `stat_boxplot`/`summary` (V2) also get a live Both/Upper-only/Lower-only radio selector that lets a viewer override the default without regenerating; `stat_summary` only has the manual spec_lo/spec_hi entry fallback. |
+| `x_label` | `"Frequency (MHz)"` | X-axis title — set for a non-frequency or non-MHz x-axis (e.g. `"Frequency Offset (Hz)"` for a phase-noise pod). |
+| `x_unit` | `"MHz"` | Short unit suffix used in hover text, stats tables, CSV export headers, and filter labels — set alongside `x_label`. |
 
 Sample size needed: n ≥ 29 for P90/C90. With n < 29 the tool flags an adequacy warning.
 

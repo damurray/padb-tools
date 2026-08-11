@@ -848,9 +848,62 @@ for i, txt in enumerate([
     p.space_after = Pt(9)
 
 # ---------------------------------------------------------------------------
+# 27f. Interactive deep dive — Global Filter (GF) export/import
+# ---------------------------------------------------------------------------
+s = content_slide("PADB Interactive — Deep Dive", "Global Filter — Export/Import CSV, Copy PADB Filter", 32)
+add_bullets(s, [
+    "GF buttons (boxplot) are additive, not replacing — \"Set filter as GF\" / \"Set outliers as GF\" / \"Set delta outliers as GF\" all add to the existing filter",
+    ("Use \"Clear global filter\" first if you want to start over from empty", 1),
+    "Export GF CSV — downloads a human-readable CSV (Serial, Condition, Temperature, Start/Stop Freq, N Points)",
+    ("Frequency columns are display-only context — the runtime match is on serial+condition+temperature only", 1),
+    "Import GF CSV — re-merges (adds to) the current filter from a previously exported CSV",
+    "Copy PADB Filter — best-effort 'Serial Number' NOT IN {...} expression for pasting into PADB itself (under development)",
+    "Once set, GF propagates automatically to summary and env_coverage — no need to re-select DUTs per view",
+], size=17)
+
+# ---------------------------------------------------------------------------
+# 27g. Interactive deep dive — In-page Help panel
+# ---------------------------------------------------------------------------
+s = content_slide("PADB Interactive — Deep Dive", "In-Page Help Panel — Explains Itself", 33)
+add_bullets(s, [
+    "Every one of the 6 main views now has a collapsible ⓘ Help button",
+    "Static explanation: what Filter / Group by / Segment by actually do, and how an unfiltered dimension can pool into extra segments or legend entries",
+    "Dynamic check: flags rows where Upper_Limit < Lower_Limit or Spec_Hi < Spec_Lo (backwards from the usual convention)",
+    ("Names which filter-dimension value(s) the inverted rows are concentrated in", 1),
+    "Real example this caught: \"14 segments where ~7 were expected\" traced to one Serial Number with inverted spec rows across its whole dataset — a pod data issue, not a tool bug",
+    "Run padb_csv_check.py (next slide) to catch the same class of issue before you even open the HTML",
+], size=17)
+
+# ---------------------------------------------------------------------------
+# 27h. Interactive deep dive — padb_csv_check.py
+# ---------------------------------------------------------------------------
+s = content_slide("PADB Interactive — Deep Dive", "Pre-Flight Check — padb_csv_check.py", 34)
+add_bullets(s, [
+    "Run it between Step 2 (extraction) and Step 4 (build views) — before spending time on a build that turns out wrong:",
+], top=1.85, height=0.5, size=17)
+add_code(s, ["py padb_csv_check.py path\\to\\Scatter.csv"], top=2.35, height=0.55, size=15)
+add_bullets(s, [
+    "Calls the exact same CSV-loading function padb_v2.py itself uses — findings can't drift out of sync with what actually gets plotted",
+    "Flags orphaned numeric columns (a second swept dimension sitting unused), inverted spec rows, high Group cardinality (>100 crowded, >500 genuinely slow), and missing grouping items (Serial/Port/Spec/Uncertainty)",
+    "Exit code 1 on any WARN/FAIL — usable as a pre-flight gate in a script, not just an interactive read",
+], top=3.1, height=3.0, size=17)
+
+# ---------------------------------------------------------------------------
+# 27i. Reliability — job abort & cross-process exclusivity guard
+# ---------------------------------------------------------------------------
+s = content_slide("Web App Reliability", "Job Abort & Cross-Process PADB-R.exe Exclusivity", 35)
+add_bullets(s, [
+    "Job abort — a queued or running job in the web app can now be cancelled from the status panel",
+    "Run jobs execute before plot jobs whenever a mixed selection is run",
+    "Cross-process exclusivity guard (padb_batch.py) — two PADB-R.exe instances interfere with and stall each other, even across separate process launches (e.g. a webapp restart mid-run)",
+    ("Every entry point (CLI and web app alike) now waits on the live OS process table before launching, rather than trusting one process's own in-memory queue", 1),
+    ("If it never clears, it names the blocking PID(s) with the exact taskkill command to clear a genuinely-stuck instance by hand", 1),
+], size=17)
+
+# ---------------------------------------------------------------------------
 # 28. Tutorial 3 intro — /padb-tools
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 3 — /padb-tools", "What It Is, When to Use It", 32)
+s = content_slide("Tutorial 3 — /padb-tools", "What It Is, When to Use It", 36)
 add_bullets(s, [
     "A Claude Code command scoped to this repo (.claude/commands/padb-tools.md)",
     "Surfaces a condensed index of the tool's architecture, gotchas, and a",
@@ -864,7 +917,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 29. Tutorial 3 — what it actually returns
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 3 — /padb-tools", "What It Actually Tells You", 33)
+s = content_slide("Tutorial 3 — /padb-tools", "What It Actually Tells You", 37)
 add_bullets(s, [
     "A few of the 13 new-pod checklist items it surfaces immediately:",
     ("TestRun_RunStatus — exit 0 but no CSV? Check the pod's default 'P'-only filter", 1),
@@ -878,7 +931,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30. Tutorial 3 — worked example
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 3 — /padb-tools", "Worked Example: MaxPowerTutorial3.pod", 34)
+s = content_slide("Tutorial 3 — /padb-tools", "Worked Example: MaxPowerTutorial3.pod", 38)
 add_bullets(s, [
     "You've just been handed MaxPowerTutorial3.pod — 2 analytics, never run before",
     "Open Claude Code with your working directory inside the padb-tools repo",
@@ -892,7 +945,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30b. Site conversion — the problem
 # ---------------------------------------------------------------------------
-s = content_slide("Multi-Site Testing", "Same Test, Different Database", 35)
+s = content_slide("Multi-Site Testing", "Same Test, Different Database", 39)
 add_bullets(s, [
     "Malaysia (AMC2) production ramp-up: the same test now also pulls from",
     ("AMC2's own PADB Oracle database, not just Santa Rosa's", 1),
@@ -908,7 +961,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30c. Site conversion — converting a pod
 # ---------------------------------------------------------------------------
-s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Pod", 36)
+s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Pod", 40)
 add_bullets(s, ["Site registry lives in padb_sites.json — add a new site there, no code changes:"],
             top=1.75, height=0.4, size=16)
 add_code(s, [
@@ -931,7 +984,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 30d. Site conversion — converting a job
 # ---------------------------------------------------------------------------
-s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Job", 37)
+s = content_slide("Multi-Site Testing", "padb_convert_site.py — Converting a Job", 41)
 add_code(s, [
     "py padb_convert_site.py --job my_run_job.json --to AMC2",
 ], top=1.85, height=0.55, size=14.5)
@@ -989,7 +1042,7 @@ p.font.color.rgb = ACCENT
 # ---------------------------------------------------------------------------
 # 33. Appendix — getting the code
 # ---------------------------------------------------------------------------
-s = content_slide("Appendix", "Getting the Code", 39)
+s = content_slide("Appendix", "Getting the Code", 43)
 add_bullets(s, [
     "This repo isn't on a company-wide share by default — copy it from:",
 ], top=1.85, height=0.4, size=19)
@@ -1010,7 +1063,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 34. Appendix — first commands to verify
 # ---------------------------------------------------------------------------
-s = content_slide("Appendix", "First Commands to Verify Your Setup", 40)
+s = content_slide("Appendix", "First Commands to Verify Your Setup", 44)
 add_bullets(s, ["From inside the tools folder, confirm everything imports cleanly:"],
             top=1.85, height=0.4, size=18)
 add_code(s, ['py -c "import padb_run, padb_v2, padb_config"'], top=2.3, height=0.55, size=14.5)

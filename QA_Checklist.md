@@ -18,6 +18,17 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 
 ---
 
+## Pre-flight CSV check (before building V2 plots)
+
+Run `padb_csv_check.py` against the extracted Scatter CSV **before** trusting any of the V2 HTML below — it catches orphaned numeric columns, inverted spec rows, and high-cardinality Group data as a fast command-line check rather than a confusing plot:
+```
+python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
+```
+- [ ] Exit code 0 (no WARN/FAIL) — or any WARN/FAIL is understood and expected for this pod
+- [ ] Grouping-item presence check confirms Serial/Port/Limit are found; if Segment-by Spec/Uncertainty will be used, confirms those are found too
+
+---
+
 ## `SG6311A_Harmonics_stat_summary.html`
 
 ### On load
@@ -61,6 +72,20 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 - [ ] Click CSV button → file downloads
 - [ ] Open CSV — rows have condition, frequency, mean, TI bounds
 
+### Group by
+- [ ] "Group by" dropdown present — selecting a single dimension (e.g. SpurType) collapses the condition list to that dimension's distinct values
+- [ ] Mean/std/quantiles/outliers update to the pooled values; Shapiro normality dot renders as "Non-normal" (red) for pooled groups, not a real Shapiro result
+- [ ] Switching back to "Condition" (the default) restores the original per-condition traces
+
+### Segment by
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next buttons jump the frequency range to each contiguous spec band
+- [ ] Selecting "Spec" or "Uncertainty" shows zero segments (Prev/Next hidden) if the pod's extraction didn't include those as grouping items — expected, not a bug
+- [ ] Segment boundaries respect the current condition/serial/Group-by selection
+
+### Help panel
+- [ ] ⓘ Help button opens a panel explaining Filter/Group by/Segment by
+- [ ] If the data has inverted Upper/Lower Limit or Spec rows, the panel names which filter-dimension value they're concentrated in
+
 ---
 
 ## `SG6311A_Harmonics_boxplot.html`
@@ -103,6 +128,20 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 - [ ] Statistics table toggles (same as stat_summary)
 - [ ] CSV download works
 
+### Segment by
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band
+
+### Global Filter (GF) buttons
+- [ ] "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" each **add** to the existing GF rather than replacing it (set GF twice from different selections, confirm both sets of exclusions remain)
+- [ ] "Clear global filter" empties it
+- [ ] "Export GF CSV" downloads a CSV with `Serial,Condition,Temperature,Start_Freq,Stop_Freq,N_Points` columns
+- [ ] "Import GF CSV" on a previously-exported file re-merges (adds to) the current GF without erroring
+- [ ] "Copy PADB Filter" copies a `NOT IN {...}`-style expression to the clipboard (hover text notes this is under development)
+
+### Help panel
+- [ ] ⓘ Help button opens a panel explaining Filter/Segment by/GF
+- [ ] Inverted Upper/Lower Limit or Spec rows (if present) are named by filter-dimension value
+
 ---
 
 ## `SG6311A_Harmonics_distribution.html`
@@ -135,6 +174,12 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 - [ ] Temperature selections persist across page loads (shared with other plots via `temp_*` key)
 - [ ] If all spur types were previously saved as deselected, they are all restored to checked on load
 
+### Segment by
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band (no "Group by" equivalent exists for this view)
+
+### Help panel
+- [ ] ⓘ Help button opens a panel explaining Filter/Segment by
+
 ---
 
 ## `SG6311A_Harmonics_env_coverage.html` (V2)
@@ -166,6 +211,20 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 - [ ] Click Statistics button → table appears below plot with UDE, LDE, TTU, TTL, Room μ, n columns
 - [ ] Rows with TTL below spec or TTU above spec highlighted red
 - [ ] CSV export downloads correctly
+
+### Group by
+- [ ] "Group by" dropdown collapses conditions to a single dimension; UDE/LDE/TTU/TTL recompute exactly (fully exact, not approximated, since `computeStats()` reruns from pooled raw per-DUT data)
+- [ ] "Show excluded" has no visible effect while Group by is active (expected — it compares by object identity, meaningless for pooled conditions)
+
+### Segment by
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band, respecting the current Group-by selection
+
+### Room/ΔEnv shared population (2026-08-08)
+- [ ] Deselect one DUT via the Serial filter → Room `n` and ΔEnv `n` drop together (both, not just ΔEnv)
+- [ ] Selecting a single Port does NOT shrink either Room `n` or ΔEnv `n` (port stays excluded from the population on purpose)
+
+### Help panel
+- [ ] ⓘ Help button opens a panel explaining Filter/Group by/Segment by
 
 ---
 
@@ -200,6 +259,16 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 
 ### Reset
 - [ ] Reset / reset-filters button returns all filters to default
+
+### Group by
+- [ ] "Group by" dropdown collapses conditions to a single dimension; mean/min/max are exact (pooled), NP TI (`uttl`/`lttl`) and spec are worst-case across constituent conditions
+- [ ] "Show excluded" has no visible effect while Group by is active (expected)
+
+### Segment by
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band, respecting the current Group-by selection
+
+### Help panel
+- [ ] ⓘ Help button opens a panel explaining Filter/Group by/Segment by
 
 ---
 
@@ -254,3 +323,5 @@ Record these in a spreadsheet or use `qa_padb.py` which asserts the stat_summary
 - summary (V2) has no serial *dropdown* filter, by design — GF already handles per-DUT effects for this view via embedded per-DUT-per-frequency means (`dut_vals`/`dut_info` in `render_summary()`, `padb_v2.py`), recomputed live in JS whenever GF excludes a DUT. A dedicated Serial Number Condition-filter option isn't needed on top of that. (The separate *V1-legacy* `summary_plot()` function — invoked via `secondary_plots` `"type": "summary_plot"` against a real Type=90 CSV, a discouraged V2 data source — does get a Condition-filter Serial Number option automatically when the CSV's Group column has 2+ distinct values, added 2026-08-05. Different function, different code path, not what V2's real `summary` view uses.)
 - env_coverage TTU/TTL require Spec override inputs when the source CSV has null Upper_Limit/Lower_Limit columns.
 - env_coverage TTU/TTL lines may extend outside the visible Y range — the axis is scaled to UDE/LDE data only, not to TTU/TTL values.
+- GF Export/Import CSV's `Start_Freq`/`Stop_Freq`/`N_Points` columns are display-only context — the runtime exclusion match is on (serial, condition, temperature) only, so import does not reconstruct an exact frequency-by-frequency exclusion (by design, not a bug).
+- "Segment by: Spec"/"Segment by: Uncertainty" show zero segments if the pod's extraction didn't add `Upper/Lower Spec` or `Upper/Lower Uncertainty` as grouping items — this is a pod-authoring gap, not a code bug. "Segment by: Limit" always works.

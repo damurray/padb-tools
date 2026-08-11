@@ -1,6 +1,6 @@
 # PADB Modern Analysis Tools — User Guide
 
-**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_scheduler.py`, `padb_make_job.py`, `padb_make_v2_job.py`  
+**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_batch.py`, `padb_scheduler.py`, `padb_make_job.py`, `padb_make_v2_job.py`, `padb_convert_site.py`, `padb_csv_check.py`, `webapp/padb_web.py`  
 **Location:** `C:\apps\padb\tools\`  
 **Purpose:** Automate PADB extraction from a `.pod` file, generate interactive self-contained HTML plots, and publish results to a shared drive.
 
@@ -277,9 +277,11 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Group by** — display by serial number, test step, or any condition dimension parsed from the Group field
 - **Sort** — traces by name, worst-first, or median value
 - **Condition filter dropdowns** — one per dimension (OA State, AlcState, etc.)
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jumps the frequency-range filter to each contiguous band of a frequency-varying spec, sourced from whichever limit-key pair (`Upper/Lower Limit`, `Upper/Lower Uncertainty`, or `Upper/Lower Spec`) the pod's extraction actually selected as a grouping item. Respects the current condition/serial/port filters. See **Segment-by Tab-Through** below.
 - **Frequency sliders** — min/max zoom on the X axis
 - **Log X toggle**
 - **Reset button**
+- **Help (ⓘ) panel** — explains the filter/segment controls and flags rows where Upper/Lower Limit or Spec is inverted (backwards) — see **In-Page Help Panel** below.
 - **Hover** — shows frequency (labelled with `x_unit`, default `"MHz"`), group label, and value
 
 **Axis labeling:** x-axis title comes from `x_label` (default `"Frequency (MHz)"`); hover/CSV-export text uses the shorter `x_unit` (default `"MHz"`). Set both explicitly for a non-MHz x-axis (e.g. a phase-noise pod's `"Frequency Offset (Hz)"` / `"Hz"`).
@@ -341,13 +343,16 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 
 **Interactive controls:**
 - **Condition filter dropdowns** — one per condition dimension (OA State, AlcState, mode, etc.)
+- **Group by** — collapse the full condition combination down to a single dimension (e.g. just SpurType) when a pod's grouping items (Upper Spec/Uncertainty, etc.) fragment "condition" into many near-duplicate entries. Mean/std/quantiles/outliers recompute exactly from pooled per-DUT data; Shapiro normality is not recomputed for a pooled group and renders as "Non-normal" (a visible cue it's approximate) rather than a real result. See **Group By** below.
 - **Serial number filter** — uncheck individual DUTs to exclude them; statistics recompute live
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band; respects the current condition/serial/Group-by selection. See **Segment-by Tab-Through** below.
 - **TI toggle** — show/hide parametric tolerance interval band
 - **NP TI toggle** — show/hide non-parametric tolerance interval bounds (requires server-side scipy; displayed when data is sufficient)
 - **Show points** — overlay individual per-DUT measurement points on each trace. Points for serials currently excluded by the serial filter are shown in grey rather than hidden, so the full population remains visible while the statistics reflect only the selected DUTs.
 - **Show excluded** — display conditions currently excluded by the condition filter as dim grey traces in the background, so you can compare filtered and unfiltered populations without switching the filter off.
 - **Frequency sliders** — min/max zoom on the X axis
 - **Log X toggle**
+- **Help (ⓘ) panel** — see **In-Page Help Panel** below.
 - **Statistics Table toggle** — opens a scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality (Shapiro-Wilk W), NP TI bounds, outliers with serial numbers. Wrapped in try/catch — if it ever fails to build, the panel shows the actual JS error message instead of staying empty. **If the table looks stale/unresponsive to filter changes, hard-reload the browser tab (Ctrl+Shift+R) before assuming it's a bug** — a stale cached copy of an older version of this same file is the most common cause, confirmed twice in practice.
 - **CSV export** — downloads a CSV of all visible data
 
@@ -373,8 +378,11 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Serial number filter** — uncheck individual DUTs; box statistics recompute live
 - **TLL display: Both / Upper only / Lower only** — same rule as the `summary` plot (see above): shown as a live selector only when the CSV has no `Upper_Limit`/`Lower_Limit` at all, defaulting from job.json's `spec_direction`. A detected CSV limit always wins with no selector.
 - **Data filter: All data / Passing only / Upper limit / Lower limit** — "Upper limit"/"Lower limit" are two independent radios (added 2026-08-04, replacing a single relabeled "range" radio that couldn't represent both bounds when direction is "Both"), each shown only when relevant to the current TLL direction. Unlike `summary`'s filter (which hides whole condition traces), this one trims individual raw sample points *before* Q1/Q2/Q3/whiskers are computed — "Upper limit" removes samples above the typed-in value, "Lower limit" removes samples below it.
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band. See **Segment-by Tab-Through** below.
 - **Show points** — overlay individual per-DUT measurement points on each box trace (size 5, semi-transparent). Points for serials excluded by the serial filter are shown in grey; outliers remain as open-circle markers for visual distinction. Hovering a scatter point shows the serial number and value.
+- **Global Filter (GF) buttons** — "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" each *add* to the current GF (they don't replace it — use "Clear global filter" first to start over). **Export GF CSV** / **Import GF CSV** round-trip the current GF through a human-readable CSV; import re-merges (adds to) the current filter, same as the "Set ... as GF" buttons. **Copy PADB Filter** generates a best-effort `NOT IN {...}` expression for pasting into PADB's own filter box — flagged as under development, may not exactly match PADB's filter syntax in every case. See **Global Filter (GF)** below for what GF actually does across views.
 - **Log X toggle**
+- **Help (ⓘ) panel** — see **In-Page Help Panel** below.
 - **Statistics Table toggle** — scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality, NP TI bounds, outliers with serial numbers. This table is purely descriptive (no spec/TLL columns), so it has no direction-dependent columns to toggle.
 - **CSV export**
 - **Outlier hover** — shows value and serial number of each outlier point
@@ -382,6 +390,51 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 **Best for:** Comparing spread across temperature conditions. Identifying which condition drives the worst-case. Outlier identification with serial traceability.
 
 **Axis labeling:** the frequency filter label, stats table header, and CSV export headers follow `x_unit` (default `"MHz"`) — set alongside `x_label` for a non-MHz x-axis. Note the plot's own x-axis title stays a generic `"Frequency"` (no unit suffix), since it's categorical (one box per discretized frequency label), not a continuous numeric axis.
+
+---
+
+## Global Filter (GF)
+
+A cross-view DUT exclusion set, created in `stat_boxplot`/boxplot and automatically respected by `summary` and `env_coverage` (both V2). Stored in the browser's `localStorage` (`padb_v2_excluded`), so it persists across page reloads for the same results folder but is not shared between different machines/browsers.
+
+- **Additive, not replacing.** "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" all *add* to whatever's already in the GF — none of them start from empty. Use **Clear global filter** first if you want to start over.
+- **Export GF CSV / Import GF CSV** round-trip the GF through a human-readable CSV (`Serial,Condition,Temperature,Start_Freq_<unit>,Stop_Freq_<unit>,N_Points`). The frequency columns are **display-only context** — the actual runtime exclusion check matches only on (serial, condition, temperature), not frequency, so importing doesn't reconstruct an exact frequency-by-frequency exclusion, just the same (serial, condition, temperature) match the original exclusion produced. Import merges into (adds to) the current GF, same as the "Set ... as GF" buttons.
+- **Copy PADB Filter** generates a best-effort `'Serial Number' NOT IN {...}`-style expression for pasting into PADB's own filter box. Flagged as under development — the generated expression may not exactly match PADB's own filter syntax in every case.
+- **Where it applies:** `summary` visually flags (Focus/Inspect mode: shows only; Exclude mode: dims) conditions whose pre-aggregated data includes a GF-flagged DUT. `env_coverage` recomputes Room and ΔEnv tolerance-interval stats directly from the GF-filtered DUT population (see **Real bugs found on a real complex multi-analytic pod** in `CLAUDE.md` — Room and delta now always share the same DUT population when Serial/GF filtering is active; port selection alone never shrinks either).
+
+---
+
+## Segment-by Tab-Through
+
+Present in all 6 V2-relevant views (`scatter`, `boxplot`/`stat_boxplot`, `stat_summary`, `summary`, `env_coverage`, and the real `distribution` view). A **"Segment by: Spec / Limit / Uncertainty"** selector plus **Prev / Next** buttons jump the frequency-range filter to each contiguous band of a frequency-varying spec — e.g. a datasheet spec that steps -100 → -94 → -88 dBc as frequency increases.
+
+- PADB extraction has three separate limit-key pairs a pod's Type=80 analytic can select as grouping items: **Upper/Lower Limit** (selected by default), **Upper/Lower Uncertainty**, and **Upper/Lower Spec**. `Upper Limit ≈ Upper Spec − Upper Uncertainty` — Limit is the *derived*, per-unit value PADB shows by default, so it often isn't piecewise-constant across frequency; **Spec is the raw nominal value and is the one that's actually piecewise-constant**.
+- **For "Segment by: Spec" or "Segment by: Uncertainty" to find anything, the pod's extraction needs `Upper Spec`/`Lower Spec` and/or `Upper Uncertainty`/`Lower Uncertainty` added as grouping items** (open the pod in PADB-R.exe, add them to the analytic's grouping, re-save). Most existing pods only have the default `Upper Limit`/`Lower Limit` — without the extra grouping items, those two selector options simply find zero segments and the Prev/Next bar stays hidden. "Segment by: Limit" always works off the always-present `Upper_Limit`/`Lower_Limit` columns.
+- Segments respect whatever condition/serial/port/Global Filter/Group-by selection is currently active in that view.
+- Asymmetric two-sided specs (Upper and Lower stepping at genuinely different frequencies) are handled correctly — segments break wherever *either* side changes, and each segment reports both sides' values separately (`upper: X` / `lower: Y`) rather than one ambiguous value.
+
+---
+
+## Group By
+
+Present in `stat_summary`, `summary` (V2), and `env_coverage` (V2). "Condition" in these views is the *full combination* of every Group key — including per-unit-noisy keys like Limit/Uncertainty when a pod's extraction includes them as grouping items (for Segment-by, above). A pod with 5 real SpurTypes but per-unit Limit variation can fragment into 150+ near-duplicate legend entries that differ only in Limit/Uncertainty digits.
+
+**Group by** collapses on a single chosen dimension (e.g. "SpurType" alone) instead of the full combination — confirmed on real data: 151 fragmented conditions → 5 real SpurTypes, with matching, correctly-pooled statistics.
+
+- **Exact aggregates** (mean, min, max) are always exact when grouped, since a given DUT's data falls under exactly one constituent condition per single dimension. `env_coverage` is fully exact even for UDE/LDE/TTU/TTL, since it recomputes those directly from pooled raw per-DUT data every time.
+- **Approximate aggregates** (NP-TI/spec/Shapiro normality) use a worst-case (tightest) value across the constituent conditions' own pre-computed values rather than a true recompute — `stat_summary`'s Shapiro result renders as "Non-normal" for a pooled group as a visible cue that it's not a real Shapiro test.
+- `env_coverage`'s "Show excluded" checkbox has no effect while Group By is active (it compares by object identity, which doesn't apply to synthetic pooled conditions).
+
+---
+
+## In-Page Help Panel
+
+A collapsible ⓘ **Help** button is available on all 6 main views (`scatter`, `boxplot`, `stat_summary`, the real `distribution` view, `env_coverage`, `summary`). It has two parts:
+
+1. A static explanation of what the Filter dropdowns / Group by / Segment by controls actually do, and how an unfiltered dimension can pool into extra segments/legend entries.
+2. A **dynamic check** that flags rows where `Upper_Limit < Lower_Limit` or `Spec_Hi < Spec_Lo` (backwards from the usual convention) and names which filter-dimension value(s) the inverted rows are concentrated in. This is the fastest way to explain an unexpectedly high segment/condition count — a real case found this way: a "14 segments where ~7 were expected" report traced to a single Serial Number with inverted spec rows across its entire dataset, a pod data-entry issue, not a tool bug.
+
+Run `padb_csv_check.py` (below) *before* building plots to catch the same class of issue earlier, from the command line, without opening any HTML yet.
 
 ---
 
@@ -538,6 +591,36 @@ Each task is named `PADB_{job_stem}` in Task Scheduler (e.g. `PADB_amplitude_job
 
 ---
 
+## Web App (webapp/padb_web.py)
+
+A local Flask app — local use only, not meant to be reachable beyond `127.0.0.1` — that wraps the CLI scripts above in a browser UI:
+
+```
+py "C:\apps\padb\tools\webapp\padb_web.py"
+```
+
+Opens `http://127.0.0.1:5000` in the default browser. Every route shells out to the same CLI scripts documented in this guide, or imports their functions directly — nothing about the underlying tools changed to build this.
+
+- **Drop a `.pod` file** (drag-and-drop or click to choose) → parses and previews its analytics → fill in mode/module/dates → **Generate Job** calls `padb_make_job.py` or `padb_make_v2_job.py` exactly as the CLI would, showing the generated job.json and any `NOTE:`/`WARNING:` output verbatim.
+- **Execute job(s)** — a jobs table with checkboxes and **Run Selected**. A single background worker + queue serializes every PADB-R.exe launch, since two concurrent instances interfere with and stall each other (see **Cross-Process PADB-R.exe Exclusivity**, below). Run jobs execute before plot jobs in a mixed selection, and a queued or running job can be **aborted**. For a V2 `*_run_job.json`, once extraction succeeds the worker automatically runs every sibling `*_v2_job.json` plot job in turn — the full V2 flow in one click.
+- **Schedule/unschedule job(s)** — calls the same `padb_scheduler.py` functions the desktop Scheduler GUI uses, so a task created from either place is indistinguishable to the other.
+- **Convert pod/job between sites** — calls `padb_convert_site.py`'s functions directly (see **Converting Between Database Sites** below).
+- The jobs table's **Kind** column distinguishes `run` jobs (have a `pod` key, runnable via `padb_run.py`) from `plot` jobs (have `csv_path`/`analytic`, only runnable via `padb_v2.py`) — use **Select All Runnable** to bulk-select only `run` jobs for an unattended batch, rather than hand-picking across a long list. **Scheduled**/**Last Run**/**Results** columns mirror the desktop Scheduler and the actual `results_dir/index.html` on disk.
+
+---
+
+## Cross-Process PADB-R.exe Exclusivity
+
+Two concurrent PADB-R.exe instances interfere with each other and both stall at zero CPU progress — this is true even across **separate process launches** (e.g. the web app restarting while a run is still in flight, or a scheduled task firing while someone is running a job from the CLI), not just within one Python process.
+
+`padb_batch.py`'s `PADBBatch.run()` — the one choke point every invocation path goes through (webapp queue and direct CLI use of `padb_run.py` alike) — calls `wait_for_exclusive_padb_r()` before launching PADB-R.exe:
+- Checks the **live OS process table** (`tasklist`), not a lock file, so a stale lock from a crashed process can never cause a false "still busy" deadlock.
+- If another instance is running, polls until it clears or a timeout is reached (defaults to the job's own `padb_timeout`), printing a one-time notice so a long wait doesn't look stuck.
+- If it never clears, raises an error naming the blocking PID(s) with the exact `taskkill /IM PADB-R.exe /F` command to clear a genuinely-stuck instance by hand, rather than launching a second instance and letting them silently interfere.
+- `--dry-run` never reaches this check — switch-file-only runs add no delay.
+
+---
+
 ## Adding a Custom Plot Type
 
 Write a function in `padb_plots.py` (or your own module imported there):
@@ -660,8 +743,10 @@ V2 job JSON schema (all keys optional unless marked):
 - **Spur type filter** — individual checkboxes per spur type
 - **Temperature filter** — include/exclude individual non-room temperatures
 - **Serial / port filter** — exclude individual DUTs or ports
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — same mechanism as `scatter` (above); no "Group by" equivalent exists for this view.
 - **Frequency sliders** — restrict to a frequency sub-range
 - **Delta summary table** — per-spur-type statistics comparing temperature points
+- **Help (ⓘ) panel** — see **In-Page Help Panel** below.
 - **State persistence** — filter selections and frequency range are remembered across page loads
 
 **Axis labeling:** the frequency filter's `(MHz)` label follows `x_unit` (default `"MHz"`) — set alongside `x_label` for a non-MHz x-axis.
@@ -674,12 +759,15 @@ V2 job JSON schema (all keys optional unless marked):
 
 **Interactive controls:**
 - **Condition filter dropdowns** — one per condition dimension found in the data (e.g. HarmonicNumber, Port, AlcState). Serial number columns are intentionally excluded — the summary pre-aggregates all DUTs per condition in Python, so no per-serial data reaches the browser.
+- **Group by** — collapse the full condition combination to a single dimension when per-unit grouping items fragment it into near-duplicates. Mean/min/max are exact when pooled; NP TI (`uttl`/`lttl`) and spec are worst-case across constituent conditions. See **Group By** above.
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band; respects the current Group-by selection. See **Segment-by Tab-Through** above.
 - **TLL display: Both / Upper only / Lower only** — which side(s) of the NP-TI (TTL) band to draw, and which columns the Results Table/CSV export show (see "TLL display and Data filter direction" below). Shown as a live radio selector *only* when the CSV has no `Upper_Limit`/`Lower_Limit` at all; if the CSV has a real limit, that decides the direction automatically and no selector appears.
 - **Data filter: All data / Passing only / Upper limit / Lower limit** — "Upper limit"/"Lower limit" are two independent radios (not one relabeled control), each shown only when relevant to the current TLL direction. "Upper limit" hides conditions whose max data exceeds a typed-in value; "Lower limit" hides conditions whose min data falls below it.
-- **Global filter (GF)** — cross-plot DUT exclusion set from the boxplot propagates here. Conditions whose pre-aggregated data includes GF-flagged DUTs are visually flagged. In Focus/Inspect mode only GF-flagged conditions are shown; in Exclude mode they are dimmed. GF matching strips both serial and temperature dimensions from the GF key before comparing against summary conditions (which aggregate both away).
-- **Show excluded** — dim grey min/max/mean bands for conditions excluded by the filter, rendered behind the active traces.
+- **Global filter (GF)** — cross-plot DUT exclusion set from the boxplot propagates here. Conditions whose pre-aggregated data includes GF-flagged DUTs are visually flagged. In Focus/Inspect mode only GF-flagged conditions are shown; in Exclude mode they are dimmed. GF matching strips both serial and temperature dimensions from the GF key before comparing against summary conditions (which aggregate both away). See **Global Filter (GF)** above.
+- **Show excluded** — dim grey min/max/mean bands for conditions excluded by the filter, rendered behind the active traces. Has no effect while Group by is active.
 - **Frequency sliders** — min/max zoom on the X axis.
 - **Log X toggle**
+- **Help (ⓘ) panel** — see **In-Page Help Panel** above.
 - **Results Table** — per-condition × per-frequency stats table below the plot; columns follow the current TLL direction (TTL↑/Spec Hi/Margin↑ shown for Upper/Both, TTL↓/Spec Lo/Margin↓ for Lower/Both). CSV export mirrors the same column set.
 
 **TLL display and Data filter direction (added 2026-08-04):** a real spec limit in the CSV always decides which side of the tolerance band matters — no ambiguity, no selector. Only when the CSV has **no** limit at all (e.g. a guaranteed-minimum-power pod with `Limits_YLimit=None`) does the direction become a genuine choice; in that case job.json's `spec_direction` sets the *default* selection (or "Both" if unset/`"auto"`), and the live selector lets you override it without regenerating. See `spec_direction` under `stat_summary` above and the CLAUDE.md write-up for the full rule (identical logic is applied to `stat_boxplot` too — see below).
@@ -701,11 +789,14 @@ V2 job JSON schema (all keys optional unless marked):
 - **n override inputs** — override the DUT count used for k-factor lookup (useful for extrapolating to a larger population).
 - **Temperature filter** — include/exclude individual non-room temperature conditions.
 - **Condition filter dropdowns** — one per varying condition dimension.
-- **Serial / port filter** — exclude individual DUTs or ports; TI recomputes live.
-- **Global filter (GF)** — cross-plot DUT exclusion reacts automatically.
-- **Show excluded** — dim grey UDE/LDE bands for GF-excluded conditions.
+- **Group by** — collapse the full condition combination to a single dimension. The only fully exact one of the three Group-by views: `computeStats()` recomputes UDE/LDE/TTU/TTL directly from pooled raw per-DUT data, so pooling introduces no approximation at all. See **Group By** above.
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band. See **Segment-by Tab-Through** above.
+- **Serial / port filter** — exclude individual DUTs or ports; TI recomputes live. Room and ΔEnv TI bands are computed from the *same* serial/GF-filtered DUT population (port selection alone never shrinks either).
+- **Global filter (GF)** — cross-plot DUT exclusion reacts automatically, shrinking both the Room and ΔEnv bands together. See **Global Filter (GF)** above.
+- **Show excluded** — dim grey UDE/LDE bands for GF-excluded conditions. Has no effect while Group by is active.
 - **Frequency sliders** — min/max zoom on the X axis.
 - **Log X toggle**
+- **Help (ⓘ) panel** — see **In-Page Help Panel** above.
 - **Statistics table** — per-condition × per-frequency: UDE, LDE, TTU, TTL, Room μ, Room n, ΔEnv n. Rows where TTU/TTL exceeds the spec are highlighted red.
 - **CSV export**
 
@@ -754,6 +845,28 @@ The run job JSON (`*_run_job.json`) references the pod file and sets `padb_outpu
 | `env_coverage_freq_scale` | Frequency scale multiplier for env_coverage (e.g. `0.000001` converts Hz to MHz) |
 | `spec_direction` | `"lo"` / `"hi"` / `"both"` / `"none"` / `"auto"` (default). A real CSV limit always overrides this. Only sets the default TLL-display selection in `summary`/`stat_boxplot` (live selector, shown only when the CSV has no limit) and the display in `stat_summary` (manual entry fallback, no selector) — needed when the pod has no `Lower Limit`/`Upper Limit` data but the measurement is one-sided. See the 4 `MaxPower3_*_v2_job.json` jobs above. |
 | `force_output_csv` | `true` to force `OutputConfig_OutputCSV=1` on every Type=80 analytic in the `_run.pod` copy — fixes pods where a Scatter analytic has CSV output disabled at the pod level (a real case: a CW Closed Loop pod rendered native PNG/PDF but wrote zero CSVs). `padb_make_v2_job.py` sets it automatically when it detects this. See `CLAUDE.md` → **`force_output_csv` job.json key**. |
+
+---
+
+## Pre-Flight CSV Check (padb_csv_check.py)
+
+Run this **between Step 1 and Step 2** of the V2 workflow — after extraction, before `padb_v2.py` — to catch data issues that would otherwise surface as a confusing plot rather than a clear message:
+
+```
+py padb_csv_check.py path\to\Scatter.csv
+py padb_csv_check.py path\to\Scatter.csv --x-col "Amplitude (dBm)"
+```
+
+It calls the exact same CSV-loading function `padb_v2.py` itself uses (`padb_plots._load_scatter_for_stats()`), so its findings can never drift out of sync with what actually gets plotted. Checks, in order:
+
+1. **Load success** — 0 usable rows is reported as a FAIL with the same guidance the loader's own warning gives (set `--x-col`).
+2. **Orphaned numeric columns** — a numeric CSV column that isn't the detected x-axis/value/Limit column and isn't known metadata. Flagged with extra emphasis if it has *more* distinct values than the detected x-axis — the real case this catches: a pod with a genuine second swept dimension (e.g. Amplitude) sitting unused while Frequency got auto-detected as the x-axis.
+3. **Raw-vs-usable row count** — the drop rate from discarding rows with no frequency/value, so a large-looking drop isn't a surprise later.
+4. **Group cardinality** — warns above 100 distinct conditions (crowded legend — use Group by), and above 500 (real slowness — a 2,388-condition analytic took ~19 minutes to build boxplot/stat_summary).
+5. **Grouping-item presence** — Serial, Port, Upper/Lower Limit, Upper/Lower Spec/Uncertainty (needed for the Spec/Uncertainty Segment-by options — see **Segment-by Tab-Through** above).
+6. **Temperature coverage** — Room-only vs multi-temp, since that determines whether `distribution`/`env_coverage`/`summary` get built at all.
+
+Exit code is `1` on any WARN or FAIL, so it's usable as a pre-flight gate in a script, not just an interactive read.
 
 ---
 

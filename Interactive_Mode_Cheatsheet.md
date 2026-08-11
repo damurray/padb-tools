@@ -38,6 +38,12 @@ py C:\apps\padb\tools\padb_run.py "C:\path\to\your_analysis_run_job.json"
 ```
 Real PADB-R.exe execution (desktop session + Oracle DB required). Writes CSV(s) into `results_dir\padb\`. Note the printed path — you'll need it in step 4.
 
+**Recommended before step 4:** sanity-check the CSV first —
+```
+py C:\apps\padb\tools\padb_csv_check.py "C:\path\to\your_analysis_run_results\padb\Extracted.csv"
+```
+Catches orphaned numeric columns (a second swept dimension sitting unused), inverted spec rows, high Group cardinality, and missing grouping items (Serial/Port/Spec/Uncertainty) before you spend time on a build that turns out wrong.
+
 ## 3. Write the plot job (`*_v2_job.json`)
 Different schema — this one drives `padb_v2.py`, not `padb_run.py`:
 
@@ -63,7 +69,7 @@ py C:\apps\padb\tools\padb_v2.py "C:\path\to\your_analysis_v2_job.json" --csv "C
 ```
 
 ## 5. Review
-Open the `results_dir\index.html` this step wrote. Filters, TI/NP-TI toggle, serial exclusion, GF (set/clear a global flag), Y-range filter, CSV export — per view, see `PADB_Tools_Guide.md`.
+Open the `results_dir\index.html` this step wrote. Filters, TI/NP-TI toggle, serial exclusion, GF (set/clear/export/import a global flag), Group by, Segment by (Spec/Limit/Uncertainty), Y-range filter, CSV export — per view, see `PADB_Tools_Guide.md`. Each view also has a collapsible ⓘ **Help** panel that explains these controls and flags any inverted Upper/Lower Limit or Spec rows it finds.
 
 ## 6. Iterate without re-extracting
 CSV unchanged? Just re-run step 4 alone — no need to touch PADB-R.exe again.

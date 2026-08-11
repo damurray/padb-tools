@@ -18,8 +18,11 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_make_v2_job.py` | Generates the full Interactive/V2 job set (run job + one plot job per Type=80 analytic) from a `.pod` file — `py padb_make_v2_job.py pod1.pod --module MiniMoab` |
 | `padb_config.py` | Shared per-user defaults (padb_exe, R-Plots/Logs/Data paths, publish root), optionally overridden via `padb_config.json` |
 | `padb_convert_site.py` | Converts a `.pod`/job.json between PADB database sites (e.g. Santa Rosa ↔ AMC2/Malaysia) — site registry in `padb_sites.json` — `py padb_convert_site.py --pod MyPod.pod --to AMC2` |
+| `padb_csv_check.py` | Pre-flight CSV sanity check — run between extraction and `padb_v2.py` to catch orphaned columns, inverted spec rows, and high Group cardinality before building plots — `py padb_csv_check.py path\to\Scatter.csv` |
 | `padb_scheduler.py` | tkinter GUI for managing Windows Task Scheduler entries |
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
+| `padb_batch.py` | Shared PADB-R.exe launcher used by every entry point (CLI and web app) — enforces cross-process exclusivity so two PADB-R.exe instances never run concurrently and stall each other |
+| `webapp/` | Local Flask web UI (`padb_web.py` + `static/`/`templates/`) — see **Web app** below |
 | `v1.0/` | Archive of the original V1.0 scripts |
 
 ### Job files
@@ -86,7 +89,7 @@ Opens a GUI that reads `*_job.json` files from a directory and manages Windows T
 py webapp\padb_web.py
 ```
 
-Opens a local web UI (`http://127.0.0.1:5000`, local use only) for four workflows: drop a `.pod` file to auto-generate its job.json, select one or more job files to execute, schedule/unschedule jobs in Windows Task Scheduler, and convert a pod or job between database sites. PADB-R.exe runs are strictly serialized through a background queue, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. The jobs table filters by mode/name and shows each job's actual schedule cadence, when it last ran, and a link to its results gallery. See `CLAUDE.md` → **Web app** for details.
+Opens a local web UI (`http://127.0.0.1:5000`, local use only) for four workflows: drop a `.pod` file to auto-generate its job.json, select one or more job files to execute, schedule/unschedule jobs in Windows Task Scheduler, and convert a pod or job between database sites. PADB-R.exe runs are strictly serialized through a background queue — this also holds across separate process launches (e.g. a webapp restart) via `padb_batch.py`'s cross-process exclusivity guard, not just within one queue's lifetime. Run jobs execute before plot jobs in a mixed selection, a queued or running job can be aborted, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. The jobs table filters by mode/kind/name and shows each job's actual schedule cadence, when it last ran, and a link to its results gallery. See `CLAUDE.md` → **Web app** and **Cross-process PADB-R.exe exclusivity guard** for details.
 
 ---
 
@@ -99,8 +102,8 @@ Opens a local web UI (`http://127.0.0.1:5000`, local use only) for four workflow
 | `population_envelope` | Type=80 Scatter | — |
 | `empirical_cdf` | Type=80 Scatter | — |
 | `spec_derivation` | Type=80 Scatter | — |
-| `stat_summary` | Type=80 Scatter | Condition filter, freq sliders, serial filter, TI/NP-TI toggle, show points, stats table, log X, CSV export |
-| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, show points, stats table, log X, CSV export |
+| `stat_summary` | Type=80 Scatter | Condition/Group-by filter, freq sliders, serial filter, Segment-by, TI/NP-TI toggle, show points, stats table, log X, CSV export |
+| `stat_boxplot` | Type=80 Scatter | Condition/temp filter, serial filter, Y-range filter, Segment-by, GF (set/export/import/copy), show points, stats table, log X, CSV export |
 | `de_summary` | Type=60 Environmental | Condition filter, show excluded, freq sliders, stats table, log X, CSV export |
 
 **V2 pipeline** (`padb_v2.py`) generates all views from a single scatter CSV using a two-step workflow: `padb_run.py` extracts from the database → `padb_v2.py` builds the HTML.
@@ -109,12 +112,14 @@ Omit `"views"` from job.json to get automatic, data-driven view selection: Room-
 
 | Type | Interactive controls |
 |---|---|
-| `scatter` (V2) | Condition/serial/port filter, temp filter, freq sliders, log X, GF |
-| `stat_summary` (V2) | Condition/serial filter, TI/NP-TI toggle, show points/excluded, freq sliders, log X, stats table, CSV, GF |
-| `boxplot` (V2) | Condition/temp/serial/port filter, Y-range, show points, outlier panel, GF, set-as-GF |
-| `distribution` (V2) | Spur type/temp/serial/port filter, delta vs absolute mode, freq sliders, delta summary table, state persistence |
-| `env_coverage` (V2) | P/C/MU/spec-override inputs, serial/port/temp filter, freq sliders, log X, stats table, CSV, GF |
-| `summary` (V2) | Condition filter (no serial dropdown — GF already recomputes per-DUT via embedded per-DUT means), show excluded, freq sliders, log X, GF |
+| `scatter` (V2) | Condition/serial/port filter, temp filter, Segment-by, freq sliders, log X, GF |
+| `stat_summary` (V2) | Condition/Group-by/serial filter, TI/NP-TI toggle, show points/excluded, Segment-by, freq sliders, log X, stats table, CSV, GF |
+| `boxplot` (V2) | Condition/temp/serial/port filter, Y-range, Segment-by, show points, outlier panel, GF (set/export/import/copy) |
+| `distribution` (V2) | Spur type/temp/serial/port filter, delta vs absolute mode, Segment-by, freq sliders, delta summary table, state persistence |
+| `env_coverage` (V2) | P/C/MU/spec-override inputs, serial/port/temp/Group-by filter, Segment-by, freq sliders, log X, stats table, CSV, GF |
+| `summary` (V2) | Condition/Group-by filter (no serial dropdown — GF already recomputes per-DUT via embedded per-DUT means), show excluded, Segment-by, freq sliders, log X, GF |
+
+All V2 views (plus the real `distribution`) also have an in-page ⓘ Help panel and can be sanity-checked pre-build with `padb_csv_check.py`. See `CLAUDE.md` for the "Segment by"/"Group by"/Help-panel/GF write-ups.
 
 ---
 
