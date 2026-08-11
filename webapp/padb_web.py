@@ -541,6 +541,15 @@ def job_abort(job_id):
             return jsonify(error=f"job is already {job['status']}, nothing to abort"), 400
         job["cancel_requested"] = True
         proc = job.get("proc")
+        if job["status"] == "queued":
+            # Nothing has launched yet, so there's nothing for _worker() to
+            # kill -- flip straight to the terminal state now rather than
+            # waiting for _worker() to dequeue it, which could be minutes
+            # away behind a slow PADB-R.exe extraction ahead of it in the
+            # single-worker FIFO. _worker() still checks cancel_requested
+            # itself (in case it races this and dequeues first) so it never
+            # actually launches a job already marked cancelled here.
+            job["status"] = "cancelled"
     if proc is not None and proc.poll() is None:
         # taskkill /T kills the whole process tree, not just the immediate
         # python.exe child -- necessary because PADB-R.exe runs as a

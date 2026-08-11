@@ -447,6 +447,22 @@ Deliberately out of scope for Phase 1 (not started): the guided "what do you wan
 - **Always use `-ext r` flag** for Oracle extraction.
 - **`-dir` flag** redirects PDF/PNG/CSV output to a folder. When used, CSVs land directly in `results/padb/` and do NOT appear in R-Plots — the `_collect_padb_outputs()` function monitors R-Plots, so its "no new files" message is expected and harmless.
 - **Timeout:** Large pods (Environmental analytics, all temps) need `padb_timeout: 7200` or more.
+- **Two concurrent instances interfere with each other and both stall** (zero CPU progress) — see the cross-process exclusivity guard below for the real fix, not just "don't do that."
+
+---
+
+## Cross-process PADB-R.exe exclusivity guard (added 2026-08-10)
+
+**Real incident this was built from**: the webapp's single-worker job queue (`queue.Queue` + an in-memory `_jobs` dict in `padb_web.py`) only serializes PADB-R.exe launches within one Flask process's *lifetime*. That Flask process got killed mid-run (a background-task lifecycle issue, unrelated to the job itself — not something either the user or the job caused), while a real extraction was still in progress. `subprocess.Popen` doesn't bind child-process lifetime to its parent on Windows without an explicit job object, which this code never set up — so the already-launched `padb_run.py` → PADB-R.exe chain kept running, orphaned and invisible to any UI, once its parent Flask process died. A *new* Flask process then started with a fresh, empty queue that had no idea the orphan existed, and happily launched a second PADB-R.exe for a different job. Two concurrent PADB-R.exe instances → both stalled at zero CPU progress, confirmed via repeated `Get-Process -Id ... | Select CPU` sampling showing no growth across several seconds on both.
+
+**Fix**: `padb_batch.py`'s `wait_for_exclusive_padb_r(exe_path, max_wait, poll_interval)`, called from `PADBBatch.run()` itself — the one real choke point every invocation path goes through (webapp queue *and* direct CLI use of `padb_run.py`), rather than relying on any one process's in-memory queue state:
+- Checks the **live OS process table** via `tasklist /FI "IMAGENAME eq <exe>" /FO CSV` (not psutil — avoids a new dependency for one lookup; `tasklist` is always present on Windows). Checking real OS state instead of a lock file means a stale lock from a crashed/killed process can never cause a false "still busy" deadlock — the moment the real process exits, this sees it gone, no cleanup step required.
+- If another instance is found, polls every `poll_interval` seconds (default 5s) until it clears or `max_wait` elapses, printing a one-time notice on the first check so a long wait doesn't look silently stuck.
+- If it never clears, raises `RuntimeError` naming the blocking PID(s) and how long it waited, with the exact `taskkill /IM <exe> /F` command to clear a genuinely-stuck instance by hand — refuses to launch a second instance rather than let two interfere silently.
+- `max_wait` defaults to the caller's own `timeout` (i.e. `padb_timeout` from job.json) when `PADBBatch.run()` is called with one, so "how long am I willing to wait for my own run" and "how long am I willing to wait for someone else's run to clear first" reuse the same already-configurable value rather than inventing a second timeout setting.
+- `--dry-run` never reaches this check at all (`padb_run.py` returns before calling `.run()` when `dry_run=True`), so it adds no delay to switch-file-only runs.
+
+Verified: directly exercised `_running_pids()`/`wait_for_exclusive_padb_r()` against a real live PADB-R.exe instance (correctly detected the real PID and refused to proceed within the test's short `max_wait`) and against a nonexistent exe name (returned in ~1s, the `tasklist` subprocess's own overhead, with no artificial delay).
 
 ---
 

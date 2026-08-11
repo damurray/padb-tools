@@ -19,11 +19,80 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 StrPath = Union[str, os.PathLike]
+
+
+def _running_pids(exe_name: str) -> list[str]:
+    """PIDs of any currently-running process named exe_name (e.g. "PADB-R.exe"),
+    system-wide -- not just children of this process tree. Uses `tasklist`
+    (always present on Windows) rather than adding psutil as a new dependency
+    for one lookup.
+
+    Checks the real OS process table, not a lock file, so a stale lock left
+    behind by a crashed/killed process can never cause a false "still busy"
+    deadlock -- the moment the real process is gone, this reports it gone."""
+    try:
+        cp = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {exe_name}", "/NH", "/FO", "CSV"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []  # tasklist itself failing shouldn't block a run -- fail open
+    pids = []
+    for line in cp.stdout.splitlines():
+        line = line.strip()
+        if not line or line.startswith("INFO:"):
+            continue
+        fields = [f.strip('"') for f in line.split('","')]
+        if len(fields) >= 2 and fields[0].lower() == exe_name.lower():
+            pids.append(fields[1])
+    return pids
+
+
+def wait_for_exclusive_padb_r(exe_path: StrPath, max_wait: float = 600.0, poll_interval: float = 5.0) -> None:
+    """Block until no PADB-R.exe (matching exe_path's own filename) is running
+    anywhere on this machine, or raise if none clears within max_wait.
+
+    Found 2026-08-10: the webapp's single-worker job queue only serializes
+    PADB-R.exe launches within one Flask process's lifetime. If that process
+    is killed and restarted while a job is mid-run (happened for real -- a
+    background-task lifecycle issue unrelated to the job itself), the
+    already-launched PADB-R.exe becomes orphaned but keeps running,
+    invisible to the new process's fresh, empty queue. The new process then
+    launches its own PADB-R.exe with no idea the first one still exists --
+    two concurrent instances interfere with each other and both stall with
+    zero CPU progress (confirmed via Get-Process CPU sampling on a real
+    stuck pair). This check is the actual fix: enforced at the one real
+    choke point (PADBBatch.run(), called by every invocation path -- webapp
+    and direct CLI both), by checking the live OS process table rather than
+    trusting any one process's own in-memory state, so it holds even across
+    a full process restart."""
+    exe_name = Path(exe_path).name
+    deadline = time.monotonic() + max_wait
+    first_check = True
+    while True:
+        pids = _running_pids(exe_name)
+        if not pids:
+            return
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"Refusing to launch {exe_name}: already running (PID {', '.join(pids)}) "
+                f"and still hasn't exited after waiting {max_wait:.0f}s. Running two "
+                f"instances concurrently causes both to interfere with each other and "
+                f"stall (confirmed 2026-08-10) -- not launching a second one. If the "
+                f"existing instance is truly stuck (not just slow), close it manually "
+                f"(or `taskkill /IM {exe_name} /F`) and retry."
+            )
+        if first_check:
+            print(f"  Waiting for existing {exe_name} (PID {', '.join(pids)}) to exit "
+                  f"before launching -- running two at once would make both stall...")
+            first_check = False
+        time.sleep(poll_interval)
 
 
 def _to_str_path(p: StrPath) -> str:
@@ -290,6 +359,11 @@ class PADBBatch:
 
     def run(self, use_file: bool = True, switch_file_path: Optional[StrPath] = None, timeout: Optional[float] = None,
             cwd: Optional[StrPath] = None, env: Optional[dict] = None, check: bool = False, capture_output: bool = True) -> subprocess.CompletedProcess:
+        # Enforced here, not just at the caller's queue, because this is the
+        # one place every invocation path (webapp queue, direct CLI use)
+        # actually goes through -- see wait_for_exclusive_padb_r()'s
+        # docstring for why an in-memory queue alone isn't enough.
+        wait_for_exclusive_padb_r(self.exe_path, max_wait=timeout or 600.0)
         cmd, sf, _ = self.build_command(use_file=use_file, switch_file_path=switch_file_path)
         self.last_switch_file = sf
         self.last_cmd = cmd
