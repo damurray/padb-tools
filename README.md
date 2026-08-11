@@ -27,6 +27,8 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 
 ### Job files
 
+**These are reference templates, not directly runnable from a fresh clone.** The `.pod` file each one's `"pod"` key points at is not checked into this repo (job configs/pods live in the OneDrive `Data\` folder — see `CLAUDE.md` → **File locations**), and neither are the CSVs a `--plots-only` run would need. Use them as real, working examples of the job.json schema per measurement family — copy from them when onboarding a new pod — but to actually execute one, first supply the matching `.pod` alongside it.
+
 | File | Description |
 |---|---|
 | `amplitude_job.json` | Amplitude accuracy — all temps |
