@@ -733,20 +733,15 @@ for i, txt in enumerate([
 # ---------------------------------------------------------------------------
 # 27. Tutorial 2 — the result: summary view + TLL selector
 # ---------------------------------------------------------------------------
-s = content_slide("Tutorial 2 — PADB Interactive", "The Result — Try the TLL Selector", 27)
+s = content_slide("Tutorial 2 — PADB Interactive", "The Result — Spec Pass/Fail", 27)
 add_bullets(s, [
-    "This pod has no spec limits, so the live \"TLL display\" selector appears (circled) —",
-    "MaxPower is a guaranteed-minimum-power measurement, so try switching it to \"Lower only\"",
-], top=1.75, height=0.8, size=15)
-_img_left, _img_top, _img_w = 2.07, 2.65, 9.2
+    "This pod's CSV has real Upper (30 dBm) and Lower (23 dBm) limits, so both are detected",
+    "automatically -- no manual override needed, and no live selector to switch (data beats config)",
+    "MaxPower is a guaranteed-minimum-power measurement, so the Lower limit is the one that",
+    "actually matters here -- watch the dashed lower spec line against the TTL band as you filter",
+], top=1.75, height=1.1, size=15)
+_img_left, _img_top, _img_w = 2.07, 2.75, 9.2
 add_image(s, f"{IMG_DIR}/interactive_summary_crop.png", left=_img_left, top=_img_top, width=_img_w)
-_hl = s.shapes.add_shape(MSO_SHAPE.ROUNDED_RECTANGLE,
-                          Inches(_img_left + 0.418 * _img_w - 0.05), Inches(_img_top + 0.154 * _img_w * 0.4643 - 0.05),
-                          Inches(0.671 * _img_w - 0.418 * _img_w + 0.1), Inches(0.188 * _img_w * 0.4643 - 0.154 * _img_w * 0.4643 + 0.1))
-_hl.fill.background()
-_hl.line.color.rgb = RGBColor(0xCC, 0x00, 0x00)
-_hl.line.width = Pt(2.25)
-_hl.shadow.inherit = False
 
 # ---------------------------------------------------------------------------
 # 27b. Interactive deep dive — the six views at a glance
