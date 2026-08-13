@@ -3742,11 +3742,22 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
 
     # When serial is not embedded in the Group string (e.g. phase noise where Serial Number
     # is a separate TData column), the fallback serial_id is the whole group string — every
-    # DUT in a group gets the same id, collapsing n to 1.  Override with the Serial column.
-    if not serial_keys and "Serial" in df.columns:
-        valid = df["Serial"].str.strip().str.match(r'^[A-Z]{2,3}\d{5,}$')
-        if valid.any():
-            df["_serial_id"] = df["Serial"].str.strip().where(valid, df["_serial_id"])
+    # DUT in a group gets the same id, collapsing n to 1.  Override with the real Serial
+    # column, matched flexibly by name (not just the exact literal "Serial") -- confirmed on
+    # a real UHP amplifier pod whose serial column is named "Serial Number" and whose values
+    # are purely numeric (e.g. "23262500004"), not the SG6311A-style 2-3-letter-prefix
+    # format, so the value pattern accepts either. Same fix as _stat_boxplot_interactive's
+    # own copy of this fallback.
+    if not serial_keys:
+        _serial_col = next(
+            (c for c in df.columns
+             if "station" not in c.lower() and any(kw in c.lower() for kw in _serial_key_kws)),
+            None,
+        )
+        if _serial_col:
+            valid = df[_serial_col].astype(str).str.strip().str.match(r'^([A-Z]{2,3}\d{5,}|\d{5,})$')
+            if valid.any():
+                df["_serial_id"] = df[_serial_col].astype(str).str.strip().where(valid, df["_serial_id"])
 
     results = []
 
@@ -6768,7 +6779,10 @@ def _aggregate_env_coverage_data(df: pd.DataFrame, cfg: dict) -> tuple:
         groups_in_sc = sc_df["Group"].dropna().unique()
 
         for grp in groups_in_sc:
-            # Extract serial label (from _grp_Serial Number column or Group string)
+            # Extract serial label (from _grp_Serial Number column, Group string,
+            # or -- when Serial Number is a separate CSV column rather than part
+            # of the Group text at all, e.g. a real UHP amplifier pod -- the
+            # already-standardized plain "Serial" column the loader produces)
             grp_rows = sc_df[sc_df["Group"] == grp]
             if ser_col and ser_col in grp_rows.columns:
                 ser_vals = grp_rows[ser_col].dropna().unique()
@@ -6776,7 +6790,12 @@ def _aggregate_env_coverage_data(df: pd.DataFrame, cfg: dict) -> tuple:
             else:
                 # Parse from Group string
                 m = re.search(r'Serial Number:\s*(\S+)', str(grp), re.IGNORECASE)
-                serial = m.group(1) if m else str(grp)
+                if m:
+                    serial = m.group(1)
+                elif "Serial" in grp_rows.columns and grp_rows["Serial"].notna().any():
+                    serial = str(grp_rows["Serial"].dropna().iloc[0])
+                else:
+                    serial = str(grp)
 
             all_serials_set.add(serial)
             gf_key = _make_ec_gf_key(str(grp))
@@ -9847,11 +9866,21 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
 
         # When serial is not embedded in the Group string (e.g. Serial Number is a separate
         # CSV column), the fallback serial_id above is the whole group string, so every DUT
-        # in a group collapses onto one id. Override with the real Serial column.
-        if not serial_keys and "Serial" in df.columns:
-            valid = df["Serial"].str.strip().str.match(r'^[A-Z]{2,3}\d{5,}$')
-            if valid.any():
-                df["_serial_id"] = df["Serial"].str.strip().where(valid, df["_serial_id"])
+        # in a group collapses onto one id. Override with the real Serial column, matched
+        # flexibly by name (not just the exact literal "Serial") -- confirmed on a real UHP
+        # amplifier pod whose serial column is named "Serial Number" and whose values are
+        # purely numeric (e.g. "23262500004"), not the SG6311A-style 2-3-letter-prefix
+        # format, so the value pattern accepts either.
+        if not serial_keys:
+            _serial_col = next(
+                (c for c in df.columns
+                 if "station" not in c.lower() and any(kw in c.lower() for kw in _serial_kws)),
+                None,
+            )
+            if _serial_col:
+                valid = df[_serial_col].astype(str).str.strip().str.match(r'^([A-Z]{2,3}\d{5,}|\d{5,})$')
+                if valid.any():
+                    df["_serial_id"] = df[_serial_col].astype(str).str.strip().where(valid, df["_serial_id"])
     else:
         df["_cond"] = "All"
         df["_serial_id"] = "unknown"

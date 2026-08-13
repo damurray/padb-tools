@@ -386,6 +386,11 @@ def render_summary(
          if any(kw in c.removeprefix("_grp_").lower() for kw in _serial_kws)),
         None
     )
+    # Fall back to the already-standardized plain "Serial" column when the serial
+    # isn't embedded in Group text at all (e.g. a real UHP amplifier pod where
+    # Serial Number is a separate CSV column, not a Group dimension).
+    if _ser_col is None and "Serial" in df.columns and df["Serial"].nunique(dropna=True) >= 1:
+        _ser_col = "Serial"
 
     hi_spec_global = float("nan")
     lo_spec_global = float("nan")
