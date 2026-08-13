@@ -4680,8 +4680,8 @@ function updateStatPanel(conds,params){
     if(_spsd==='lo'||_spsd==='both') _hasLo=true;
     if(_spsd==='hi'||_spsd==='both') _hasHi=true;
   }
-  var ssuHdr=(_hasLo&&!_hasHi)?'Spec Spt&#8595;':(_hasHi?'Spec Spt&#8593;':'Spec Spt');
-  var marginHdr=(_hasLo&&!_hasHi)?'Margin&#8595;':(_hasHi?'Margin&#8593;':'Margin');
+  var ssuHdr=(_hasLo&&_hasHi)?'Spec Spt':(_hasLo?'Spec Spt&#8595;':(_hasHi?'Spec Spt&#8593;':'Spec Spt'));
+  var marginHdr=(_hasLo&&_hasHi)?'Margin&#8595;/&#8593;':(_hasLo?'Margin&#8595;':(_hasHi?'Margin&#8593;':'Margin'));
   conds.forEach(function(cd){
     var sorted=(cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;});
     sorted.forEach(function(fs){
@@ -4700,12 +4700,19 @@ function updateStatPanel(conds,params){
         tllStr='Hi: '+r.tll_up.toFixed(4);
       else
         tllStr='—';
-      var ssuVal=(_hasLo&&!_hasHi)?r.ssu_lo:r.ssu_up;
-      var ssuStr=ssuVal.toFixed(4);
-      var marginVal=(_hasLo&&!_hasHi)?r.margin_lo:r.margin_up;
-      var marginStr=marginVal!==null?
-        '<span style="color:'+(marginVal>=0?'green':'red')+';font-weight:bold">'+
-        (marginVal>=0?'+':'')+marginVal.toFixed(4)+'</span>':'—';
+      var ssuStr;
+      if(_hasLo&&_hasHi) ssuStr='&#8595;'+r.ssu_lo.toFixed(4)+'&nbsp;/&nbsp;&#8593;'+r.ssu_up.toFixed(4);
+      else if(_hasLo) ssuStr=r.ssu_lo.toFixed(4);
+      else ssuStr=r.ssu_up.toFixed(4);
+      function _marginSpan(v){
+        return v!==null?
+          '<span style="color:'+(v>=0?'green':'red')+';font-weight:bold">'+
+          (v>=0?'+':'')+v.toFixed(4)+'</span>':'—';
+      }
+      var marginStr;
+      if(_hasLo&&_hasHi) marginStr='&#8595;'+_marginSpan(r.margin_lo)+'&nbsp;/&nbsp;&#8593;'+_marginSpan(r.margin_up);
+      else if(_hasLo) marginStr=_marginSpan(r.margin_lo);
+      else marginStr=_marginSpan(r.margin_up);
       var outCells='';
       if(fs.outliers&&fs.outliers.length){
         outCells='<td class="out"><b>'+fs.outliers.length+'</b>: '+
