@@ -209,8 +209,16 @@ def create_task(task_name: str, job_path: str, schedule_type: str,
     start_time: 'HH:MM' 24-hour string
     Returns (success, error_message).
     """
-    # Build the task run command — quote the job path inside the /tr value
-    tr_value = f'py "{PADB_RUN}" "{job_path}"'
+    # Build the task run command — quote the job path inside the /tr value.
+    # Use sys.executable (the real interpreter path), not bare "py": on this
+    # machine "py" resolves to the Windows Store app-execution-alias stub
+    # (%LOCALAPPDATA%\Microsoft\WindowsApps\py.exe), which fails to launch
+    # from Task Scheduler even under "Interactive only" logon mode (alias
+    # redirection needs package-activation context a scheduled task doesn't
+    # have) -- confirmed via a real task's "Last Result" of -2147024894
+    # (0x80070002, ERROR_FILE_NOT_FOUND). sys.executable is already used the
+    # same way by webapp/padb_web.py's job launches and "Test Run Now".
+    tr_value = f'"{sys.executable}" "{PADB_RUN}" "{job_path}"'
 
     args = [
         "/create",
