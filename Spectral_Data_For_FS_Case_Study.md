@@ -44,9 +44,35 @@ Worth noting: extraction time doesn't track CSV byte size — the 1.24 GB file f
 
 ---
 
+## Second incident: "why are there two box plots at one frequency?"
+
+*This is where the pod's name comes from — `Spectral_Data_For_FS` was generated for a requestor referred to as FS. Reviewing the boxplot results with him is what first surfaced this.*
+
+**David:** for the box plot views, each frequency looks like it has two samples per serial number. The real issue is that we are testing at very small offsets either side of a frequency band break or YTO band break. You've chosen to stack to boxes on waht looks like the same x-axis frequency. Any chance you could offset those boxes very slightly so its obvious they are close in frequencies. Hover data is useful here too. For now just an analysis and review.
+
+**Claude:** Traced the actual root cause in `padb_plots.py` — it's not really "two samples stacked at one frequency," it's a **label-precision collision** on a categorical axis.
+
+The boxplot's x-axis is a Plotly **category** axis, and each box's position is keyed by `_freq_label(f)` — a *rounded display string*, not the real number:
+```python
+def _freq_label(f: float) -> str:
+    if x_unit == "MHz" and f >= 1000:
+        return f"{f / 1000:.3g} GHz"   # only ~1 decimal place once in GHz
+    return f"{f:.4g} {x_unit}"
+```
+Above 1000 MHz — exactly where YTO band edges live — `.3g` collapses e.g. both `8199.95` and `8200.05` MHz to the identical string `"8.2 GHz"`. Since the axis is categorical and keyed by that string, both boxes land on the same slot and render fully overlapping. Underneath, `_aggregate_box_data_by_temp()` groups by the exact raw frequency value with no merging at all — the two box statistics are computed correctly and independently. The stacking is purely a rendering collision from the label, not a data problem.
+
+What that means for a fix: tightening `_freq_label()`'s precision so two genuinely distinct frequencies never format to the same string should resolve the visual stacking on its own — once the labels are distinct, Plotly's categorical axis naturally gives each its own slot. No manual box-offset hack should be needed; the stacking is a label bug, not an intentional design choice. Richer hover data (spelling out the exact frequency per box, not just the rounded tick) is still worth doing either way. No changes made — this is analysis only, per your ask.
+
+**David:** save this to memory to explore as future embellishment.
+
+**Claude:** Saved — alongside the other deferred, pre-training items.
+
+---
+
 ## Why this is a good training example
 
 - **A clean log is not the same as a verified claim.** "Return code 0" and a plausible elapsed time both looked like evidence of success — neither actually proved that fresh work happened. The first answer given was wrong, and it was backed by a real log.
 - **Domain experience caught what the log missed.** The correction didn't come from re-reading the code more carefully — it came from someone who actually knows how long this pod takes in the GUI, noticing the numbers didn't add up.
 - **The fix for "I'm not sure, but I doubt it" is a concrete check, not a stronger opinion.** Comparing the run's own timestamp against the collected files' modification times turned a disagreement into a provable fact in one step.
 - **Not every confirmed finding needs an immediate fix.** The real open question — can a run silently serve stale data as success — was worth writing down precisely and deferring, not rushing to patch under time pressure before training.
+- **A display bug and a data bug can look identical from the outside.** "Two box plots at one frequency" sounded like a data problem (duplicate measurements, or a real aggregation collapsing two points together). It was neither — the underlying statistics were computed correctly and independently; only the on-screen label rounding made two distinct frequencies collide onto the same spot. Worth checking which layer a symptom actually lives in before assuming where the fix belongs.
