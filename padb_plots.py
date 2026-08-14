@@ -8427,7 +8427,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
           });
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
-        var s=computeBoxStats(fv);
+        var s=computeBoxStats(fv,getIqrK());
         if(!s) return;
         var variance=fv.reduce(function(acc,v){return acc+(v-s.mean)*(v-s.mean);},0)/(fv.length>1?fv.length-1:1);
         var std=Math.sqrt(variance);
