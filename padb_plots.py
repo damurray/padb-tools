@@ -2432,6 +2432,7 @@ function saveState(){
   if(vm)_stSet('dist_view',vm.value);
   var lo=document.getElementById('dist_freq_lo'),hi=document.getElementById('dist_freq_hi');
   if(lo)_stSet('dist_freq_lo',lo.value);if(hi)_stSet('dist_freq_hi',hi.value);
+  var hs=document.getElementById('dist_hide_spec_chk');if(hs)_stSet('dist_hide_spec',hs.checked?'1':'0');
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.dist_spur_chk').forEach(function(c){_stSet('dist_spur_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.dist_port_chk').forEach(function(c){_stSet('dist_port_'+c.value,c.checked?'1':'0');});
@@ -2439,6 +2440,7 @@ function saveState(){
 function loadState(){
   var vm=_stGet('dist_view');
   if(vm){var el=document.querySelector('input[name="view_mode"][value="'+vm+'"]');if(el)el.checked=true;}
+  var hs=_stGet('dist_hide_spec');if(hs!==null){var hsEl=document.getElementById('dist_hide_spec_chk');if(hsEl)hsEl.checked=(hs==='1');}
   var lo=_stGet('dist_freq_lo');
   if(lo!=null){var sl=document.getElementById('dist_freq_lo');if(sl){sl.value=lo;var lt=document.getElementById('dist_freq_lo_txt');if(lt)lt.value=parseFloat(lo).toFixed(3);}}
   var hi=_stGet('dist_freq_hi');
@@ -2804,10 +2806,12 @@ function update(){
 
   /* Spec limit lines */
   var shapes=[];
+  var hideSpecEl=document.getElementById('dist_hide_spec_chk');
+  var hideSpec=hideSpecEl?hideSpecEl.checked:false;
   if(!isAbs){
-    shapes.push({type:'line',xref:'x',yref:'paper',x0:0,x1:0,y0:0,y1:1,
+    if(!hideSpec) shapes.push({type:'line',xref:'x',yref:'paper',x0:0,x1:0,y0:0,y1:1,
       line:{color:'#888',width:1,dash:'dot'}});
-  } else {
+  } else if(!hideSpec) {
     var curHi=HI_SPEC,curLo=LO_SPEC;
     if(freqFlt&&RAW_ABS){
       var hiSet=[],loSet=[];
@@ -3191,6 +3195,8 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         '<input type="number" id="dist_n" min="0" max="200" value="0" oninput="update()"></label>\n'
         '  <label title="Compute TI bounds in linear power domain: each per-DUT mean is converted via 10^(Δ/10) before computing k·σ, then UDE/LDE are converted back to dB. Reduces asymmetry for small Δ values.">'
         '<input type="checkbox" id="dist_linear_ti" onchange="update()"> Lin.&nbsp;TI</label>\n'
+        '  <label><input type="checkbox" id="dist_hide_spec_chk" onchange="update()">'
+        ' Hide&nbsp;spec&nbsp;lines</label>\n'
         '  <div class="sep"></div>\n'
         '  <span id="n_pts"></span>\n'
         "</div>\n"
@@ -4601,6 +4607,8 @@ function buildLayout(conds,params,fLo,fHi){
   if(params&&params.spec_lo_override!==null&&params.spec_lo_override!==undefined){
     loSpecs={};loSpecs[Math.round(params.spec_lo_override*100)/100]=true;
   }
+  var hideSpecEl=document.getElementById('stat_hide_spec_chk');
+  if(!hideSpecEl||!hideSpecEl.checked){
   Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
     annotations.push({xref:'paper',yref:'y',x:0.99,y:v,text:'Spec Hi '+v,showarrow:false,xanchor:'right',yanchor:'bottom',font:{color:'red',size:11}});
@@ -4609,6 +4617,7 @@ function buildLayout(conds,params,fLo,fHi){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec Lo '+v,showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
+  }
   var xRange=(isFinite(fLo)&&isFinite(fHi))?
     (isLogX()?[Math.log10(fLo),Math.log10(fHi)]:[fLo,fHi]):null;
   return {
@@ -5076,6 +5085,7 @@ function saveState(){
   var muEl=document.getElementById('stat_mu');if(muEl)_stSet('stat_mu',muEl.value);
   var gbEl=document.getElementById('stat_gb');if(gbEl)_stSet('stat_gb',gbEl.value);
   var drEl=document.getElementById('stat_drift');if(drEl)_stSet('stat_drift',drEl.value);
+  var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)_stSet('stat_hide_spec',hsEl.checked?'1':'0');
 }
 function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
@@ -5100,6 +5110,7 @@ function loadState(){
   var smu=_stGet('stat_mu');if(smu!==null){var muEl=document.getElementById('stat_mu');if(muEl)muEl.value=smu;}
   var sgb=_stGet('stat_gb');if(sgb!==null){var gbEl=document.getElementById('stat_gb');if(gbEl)gbEl.value=sgb;}
   var sdr=_stGet('stat_drift');if(sdr!==null){var drEl=document.getElementById('stat_drift');if(drEl)drEl.value=sdr;}
+  var shs=_stGet('stat_hide_spec');if(shs!==null){var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)hsEl.checked=(shs==='1');}
 }
 
 _loadStatGlobalFilter();
@@ -5504,6 +5515,8 @@ def _build_stat_summary_html(
         '  <label title="Overlay individual measurement points on the plot">'
         '<input type="checkbox" id="show_pts_chk" onchange="update()">'
         '&nbsp;Show&nbsp;points</label>\n'
+        '  <label><input type="checkbox" id="stat_hide_spec_chk" onchange="update()">'
+        '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
         '  <label id="stat_gf_label" style="display:none;white-space:nowrap;margin-left:4px">'
         '<input type="checkbox" id="stat_gf_chk" checked '
         'onchange="_updateStatGfBadge();update()">'
@@ -8360,10 +8373,12 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
     if(hv!==undefined){hiX.push(fl);hiY.push(hv);}
     if(lv!==undefined){loX.push(fl);loY.push(lv);}
   });
-  if(loX.length) traces.push({type:'scatter',mode:(loX.length<2?'markers':'lines'),x:loX,y:loY,
+  var _boxHideSpecEl=document.getElementById('box_hide_spec_chk');
+  var _boxHideSpec=_boxHideSpecEl?_boxHideSpecEl.checked:false;
+  if(!_boxHideSpec&&loX.length) traces.push({type:'scatter',mode:(loX.length<2?'markers':'lines'),x:loX,y:loY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
     hovertemplate:'Spec Lo: %{y:.4f}<extra></extra>'});
-  if(hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
+  if(!_boxHideSpec&&hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
   /* Manual TLL override line */
@@ -9283,6 +9298,7 @@ function saveState(){
   var yloEl=document.getElementById('box_flt_ylo');if(yloEl)_stSet('box_filter_ylo',yloEl.value);
   var tllEl=document.getElementById('box_tll_hi');if(tllEl)_stSet('box_tll_hi',tllEl.value);
   var kEl=document.getElementById('box_iqr_k');if(kEl)_stSet('box_iqr_k',kEl.value);
+  var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)_stSet('box_hide_spec',hsEl.checked?'1':'0');
 }
 function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
@@ -9307,6 +9323,7 @@ function loadState(){
   var fylo=_stGet('box_filter_ylo');var fyloEl=document.getElementById('box_flt_ylo');if(fylo!==null&&fyloEl)fyloEl.value=fylo;
   var tll=_stGet('box_tll_hi');var tllEl=document.getElementById('box_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
   var iqr=_stGet('box_iqr_k');if(iqr!==null){var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value=iqr;}
+  var hs=_stGet('box_hide_spec');if(hs!==null){var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)hsEl.checked=(hs==='1');}
 }
 (function init(){
   _loadBoxGlobalFilter();
@@ -9624,6 +9641,8 @@ def _build_box_interactive_html(
         '  <label title="Overlay individual DUT measurement points on each box">'
         '<input type="checkbox" id="box_show_pts_chk" onchange="update()">'
         '&nbsp;Show&nbsp;points</label>\n'
+        '  <label><input type="checkbox" id="box_hide_spec_chk" onchange="update()">'
+        '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
         '  <span class="sep"></span>\n'
         '  <label title="IQR fence multiplier: points beyond Q1 - k×IQR or Q3 + k×IQR are flagged as outliers">'
         'k&thinsp;&times;&thinsp;IQR:&nbsp;<input type="number" id="box_iqr_k" value="1.5"'
@@ -10389,6 +10408,9 @@ function buildTraces(active,excl){
       ranges[Math.round(fallback*100)/100]={fMin:fLo,fMax:fHi};
     return ranges;
   }
+  var _sumHideSpecEl=document.getElementById('sum_hide_spec_chk');
+  var _sumHideSpec=_sumHideSpecEl?_sumHideSpecEl.checked:false;
+  if(!_sumHideSpec){
   var hiRanges=buildSpecRanges('spec_hi_list',HI_SPEC);
   var loRanges=buildSpecRanges('spec_lo_list',LO_SPEC);
   Object.keys(hiRanges).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
@@ -10403,6 +10425,7 @@ function buildTraces(active,excl){
       line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
       hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
   });
+  }
   /* Manual TLL override line */
   var _sumPar=getSumParams();
   if(_sumPar.tll_hi_override!==null&&isFinite(fLo)&&isFinite(fHi))
@@ -11058,6 +11081,7 @@ function saveState(){
   var nEl=document.getElementById('sum_n');if(nEl)_stSet('sum_n',nEl.value);
   var muEl=document.getElementById('sum_mu');if(muEl)_stSet('sum_mu',muEl.value);
   var dvEl=document.getElementById('sum_denv');if(dvEl)_stSet('sum_denv',dvEl.value);
+  var hsEl=document.getElementById('sum_hide_spec_chk');if(hsEl)_stSet('sum_hide_spec',hsEl.checked?'1':'0');
 }
 function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
@@ -11084,6 +11108,7 @@ function loadState(){
   var sn=_stGet('sum_n');if(sn!==null){var nEl=document.getElementById('sum_n');if(nEl)nEl.value=sn;}
   var smu=_stGet('sum_mu');if(smu!==null){var muEl=document.getElementById('sum_mu');if(muEl)muEl.value=smu;}
   var sdv=_stGet('sum_denv');if(sdv!==null){var dvEl=document.getElementById('sum_denv');if(dvEl)dvEl.value=sdv;}
+  var shs=_stGet('sum_hide_spec');if(shs!==null){var hsEl=document.getElementById('sum_hide_spec_chk');if(hsEl)hsEl.checked=(shs==='1');}
 }
 
 _loadSumGlobalFilter();
@@ -11401,6 +11426,8 @@ def _build_summary_html(
         + '  <label title="Show non-selected conditions as dim gray bands">'
         + '<input type="checkbox" id="sum_show_excl_chk" onchange="update()">'
         + '&nbsp;Show&nbsp;excluded</label>\n'
+        + '  <label><input type="checkbox" id="sum_hide_spec_chk" onchange="update()">'
+        + '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
         + '  <label title="Apply global exclusion filter from boxplot (excludes whole DUTs)">'
         + '<input type="checkbox" id="sum_gf_chk" checked onchange="update()">'
         + '&nbsp;Apply&nbsp;GF</label>\n'

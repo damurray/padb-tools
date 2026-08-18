@@ -139,6 +139,23 @@ Both default to the exact prior literal text, so no existing pod's output change
 
 ---
 
+## "Hide spec lines" checkbox (added 2026-08-17)
+
+A checkbox that suppresses the red dashed CSV-derived spec reference line/trace, added independently to all 6 views except `env_coverage`:
+
+- **scatter** (`_AV_FREQ_JS`): `hide_spec_chk` gates both the flat dashed `shapes` (`buildLayout()`) and the frequency-varying mask step-line traces (`buildTraces()`, `getSpecMask()`).
+- **distribution** (`_build_env_distribution_html`, the real V2 distribution view): `dist_hide_spec_chk` gates the ΔTemp mode's light-gray zero-line shape *and* the Absolute mode's red/blue vertical `curHi`/`curLo` shapes.
+- **stat_summary** (`_STAT_SUMMARY_JS`): `stat_hide_spec_chk` gates the `hiSpecs`/`loSpecs` shapes+annotations block in `buildLayout()`.
+- **boxplot** (`_STAT_BOXPLOT_INTERACTIVE_JS`): `box_hide_spec_chk` gates the `Spec Lo`/`Spec Hi` named traces in `buildBoxTraces()`.
+- **summary** (`_SUMPLOT_JS`): `sum_hide_spec_chk` gates the per-frequency-range `Spec Hi <v>`/`Spec Lo <v>` segment traces in `buildTraces()`.
+- **`env_coverage` deliberately excluded** — it never draws a visible spec line/shape at all; `spec_hi`/`spec_lo` there only drive a pass/fail comparison against TTU/TTL and hover/CSV text, so there's nothing for this checkbox to hide.
+
+Each view's checkbox is independent (own `localStorage` key via the existing `saveState()`/`loadState()` pattern already in every view) — same reason `getSpecSegments()`/the Help panel/etc. are duplicated per view rather than shared. Deliberately does **not** touch TTL/TLL bands (the computed tolerance-interval lines) in any view — those are the actual statistical content of stat_summary/boxplot/summary/env_coverage, not a spec reference a viewer would want to hide. Also does not touch the "TLL override" manual line (`box_tll_hi`/`sum_tll_hi`) — a separate, already-named feature.
+
+Verified headlessly (Edge `--dump-dom`) against a synthetic multi-temp CSV for all 5 wired views: shape/trace counts confirmed to drop to 0 after checking the box, for both the scatter flat-line and frequency-varying-mask cases, and both distribution view modes (ΔTemp zero-line, Absolute red/blue spec lines).
+
+---
+
 ## `mode` job.json key (added 2026-08-03)
 
 Three values, default preserves every pre-existing job.json byte-for-byte:
