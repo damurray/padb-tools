@@ -401,7 +401,8 @@ def _analytic_stems(analytics: list[dict]) -> set[str]:
     return stems
 
 
-def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) -> None:
+def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
+                           run_start: float | None = None) -> None:
     """
     Copy files written to padb_output_dir into results_padb, selecting only
     files whose stem matches a known analytic OutputFile or AnalyticName.
@@ -417,7 +418,12 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) 
 
     This replaces the previous timestamp-based sweep so that parallel PADB
     jobs writing to the same R-Plots directory do not cross-contaminate each
-    other's results.
+    other's results. Selection is by stem match only, not by mtime -- but if
+    run_start is given, a stem-matched file whose mtime predates the PADB-R.exe
+    invocation is still collected (stem matching is the real selection
+    mechanism and must stay unconditional -- see cross-contamination note
+    above) but flagged with a WARNING, since that means PADB likely did not
+    actually write fresh output this run despite returning success.
     """
     output_dir_raw = cfg.get("padb_output_dir", "")
     if not output_dir_raw:
@@ -449,10 +455,13 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) 
         f.unlink()
 
     copied: list[str] = []
+    stale: list[str] = []
     for f, _ in fresh:
         dest = results_padb / f.name
         shutil.copy2(str(f), str(dest))
         copied.append(f.name)
+        if run_start is not None and f.stat().st_mtime < run_start:
+            stale.append(f.name)
 
     if removed:
         print(f"  Cleared {len(removed)} stale file(s) from a previous run")
@@ -462,6 +471,11 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path) 
             print(f"    {name}")
     else:
         print(f"  No matching files in {output_dir.name}/ -- check PADB log")
+    if stale:
+        print(f"  WARNING: {len(stale)} collected file(s) predate this PADB-R.exe run "
+              f"-- PADB may not have written fresh output despite returning success:")
+        for name in sorted(stale):
+            print(f"    {name}")
 
 
 def run_padb(cfg: dict, run_pod: Path, results_padb: Path,
@@ -522,7 +536,7 @@ def run_padb(cfg: dict, run_pod: Path, results_padb: Path,
 
     # Collect PADB outputs from the actual write location.
     # PADB-R writes to its configured R-Plots directory, not to -dir.
-    _collect_padb_outputs(cfg, analytics or [], results_padb)
+    _collect_padb_outputs(cfg, analytics or [], results_padb, run_start=run_start)
 
     return cp.returncode, cp.stdout or "", cp.stderr or ""
 

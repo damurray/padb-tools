@@ -390,8 +390,9 @@ function buildTraces(filtered){
       hovertemplate:tmpl
     };
   });
+  var _hideSpec=document.getElementById('hide_spec_chk').checked;
   var _mask=getSpecMask(filtered);
-  if(_mask.isMask){
+  if(_mask.isMask&&!_hideSpec){
     if(_mask.hi.length) traces.push({
       type:'scatter',mode:(_mask.hi.length<2?'markers':'lines'),
       x:_mask.hi.map(function(p){return p.x;}),y:_mask.hi.map(function(p){return p.y;}),
@@ -413,7 +414,8 @@ function buildLayout(filtered){
      Keep the most stringent value per 1-dBc bin (min for upper limits, max for lower limits).
      Skipped entirely when the spec is a genuine frequency-varying mask -- that's drawn as a
      proper per-frequency step-line trace in buildTraces() instead. */
-  if(!getSpecMask(filtered||DATA).isMask){
+  var _hideSpec=document.getElementById('hide_spec_chk').checked;
+  if(!_hideSpec&&!getSpecMask(filtered||DATA).isMask){
   (filtered||DATA).forEach(function(r){
     if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit))){
       var k=Math.round(Number(r.Upper_Limit)),v=Number(r.Upper_Limit);
@@ -647,6 +649,7 @@ function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k
 function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
+  _stSet('hide_spec',document.getElementById('hide_spec_chk').checked?'1':'0');
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -657,6 +660,7 @@ function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  var hs=_stGet('hide_spec');if(hs!==null)document.getElementById('hide_spec_chk').checked=(hs==='1');
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -1361,6 +1365,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  <label><input type="checkbox" id="log_x_chk"'
         + (' checked' if log_x else '')
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
+        '  <label><input type="checkbox" id="hide_spec_chk" onchange="update()">'
+        ' Hide&nbsp;spec&nbsp;lines</label>\n'
         f'{band_section_html}'
         '  <div class="sep"></div>\n'
         '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
