@@ -76,6 +76,24 @@ def _csv_btn(fn: str = "saveCSV") -> str:
 # JS for accuracy_vs_freq interactive plot (raw string — no Python escaping)
 # ---------------------------------------------------------------------------
 _AV_FREQ_JS = r"""
+/* Zoom/pan persistence across filter changes: Plotly.react() (what every
+   update() call ends up doing) recomputes autorange from the new trace data
+   by default, discarding any manual zoom -- confirmed empirically that
+   layout.uirevision alone (Plotly's documented mechanism for this) does NOT
+   preserve it here even across a matching-revision react() call, so this
+   reads the plot's own live axis state instead. Plotly sets autorange:false
+   automatically on any axis a user has manually zoomed/panned (drag, scroll-
+   zoom) or that a Plotly.relayout() call set an explicit range on -- so
+   "autorange===false" is a reliable live signal for "don't recompute this,
+   the user (or we) already pinned it," while the built-in "Reset axes"
+   modebar button sets autorange back to true, correctly falling through to
+   this function's normal default range on the very next update(). */
+function _liveAxisRange(axis){
+  var gd=document.getElementById('plot');
+  if(gd&&gd.layout&&gd.layout[axis]&&gd.layout[axis].autorange===false&&
+     Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
+  return null;
+}
 function median(arr){
   var s=[].concat(arr).sort(function(a,b){return a-b;});
   var m=Math.floor(s.length/2);
@@ -437,11 +455,14 @@ function buildLayout(filtered){
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec '+v.toFixed(2),showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
   }
+  var curX=_liveAxisRange('xaxis');
+  var curY=Y_LIM||_liveAxisRange('yaxis');
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:X_LABEL,type:isLogX()?'log':'linear'},
-    yaxis:{title:Y_LABEL,range:Y_LIM},
+    xaxis:Object.assign({title:X_LABEL,type:isLogX()?'log':'linear'},
+                         curX?{range:curX,autorange:false}:{}),
+    yaxis:Object.assign({title:Y_LABEL},curY?{range:curY,autorange:false}:{}),
     shapes:shapes,annotations:annotations,height:520,
     legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:60,b:60}
@@ -465,6 +486,9 @@ function resetFilters(){
   document.getElementById('freq_hi').value=FREQ_MAX;
   document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
   document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
+  /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
+     would keep re-applying the stale zoomed range even after Reset. */
+  Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
 }
 

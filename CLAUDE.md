@@ -129,6 +129,24 @@ Both default to the exact prior literal text, so no existing pod's output change
 
 ---
 
+## Zoom/pan persistence across filter changes (`scatter` view, added 2026-08-18)
+
+Every `update()` call re-renders via `Plotly.react()`, which recomputes axis autorange from the fresh trace data by default — so any manual zoom/pan (drag-zoom, scroll-zoom) got silently discarded on *any* filter change at all, not just ones that touch the frequency window. Reported by the user: "almost every data filter item resets the plot axis."
+
+**First attempt (reverted, didn't work): `layout.uirevision`.** This is Plotly's own documented mechanism for exactly this problem, so it was the obvious first try — keep `uirevision` constant across ordinary `update()` calls, bump it only at intentional-range-change call sites. Verified empirically it does **not** work in this app's bundled Plotly version: built a minimal from-scratch repro (`Plotly.newPlot` → real simulated drag-zoom via dispatched `mousedown`/`mousemove`/`mouseup` on the `.nsewdrag` element → `Plotly.react()` with matching `uirevision`) and the axis still reset to autorange. Confirmed it wasn't a test artifact (e.g. falsy `uirevision:0`) by re-running with a non-zero value — same result.
+
+**Working fix: read back the plot's own live axis state.** `_liveAxisRange(axis)` checks `document.getElementById('plot').layout[axis]` — if `autorange===false` (which Plotly sets automatically on any manually zoomed/panned axis, or any axis a `Plotly.relayout()` call gave an explicit range to), returns that live `range` array; otherwise `null`. `buildLayout()` calls this for both axes and explicitly passes the result back (`range:..., autorange:false`) instead of leaving the axis unconstrained — this is what actually stops `Plotly.react()` from recomputing autorange on an unrelated filter change.
+
+**Why this doesn't break the "intentional new range" cases**: `syncFreq()`/`freqTxtChange()`/`freqStep()`/`setFreqBand()`/`toggleLogX()` all already called `Plotly.relayout('plot', {'xaxis.range':...})` directly (for immediate visual feedback) *before* calling `update()` — so by the time `buildLayout()` runs, the live DOM already reflects the new intended range, and `_liveAxisRange()` picks it up correctly. No changes needed to any of them. `resetFilters()` (the app's own Reset button) is the one exception: it never called `Plotly.relayout()` itself, so it now explicitly does `Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true})` before `update()` — otherwise `_liveAxisRange()` would keep re-applying the stale zoomed range even after Reset. Plotly's own built-in "Reset axes" modebar button needs no support at all — it already sets `autorange:true` internally, which `_liveAxisRange()` correctly reads as "nothing pinned" on the next `update()`.
+
+**Y-axis interaction with `Y_LIM`**: `curY = Y_LIM || _liveAxisRange('yaxis')` — an actual configured Y-limit override always takes priority over a live zoom read-back, so this doesn't change existing Y-limit-override behavior at all.
+
+Verified headlessly end-to-end on a real generated page: real simulated drag-zoom → ordinary filter change (hover-column checkbox) → zoom range unchanged; typing a new frequency value → view correctly moves to it; clicking Reset → view correctly returns to the full default range.
+
+**Scope**: implemented for `scatter` only so far, to validate the approach before extending to the other 5 interactive views (each has its own `buildLayout()`/equivalent, same reason every other per-view feature in this file is duplicated).
+
+---
+
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
 
 `accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.
