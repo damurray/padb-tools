@@ -19,6 +19,7 @@ cfg keys (all optional unless noted):
 from __future__ import annotations
 
 import json
+import math
 import re
 from pathlib import Path
 
@@ -1058,6 +1059,25 @@ def _detect_group_cols(df: pd.DataFrame) -> list[tuple[str, str]]:
     return result
 
 
+def _floor_dec(v: float, ndigits: int) -> float:
+    """Round DOWN to ndigits decimals. Used for the displayed/default lower
+    frequency-filter bound: rounding a real min *up* (plain round()/f-string
+    ':.Nf' formatting can go either way) would make the very first data point
+    fail the '>=' filter comparison on initial page load, before the user
+    ever touches the slider -- reported by the user as rows starting after
+    the slider's own displayed start value. Floor for lo / ceil for hi
+    guarantees the default full-range view never silently clips real data.
+    """
+    scale = 10**ndigits
+    return math.floor(v * scale) / scale
+
+
+def _ceil_dec(v: float, ndigits: int) -> float:
+    """Round UP to ndigits decimals -- see _floor_dec, the upper-bound twin."""
+    scale = 10**ndigits
+    return math.ceil(v * scale) / scale
+
+
 def _short_x_label(x_label: str) -> str:
     """Prefix used in 'Freq min/max'-style control labels, derived from the
     full x_label (e.g. "Amplitude (dBm)" -> "Amplitude"). Found 2026-08-10:
@@ -1396,13 +1416,13 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
-        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{_floor_dec(freq_min, 3):.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
         f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
         f'  <label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
-        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{_ceil_dec(freq_max, 3):.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
         f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>\n'
         f'  <label><input type="checkbox" id="log_x_chk"'
@@ -2027,13 +2047,13 @@ update();
         f'  <label>Freq&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{_floor_dec(freq_min, 3):.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
         f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;MHz</label>\n'
         f'  <label>Freq&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{_ceil_dec(freq_max, 3):.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
         f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;MHz</label>\n'
         f'{band_section_html}'
@@ -2289,8 +2309,10 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     # 5b.  Raw data for client-side freq-filtered KDE
     # -------------------------------------------------------------------------
     all_freqs_sorted = sorted(float(f) for f in df["Frequency_MHz"].dropna().unique())
-    dist_freq_min = round(all_freqs_sorted[0], 1) if all_freqs_sorted else 0.0
-    dist_freq_max = round(all_freqs_sorted[-1], 1) if all_freqs_sorted else 1000.0
+    # floor/ceil (not round()) so the default full-range filter can never clip
+    # the true min/max point -- see _floor_dec's docstring for the general bug.
+    dist_freq_min = _floor_dec(all_freqs_sorted[0], 1) if all_freqs_sorted else 0.0
+    dist_freq_max = _ceil_dec(all_freqs_sorted[-1], 1) if all_freqs_sorted else 1000.0
 
     _abs_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Serial"]
     if port_col:
@@ -5547,14 +5569,14 @@ def _build_stat_summary_html(
         f'<label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
-        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{_floor_dec(freq_min, 3):.3f}"'
         f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>'
     )
     freq_hi_html = (
         f'<label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
-        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{_ceil_dec(freq_max, 3):.3f}"'
         f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>'
     )
     log_x_html = (
@@ -7352,14 +7374,14 @@ def _build_env_coverage_html(
         f'<label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="ec_freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<input class="freq-txt" id="ec_freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f'<input class="freq-txt" id="ec_freq_lo_txt" type="text" value="{_floor_dec(freq_min, 3):.3f}"'
         f' onchange="freqTxtChange(\'lo\')" onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>'
     )
     freq_hi_html = (
         f'<label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="ec_freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()">'
-        f'<input class="freq-txt" id="ec_freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f'<input class="freq-txt" id="ec_freq_hi_txt" type="text" value="{_ceil_dec(freq_max, 3):.3f}"'
         f' onchange="freqTxtChange(\'hi\')" onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>'
     )
     log_x_html = (
@@ -10003,11 +10025,11 @@ def _build_box_interactive_html(
         '&nbsp;&#916;Env&nbsp;temps</label>\n'
         '  <span class="sep"></span>\n'
         f'  <label>{_short_x_label(x_label)}&thinsp;min&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_lo"'
-        f' value="{box_freq_min:.3f}" step="any"'
+        f' value="{_floor_dec(box_freq_min, 3):.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
         f'  <label>{_short_x_label(x_label)}&thinsp;max&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_hi"'
-        f' value="{box_freq_max:.3f}" step="any"'
+        f' value="{_ceil_dec(box_freq_max, 3):.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
         '  <span class="sep"></span>\n'
@@ -11796,13 +11818,13 @@ def _build_summary_html(
         + f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
-        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{freq_min:.3f}"'
+        f'<input class="freq-txt" id="freq_lo_txt" type="text" value="{_floor_dec(freq_min, 3):.3f}"'
         f' onchange="freqTxtChange(\'lo\')"'
         f' onkeydown="freqKeyDown(event,\'lo\')">&nbsp;{x_unit}</label>\n'
         f'  <label>{_short_x_label(x_label)}&nbsp;max:<input type="range" id="freq_hi"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_max:.4f}"'
         f' step="{freq_step:.4f}" oninput="syncFreq()" onchange="update()">'
-        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{freq_max:.3f}"'
+        f'<input class="freq-txt" id="freq_hi_txt" type="text" value="{_ceil_dec(freq_max, 3):.3f}"'
         f' onchange="freqTxtChange(\'hi\')"'
         f' onkeydown="freqKeyDown(event,\'hi\')">&nbsp;{x_unit}</label>\n'
         f'  <label><input type="checkbox" id="log_x_chk"'

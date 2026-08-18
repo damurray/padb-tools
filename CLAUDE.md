@@ -225,6 +225,22 @@ Verified headlessly against two synthetic datasets: a 180-condition one (2 combi
 
 ---
 
+## Freq-range default bounds silently clipped the true min/max point (fixed 2026-08-18)
+
+Reported by the user looking at a real generated page: "the row frequencies start after the slider start frequency and finish before the slider stop frequencies. Is this an off by 1 error?" Yes — an off-by-rounding bug, not an indexing one.
+
+Every freq-slider control has two independent representations of the same bound: the `<input type="range">` (`min`/`max`/`value` formatted `:.4f`, effectively full precision) and a paired `<input type="text">` display box (formatted `:.3f`, i.e. rounded to 3 decimals) that the user can type into directly. Every filtering path (`getFilteredCondsAndParams()` in `stat_summary`, and the equivalent inline logic in scatter/distribution/env_coverage/boxplot/summary) reads the **text box**, not the slider, as the authoritative bound whenever it has a value — and on initial page load, that text box is *always* populated (with the rounded default), so this is the active bound from the very first render, before the user ever touches anything.
+
+Python's `:.3f`/`:.4f` formatting rounds to nearest, which can round either direction. If the true minimum frequency is e.g. `1000.1236`, `:.3f` produces `"1000.124"` — a lower bound *higher* than the real minimum. The filter comparison itself (`fs.freq>=fLo`, confirmed inclusive at every call site) is correct, but with `fLo=1000.124` and the real data point at `1000.1236`, `1000.1236 >= 1000.124` is false — the true first row is silently excluded by default. Symmetrically, rounding the true max down (e.g. `1999.8764` → `"1999.876"`) excludes the true last row. Same root cause as the two other rounding/precision bugs already documented for this control family (segment-tab boundary comparison, `setFreqBand`'s slider-`.value` snapping) — a recurring lesson that any place a displayed/rounded string gets parsed back into a filter boundary needs to round outward, not to-nearest.
+
+**Fix:** `_floor_dec(v, ndigits)` / `_ceil_dec(v, ndigits)` (new, near `_short_x_label`) round down/up instead of to-nearest. Applied to every default lower/upper text-box `value=` at page-generation time: `freq_lo_txt`/`freq_hi_txt` (scatter, legacy `distribution()`, `stat_summary`, `summary`), `ec_freq_lo_txt`/`ec_freq_hi_txt` (`env_coverage`), `box_freq_lo`/`box_freq_hi` (boxplot — this view's number inputs have no separate full-precision slider to fall back on, so this was the only source of the bound), and the real V2 `distribution` (`_build_env_distribution_html`)'s `dist_freq_min`/`dist_freq_max` (1-decimal `round()` → `_floor_dec`/`_ceil_dec` at the point they're computed, since that view derives both the slider bound *and* the JS filter constant from the same rounded value). Deliberately **not** touched: `_build_env_summary_html` (the `de_summary`-equivalent legacy path — same pre-existing exclusion boundary as every other feature in this doc that lists it).
+
+This only ever widens the default range very slightly (at most one unit in the last displayed decimal) — it can never newly exclude a point that was previously included, only stop excluding ones that shouldn't have been.
+
+Verified via direct unit check of `_floor_dec`/`_ceil_dec` against the exact reported failure shape (a non-round min/max like `1000.1236`/`1999.8764`, where plain `:.3f` rounding lands on the wrong side of the true value in at least one direction) confirming the floor/ceil result is always ≤/≥ the true value; `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL, same pre-existing failures as always).
+
+---
+
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
 
 `accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.
