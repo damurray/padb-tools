@@ -446,6 +446,28 @@ Per job: unschedules its Task Scheduler entry first if one exists (reuses `delet
 
 ---
 
+## V2 index.html: per-analytic grouping (added 2026-08-18)
+
+`_write_index()` (padb_v2.py) used to render one flat alphabetically-sorted `<ul>` of every generated view file — for a multi-analytic pod (up to N analytics × 6 views accumulating into one shared `results_dir`, per "all plot jobs for one pod share one results_dir" above) this interleaves views from different analytics with nothing showing which analytic a link belongs to.
+
+**Fix:** `_index_group_key(stem)` strips a filename's trailing `_<view>` suffix (the exact `f"{prefix}_{slug}.html"` convention `generate_report()` writes) to recover the analytic prefix each view shares. `_write_index()` groups files by that prefix and renders one `<h3>{analytic}</h3><ul>...</ul>` section per group, each internally ordered by `_VIEW_FN`'s own canonical key order (scatter, stat_summary, boxplot, distribution, env_coverage, summary) rather than alphabetically — link text switches to the friendlier `_VIEW_LABELS` value (e.g. "Box Plots") instead of the raw filename stem, since the analytic name is already in the group header. A file whose stem doesn't end in any known view suffix (not written by `generate_report()`, e.g. a stray file) falls back to being its own single-item group rather than being dropped.
+
+**Only applied when there's more than one group.** A single-analytic `results_dir` (the common case — one plot job's own output, or a Room-only job with just `scatter`+`boxplot`) keeps the exact old flat `<ul>` with full-stem link text, byte-for-byte — grouping structure would be pure overhead there, same "only add it when it helps" call as the Simple-mode gallery TOC below.
+
+Verified: a synthetic single-analytic/2-view case renders identically to the old flat list (no `<h3>`); a synthetic 3-analytic × 6-view case, built via 3 separate `_write_index()` calls into the same directory (mirroring how 3 real plot jobs would accumulate), correctly produces 3 alphabetically-sorted group headers each with its 6 links in canonical view order, not alphabetical.
+
+---
+
+## PADB Simple mode gallery: jump-nav TOC (added 2026-08-18)
+
+`make_simple_gallery_html()` (padb_simple.py) stacks one card per analytic (and one card per PNG for an analytic that paginates into several), with no way to jump between them — a 6-analytic pod is already a long scroll, and pods with more analytics only make it worse.
+
+**Fix:** every analytic's first card gets `id="analytic-{idx}"`; an analytic that renders multiple PNGs (pagination) still gets exactly one anchor, on its first card only, since the nav is for jumping *between analytics*, not between pages of the same one. A `<div class="toc">Jump to: ...</div>` bar linking to each anchor is inserted between the page's metadata line and the cards — but **only when there are more than 3 analytics**; for 1–3 it's just clutter above the content.
+
+Verified against a synthetic 6-analytic case (one analytic paginated into 2 PNGs — confirmed only one anchor/TOC entry for it, not two) and a 3-analytic case (confirmed the TOC is correctly suppressed, anchors still present but unused/harmless). Also regenerated the real `MaxPowerTutorial1_job.json` (Simple mode, 6 analytics) via `--plots-only` and confirmed the real page renders a correct 6-entry nav.
+
+---
+
 ## Implemented plot types
 
 | Function | Source | Interactive? |

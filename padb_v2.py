@@ -786,6 +786,23 @@ def generate_report(
 # 6.  Index page
 # ===========================================================================
 
+_VIEW_ORDER = list(_VIEW_FN.keys())
+
+
+def _index_group_key(stem: str) -> tuple[str, str | None]:
+    """Split a generated HTML filename's stem into (analytic_prefix, view) by
+    stripping a trailing "_<view>" suffix -- the exact naming convention
+    generate_report() uses (f"{prefix}_{slug}.html"). Returns (stem, None)
+    for a file that doesn't end in any known view suffix (not written by
+    generate_report(), e.g. a stray file someone dropped in the output dir),
+    so it falls back to being its own single-item group in _write_index()."""
+    for view in _VIEW_ORDER:
+        suffix = "_" + view
+        if stem.endswith(suffix) and len(stem) > len(suffix):
+            return stem[: -len(suffix)], view
+    return stem, None
+
+
 def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dict) -> None:
     # Merge newly generated files with any pre-existing HTML files in the directory
     # so multiple job runs into the same output dir all appear in the index.
@@ -794,10 +811,38 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
         if p.name != "index.html" and p not in html_files
     )
     all_files = sorted(set(existing) | set(html_files), key=lambda p: p.stem.lower())
-    items = "".join(
-        f'<li><a href="{p.name}">{p.stem.replace("_", " ")}</a></li>'
-        for p in all_files
-    )
+
+    # Group by analytic (the prefix each view's own filename shares) rather
+    # than one flat alphabetical list -- a multi-analytic pod's views for
+    # different analytics otherwise interleave with nothing showing which
+    # analytic a link belongs to. Only worth the extra structure once there's
+    # more than one analytic in this output_dir; a single-analytic dir keeps
+    # the plain flat list it always had.
+    groups: dict[str, list[tuple[Path, str | None]]] = {}
+    for p in all_files:
+        group_key, view = _index_group_key(p.stem)
+        groups.setdefault(group_key, []).append((p, view))
+
+    if len(groups) > 1:
+        def _view_rank(view: str | None) -> int:
+            return _VIEW_ORDER.index(view) if view in _VIEW_ORDER else len(_VIEW_ORDER)
+
+        sections = []
+        for group_key in sorted(groups, key=str.lower):
+            entries = sorted(groups[group_key], key=lambda pv: _view_rank(pv[1]))
+            items = "".join(
+                f'<li><a href="{p.name}">{_VIEW_LABELS.get(view, p.stem.replace("_", " "))}</a></li>'
+                for p, view in entries
+            )
+            sections.append(f'<h3>{group_key.replace("_", " ")}</h3>\n<ul>{items}</ul>')
+        items_html = "\n".join(sections)
+    else:
+        items = "".join(
+            f'<li><a href="{p.name}">{p.stem.replace("_", " ")}</a></li>'
+            for p in all_files
+        )
+        items_html = f"<ul>{items}</ul>"
+
     title = cfg.get("index_title", prefix)
     # Suppress per-job description when multiple jobs share the same output dir
     desc = cfg.get("description", "") if not existing else ""
@@ -806,14 +851,15 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
 <head><meta charset='utf-8'><title>{title}</title>
 <style>
   body{{font-family:sans-serif;max-width:800px;margin:40px auto;}}
-  h1{{font-size:1.4em;}} li{{margin:6px 0;}}
+  h1{{font-size:1.4em;}} h3{{font-size:1.05em;margin:18px 0 4px;color:#444;}}
+  li{{margin:6px 0;}}
   a{{color:#1f77b4;text-decoration:none;}} a:hover{{text-decoration:underline;}}
 </style>
 </head>
 <body>
 <h1>{title}</h1>
 {"<p>"+desc+"</p>" if desc else ""}
-<ul>{items}</ul>
+{items_html}
 </body></html>"""
     (output_dir / "index.html").write_text(html, encoding="utf-8")
     print(f"  Index: {output_dir / 'index.html'}", flush=True)
