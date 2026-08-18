@@ -464,6 +464,14 @@ Deliberately out of scope for Phase 1 (not started): the guided "what do you wan
 
 Verified: directly exercised `_running_pids()`/`wait_for_exclusive_padb_r()` against a real live PADB-R.exe instance (correctly detected the real PID and refused to proceed within the test's short `max_wait`) and against a nonexistent exe name (returned in ~1s, the `tasklist` subprocess's own overhead, with no artificial delay).
 
+**Idle-GUI exemption (added 2026-08-17):** the original guard above treated *any* running `PADB-R.exe` process as blocking — including a bare interactive window opened by hand and left sitting on the desktop, doing nothing ("PADB open on your desk"). That's a completely normal way to have PADB open while also using the webapp, but it made every webapp launch wait out its full `max_wait` and then fail with a "go taskkill it" error, even though nothing was actually running.
+
+`tasklist` (used by `_running_pids()`) doesn't expose command-line arguments, so there was no way to tell an idle GUI window apart from a real batch run from that alone. Fixed with `_process_command_lines(exe_name)` (PowerShell `Get-CimInstance Win32_Process`, since `tasklist` can't do this) and `_running_batch_pids(exe_name)`, which only counts a PID as blocking if its own command line contains `-f <switchfile>` — this tool's own batch-invocation convention (every real call goes through `PADBBatch.build_command`, which always uses `-f`). An interactively-opened GUI window has an empty/bare command line and is never flagged. `wait_for_exclusive_padb_r()` now calls `_running_batch_pids()` instead of `_running_pids()`.
+
+**Fails safe, not open**: if `_process_command_lines()` itself can't be resolved (PowerShell unavailable, times out, etc.), `_running_batch_pids()` falls back to treating every running PID as blocking — the original all-or-nothing behavior — rather than risk silently launching a second real batch run concurrently, which is the exact stall this guard exists to prevent. The idle-vs-batch distinction is only ever used to *relax* the check when it's confirmed safe to do so, never to bypass it on uncertainty.
+
+Verified end-to-end: (1) launched a synthetic pair of processes, one with `-f <file>` in its command line and one without — `_running_batch_pids()` correctly flagged only the `-f` one; (2) confirmed real idle processes already running on the machine (including the webapp's own `padb_web.py` instances) are correctly excluded; (3) confirmed the fail-safe path — with `_process_command_lines()` forced to fail, a real running PID is still reported as blocking, not silently waved through.
+
 ---
 
 ## CSV loading

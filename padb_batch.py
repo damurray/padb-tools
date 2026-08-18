@@ -17,6 +17,7 @@ Author: 2026
 """
 from __future__ import annotations
 import os
+import re
 import subprocess
 import tempfile
 import time
@@ -54,9 +55,74 @@ def _running_pids(exe_name: str) -> list[str]:
     return pids
 
 
+_BATCH_ARG_RE = re.compile(r'(?:^|\s)-f(?:\s|$)')
+
+
+def _is_batch_invocation(cmdline: str) -> bool:
+    """True if cmdline looks like this tool's own batch launch -- always
+    includes "-f <switchfile>" (see PADBBatch.build_command) -- rather than a
+    bare interactive GUI window with no arguments (e.g. PADB-R.exe opened by
+    hand and left sitting on the desktop, doing nothing)."""
+    return bool(_BATCH_ARG_RE.search(cmdline or ""))
+
+
+def _process_command_lines(exe_name: str) -> dict[str, str]:
+    """Map PID -> full command line for every currently-running process named
+    exe_name, system-wide. `tasklist` (used by _running_pids) doesn't expose
+    command-line args at all, so this uses PowerShell's Win32_Process CIM
+    class instead -- needed specifically to tell an idle interactive PADB-R
+    window apart from a real batch invocation. Returns {} on any error
+    (PowerShell unavailable, timeout, etc.) -- the caller treats that as
+    "can't tell, assume blocking" rather than fail-open, since silently
+    allowing a second real batch run through is exactly the stall this guard
+    exists to prevent."""
+    try:
+        cp = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"Get-CimInstance Win32_Process -Filter \"Name='{exe_name}'\" | "
+             "ForEach-Object { Write-Output ($_.ProcessId.ToString() + \"`t\" + $_.CommandLine) }"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    result: dict[str, str] = {}
+    for line in cp.stdout.splitlines():
+        if not line.strip():
+            continue
+        pid, _, cmdline = line.partition("\t")
+        result[pid.strip()] = cmdline
+    return result
+
+
+def _running_batch_pids(exe_name: str) -> list[str]:
+    """Subset of _running_pids() that are actually mid-batch-run, not just an
+    idle interactive GUI window left open ("PADB open on your desk" -- the
+    real case that prompted this, 2026-08-17: the original guard treated ANY
+    PADB-R.exe process as blocking, so leaving the GUI open while also using
+    the webapp made every webapp launch wait out its full timeout and then
+    fail with a "go taskkill it" error, even though nothing was actually
+    running).
+
+    Fails safe, not open: if _process_command_lines() can't be resolved (e.g.
+    PowerShell itself is unavailable), every running PID is treated as
+    blocking -- the exact pre-fix behavior -- rather than risk launching a
+    second real batch run concurrently, which is the stall this whole guard
+    exists to prevent."""
+    pids = _running_pids(exe_name)
+    if not pids:
+        return []
+    cmdlines = _process_command_lines(exe_name)
+    if not cmdlines:
+        return pids
+    return [pid for pid in pids if _is_batch_invocation(cmdlines.get(pid, ""))]
+
+
 def wait_for_exclusive_padb_r(exe_path: StrPath, max_wait: float = 600.0, poll_interval: float = 5.0) -> None:
-    """Block until no PADB-R.exe (matching exe_path's own filename) is running
-    anywhere on this machine, or raise if none clears within max_wait.
+    """Block until no *batch-invoked* PADB-R.exe (matching exe_path's own
+    filename) is running anywhere on this machine, or raise if none clears
+    within max_wait. An idle PADB-R.exe window with no command-line switches
+    (opened by hand, not doing anything) never blocks -- only another process
+    actually launched with "-f <switchfile>" does (see _running_batch_pids).
 
     Found 2026-08-10: the webapp's single-worker job queue only serializes
     PADB-R.exe launches within one Flask process's lifetime. If that process
@@ -76,21 +142,22 @@ def wait_for_exclusive_padb_r(exe_path: StrPath, max_wait: float = 600.0, poll_i
     deadline = time.monotonic() + max_wait
     first_check = True
     while True:
-        pids = _running_pids(exe_name)
+        pids = _running_batch_pids(exe_name)
         if not pids:
             return
         if time.monotonic() >= deadline:
             raise RuntimeError(
-                f"Refusing to launch {exe_name}: already running (PID {', '.join(pids)}) "
-                f"and still hasn't exited after waiting {max_wait:.0f}s. Running two "
-                f"instances concurrently causes both to interfere with each other and "
-                f"stall (confirmed 2026-08-10) -- not launching a second one. If the "
-                f"existing instance is truly stuck (not just slow), close it manually "
-                f"(or `taskkill /IM {exe_name} /F`) and retry."
+                f"Refusing to launch {exe_name}: already running a batch job "
+                f"(PID {', '.join(pids)}) and still hasn't exited after waiting "
+                f"{max_wait:.0f}s. Running two batch instances concurrently causes "
+                f"both to interfere with each other and stall (confirmed 2026-08-10) "
+                f"-- not launching a second one. If the existing instance is truly "
+                f"stuck (not just slow), close it manually (or `taskkill /IM {exe_name} /F`) "
+                f"and retry."
             )
         if first_check:
-            print(f"  Waiting for existing {exe_name} (PID {', '.join(pids)}) to exit "
-                  f"before launching -- running two at once would make both stall...")
+            print(f"  Waiting for existing {exe_name} batch run (PID {', '.join(pids)}) "
+                  f"to exit before launching -- running two at once would make both stall...")
             first_check = False
         time.sleep(poll_interval)
 
