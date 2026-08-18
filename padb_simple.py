@@ -149,9 +149,13 @@ def make_simple_gallery_html(
     run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     cards: list[str] = []
+    toc_items: list[str] = []
     for a in analytics:
         idx = a["index"]
         title = a.get("main_title") or a.get("name") or f"Analytic {idx}"
+        anchor_id = f"analytic-{idx}"
+        nav_label = f"{_type_label(a['type'])}: {title}"
+        toc_items.append(f'<a href="#{anchor_id}">{nav_label}</a>')
         table_html = build_metadata_table_html(sections, idx)
         downloads_html = _downloads_html(a, results_padb, csv_map)
         downloads_row = f'<p class="meta">Downloads: {downloads_html}</p>' if downloads_html else ""
@@ -161,8 +165,8 @@ def make_simple_gallery_html(
 
         if not pngs:
             cards.append(f"""
-    <div class="card plot-card">
-      <h3>{_type_label(a["type"])}: {title}</h3>
+    <div class="card plot-card" id="{anchor_id}">
+      <h3>{nav_label}</h3>
       <p style="color:#cc4400">Native graph not found for this analytic -- PADB may not have
       rendered a PNG (check OutputConfig_OutputGraph/GraphFormat in the pod).</p>
       {table_html}
@@ -170,13 +174,17 @@ def make_simple_gallery_html(
     </div>""")
             continue
 
-        for png in pngs:
+        for i, png in enumerate(pngs):
             pdf = pdfs_by_stem.get(png.stem)
             image_html = f'<img src="padb/{png.name}" style="max-width:100%">'
             image_block = f'<a href="padb/{pdf.name}">{image_html}</a>' if pdf else image_html
+            # Anchor only the first card for this analytic -- an analytic that
+            # paginates into several PNGs still gets one TOC entry, not one
+            # per page, since the nav is meant to jump between analytics.
+            id_attr = f' id="{anchor_id}"' if i == 0 else ""
             cards.append(f"""
-    <div class="card plot-card">
-      <h3>{_type_label(a["type"])}: {title}</h3>
+    <div class="card plot-card"{id_attr}>
+      <h3>{nav_label}</h3>
       <table border="0" cellpadding="10" cellspacing="0">
         <tr>
           <td>{image_block}</td>
@@ -187,6 +195,13 @@ def make_simple_gallery_html(
     </div>""")
 
     cards_html = "\n".join(cards) if cards else '<p style="color:#888">No analytics found in pod.</p>'
+    # Only worth a jump-nav once there are enough analytics that scrolling to
+    # find one is a real problem -- for 1-3 analytics it's just clutter above
+    # the content.
+    toc_html = (
+        f'<div class="toc"><b>Jump to:</b> {" &nbsp;|&nbsp; ".join(toc_items)}</div>'
+        if len(toc_items) > 3 else ""
+    )
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -213,6 +228,9 @@ def make_simple_gallery_html(
   a {{ color: #003366; text-decoration: none; }}
   a:hover {{ text-decoration: underline; }}
   .meta {{ font-size: 0.8em; color: #888; margin-top: 10px; }}
+  .toc {{ background: #fff; border-radius: 6px; padding: 10px 16px; margin-bottom: 20px;
+          box-shadow: 0 1px 4px rgba(0,0,0,.1); font-size: 0.85em; }}
+  .toc a {{ white-space: nowrap; }}
 </style>
 </head>
 <body>
@@ -223,6 +241,7 @@ def make_simple_gallery_html(
 <div class="body">
   <p class="meta">POD: {pod_name} &nbsp;|&nbsp; Generated: {run_time} &nbsp;|&nbsp;
      <a href="HOW_TO_USE.txt">How to use this output</a></p>
+  {toc_html}
   {cards_html}
 </div>
 </body>
