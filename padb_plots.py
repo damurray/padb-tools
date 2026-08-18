@@ -3993,6 +3993,24 @@ _STAT_SUMMARY_JS = r"""
    LO_SPEC, HI_SPEC, DEFAULT_P, DEFAULT_C, DEFAULT_MU, DEFAULT_GB, COND_DIMS
    Each COND_DIMS entry: {col, col_id, label, vals}
 */
+/* Above this many active conditions, rebuilding the Statistics Table on
+   every filter change gets slow enough to make the page feel unresponsive
+   (see summary/_SUMPLOT_JS's identical constant for the documented case
+   this is based on) -- past this size the table stops auto-rebuilding and
+   shows a placeholder + "Refresh table" button instead. */
+var STATS_TABLE_AUTO_THRESHOLD=150;
+/* Visually highlight the refresh button whenever a manual click is actually
+   needed, so it isn't casually missed sitting next to a table that looks
+   like it might just already be current. */
+function _setTableBtnStale(rb,stale){
+  if(!rb) return;
+  if(stale){
+    rb.style.background='#fff0e8';rb.style.borderColor='#e0905a';
+    rb.style.color='#c04000';rb.style.fontWeight='bold';
+  } else {
+    rb.style.background='';rb.style.borderColor='';rb.style.color='';rb.style.fontWeight='';
+  }
+}
 /* Zoom/pan persistence across filter changes -- see the scatter view's
    identical _liveAxisRange() for the general rationale. This view's own
    update() calls Plotly.purge('plot') before rebuilding (unlike scatter's
@@ -4778,8 +4796,16 @@ function toggleStatPanel(){
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
 }
-function updateStatPanel(conds,params){
+function updateStatPanel(conds,params,force){
   var el=document.getElementById('stat_panel');if(!el||el.style.display==='none')return;
+  var rb=document.getElementById('stat_refresh_table_btn');
+  if(!force&&(conds||[]).length>STATS_TABLE_AUTO_THRESHOLD){
+    el.innerHTML='<p style="color:#888;padding:8px">Large dataset ('+conds.length+
+      ' conditions) -- click "Refresh table" above to build the Statistics Table.</p>';
+    _setTableBtnStale(rb,true);
+    return;
+  }
+  _setTableBtnStale(rb,false);
   try{
   var nFail=0,rows=[];
   var _hasLo=false,_hasHi=false;
@@ -5727,9 +5753,15 @@ def _build_stat_summary_html(
         + stat_bar
         + env_bar
         + filter_bar
-        + '<div style="padding:4px 8px 2px">'
+        + '<div style="padding:4px 8px 2px;display:flex;gap:8px;align-items:center">'
         + '<button class="toggle-btn" id="stat_toggle_btn" onclick="toggleStatPanel()">'
-        + '&#9658; Statistics Table</button></div>\n'
+        + '&#9658; Statistics Table</button>'
+        + '<button id="stat_refresh_table_btn" class="reset-btn"'
+        + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
+        + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
+        + ' this click instead"'
+        + ' onclick="var _r=getFilteredCondsAndParams();updateStatPanel(_r.conds,_r.params,true)">'
+        + 'Refresh&nbsp;table</button></div>\n'
         + '<div id="stat_panel" style="display:none;padding:0 4px 16px"></div>\n'
         + '<div id="plot"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
@@ -6086,6 +6118,24 @@ function _liveAxisRange(axis){
   if(gd&&gd.layout&&gd.layout[axis]&&gd.layout[axis].autorange===false&&
      Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
   return null;
+}
+/* Above this many active conditions, rebuilding the Statistics Table on
+   every filter change gets slow enough to make the page feel unresponsive
+   (see summary/_SUMPLOT_JS's identical constant for the documented case
+   this is based on) -- past this size the table stops auto-rebuilding and
+   shows a placeholder + "Refresh table" button instead. */
+var STATS_TABLE_AUTO_THRESHOLD=150;
+/* Visually highlight the refresh button whenever a manual click is actually
+   needed, so it isn't casually missed sitting next to a table that looks
+   like it might just already be current. */
+function _setTableBtnStale(rb,stale){
+  if(!rb) return;
+  if(stale){
+    rb.style.background='#fff0e8';rb.style.borderColor='#e0905a';
+    rb.style.color='#c04000';rb.style.fontWeight='bold';
+  } else {
+    rb.style.background='';rb.style.borderColor='';rb.style.color='';rb.style.fontWeight='';
+  }
 }
 function isLogX(){return document.getElementById('ec_log_x_chk').checked;}
 function toggleLogX(){
@@ -6619,9 +6669,17 @@ function freqKeyDown(e,which){
   else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
 }
 function fmt(v,d){return v===null||v===undefined?'—':v.toFixed(d!==undefined?d:4);}
-function updateStatsTable(selConds){
+function updateStatsTable(selConds,force){
   var el=document.getElementById('ec_stat_panel');
   if(!el||el.style.display==='none') return;
+  var rb=document.getElementById('ec_refresh_table_btn');
+  if(!force&&(selConds||[]).length>STATS_TABLE_AUTO_THRESHOLD){
+    el.innerHTML='<p style="color:#888;padding:8px">Large dataset ('+selConds.length+
+      ' conditions) -- click "Refresh table" above to build the Statistics Table.</p>';
+    _setTableBtnStale(rb,true);
+    return;
+  }
+  _setTableBtnStale(rb,false);
   var params=getParams();var fr=getFreqRange();var selTemps=getSelectedTemps();
   var hdrs=['Condition','Freq ('+EC_X_UNIT+')','UDE','LDE','TTU','TTL','Room μ','Room n','ΔEnv n'];
   var hrow='<tr>'+hdrs.map(function(h){return '<th>'+h+'</th>';}).join('')+'</tr>';
@@ -7345,6 +7403,11 @@ def _build_env_coverage_html(
         + f'  {help_panel_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + f'  <button class="stat-btn" id="ec_stat_btn" onclick="toggleStatsPanel()">&#9658;&nbsp;Statistics</button>\n'
+        + '  <button id="ec_refresh_table_btn" class="reset-btn"'
+        + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
+        + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
+        + ' this click instead"'
+        + ' onclick="updateStatsTable(getGroupedConditions(),true)">Refresh&nbsp;table</button>\n'
         + f'  <button class="gf-toggle-btn" id="ec_gf_toggle_btn" onclick="toggleEcGf()">GF:&nbsp;ON</button>\n'
         + f'  {gf_badge_html}\n'
         + '</div>\n'
@@ -8115,6 +8178,24 @@ function _liveAxisRange(axis){
      Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
   return null;
 }
+/* Above this many active conditions, rebuilding the Statistics Table on
+   every filter change gets slow enough to make the page feel unresponsive
+   (see summary/_SUMPLOT_JS's identical constant for the documented case
+   this is based on) -- past this size the table stops auto-rebuilding and
+   shows a placeholder + "Refresh table" button instead. */
+var STATS_TABLE_AUTO_THRESHOLD=150;
+/* Visually highlight the refresh button whenever a manual click is actually
+   needed, so it isn't casually missed sitting next to a table that looks
+   like it might just already be current. */
+function _setTableBtnStale(rb,stale){
+  if(!rb) return;
+  if(stale){
+    rb.style.background='#fff0e8';rb.style.borderColor='#e0905a';
+    rb.style.color='#c04000';rb.style.fontWeight='bold';
+  } else {
+    rb.style.background='';rb.style.borderColor='';rb.style.color='';rb.style.fontWeight='';
+  }
+}
 function getSelected(col){
   return Array.from(document.querySelectorAll('.'+col+':checked')).map(function(c){return c.value;});
 }
@@ -8664,9 +8745,17 @@ function buildLayout(){
     margin:{l:60,r:30,t:60,b:90},
   };
 }
-function updateStatsTable(selConds,yFlt,selBoxSers,selTemps){
+function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var el=document.getElementById('box_stat_panel');
   if(!el||el.style.display==='none') return;
+  var rb=document.getElementById('box_refresh_table_btn');
+  if(!force&&(selConds||[]).length>STATS_TABLE_AUTO_THRESHOLD){
+    el.innerHTML='<p style="color:#888;padding:8px">Large dataset ('+selConds.length+
+      ' conditions) -- click "Refresh table" above to build the Statistics Table.</p>';
+    _setTableBtnStale(rb,true);
+    return;
+  }
+  _setTableBtnStale(rb,false);
   var showNp=isBoxNpTI();
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
@@ -9995,6 +10084,12 @@ def _build_box_interactive_html(
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
         + '  <button class="toggle-btn" id="box_stat_toggle_btn"'
         ' onclick="toggleStatPanel()">&#9658; Statistics Table</button>\n'
+        + '  <button id="box_refresh_table_btn" class="reset-btn"'
+        + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
+        + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
+        + ' this click instead"'
+        + ' onclick="updateStatsTable(getSelectedConds(),getYFilter(),getSelectedBoxSerials(),'
+        + 'getSelectedTemps(),true)">Refresh&nbsp;table</button>\n'
         + '  <button class="toggle-btn" id="box_outlier_toggle_btn"'
         ' onclick="toggleOutlierPanel()">&#9658; Outlier Detail</button>\n'
         + '  <button class="toggle-btn" id="box_delta_toggle_btn"'
@@ -10282,6 +10377,27 @@ _SUMPLOT_JS = r"""
 var PALETTE=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
              '#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf',
              '#aec7e8','#ffbb78','#98df8a','#ff9896','#c5b0d5'];
+
+/* Above this many active conditions, rebuilding the Results Table on every
+   filter change gets slow enough to make the whole page feel unresponsive
+   (a real documented case: a 2,388-condition analytic took ~19 minutes to
+   build boxplot/stat_summary -- see padb_csv_check.py's own >500 warning) --
+   so past this size the table stops auto-rebuilding and requires an explicit
+   "Refresh table" click instead, exactly like it always did before auto-
+   refresh existed at all. */
+var STATS_TABLE_AUTO_THRESHOLD=150;
+/* Visually highlight the refresh button whenever a manual click is actually
+   needed, so it isn't casually missed sitting next to a table that looks
+   like it might just already be current. */
+function _setTableBtnStale(rb,stale){
+  if(!rb) return;
+  if(stale){
+    rb.style.background='#fff0e8';rb.style.borderColor='#e0905a';
+    rb.style.color='#c04000';rb.style.fontWeight='bold';
+  } else {
+    rb.style.background='';rb.style.borderColor='';rb.style.color='';rb.style.fontWeight='';
+  }
+}
 
 /* Zoom/pan persistence across filter changes -- see the scatter view's
    identical _liveAxisRange() for the full rationale. */
@@ -10775,14 +10891,6 @@ function resetFilters(){
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
-  /* The Results Table otherwise only rebuilds on an explicit "Refresh table"
-     click (marked "stale" by update() on every other filter change, since a
-     full rebuild can be expensive with many conditions) -- but Reset is a
-     deliberate, one-shot action the user just took, not an incremental
-     tweak, so it should show the reset state immediately rather than
-     leaving the table stale until a second click. */
-  buildTable();
-  var rb=document.getElementById('sum_refresh_table_btn');if(rb)rb.textContent='Refresh table';
 }
 
 /* ---- data filter (pass/Y-range) ---- */
@@ -11360,7 +11468,15 @@ function update(){
   showExcl=showExcl?showExcl.checked:false;
   var excl=showExcl?DATA.filter(function(cd){return active.indexOf(cd)<0;}):[];
   Plotly.react('plot',buildTraces(active,excl),buildLayout());
-  var rb=document.getElementById('sum_refresh_table_btn');if(rb)rb.textContent='Refresh table (stale)';
+  var rb=document.getElementById('sum_refresh_table_btn');
+  if(active.length<=STATS_TABLE_AUTO_THRESHOLD){
+    buildTable();
+    if(rb) rb.textContent='Refresh table';
+    _setTableBtnStale(rb,false);
+  } else {
+    if(rb) rb.textContent='Refresh table (stale)';
+    _setTableBtnStale(rb,true);
+  }
   _recomputeSpecSegments();
   saveState();
 }
@@ -11423,7 +11539,13 @@ updateSumFilterLabels();
 var _sumInitActive=_getFilteredActive();
 Plotly.newPlot('plot',buildTraces(_sumInitActive,[]),buildLayout());
 document.getElementById('n_groups').textContent=_sumInitActive.length+' groups';
-buildTable();
+if(_sumInitActive.length<=STATS_TABLE_AUTO_THRESHOLD){
+  buildTable();
+} else {
+  var _rb0=document.getElementById('sum_refresh_table_btn');
+  if(_rb0) _rb0.textContent='Refresh table (stale)';
+  _setTableBtnStale(_rb0,true);
+}
 _recomputeSpecSegments();
 """
 
@@ -11750,7 +11872,11 @@ def _build_summary_html(
         + '<div style="margin:4px 8px 2px;display:flex;gap:8px;align-items:center">\n'
         + '  <b style="font-size:13px">Results Table</b>\n'
         + '  <button id="sum_refresh_table_btn" class="reset-btn"'
-        + ' onclick="buildTable();this.textContent=\'Refresh table\'">Refresh&nbsp;table</button>\n'
+        + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
+        + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
+        + ' this click instead"'
+        + ' onclick="buildTable();this.textContent=\'Refresh table\';_setTableBtnStale(this,false)"'
+        + '>Refresh&nbsp;table</button>\n'
         + '  <button class="csv-btn" onclick="exportTableCSV()">Export&nbsp;CSV</button>\n'
         + '  <small style="color:#888;font-size:11px">Active conditions within current freq range</small>\n'
         + '</div>\n'
