@@ -254,6 +254,41 @@ document.getElementById("unscheduleSelectedBtn").addEventListener("click", async
 });
 
 // ---------------------------------------------------------------------------
+// Delete
+// ---------------------------------------------------------------------------
+
+document.getElementById("deleteSelectedBtn").addEventListener("click", async () => {
+  const paths = selectedJobPaths();
+  if (!paths.length) {
+    alert("Select at least one job to delete");
+    return;
+  }
+  const deleteData = document.getElementById("deleteDataCheckbox").checked;
+  const msg = `Delete ${paths.length} job.json file(s)` +
+    (deleteData ? " AND their local results data" : "") +
+    `?\n\nThis does not remove the source .pod file or any already-published ` +
+    `copy on the network share.\n\n` + paths.join("\n");
+  if (!confirm(msg)) return;
+  const res = await fetch("/api/delete-job", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths, delete_data: deleteData }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Delete failed: " + data.error);
+    return;
+  }
+  const failures = data.results.filter(r => !r.ok);
+  const notes = data.results.filter(r => r.note);
+  let out = "";
+  if (failures.length) out += `Failed:\n` + failures.map(f => `${f.path}: ${f.error}`).join("\n") + "\n";
+  if (notes.length) out += `Notes:\n` + notes.map(n => `${n.path}: ${n.note}`).join("\n");
+  if (out) alert(out);
+  loadJobs();
+});
+
+// ---------------------------------------------------------------------------
 // Site conversion
 // ---------------------------------------------------------------------------
 

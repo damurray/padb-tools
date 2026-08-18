@@ -109,6 +109,11 @@
       <label class="inline"><input type="checkbox" id="convertJobForce"> Overwrite existing</label>
       <button id="convertSelectedBtn">Convert Selected</button>
     </div>
+    <div class="toolbar">
+      <label class="inline"><input type="checkbox" id="deleteDataCheckbox" checked> Also delete local results data</label>
+      <button id="deleteSelectedBtn" class="danger">Delete Selected</button>
+      <span class="hint">Never removes the source .pod file or any already-published copy on the network share.</span>
+    </div>
     <div id="jobsTableWrap" class="scroll-box">
       <table id="jobsTable">
         <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th></tr></thead>

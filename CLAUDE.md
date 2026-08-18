@@ -438,6 +438,12 @@ Phase 1 covers four of the seven originally-requested features:
 
 Deliberately out of scope for Phase 1 (not started): the guided "what do you want to do?" wizard, the tutorial walkthrough dropdown, and the doc viewer.
 
+**Delete job(s) (added 2026-08-17):** a third toolbar row — **Also delete local results data** checkbox (default checked) + **Delete Selected** button — posts to `POST /api/delete-job` (`{paths, delete_data}`). Deliberately never touches the source `.pod` file (shared across jobs, not job-specific output) or any already-published copy on the network share (a location other people may rely on — out of scope for a local delete button, same reasoning `_publish()` is never invoked from a delete path). The browser shows a native `confirm()` listing every path about to be deleted before the request fires.
+
+Per job: unschedules its Task Scheduler entry first if one exists (reuses `delete_task()` — an orphaned task pointing at a now-deleted job.json would otherwise just fail confusingly the next time it fires), then optionally removes `results_dir`, then deletes the job.json itself.
+
+**Shared results_dir is the real hazard here, not the job.json deletion itself**: `padb_make_v2_job.py` deliberately gives every plot job for one pod the *same* `results_dir` ("all plot jobs for one pod share one results_dir"). Deleting one plot job.json out of several must not `rmtree` output the surviving siblings still point at. Fixed by computing, before any deletion in the batch runs, the set of `results_dir` values referenced by every job.json **not** in this delete request — a results_dir already in that set is left alone (reported back as a `note`, not silently skipped) even if `delete_data` is checked. Verified against three cases via a Flask test-client harness (not the running dev server, to avoid touching whichever real job files happen to be in `data_dir`): a standalone job (job.json + results_dir both removed), a run-job-plus-plot-job pair sharing one results_dir (deleting just the run job keeps the results_dir, since the plot job.json still references it; deleting the remaining plot job afterward then removes it), and a nonexistent path (`error: "not found"`, doesn't fail the rest of the batch).
+
 ---
 
 ## Implemented plot types

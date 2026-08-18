@@ -170,6 +170,11 @@ button.secondary {
   background: #fff;
   color: #3b82f6;
 }
+button.danger {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+button.danger:hover { background: #b91c1c; }
 
 pre {
   background: #111;

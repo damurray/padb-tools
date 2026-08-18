@@ -30,6 +30,7 @@ import hashlib
 import io
 import json
 import queue
+import shutil
 import subprocess
 import sys
 import threading
@@ -110,6 +111,18 @@ def _job_index_path(job_dir: Path, cfg: dict) -> Path | None:
         return None
     idx = job_dir / results_dir / "index.html"
     return idx if idx.is_file() else None
+
+
+def _resolve_results_dir(job_path: Path, cfg: dict) -> Path | None:
+    """Absolute, resolved results_dir for a job.json, or None if it has none.
+    Used by delete_jobs() to decide whether a results_dir is safe to remove --
+    padb_make_v2_job.py deliberately has every plot job for one pod share a
+    single results_dir, so deleting one plot job.json must not destroy
+    output that a surviving sibling job.json still points at."""
+    results_dir = cfg.get("results_dir")
+    if not results_dir:
+        return None
+    return (job_path.parent / results_dir).resolve()
 
 
 def _find_v2_siblings(job_path: Path, run_cfg: dict) -> list[Path]:
@@ -486,6 +499,84 @@ def unschedule_jobs():
         task_name = TASK_PREFIX + job_path.stem
         ok, err = delete_task(task_name)
         results.append({"path": p, "task_name": task_name, "ok": ok, "error": err})
+    return jsonify(results=results)
+
+
+@app.route("/api/delete-job", methods=["POST"])
+def delete_jobs():
+    """Delete one or more job.json files, optionally along with their local
+    results_dir. Deliberately never touches the source .pod file (shared
+    across jobs, not job-specific output) or any already-published copy on
+    the network share (a shared location other people may rely on -- out of
+    scope for a local delete button, same reasoning as _publish() never
+    being invoked from a delete path)."""
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths") or []
+    delete_data = bool(body.get("delete_data"))
+    if not paths:
+        return jsonify(error="paths must be a non-empty list"), 400
+
+    targets = [Path(p).resolve() for p in paths]
+    target_set = {str(p) for p in targets}
+
+    # Results_dir values used by every *other* job.json NOT in this deletion
+    # batch -- computed up front, before any deletion happens, so a shared
+    # results_dir (see padb_make_v2_job.py: "all plot jobs for one pod share
+    # one results_dir") already referenced by a surviving job.json is never
+    # rmtree'd out from under it, even if this batch includes some (but not
+    # all) of that pod's other job.json files.
+    surviving_results_dirs: set[str] = set()
+    for p in DATA_DIR.glob("*_job.json"):
+        rp = p.resolve()
+        if str(rp) in target_set:
+            continue
+        try:
+            other_cfg = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        rd = _resolve_results_dir(rp, other_cfg)
+        if rd:
+            surviving_results_dirs.add(str(rd).lower())
+
+    scheduled_tasks = {t.upper() for t in discover_all_padb_tasks()}
+    results = []
+    for job_path in targets:
+        entry = {"path": str(job_path), "ok": False, "deleted_results": False, "note": ""}
+        if not job_path.exists():
+            entry["error"] = "not found"
+            results.append(entry)
+            continue
+        try:
+            cfg = json.loads(job_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+
+        # Unschedule first -- a deleted job.json left behind in a scheduled
+        # task would otherwise fire later against a file that no longer
+        # exists, and just fail confusingly (same orphan-task concern
+        # padb_scheduler.py's own orphan detection exists for).
+        task_name = TASK_PREFIX + job_path.stem
+        if task_name.upper() in scheduled_tasks:
+            delete_task(task_name)
+
+        if delete_data:
+            results_dir = _resolve_results_dir(job_path, cfg)
+            if results_dir and results_dir.is_dir():
+                if str(results_dir).lower() in surviving_results_dirs:
+                    entry["note"] = f"results_dir kept -- still used by another job.json ({results_dir})"
+                else:
+                    try:
+                        shutil.rmtree(results_dir)
+                        entry["deleted_results"] = True
+                    except OSError as exc:
+                        entry["note"] = f"could not remove results_dir: {exc}"
+
+        try:
+            job_path.unlink()
+            entry["ok"] = True
+        except OSError as exc:
+            entry["error"] = str(exc)
+        results.append(entry)
     return jsonify(results=results)
 
 
