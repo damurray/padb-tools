@@ -113,6 +113,33 @@ def _job_index_path(job_dir: Path, cfg: dict) -> Path | None:
     return idx if idx.is_file() else None
 
 
+def _remove_results_dir_except_sao(results_dir: Path) -> list[str]:
+    """Delete results_dir, preserving any .sao file(s) found inside it in
+    place. A .sao is PADB's saved analysis object for that extraction --
+    binary, site-specific DUT serial data (see padb_convert_site.py), not
+    cheap derived output like the CSVs/HTML/PNGs a job.json's own plotting
+    step produces. Losing it means a full re-extraction against the real
+    Oracle DB to get it back, so "delete this job's local data" should not
+    silently take it with everything else. Returns the relative paths of any
+    .sao file(s) kept -- empty if none were found, in which case results_dir
+    is removed exactly as before this existed."""
+    sao_paths = set(results_dir.rglob("*.sao"))
+    if not sao_paths:
+        shutil.rmtree(results_dir)
+        return []
+    for p in sorted(results_dir.rglob("*"), key=lambda x: len(x.parts), reverse=True):
+        if p in sao_paths:
+            continue
+        if p.is_file():
+            p.unlink()
+        elif p.is_dir():
+            try:
+                p.rmdir()  # only succeeds once empty -- leaves ancestors of a kept .sao in place
+            except OSError:
+                pass
+    return sorted(str(p.relative_to(results_dir)) for p in sao_paths)
+
+
 def _resolve_results_dir(job_path: Path, cfg: dict) -> Path | None:
     """Absolute, resolved results_dir for a job.json, or None if it has none.
     Used by delete_jobs() to decide whether a results_dir is safe to remove --
@@ -506,10 +533,11 @@ def unschedule_jobs():
 def delete_jobs():
     """Delete one or more job.json files, optionally along with their local
     results_dir. Deliberately never touches the source .pod file (shared
-    across jobs, not job-specific output) or any already-published copy on
-    the network share (a shared location other people may rely on -- out of
-    scope for a local delete button, same reasoning as _publish() never
-    being invoked from a delete path)."""
+    across jobs, not job-specific output), any .sao file(s) found inside
+    results_dir (see _remove_results_dir_except_sao), or any already-
+    published copy on the network share (a shared location other people may
+    rely on -- out of scope for a local delete button, same reasoning as
+    _publish() never being invoked from a delete path)."""
     body = request.get_json(force=True) or {}
     paths = body.get("paths") or []
     delete_data = bool(body.get("delete_data"))
@@ -566,8 +594,10 @@ def delete_jobs():
                     entry["note"] = f"results_dir kept -- still used by another job.json ({results_dir})"
                 else:
                     try:
-                        shutil.rmtree(results_dir)
+                        preserved = _remove_results_dir_except_sao(results_dir)
                         entry["deleted_results"] = True
+                        if preserved:
+                            entry["note"] = f"kept .sao file(s): {', '.join(preserved)}"
                     except OSError as exc:
                         entry["note"] = f"could not remove results_dir: {exc}"
 
