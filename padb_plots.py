@@ -10780,12 +10780,19 @@ function applyDataFilter(active){
       });
     }
     if(flt.mode==='range_hi'){
-      return vis.some(function(i){
+      /* Hide the whole condition if it exceeds the limit at ANY visible
+         frequency, matching the control's own hint text ("hides conditions
+         where max data exceeds limit") -- must be .every(), not .some():
+         .some() only hid a condition that failed at literally every single
+         frequency, which real multi-frequency sweep data almost never does,
+         making the filter silently do nothing (reported by the user: "setting
+         a lower limit to 18dBm does nothing"). */
+      return vis.every(function(i){
         return cd.max_data[i]<=flt.yhi;
       });
     }
     if(flt.mode==='range_lo'){
-      return vis.some(function(i){
+      return vis.every(function(i){
         return cd.min_data[i]>=flt.ylo;
       });
     }

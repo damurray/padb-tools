@@ -169,6 +169,16 @@ Verified headlessly: both wraps correctly visible by default (data has both Uppe
 
 ---
 
+## `summary` Data-filter range_hi/range_lo silently excluded nothing (fixed 2026-08-18)
+
+Reported by the user against a real generated page: "setting a lower limit to 18dBm does nothing." `applyDataFilter()`'s `range_hi`/`range_lo` branches (unlike the `passing` branch right above them, which correctly uses `.every()`) used `vis.some(...)` to decide whether to *keep* a condition — meaning a condition was only *excluded* if it failed the limit at literally every single visible frequency. The control's own hint text ("hides conditions where max data exceeds limit" / "...min data falls below limit") describes the opposite: hide it if it *ever* crosses the limit. For real multi-frequency sweep data, a condition failing at every single frequency is rare, so in practice the filter almost never excluded anything, regardless of what threshold was entered.
+
+**Fix**: changed both branches from `vis.some(...)` to `vis.every(...)`, matching the `passing` branch's existing (correct) pattern — a condition is now kept only if it satisfies the limit at *every* visible frequency, i.e. excluded if it fails at any one of them.
+
+Verified with a synthetic two-condition dataset (`Board: A` never dips below 25, `Board: B` dips to 15 at 2 of 8 frequencies, everywhere else fine): setting Lower limit to 18 now correctly excludes `Board: B` while keeping `Board: A`. Confirmed the old `.some()` logic would have kept both (reproducing the reported bug exactly) by evaluating both versions directly against the same synthetic per-frequency data.
+
+---
+
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
 
 `accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.
