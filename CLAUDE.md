@@ -179,6 +179,34 @@ Verified with a synthetic two-condition dataset (`Board: A` never dips below 25,
 
 ---
 
+## `stat_summary` Statistics Table not respecting active filters (fixed 2026-08-18)
+
+Reported by the user against a real generated page: "statistics table does not apply a filter to show just the plot data." `toggleStatPanel()` called `getGroupedConditions()` directly when the panel was first opened — the raw, unfiltered condition list, skipping every filter `update()` normally applies (frequency range, condition checkboxes, serial/port, GF, Data-filter/spec override). Opening the table right after narrowing the frequency range (before any other filter change happened to trigger `update()`) showed every row regardless.
+
+**Fix**: extracted `update()`'s entire filtering pipeline (Group-by → frequency-range trim → serial/port/GF recompute → Data-filter/spec-override → `applyDataFilter()`) into a shared `getFilteredCondsAndParams()`, which both `update()` and `toggleStatPanel()` now call — the table can no longer drift out of sync with the plot, by construction, since there's only one function that computes "what's currently shown."
+
+**Same bug class found in `boxplot`, fixed the same way**: its `toggleStatPanel()` called `updateStatsTable(getSelectedConds(),getYFilter(),getSelectedBoxSerials())` — missing the 4th argument (`selTemps`) that `update()` always passes. With `selTemps` `undefined`, `updateStatsTable()`'s own temperature-checkbox filtering (`if(selTemps&&selTemps.indexOf(cd.temp)<0)...`) silently never ran, so opening the table for the first time showed all temperatures regardless of which env-step checkboxes were actually checked. Fixed by adding the missing `getSelectedTemps()` argument. (`env_coverage`'s and `summary`'s equivalent toggle/refresh functions were also audited — both already call the exact same data-fetching path `update()` uses, so no bug there.)
+
+**Defensive addition while investigating**: `update()` calls `updateTLLDisplay(conds,params)` immediately before `updateStatPanel(conds,params)` — if the former ever throws on some data shape, the plot (updated just before) would look current while the table (never reached) silently freezes on stale content with no visible error. Wrapped in a try/catch that surfaces the error inline, mirroring `updateStatPanel()`'s own existing internal try/catch.
+
+Verified headlessly: narrowing the frequency range *before* ever opening the panel now correctly shows only the in-range rows (previously showed all); the same holds with Group By pooling multiple conditions into a virtual one, and with "Passing only"/Upper-limit/Lower-limit overrides applied before first open — all match the plot's actual filtered state.
+
+---
+
+## `stat_summary`: drag-zoom didn't narrow the Statistics Table (added 2026-08-18)
+
+A related but distinct report from the one above: "Open statistical Summary, zoom to subset of frequencies, open statistics table, and it still shows all the rows, not just the rows matching the plot data view." This is *not* the same bug — a Plotly drag-zoom only changes the axis viewport; it has never touched `freq_lo`/`freq_hi` (the slider that actually drives `getFilteredCondsAndParams()`'s frequency trim), and deliberately so — that decoupling is exactly what the zoom-persistence feature above depends on (zoom must survive unrelated filter changes without forcing a data refilter).
+
+The user confirmed they want the opposite relationship specifically for this control: a drag-zoom should *also* narrow the data used for the table (and by extension the plot's own computed TI/TLL, since those already reuse `freq_lo`/`freq_hi`). Rather than inventing a second, parallel frequency-filtering path, `_onPlotRelayout(ed)` listens for the plot's own `plotly_relayout` event and calls `setFreqBand()` (new in this view — moves the slider + textboxes and calls `update()`) with the zoomed range, converting from log10 units first if `isLogX()` is active. This reuses the *existing*, already-correct frequency-filter pipeline entirely — no new filtering logic, the slider was already wired to both plot and table. A `'xaxis.autorange'` event (double-click / the built-in "Reset axes" modebar button) resets the slider back to the full `FREQ_MIN`–`FREQ_MAX` range instead, checked *before* the range keys so it always wins even if a Plotly version bundles a computed range alongside `autorange:true`.
+
+**Real bug found while verifying the reset case**: `Plotly.purge('plot')` inside `update()` tears down previously-attached event listeners along with everything else, so the relayout listener registered once at page load only survived the *first* zoom — by the time a second relayout (e.g. the reset) fired, nothing was listening anymore. Fixed by re-attaching `.on('plotly_relayout',_onPlotRelayout)` immediately after every `Plotly.newPlot()` call inside `update()` itself, not just at initial page load.
+
+Verified headlessly end-to-end with a real simulated drag-zoom: slider syncs to the zoomed range, the Statistics Table opened afterward shows only the in-range frequencies, and a simulated "Reset axes" relayout correctly restores the slider to the full range — confirmed this last step only works with the re-attach-after-purge fix (failed before it, passed after).
+
+**Scope**: `stat_summary` only, by explicit user choice, to validate the approach before considering it for scatter/env_coverage/summary.
+
+---
+
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
 
 `accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.

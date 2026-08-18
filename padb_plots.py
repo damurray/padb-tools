@@ -4772,8 +4772,8 @@ function toggleStatPanel(){
   if(!el||!btn) return;
   if(el.style.display==='none'){
     el.style.display='';btn.textContent='&#9660; Statistics Table';
-    var conds=getGroupedConditions();var params=getParams();
-    updateStatPanel(conds,params);
+    var _r=getFilteredCondsAndParams();
+    updateStatPanel(_r.conds,_r.params);
   } else {
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
@@ -5105,12 +5105,16 @@ function _recomputeSpecSegments(){
 }
 
 /* ---- main update ---- */
-function update(){
-  /* Capture the live axis state BEFORE Plotly.purge() below destroys it --
-     see this file's top-of-module note on why update() (not buildLayout())
-     has to be the one to read this. */
-  var _preservedX=_liveAxisRange('xaxis');
-  var _preservedY=_liveAxisRange('yaxis');
+/* Builds the exact same fully-filtered (Group-by, frequency range, serial/
+   port, GF, data-filter/spec-override) conds+params update() feeds to the
+   plot -- shared so any other consumer of "what's currently shown" (e.g.
+   the Statistics Table) can never drift out of sync with the plot itself.
+   Found 2026-08-18: toggleStatPanel() used to call getGroupedConditions()
+   directly, skipping every one of these filters, so opening the table
+   before any other filter change showed unfiltered stats -- reported by
+   the user as "statistics table does not apply a filter to show just the
+   plot data." */
+function getFilteredCondsAndParams(){
   var conds=getGroupedConditions();
   var fLoTxt=document.getElementById('freq_lo_txt'),fHiTxt=document.getElementById('freq_hi_txt');
   var fLo=fLoTxt&&fLoTxt.value!==''?parseFloat(fLoTxt.value):parseFloat(document.getElementById('freq_lo').value);
@@ -5160,10 +5164,35 @@ function update(){
      side a single shared value was meant for. */
   if(flt.mode==='range_hi'&&isFinite(flt.yhi)) params.spec_hi_override=flt.yhi;
   if(flt.mode==='range_lo'&&isFinite(flt.ylo)) params.spec_lo_override=flt.ylo;
-  updateFilterLabel();
   conds=applyDataFilter(conds,params,flt);
+  return {conds:conds,params:params,fLo:fLo,fHi:fHi};
+}
+function update(){
+  /* Capture the live axis state BEFORE Plotly.purge() below destroys it --
+     see this file's top-of-module note on why update() (not buildLayout())
+     has to be the one to read this. */
+  var _preservedX=_liveAxisRange('xaxis');
+  var _preservedY=_liveAxisRange('yaxis');
+  var _r=getFilteredCondsAndParams();
+  var conds=_r.conds,params=_r.params,fLo=_r.fLo,fHi=_r.fHi;
+  updateFilterLabel();
   Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params,fLo,fHi,_preservedX,_preservedY),{responsive:true});
-  updateTLLDisplay(conds,params);
+  /* Plotly.purge() tears down previously-attached event listeners along with
+     everything else, so the drag-zoom-to-frequency-slider sync (see
+     _onPlotRelayout's own comment) would only ever survive one zoom cycle
+     without this -- found while verifying the "Reset axes" case: the very
+     first zoom worked, but the listener was already gone by the time the
+     reset relayout fired. */
+  document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
+  /* Defensive: updateStatPanel() must still run even if updateTLLDisplay()
+     throws on some data shape -- otherwise the plot updates but the table
+     silently freezes on stale content with no visible error (updateStatPanel
+     already has its own internal try/catch; this is the equivalent guard for
+     the call immediately before it in this same sequence). */
+  try{updateTLLDisplay(conds,params);}catch(e){
+    var _tel=document.getElementById('tll_display');
+    if(_tel) _tel.textContent='Error: '+e.message;
+  }
   updateStatPanel(conds,params);
   var nEl=document.getElementById('n_footnote');
   if(nEl){
@@ -5234,10 +5263,44 @@ function loadState(){
   var shs=_stGet('stat_hide_spec');if(shs!==null){var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)hsEl.checked=(shs==='1');}
 }
 
+/* Sync the freq_lo/freq_hi slider (and therefore the Statistics Table, which
+   is already correctly filtered by that slider via getFilteredCondsAndParams)
+   to a drag-zoom/pan on the plot's x-axis -- a Plotly zoom by itself only
+   changes the viewport, it never touches freq_lo/freq_hi, so before this the
+   table kept showing every row regardless of what the plot was zoomed to
+   (reported by the user: "zoom to a subset of frequencies... statistics
+   table... still shows all the rows, not just the rows matching the plot
+   data view"). Reuses the existing frequency-filter pipeline entirely --
+   this only ever moves the slider, which was already correctly wired to
+   both the plot and the table. */
+function _onPlotRelayout(ed){
+  if(!ed) return;
+  if(ed['xaxis.autorange']){
+    /* Double-click / "Reset axes" -- always wins even if some Plotly versions
+       also include a computed 'xaxis.range' alongside autorange:true. */
+    setFreqBand(FREQ_MIN,FREQ_MAX);
+    return;
+  }
+  var lo=ed['xaxis.range[0]'],hi=ed['xaxis.range[1]'];
+  if(Array.isArray(ed['xaxis.range'])){lo=ed['xaxis.range'][0];hi=ed['xaxis.range'][1];}
+  if(lo===undefined||hi===undefined) return;
+  var log=isLogX();
+  var loV=log?Math.pow(10,lo):lo,hiV=log?Math.pow(10,hi):hi;
+  setFreqBand(loV,hiV);
+}
+function setFreqBand(lo,hi){
+  var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+  var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
+  s1.value=loV;s2.value=hiV;
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+  update();
+}
 _loadStatGlobalFilter();
 loadState();
 updateFilterLabel();
 Plotly.newPlot('plot',buildTraces(getActiveConditions(),getParams()),buildLayout(getActiveConditions(),getParams()),{responsive:true});
+document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
 _recomputeSpecSegments();
 /* END */
 
@@ -8694,7 +8757,7 @@ function toggleStatPanel(){
   if(!el||!btn) return;
   if(el.style.display==='none'){
     el.style.display='';btn.textContent='&#9660; Statistics Table';
-    updateStatsTable(getSelectedConds(),getYFilter(),getSelectedBoxSerials());
+    updateStatsTable(getSelectedConds(),getYFilter(),getSelectedBoxSerials(),getSelectedTemps());
   } else {
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
