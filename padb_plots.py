@@ -155,10 +155,24 @@ function toggleAllHover(){
 function isLogX(){ return document.getElementById('log_x_chk').checked; }
 function toggleLogX(){
   var log=isLogX();
-  var _lt=document.getElementById('freq_lo_txt'),_ht=document.getElementById('freq_hi_txt');
-  var lo=_lt&&_lt.value!==''?parseFloat(_lt.value):parseFloat(document.getElementById('freq_lo').value);
-  var hi=_ht&&_ht.value!==''?parseFloat(_ht.value):parseFloat(document.getElementById('freq_hi').value);
-  var range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  /* Prefer the currently displayed range (whatever it is -- a drag-zoom
+     never touches the freq_lo_txt/freq_hi_txt boxes, so falling back to
+     those unconditionally silently discarded any active zoom on every
+     toggle) -- converting it into the new axis type's scale, since the
+     live range read here is still in the OLD type's units at this point
+     (called onchange, before the relayout below switches the type). Only
+     fall back to the slider textboxes when nothing is currently zoomed. */
+  var cur=_liveAxisRange('xaxis');
+  var range;
+  if(cur){
+    range=log?[Math.log10(Math.max(cur[0],1e-9)),Math.log10(Math.max(cur[1],1e-9))]
+             :[Math.pow(10,cur[0]),Math.pow(10,cur[1])];
+  } else {
+    var _lt=document.getElementById('freq_lo_txt'),_ht=document.getElementById('freq_hi_txt');
+    var lo=_lt&&_lt.value!==''?parseFloat(_lt.value):parseFloat(document.getElementById('freq_lo').value);
+    var hi=_ht&&_ht.value!==''?parseFloat(_ht.value):parseFloat(document.getElementById('freq_hi').value);
+    range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  }
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
 }
 
