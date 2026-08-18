@@ -213,7 +213,12 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
   else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
-  txt.value=nv.toFixed(3);slider.value=nv;update();
+  txt.value=nv.toFixed(3);slider.value=nv;
+  var _fsLo=parseFloat(document.getElementById('freq_lo_txt').value);
+  var _fsHi=parseFloat(document.getElementById('freq_hi_txt').value);
+  var _fsLog=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':_fsLog?[Math.log10(Math.max(_fsLo,1e-9)),Math.log10(Math.max(_fsHi,1e-9))]:[_fsLo,_fsHi]});
+  update();
 }
 function freqKeyDown(e,which){
   if(e.key==='Enter')freqTxtChange(which);
@@ -2460,6 +2465,20 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     # 9.  JavaScript (raw string — no f-string interpolation)
     # -------------------------------------------------------------------------
     dist_js = r"""
+/* Zoom/pan persistence across filter changes -- see the scatter view's
+   identical _liveAxisRange() for the full rationale (layout.uirevision
+   doesn't actually preserve this; reading autorange===false back from the
+   live plot does). Reset only on an Absolute/DeltaTemp view-mode switch,
+   since that changes what the x-axis even means (absolute value vs. delta)
+   -- every other control here is a data filter, not an axis definition, so
+   the current zoom stays meaningful across it. */
+function _liveAxisRange(axis){
+  var gd=document.getElementById('kde_plot');
+  if(gd&&gd.layout&&gd.layout[axis]&&gd.layout[axis].autorange===false&&
+     Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
+  return null;
+}
+var _lastDistMode=null;
 function _fd(v,d){return(v===null||v===undefined||isNaN(+v))?'--':Number(v).toFixed(d!==undefined?d:3);}
 
 /* ---- localStorage helpers ---- */
@@ -2765,6 +2784,8 @@ function update(){
   _distUpdateBadge('spur');
   var modeEl=document.querySelector('input[name="view_mode"]:checked');
   var isAbs=modeEl?modeEl.value==='abs':false;
+  var _distModeChanged=(_lastDistMode!==null)&&(_lastDistMode!==(isAbs?'abs':'delta'));
+  _lastDistMode=isAbs?'abs':'delta';
   var spurs=getSelSpurIdxs();
   var traces=[];
   var multiSpur=spurs.length>1;
@@ -2884,6 +2905,10 @@ function update(){
     shapes:shapes,
     height:450,
   };
+  var curX=_distModeChanged?null:_liveAxisRange('xaxis');
+  var curY=_distModeChanged?null:_liveAxisRange('yaxis');
+  if(curX){layout.xaxis.range=curX;layout.xaxis.autorange=false;}
+  if(curY){layout.yaxis.range=curY;layout.yaxis.autorange=false;}
   if(Y_LIM&&isAbs) layout.xaxis.range=Y_LIM;
 
   var nEl=document.getElementById('n_pts');
@@ -3161,6 +3186,9 @@ function resetView(){
     fh.value=DIST_FREQ_MAX;
     var fht=document.getElementById('dist_freq_hi_txt');if(fht)fht.value=DIST_FREQ_MAX.toFixed(1);
   }
+  /* Clear any manual zoom/pan -- otherwise _liveAxisRange() would keep
+     re-applying the stale zoomed range even after Reset. */
+  Plotly.relayout('kde_plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
 }
 
@@ -3965,6 +3993,19 @@ _STAT_SUMMARY_JS = r"""
    LO_SPEC, HI_SPEC, DEFAULT_P, DEFAULT_C, DEFAULT_MU, DEFAULT_GB, COND_DIMS
    Each COND_DIMS entry: {col, col_id, label, vals}
 */
+/* Zoom/pan persistence across filter changes -- see the scatter view's
+   identical _liveAxisRange() for the general rationale. This view's own
+   update() calls Plotly.purge('plot') before rebuilding (unlike scatter's
+   in-place Plotly.react()), which wipes the live layout the DOM would
+   otherwise still hold -- so update() must call this itself, BEFORE the
+   purge, and thread the result into buildLayout() as explicit params
+   instead of buildLayout() reading the (by-then-destroyed) DOM directly. */
+function _liveAxisRange(axis){
+  var gd=document.getElementById('plot');
+  if(gd&&gd.layout&&gd.layout[axis]&&gd.layout[axis].autorange===false&&
+     Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
+  return null;
+}
 
 /* ---- filter panel helpers ---- */
 function togglePanel(col){
@@ -4498,6 +4539,25 @@ function buildTraces(conds,params){
 }
 
 function isLogX(){return document.getElementById('log_x_chk').checked;}
+function toggleLogX(){
+  var log=isLogX();
+  /* Prefer the currently displayed range over recomputing from the
+     frequency sliders -- see the scatter view's identical toggleLogX() fix.
+     cur is still in the OLD type's units at this point (called onchange,
+     before the relayout below switches the type). */
+  var cur=_liveAxisRange('xaxis');
+  var range;
+  if(cur){
+    range=log?[Math.log10(Math.max(cur[0],1e-9)),Math.log10(Math.max(cur[1],1e-9))]
+             :[Math.pow(10,cur[0]),Math.pow(10,cur[1])];
+  } else {
+    var lo=parseFloat(document.getElementById('freq_lo').value);
+    var hi=parseFloat(document.getElementById('freq_hi').value);
+    range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  }
+  Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
+  update();
+}
 function isNpTI(){var c=document.getElementById('np_ti_chk');return c?c.checked:false;}
 /* ---- serial filter ---- */
 function getAllSerials(){return Array.from(document.querySelectorAll('.ser_chk')).map(function(c){return c.value;});}
@@ -4626,10 +4686,10 @@ function recomputeFreqStat(fs,selSers,cond,freq,applyGf,selPorts){
     outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),
     np_ti_lo:null,np_ti_up:null});
 }
-function buildLayout(conds,params,fLo,fHi){
+function buildLayout(conds,params,fLo,fHi,curX,curY){
   if(fLo===undefined){var _sl=document.getElementById('freq_lo');fLo=_sl?parseFloat(_sl.value):null;}
   if(fHi===undefined){var _sh=document.getElementById('freq_hi');fHi=_sh?parseFloat(_sh.value):null;}
-  var yRange=Y_LIM;
+  var yRange=Y_LIM||curY;
   /* Spec lines as layout shapes — always replaced by Plotly.react, never stale */
   var shapes=[],annotations=[];
   var hiSpecs={},loSpecs={};
@@ -4656,13 +4716,13 @@ function buildLayout(conds,params,fLo,fHi){
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec Lo '+v,showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
   }
-  var xRange=(isFinite(fLo)&&isFinite(fHi))?
-    (isLogX()?[Math.log10(fLo),Math.log10(fHi)]:[fLo,fHi]):null;
+  var xRange=curX?curX:((isFinite(fLo)&&isFinite(fHi))?
+    (isLogX()?[Math.log10(fLo),Math.log10(fHi)]:[fLo,fHi]):null);
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:Object.assign({title:X_LABEL,type:isLogX()?'log':'linear'},xRange?{range:xRange}:{}),
-    yaxis:{title:Y_LABEL,range:yRange},
+    xaxis:Object.assign({title:X_LABEL,type:isLogX()?'log':'linear'},xRange?{range:xRange,autorange:false}:{}),
+    yaxis:Object.assign({title:Y_LABEL},yRange?{range:yRange,autorange:false}:{}),
     height:450,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:55,b:60},
@@ -4820,6 +4880,11 @@ function getDataFilter(){
   var yhi=parseFloat(yhiEl?yhiEl.value:'');
   return {mode:mode, ylo:isNaN(ylo)?-Infinity:ylo, yhi:isNaN(yhi)?Infinity:yhi};
 }
+/* "Upper limit" alone doesn't make sense for a lower-spec-only measurement,
+   and a single radio+input can't represent overriding both bounds at once
+   when direction is "both" -- show only the range radio/input that matches
+   whichever side(s) actually matter, same two-independent-radio fix already
+   applied to summary/boxplot/env_coverage. */
 function updateFilterLabel(){
   var _spLo=document.getElementById('stat_spec_lo'),_spHi=document.getElementById('stat_spec_hi');
   var _loOn=_spLo&&_spLo.value!==''&&isFinite(parseFloat(_spLo.value));
@@ -4829,25 +4894,27 @@ function updateFilterLabel(){
     _loOn=_sd==='lo'||_sd==='both';
     _hiOn=_sd==='hi'||_sd==='both';
   }
-  var lbl=document.getElementById('flt_range_lbl');
-  var inp=document.getElementById('flt_yhi');
-  if(_loOn&&!_hiOn){
-    if(lbl) lbl.innerHTML='&nbsp;Lower&nbsp;limit';
-    if(inp) inp.placeholder='min (dBm)';
-  } else {
-    if(lbl) lbl.innerHTML='&nbsp;Upper&nbsp;limit';
-    if(inp) inp.placeholder='limit';
+  var hiWrap=document.getElementById('flt_hi_wrap');
+  var loWrap=document.getElementById('flt_lo_wrap');
+  if(hiWrap) hiWrap.style.display=_hiOn?'':'none';
+  if(loWrap) loWrap.style.display=_loOn?'':'none';
+  var checked=document.querySelector('input[name="data_flt"]:checked');
+  if(checked&&((checked.value==='range_hi'&&!_hiOn)||(checked.value==='range_lo'&&!_loOn))){
+    var allRad=document.querySelector('input[name="data_flt"][value="all"]');
+    if(allRad) allRad.checked=true;
   }
+  toggleRangeInputs();
 }
 function toggleRangeInputs(){
-  var el=document.getElementById('flt_range_inputs');
-  if(el){
-    var r=document.querySelector('input[name="data_flt"][value="range"]');
-    el.style.display=(r&&r.checked)?'inline-flex':'none';
-  }
+  var hiEl=document.getElementById('flt_range_hi_inputs');
+  var loEl=document.getElementById('flt_range_lo_inputs');
+  var hiChecked=document.querySelector('input[name="data_flt"][value="range_hi"]:checked');
+  var loChecked=document.querySelector('input[name="data_flt"][value="range_lo"]:checked');
+  if(hiEl) hiEl.style.display=hiChecked?'inline-flex':'none';
+  if(loEl) loEl.style.display=loChecked?'inline-flex':'none';
 }
 function applyDataFilter(conds,params,flt){
-  if(flt.mode==='all'||flt.mode==='range') return conds;
+  if(flt.mode==='all'||flt.mode==='range_hi'||flt.mode==='range_lo') return conds;
   return conds.map(function(cd){
     var fs2=(cd.freq_stats||[]).filter(function(fs){
       var r=computeFreqResult(fs,params);
@@ -4864,6 +4931,8 @@ function syncFreq(){
   var hi=parseFloat(document.getElementById('freq_hi').value);
   document.getElementById('freq_lo_txt').value=lo.toFixed(3);
   document.getElementById('freq_hi_txt').value=hi.toFixed(3);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi]});
   update();
 }
 function freqTxtChange(which){
@@ -4875,7 +4944,12 @@ function freqTxtChange(which){
   var loTxt2=document.getElementById('freq_lo_txt'),hiTxt2=document.getElementById('freq_hi_txt');
   if(which==='lo'){var h=hiTxt2&&hiTxt2.value!==''?parseFloat(hiTxt2.value):parseFloat(document.getElementById('freq_hi').value);if(v>h)v=h;}
   else{var l=loTxt2&&loTxt2.value!==''?parseFloat(loTxt2.value):parseFloat(document.getElementById('freq_lo').value);if(v<l)v=l;}
-  txt.value=v.toFixed(3);slider.value=v;update();
+  txt.value=v.toFixed(3);slider.value=v;
+  var loV=parseFloat(document.getElementById('freq_lo_txt').value);
+  var hiV=parseFloat(document.getElementById('freq_hi_txt').value);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  update();
 }
 function freqStep(which,dir){
   var fv=FREQ_VALS,txt=document.getElementById('freq_'+which+'_txt'),slider=document.getElementById('freq_'+which);
@@ -4885,7 +4959,12 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
   else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
-  txt.value=nv.toFixed(3);slider.value=nv;update();
+  txt.value=nv.toFixed(3);slider.value=nv;
+  var loV=parseFloat(document.getElementById('freq_lo_txt').value);
+  var hiV=parseFloat(document.getElementById('freq_hi_txt').value);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  update();
 }
 function freqKeyDown(e,which){
   if(e.key==='Enter')freqTxtChange(which);
@@ -5027,6 +5106,11 @@ function _recomputeSpecSegments(){
 
 /* ---- main update ---- */
 function update(){
+  /* Capture the live axis state BEFORE Plotly.purge() below destroys it --
+     see this file's top-of-module note on why update() (not buildLayout())
+     has to be the one to read this. */
+  var _preservedX=_liveAxisRange('xaxis');
+  var _preservedY=_liveAxisRange('yaxis');
   var conds=getGroupedConditions();
   var fLoTxt=document.getElementById('freq_lo_txt'),fHiTxt=document.getElementById('freq_hi_txt');
   var fLo=fLoTxt&&fLoTxt.value!==''?parseFloat(fLoTxt.value):parseFloat(document.getElementById('freq_lo').value);
@@ -5072,16 +5156,13 @@ function update(){
     });
   }
   var flt=getDataFilter();
-  if(flt.mode==='range'&&isFinite(flt.yhi)){
-    var _spLoEl=document.getElementById('stat_spec_lo'),_spHiEl=document.getElementById('stat_spec_hi');
-    var _spLoV=_spLoEl&&_spLoEl.value!==''?parseFloat(_spLoEl.value):NaN;
-    var _spHiV=_spHiEl&&_spHiEl.value!==''?parseFloat(_spHiEl.value):NaN;
-    if(isFinite(_spLoV)&&!isFinite(_spHiV)) params.spec_lo_override=flt.yhi;
-    else params.spec_hi_override=flt.yhi;
-  }
+  /* Each radio unambiguously targets one side now, so no more guessing which
+     side a single shared value was meant for. */
+  if(flt.mode==='range_hi'&&isFinite(flt.yhi)) params.spec_hi_override=flt.yhi;
+  if(flt.mode==='range_lo'&&isFinite(flt.ylo)) params.spec_lo_override=flt.ylo;
   updateFilterLabel();
   conds=applyDataFilter(conds,params,flt);
-  Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params,fLo,fHi),{responsive:true});
+  Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params,fLo,fHi,_preservedX,_preservedY),{responsive:true});
   updateTLLDisplay(conds,params);
   updateStatPanel(conds,params);
   var nEl=document.getElementById('n_footnote');
@@ -5116,6 +5197,7 @@ function saveState(){
   });
   var fltEl=document.querySelector('input[name="data_flt"]:checked');if(fltEl)_stSet('stat_filter_mode',fltEl.value);
   var yhiEl=document.getElementById('flt_yhi');if(yhiEl)_stSet('stat_filter_yhi',yhiEl.value);
+  var yloEl=document.getElementById('flt_ylo');if(yloEl)_stSet('stat_filter_ylo',yloEl.value);
   var tllEl=document.getElementById('stat_tll_hi');if(tllEl)_stSet('stat_tll_hi',tllEl.value);
   var tllLoEl=document.getElementById('stat_tll_lo');if(tllLoEl)_stSet('stat_tll_lo',tllLoEl.value);
   var pEl=document.getElementById('stat_P');if(pEl)_stSet('stat_P',pEl.value);
@@ -5139,8 +5221,9 @@ function loadState(){
     updateBadge(col);
   });
   var fm=_stGet('stat_filter_mode');
-  if(fm){var fr=document.querySelector('input[name="data_flt"][value="'+fm+'"]');if(fr){fr.checked=true;toggleRangeInputs();}}
+  if(fm){var fr=document.querySelector('input[name="data_flt"][value="'+fm+'"]');if(fr){fr.checked=true;}}
   var fyhi=_stGet('stat_filter_yhi');var fyhiEl=document.getElementById('flt_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
+  var fylo=_stGet('stat_filter_ylo');var fyloEl=document.getElementById('flt_ylo');if(fylo!==null&&fyloEl)fyloEl.value=fylo;
   var tll=_stGet('stat_tll_hi');var tllEl=document.getElementById('stat_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
   var tllLo=_stGet('stat_tll_lo');var tllLoEl=document.getElementById('stat_tll_lo');if(tllLo!==null&&tllLoEl)tllLoEl.value=tllLo;
   var sp=_stGet('stat_P');if(sp!==null){var pEl=document.getElementById('stat_P');if(pEl)pEl.value=sp;var lpEl=document.getElementById('lbl_P');if(lpEl)lpEl.value=sp;}
@@ -5388,7 +5471,7 @@ def _build_stat_summary_html(
     log_x_html = (
         f'<label><input type="checkbox" id="log_x_chk"'
         + (' checked' if log_x else '')
-        + ' onchange="update()"> Log&nbsp;X</label>'
+        + ' onchange="toggleLogX()"> Log&nbsp;X</label>'
     )
 
     serial_panel_html = ""
@@ -5537,10 +5620,17 @@ def _build_stat_summary_html(
         ' onchange="toggleRangeInputs();update()"> All&nbsp;data</label>\n'
         '  <label><input type="radio" name="data_flt" value="passing"'
         ' onchange="toggleRangeInputs();update()"> Passing&nbsp;only&nbsp;(TI&#8838;TLL)</label>\n'
-        '  <label><input type="radio" name="data_flt" value="range"'
-        ' onchange="toggleRangeInputs();update()"><span id="flt_range_lbl">&nbsp;Upper&nbsp;limit</span></label>\n'
-        '  <span id="flt_range_inputs" style="display:none;align-items:center;gap:4px">\n'
+        '  <label id="flt_hi_wrap"><input type="radio" name="data_flt" value="range_hi"'
+        ' onchange="toggleRangeInputs();update()"> Upper&nbsp;limit</label>\n'
+        '  <span id="flt_range_hi_inputs" style="display:none;align-items:center;gap:4px">\n'
         f'    <input type="number" id="flt_yhi" placeholder="limit" step="0.001" value="{y_lim_hi}"'
+        ' oninput="update()">\n'
+        '    <small style="color:#666">(overrides test data spec; TLL and margin recalculated relative to this limit)</small>\n'
+        '  </span>\n'
+        '  <label id="flt_lo_wrap"><input type="radio" name="data_flt" value="range_lo"'
+        ' onchange="toggleRangeInputs();update()"> Lower&nbsp;limit</label>\n'
+        '  <span id="flt_range_lo_inputs" style="display:none;align-items:center;gap:4px">\n'
+        f'    <input type="number" id="flt_ylo" placeholder="limit" step="0.001" value="{y_lim_lo}"'
         ' oninput="update()">\n'
         '    <small style="color:#666">(overrides test data spec; TLL and margin recalculated relative to this limit)</small>\n'
         '  </span>\n'
@@ -5926,7 +6016,33 @@ Plotly.newPlot('plot',buildTraces(getSelectedConds(),[]),buildLayout(),{responsi
 # ---------------------------------------------------------------------------
 
 _ENV_COVERAGE_JS = r"""
+/* Zoom/pan persistence across filter changes -- see the scatter view's
+   identical _liveAxisRange() for the full rationale. */
+function _liveAxisRange(axis){
+  var gd=document.getElementById('plot');
+  if(gd&&gd.layout&&gd.layout[axis]&&gd.layout[axis].autorange===false&&
+     Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
+  return null;
+}
 function isLogX(){return document.getElementById('ec_log_x_chk').checked;}
+function toggleLogX(){
+  var log=isLogX();
+  var cur=_liveAxisRange('xaxis');
+  var range;
+  if(cur){
+    /* cur is still in the OLD type's units at this point (called onchange,
+       before the relayout below switches the type) -- see the scatter
+       view's identical toggleLogX() fix for why this conversion matters. */
+    range=log?[Math.log10(Math.max(cur[0],1e-9)),Math.log10(Math.max(cur[1],1e-9))]
+             :[Math.pow(10,cur[0]),Math.pow(10,cur[1])];
+  } else {
+    var lo=parseFloat(document.getElementById('ec_freq_lo_txt').value||document.getElementById('ec_freq_lo').value);
+    var hi=parseFloat(document.getElementById('ec_freq_hi_txt').value||document.getElementById('ec_freq_hi').value);
+    range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  }
+  Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
+  update();
+}
 function getSelectedConds(){
   return ENV_DATA.filter(function(cd){
     return COND_DIMS.every(function(dim){
@@ -6349,11 +6465,19 @@ function buildTraces(selConds,exclConds){
   return {traces:traces,yRange:yRange};
 }
 function buildLayout(yRange){
+  var curX=_liveAxisRange('xaxis');
+  /* A live manual zoom always wins over yRange -- unlike Y_LIM elsewhere,
+     yRange here isn't a deliberate config override, it's just a freshly
+     recomputed best-fit suggestion (excludes TTU/TTL's absolute units from
+     the auto-fit calc), so once the user has actually zoomed that should
+     keep taking priority over each new recompute. */
+  var curY=_liveAxisRange('yaxis')||yRange||null;
   return {
     title:{text:EC_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:EC_X_LABEL,type:isLogX()?'log':'linear'},
-    yaxis:{title:EC_Y_LABEL,range:yRange||null},
+    xaxis:Object.assign({title:EC_X_LABEL,type:isLogX()?'log':'linear'},
+                         curX?{range:curX,autorange:false}:{}),
+    yaxis:Object.assign({title:EC_Y_LABEL},curY?{range:curY,autorange:false}:{}),
     height:480,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:55,b:60},
@@ -6392,6 +6516,8 @@ function syncFreq(){
   var hi=parseFloat(document.getElementById('ec_freq_hi').value);
   var lv=document.getElementById('ec_freq_lo_txt');var hv=document.getElementById('ec_freq_hi_txt');
   if(lv) lv.value=lo.toFixed(3);if(hv) hv.value=hi.toFixed(3);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi]});
   update();
 }
 function freqTxtChange(which){
@@ -6402,7 +6528,12 @@ function freqTxtChange(which){
   v=Math.max(parseFloat(slider.min),Math.min(parseFloat(slider.max),v));
   if(which==='lo'){var h=parseFloat(document.getElementById('ec_freq_hi').value);if(v>h)v=h;}
   else{var l=parseFloat(document.getElementById('ec_freq_lo').value);if(v<l)v=l;}
-  txt.value=v.toFixed(3);slider.value=v;update();
+  txt.value=v.toFixed(3);slider.value=v;
+  var loV=parseFloat(document.getElementById('ec_freq_lo_txt').value);
+  var hiV=parseFloat(document.getElementById('ec_freq_hi_txt').value);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  update();
 }
 function freqStep(which,dir){
   var fv=EC_FREQ_VALS,txt=document.getElementById('ec_freq_'+which+'_txt'),slider=document.getElementById('ec_freq_'+which);
@@ -6412,7 +6543,12 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'&&nv>parseFloat(document.getElementById('ec_freq_hi').value))return;
   if(which==='hi'&&nv<parseFloat(document.getElementById('ec_freq_lo').value))return;
-  txt.value=nv.toFixed(3);slider.value=nv;update();
+  txt.value=nv.toFixed(3);slider.value=nv;
+  var loV=parseFloat(document.getElementById('ec_freq_lo_txt').value);
+  var hiV=parseFloat(document.getElementById('ec_freq_hi_txt').value);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  update();
 }
 function freqKeyDown(e,which){
   if(e.key==='Enter')freqTxtChange(which);
@@ -6577,6 +6713,8 @@ function segTab(dir){
      the scatter/distribution views. */
   document.getElementById('ec_freq_lo_txt').value=seg.lo.toFixed(3);
   document.getElementById('ec_freq_hi_txt').value=seg.hi.toFixed(3);
+  var log=isLogX();
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(seg.lo,1e-9)),Math.log10(Math.max(seg.hi,1e-9))]:[seg.lo,seg.hi]});
   update();
 }
 /* Recompute segments from the condition/serial/port/GF-filtered per-DUT spec
@@ -7106,7 +7244,7 @@ def _build_env_coverage_html(
     log_x_html = (
         f'<label><input type="checkbox" id="ec_log_x_chk"'
         + (' checked' if log_x else '')
-        + ' onchange="update()"> Log&nbsp;X</label>'
+        + ' onchange="toggleLogX()"> Log&nbsp;X</label>'
     )
 
     _all_panels = []
@@ -7906,6 +8044,14 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
 # ---------------------------------------------------------------------------
 
 _STAT_BOXPLOT_INTERACTIVE_JS = r"""
+/* Zoom/pan persistence across filter changes -- see the scatter view's
+   identical _liveAxisRange() for the full rationale. */
+function _liveAxisRange(axis){
+  var gd=document.getElementById('plot');
+  if(gd&&gd.layout&&gd.layout[axis]&&gd.layout[axis].autorange===false&&
+     Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
+  return null;
+}
 function getSelected(col){
   return Array.from(document.querySelectorAll('.'+col+':checked')).map(function(c){return c.value;});
 }
@@ -8436,11 +8582,20 @@ function buildLayout(){
     (cd.freq_stats||[]).forEach(function(fs){if(fs.freq>=fr.lo&&fs.freq<=fr.hi)activeLabels.add(fs.freq_label);});
   });
   var filteredOrder=BOX_FREQ_ORDER.filter(function(l){return activeLabels.has(l);});
+  /* Y-zoom persistence only -- the x-axis here is categorical (frequency
+     labels) with its visible categoryarray recomputed fresh from the
+     current freq filter on every call; freezing an explicit numeric range
+     on top of a category axis whose category SET can change size/order
+     under it is a real risk (a pinned index range could point at the wrong
+     categories after a filter change) for comparatively little benefit --
+     nobody drag-zooms a category axis the way they zoom a continuous one.
+     See the scatter view's _liveAxisRange() for the general mechanism. */
+  var curY=Y_LIM||_liveAxisRange('yaxis');
   return {
     title:{text:BOX_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
     xaxis:{title:'Frequency',categoryorder:'array',categoryarray:filteredOrder,tickangle:-45},
-    yaxis:{title:Y_LABEL,range:Y_LIM,autorange:Y_LIM?false:true},
+    yaxis:Object.assign({title:Y_LABEL},curY?{range:curY,autorange:false}:{autorange:true}),
     height:540,boxmode:'group',boxgap:0.2,boxgroupgap:0.15,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1,font:{size:11}},
     margin:{l:60,r:30,t:60,b:90},
@@ -8864,6 +9019,9 @@ function clearEverything(){
   /* Global filter */
   try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
   _loadBoxGlobalFilter();_updateBoxGfStatus();
+  /* Clear any manual Y zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
+     would keep re-applying the stale zoomed range even after Clear. */
+  Plotly.relayout('plot',{'yaxis.autorange':true});
   update();
 }
 
@@ -10062,6 +10220,15 @@ var PALETTE=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd',
              '#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf',
              '#aec7e8','#ffbb78','#98df8a','#ff9896','#c5b0d5'];
 
+/* Zoom/pan persistence across filter changes -- see the scatter view's
+   identical _liveAxisRange() for the full rationale. */
+function _liveAxisRange(axis){
+  var gd=document.getElementById('plot');
+  if(gd&&gd.layout&&gd.layout[axis]&&gd.layout[axis].autorange===false&&
+     Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
+  return null;
+}
+
 /* ---- panel open/close ---- */
 function togglePanel(col){
   var p=document.getElementById('panel_'+col);
@@ -10103,10 +10270,23 @@ function getSelected(col){
 function isLogX(){return document.getElementById('log_x_chk').checked;}
 function toggleLogX(){
   var log=isLogX();
-  var lo=parseFloat(document.getElementById('freq_lo').value);
-  var hi=parseFloat(document.getElementById('freq_hi').value);
-  Plotly.relayout('plot',{'xaxis.type':log?'log':'linear',
-    'xaxis.range':log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi]});
+  /* Prefer the currently displayed range (a drag-zoom never touches the
+     freq_lo/freq_hi sliders, so falling back to those unconditionally
+     silently discarded any active zoom on every toggle -- see the scatter
+     view's identical toggleLogX() fix). cur is still in the OLD type's
+     units at this point (called onchange, before the relayout below
+     switches the type). */
+  var cur=_liveAxisRange('xaxis');
+  var range;
+  if(cur){
+    range=log?[Math.log10(Math.max(cur[0],1e-9)),Math.log10(Math.max(cur[1],1e-9))]
+             :[Math.pow(10,cur[0]),Math.pow(10,cur[1])];
+  } else {
+    var lo=parseFloat(document.getElementById('freq_lo').value);
+    var hi=parseFloat(document.getElementById('freq_hi').value);
+    range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  }
+  Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
 }
 
 /* ---- freq sliders + text entry ---- */
@@ -10475,14 +10655,21 @@ function buildTraces(active,excl){
 
 function buildLayout(){
   var log=isLogX();
-  var lo=parseFloat(document.getElementById('freq_lo').value);
-  var hi=parseFloat(document.getElementById('freq_hi').value);
-  var range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  var curX=_liveAxisRange('xaxis');
+  var range;
+  if(curX){
+    range=curX;
+  } else {
+    var lo=parseFloat(document.getElementById('freq_lo').value);
+    var hi=parseFloat(document.getElementById('freq_hi').value);
+    range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
+  }
+  var curY=Y_LIM||_liveAxisRange('yaxis');
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:X_LABEL,type:log?'log':'linear',range:range},
-    yaxis:{title:Y_LABEL,range:Y_LIM},
+    xaxis:{title:X_LABEL,type:log?'log':'linear',range:range,autorange:false},
+    yaxis:Object.assign({title:Y_LABEL},curY?{range:curY,autorange:false}:{}),
     height:520,
     legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:60,b:60}
@@ -10521,6 +10708,9 @@ function resetFilters(){
   var nEl=document.getElementById('sum_n');if(nEl)nEl.value='0';
   var muEl=document.getElementById('sum_mu');if(muEl)muEl.value='0';
   var dvEl=document.getElementById('sum_denv');if(dvEl)dvEl.value='0';
+  /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
+     would keep re-applying the stale zoomed range even after Reset. */
+  Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
 }
 
