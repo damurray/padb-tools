@@ -10775,6 +10775,14 @@ function resetFilters(){
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
+  /* The Results Table otherwise only rebuilds on an explicit "Refresh table"
+     click (marked "stale" by update() on every other filter change, since a
+     full rebuild can be expensive with many conditions) -- but Reset is a
+     deliberate, one-shot action the user just took, not an incremental
+     tweak, so it should show the reset state immediately rather than
+     leaving the table stale until a second click. */
+  buildTable();
+  var rb=document.getElementById('sum_refresh_table_btn');if(rb)rb.textContent='Refresh table';
 }
 
 /* ---- data filter (pass/Y-range) ---- */

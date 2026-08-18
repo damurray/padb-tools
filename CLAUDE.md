@@ -205,6 +205,10 @@ Verified headlessly end-to-end with a real simulated drag-zoom: slider syncs to 
 
 **Scope**: `stat_summary` only, by explicit user choice, to validate the approach before considering it for scatter/env_coverage/summary.
 
+Follow-up question from the user after confirming the above worked: "Can we auto refresh tables after a [Reset] (button press)?" Checked directly — for `stat_summary`, this already worked with no further changes needed, since `setFreqBand()`'s reset path already calls `update()`, which always rebuilds the (open) Statistics Table. Verified headlessly: table open and zoomed to 2 visible rows, "Reset axes" correctly rebuilds it back to all 8.
+
+The user then clarified they specifically meant `summary`'s **Results Table** (`buildTable()`/`sum_table_wrap`) — a different, adjacent case: that table only ever rebuilds on an explicit "Refresh table" click, marked "(stale)" by `update()` on every other filter change (a deliberate design choice, since a full rebuild can be expensive with many conditions — see "PADB Simple mode gallery" and other "only add structure when it helps" precedents in this file for the same instinct applied elsewhere). `resetFilters()` is a deliberate, one-shot action the user just took, not an incremental tweak, so it now also calls `buildTable()` directly and resets the button text to non-stale — every *other* filter change still just marks it stale as before. Verified by poisoning the table's DOM content with a sentinel string before calling `resetFilters()` and confirming the sentinel is gone afterward (proves `buildTable()` actually re-ran, not just that the button text changed).
+
 ---
 
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
