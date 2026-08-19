@@ -8963,6 +8963,29 @@ function buildLayout(){
     margin:{l:60,r:30,t:60,b:90},
   };
 }
+/* Largest positive/negative outlier, split by sign, relative to the row's
+   own median. Only ever draws from points that already crossed the IQR
+   fence (the same set the existing "Outliers" column lists) -- this is not
+   a new, separately-gated notion of "extreme", it's the existing outlier
+   set split into its worst-per-direction summary, so a positive and a
+   negative outlier at the same frequency both get their own visible cell
+   instead of both being buried together in one shared list where a reader
+   could miss that there's also one in the other direction. A row with no
+   outliers in a given direction shows "--" there, same as Outliers would. */
+function _maxDevCells(outlierDetail,center){
+  var maxPos=null,maxNeg=null;
+  (outlierDetail||[]).forEach(function(d){
+    var dev=d.v-center;
+    if(dev>=0){if(!maxPos||dev>maxPos.dev) maxPos={dev:dev,d:d};}
+    else{if(!maxNeg||dev<maxNeg.dev) maxNeg={dev:dev,d:d};}
+  });
+  function cell(m,sign){
+    if(!m) return '<span style="color:#aaa">&#8212;</span>';
+    var tag=m.d.s&&m.d.s!=='unknown'?' ('+m.d.s+')':'';
+    return (sign>0?'+':'')+m.dev.toFixed(4)+' <span style="color:#888">['+m.d.v.toFixed(4)+tag+']</span>';
+  }
+  return {pos:cell(maxPos,1),neg:cell(maxNeg,-1)};
+}
 function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var el=document.getElementById('box_stat_panel');
   if(!el||el.style.display==='none') return;
@@ -9019,12 +9042,13 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
         var outStr=outDet.length?
           '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
+        var devCells=_maxDevCells(outDet,s.q2);
         rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+s.n+'</td>'+
           '<td>'+s.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
           '<td><em style="color:#888">'+fltLabel+'</em></td>'+
           (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
-          '<td>'+outStr+'</td></tr>');
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
     });
   } else {
@@ -9045,10 +9069,49 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           else
             npCell='<td style="color:#aaa;font-size:11px">'+(fs.np_ti_lo==null?'n&nbsp;too&nbsp;small':'Normal&nbsp;(k·s)')+'</td>';
         }
+        var devCells=_maxDevCells(outDet,fs.q2);
         rows.push('<tr><td>'+cd.condition+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+fs.s.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
-          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td></tr>');
+          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
+      });
+    });
+    /* BOX_STATS (above) is _aggregate_stat_data()'s output, built for
+       stat_summary -- it only ever computes freq_stats from Room data
+       (room_dut, Python-side), since non-Room temps there only ever feed a
+       separate ΔEnv calc, never a per-temp normality/outlier breakdown. The
+       actual box traces on the *plot* are drawn from BOX_DATA, which is
+       genuinely per-temp -- so a real outlier at 20C/30C shows on the plot
+       but was silently absent from this table, reported by the user as
+       "no Max -Delta in the table but I see it in the plot" (correctly
+       diagnosed: "you're only accessing Room data"). Fixed by adding a
+       second pass over BOX_DATA's own non-Room entries here, computed the
+       same way the filtered branch above already does for every temp (no
+       Shapiro normality test is available for these rows -- that's a real
+       Room-only limitation of _aggregate_stat_data, not faked here). */
+    BOX_DATA.forEach(function(cd){
+      if(selConds.indexOf(cd.condition)<0) return;
+      if(cd.temp==='Room') return;
+      (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(f){
+        if(f.freq<fr.lo||f.freq>fr.hi) return;
+        var detail=f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};});
+        if(!detail.length) return;
+        var fv=detail.map(function(d){return d.v;});
+        var s=computeBoxStats(fv,getIqrK());
+        if(!s) return;
+        var variance=fv.reduce(function(acc,v){return acc+(v-s.mean)*(v-s.mean);},0)/(fv.length>1?fv.length-1:1);
+        var std=Math.sqrt(variance);
+        var outDet2=detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;});
+        var outStr2=outDet2.length?
+          '<span class="out"><b>'+outDet2.length+'</b>: '+outDet2.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
+          '<span style="color:#aaa">&#8212;</span>';
+        var devCells2=_maxDevCells(outDet2,s.q2);
+        rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+s.n+'</td>'+
+          '<td>'+s.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
+          '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
+          '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(no&nbsp;normality&nbsp;test&nbsp;at&nbsp;non-Room&nbsp;temps)</td>'+
+          (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
+          '<td>'+outStr2+'</td><td>'+devCells2.pos+'</td><td>'+devCells2.neg+'</td></tr>');
       });
     });
   }
@@ -9056,7 +9119,10 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   el.innerHTML='<table class="stbl"><thead><tr>'+
     '<th>Condition</th><th>Freq('+X_UNIT+')</th><th>n&nbsp;DUTs</th>'+
     '<th>Mean</th><th>Std</th><th>Q1</th><th>Median</th><th>Q3</th>'+
-    '<th>Normality</th>'+npHdr+'<th>Outliers</th></tr></thead><tbody>'+rows.join('')+'</tbody></table>';
+    '<th>Normality</th>'+npHdr+'<th>Outliers</th>'+
+    '<th title="Most positive outlier, relative to the median">Max&nbsp;+&#916;</th>'+
+    '<th title="Most negative outlier, relative to the median">Max&nbsp;-&#916;</th>'+
+    '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 }
 function toggleStatPanel(){
   var el=document.getElementById('box_stat_panel');
@@ -9392,9 +9458,13 @@ function clearEverything(){
      up across scatter/stat_summary/boxplot. Wiping it as a side effect of a
      per-view filter reset would be surprising and hard to undo; use the
      dedicated "Clear global filter" button for that specific action. */
-  /* Clear any manual Y zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
-     would keep re-applying the stale zoomed range even after Clear. */
-  Plotly.relayout('plot',{'yaxis.autorange':true});
+  /* Clear any manual zoom/pan on both axes -- Y because buildLayout()'s
+     _liveAxisRange() would otherwise keep re-applying the stale zoomed
+     range even after Clear; X because although box_freq_lo/hi are already
+     reset above, Plotly's own index-based category zoom is a separate,
+     Plotly-internal view state that a fresh (but same-shape) categoryarray
+     from update() wouldn't otherwise disturb. */
+  Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
 }
 
@@ -9836,6 +9906,57 @@ function _recomputeSpecSegments(){
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
   document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
 }
+/* label -> frequency, built once. The x-axis is categorical (see buildLayout's
+   own comment on why an explicit numeric range is never pinned there) --
+   Plotly reports a drag-zoom on a category axis as a fractional CATEGORY
+   INDEX range (e.g. [-0.01, 1.48]), not a frequency range, so it has to be
+   converted back through whatever categoryarray was actually on screen. */
+var _boxLabelToFreq=(function(){
+  var m={};
+  for(var i=0;i<BOX_FREQ_ORDER.length;i++) m[BOX_FREQ_ORDER[i]]=BOX_FREQ_VALS[i];
+  return m;
+})();
+/* Sync box_freq_lo/box_freq_hi to a drag-zoom/pan on the plot's x-axis --
+   reported by the user: zooming in, then changing Group by, left the plot
+   "still zoomed in" per Plotly's own internal state but showing a wider
+   frequency range than before. Root cause: buildLayout() never pins an
+   xaxis range (Y-zoom persistence only, by original design -- category
+   axes were assumed nobody would drag-zoom in practice, which turned out
+   to be wrong), so a manual zoom was purely a Plotly-internal view state,
+   never reflected in box_freq_lo/box_freq_hi. Any update() -- including a
+   Group By change -- rebuilds buildLayout()'s categoryarray from scratch,
+   and Plotly's own index-based zoom range then gets reinterpreted against
+   that fresh array, landing on a different (and here, wider) set of
+   categories purely by coincidence of index math, not by design. Syncing
+   the zoom into the actual box_freq_lo/box_freq_hi filter (the same fix
+   already applied to stat_summary) fixes this at the root: once the
+   "zoomed" range is a real frequency bound instead of a transient Plotly
+   view state, every rebuild -- Group By included -- naturally re-derives
+   the same categoryarray from it via getBoxFreqRange(), with nothing left
+   for Plotly's own index reinterpretation to get wrong. */
+function _onPlotRelayout(ed){
+  if(!ed) return;
+  if(ed['xaxis.autorange']){
+    document.getElementById('box_freq_lo').value=BOX_FREQ_MIN;
+    document.getElementById('box_freq_hi').value=BOX_FREQ_MAX;
+    update();
+    return;
+  }
+  var lo=ed['xaxis.range[0]'],hi=ed['xaxis.range[1]'];
+  if(Array.isArray(ed['xaxis.range'])){lo=ed['xaxis.range'][0];hi=ed['xaxis.range'][1];}
+  if(lo===undefined||hi===undefined) return;
+  var gd=document.getElementById('plot');
+  var order=(gd.layout.xaxis&&gd.layout.xaxis.categoryarray)||BOX_FREQ_ORDER;
+  if(!order.length) return;
+  var loIdx=Math.max(0,Math.min(order.length-1,Math.round(lo)));
+  var hiIdx=Math.max(0,Math.min(order.length-1,Math.round(hi)));
+  if(loIdx>hiIdx){var t=loIdx;loIdx=hiIdx;hiIdx=t;}
+  var loF=_boxLabelToFreq[order[loIdx]],hiF=_boxLabelToFreq[order[hiIdx]];
+  if(loF===undefined||hiF===undefined) return;
+  document.getElementById('box_freq_lo').value=loF;
+  document.getElementById('box_freq_hi').value=hiF;
+  update();
+}
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
@@ -9900,6 +10021,10 @@ function loadState(){
   var allConds=[];
   BOX_DATA.forEach(function(cd){if(allConds.indexOf(cd.condition)<0) allConds.push(cd.condition);});
   Plotly.newPlot('plot',buildBoxTraces(allConds,TEMPS_PRESENT,{mode:'all'},getAllBoxSerials()),buildLayout({mode:'all'}),{responsive:true,scrollZoom:true});
+  /* update() uses Plotly.react() (in-place), not purge()+newPlot(), so this
+     listener survives every subsequent update() call -- attaching once here
+     is enough (unlike stat_summary, which purges and must re-attach). */
+  document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
   _updateBoxGfStatus();
   _recomputeSpecSegments();
 })();
@@ -9998,6 +10123,7 @@ def _build_box_interactive_html(
     spec_dir_js: str = "both",
     tll_selector_html: str = "",
     help_panel_html: str = "",
+    freq_cat_vals: list = None,
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -10254,6 +10380,11 @@ def _build_box_interactive_html(
         f"var BOX_STATS={json.dumps(stat_data_box)};",
         f"var BOX_TITLE={json.dumps(title)};",
         f"var BOX_FREQ_ORDER={json.dumps(freq_cat_order)};",
+        # Parallel to BOX_FREQ_ORDER (same order, same length) -- lets a
+        # category-axis zoom (reported as an index range, not a frequency
+        # range) be converted back into an actual box_freq_lo/box_freq_hi
+        # bound. See _onPlotRelayout's own comment for why this is needed.
+        f"var BOX_FREQ_VALS={json.dumps(freq_cat_vals or [])};",
         f"var BOX_FREQ_MIN={box_freq_min!r};",
         f"var BOX_FREQ_MAX={box_freq_max!r};",
         f"var LO_SPEC={lo_js};",
@@ -10590,6 +10721,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         spec_dir_js=box_spec_dir_js,
         tll_selector_html=box_tll_selector_html,
         help_panel_html=help_panel_html,
+        freq_cat_vals=[float(f) for f in sorted_freqs],
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
