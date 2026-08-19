@@ -305,6 +305,18 @@ Verified against a synthetic 3-temp (Room/20°C/30°C) dataset with a deliberate
 
 ---
 
+## Boxplot Statistics Table never respected "Group by: Serial Number/Port" (fixed 2026-08-19)
+
+Confirmed real gap tracked in the `project_boxplot_stats_table_ignores_group_by` memory since 2026-08-14, picked back up this session. `updateStatsTable()` always iterated `BOX_DATA`/`BOX_STATS` by the raw, ungrouped `cd.condition` — but when "Group by" is set to Serial Number or Port, `buildBoxTraces()` (the plot) delegates entirely to `buildPortSerialTraces()`, which pools a DUT's (or port's) data **across every condition it was tested under**. With Group by on either of those two settings, the plot and table described genuinely different populations: an outlier on a serial-pooled box could trace back to a different underlying condition than whatever the table's same-looking, ungrouped row reported for that condition name — exactly the mismatch originally reported (`N5383_63008_PODDAE_boxplot.html`, outliers under `QPA2962B` on the plot vs. `QPA2962A` in the table for what looked like the same state).
+
+**Scope check before fixing**: read `buildBoxTraces()` closely to confirm the *other* two Group-by modes (`Condition` default, or a named `COND_DIMS` field like `Amp`) don't have the same bug — they don't. For those, boxes stay exactly one-per-real-condition; Group by there only changes each box's **color and legend label** (via `getGroupKey()`), never merges statistics across conditions. So the table's existing per-condition rows were already correct for those two modes — only Serial Number/Port needed a fix.
+
+**Fix**: extracted `buildPortSerialTraces()`'s pooling logic (the `freqVals`/`freqSet`/`freqLabels` building + per-group-per-freq `computeBoxStats()` call) into a new shared function, `_computeBoxGroupedByColId(colId, ...)`, returning `{gk: fs_arr}` (gk = serial or port value). `buildPortSerialTraces()` now calls it and only builds Plotly traces from the result; `updateStatsTable()` gained a new first-checked branch — when `box_group_by` is `__serial__`/`__port__`, it calls the *same* function and renders one row per `(group, freq)` labeled `Serial: <gk>` / `Port: <gk>`, with Normality replaced by an explicit "pooled across conditions, no normality test" note (Shapiro was never computed for this cross-condition population, so a real note beats faking one). Sharing one function guarantees the table can't drift out of sync with the plot again, the same principle already applied to the boxplot freq-label fix earlier this session.
+
+Verified against a synthetic case mirroring the real report exactly: DUT01 tested under both condition `QPA2962A` (10.0) and `QPA2962B` (10.02), plus a lone DUT (`DUT06`) tested only under `QPA2962B` with a deliberate `40.0` value. With Group by set to Serial Number: the table's `Serial: DUT01` row correctly shows `n=2, mean=10.01` (pooling both conditions); `Serial: DUT06` shows `median=40.0000, Q3=40.0000` — read directly off the live plot's own trace data (`gd.data` for the `DUT06` trace) and confirmed to match exactly. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
+
+---
+
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
 
 `accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.

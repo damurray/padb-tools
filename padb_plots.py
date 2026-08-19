@@ -8691,7 +8691,15 @@ function _specFromStats(selConds,freqToLabel){
   });
   return {hi:hi,lo:lo};
 }
-function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
+/* Shared by buildPortSerialTraces (the plot) and updateStatsTable (the
+   table) so a Serial Number/Port "Group by" always pools the exact same
+   population in both places -- pulled out after a real, confirmed gap:
+   the table never knew about box_group_by at all, so its per-condition rows
+   could report an outlier under a different-looking condition than the
+   plot's DUT/port-pooled box, since a pooled box spans every real condition
+   that DUT/port was tested under. Returns {gk: fs_arr} -- gk is the serial
+   or port value, fs_arr is a freq-ordered array of per-group box stats. */
+function _computeBoxGroupedByColId(colId,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
   var freqVals={},freqSet={},freqLabels={};
   BOX_DATA.forEach(function(cd){
@@ -8716,8 +8724,7 @@ function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
   });
   var sortedFreqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
   var groups=Object.keys(freqVals).sort();
-  var condIdxMap={};groups.forEach(function(g,i){condIdxMap[g]=i;});
-  var traces=[];
+  var result={};
   groups.forEach(function(gk){
     var fs_arr=sortedFreqs.map(function(freq){
       var items=freqVals[gk][freq]||[];
@@ -8730,7 +8737,19 @@ function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
         lo_w:Math.min.apply(null,vals),hi_w:Math.max.apply(null,vals),
         outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:items};
     }).filter(Boolean);
-    if(!fs_arr.length) return;
+    if(fs_arr.length) result[gk]=fs_arr;
+  });
+  return result;
+}
+function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
+    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
+  var grouped=_computeBoxGroupedByColId(colId,selBoxSers,selTemps,yFlt,fr,k,
+    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
+  var groups=Object.keys(grouped).sort();
+  var condIdxMap={};groups.forEach(function(g,i){condIdxMap[g]=i;});
+  var traces=[];
+  groups.forEach(function(gk){
+    var fs_arr=grouped[gk];
     var color=PALETTE[(condIdxMap[gk]||0)%PALETTE.length];
     traces.push({
       type:'box',
@@ -9011,7 +9030,45 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var _gfActiveSt=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
   var _gfFocusSt=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
   var gfFocusActive=_gfActiveSt&&_gfFocusSt;
-  if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive){
+  /* Real gap fixed 2026-08-19: this table used to always iterate BOX_DATA by
+     raw, ungrouped condition regardless of "Group by" -- but with Group by
+     set to Serial Number/Port, buildBoxTraces() delegates to
+     buildPortSerialTraces(), which pools a DUT/port's data ACROSS every
+     condition it was tested under. The plot and table then described
+     different populations entirely: an outlier on a serial-pooled box could
+     trace back to a different underlying condition than whatever the
+     table's same-looking, ungrouped row reported. Reusing
+     _computeBoxGroupedByColId() (the same function the plot itself now
+     calls) guarantees this can't drift out of sync again. */
+  var _bxGrpElSt=document.getElementById('box_group_by');
+  var _bxGrpIdSt=_bxGrpElSt?_bxGrpElSt.value:'';
+  if(_bxGrpIdSt==='__port__'||_bxGrpIdSt==='__serial__'){
+    var allPortsSt=getAllBoxPorts(),selPortsSt=getSelectedBoxPorts();
+    var portActiveSt=allPortsSt.length>1&&selPortsSt.length<allPortsSt.length;
+    var rhiSt=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+    var rloSt=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+    var grouped=_computeBoxGroupedByColId(_bxGrpIdSt,selBoxSers,selTemps,yFlt,fr,getIqrK(),
+      serActive,portActiveSt,selPortsSt,_gfActiveSt,_gfFocusSt,passActive,stPassLo,stPassHi,rhiSt,rloSt);
+    Object.keys(grouped).sort().forEach(function(gk){
+      grouped[gk].forEach(function(fs){
+        var fv=(fs.vals_detail||[]).map(function(d){return d.v;});
+        var variance=fv.reduce(function(acc,v){return acc+(v-fs.mean)*(v-fs.mean);},0)/(fv.length>1?fv.length-1:1);
+        var std=Math.sqrt(variance);
+        var outDet=fs.outlier_detail||[];
+        var outStr=outDet.length?
+          '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
+          '<span style="color:#aaa">&#8212;</span>';
+        var devCells=_maxDevCells(outDet,fs.q2);
+        var gkLabel=(_bxGrpIdSt==='__port__'?'Port: ':'Serial: ')+gk;
+        rows.push('<tr><td>'+gkLabel+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
+          '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
+          '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
+          '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)</td>'+
+          (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
+      });
+    });
+  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rlo=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var fltLabel=gfFocusActive?'GF Focus':
