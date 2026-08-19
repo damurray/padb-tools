@@ -4341,7 +4341,14 @@ function computeFreqResult(fs,params){
   }
   var spec_up=(params.spec_hi_override!==null)?params.spec_hi_override:((fs.spec_up!=null)?fs.spec_up:null);
   // spec_lo entered as signed value: negative for upper-limit specs (e.g. −0.15 dBc), positive for lower-limit specs (e.g. +14 dBm)
-  var spec_lo_raw=(fs.spec_lo!=null)?fs.spec_lo:params.spec_lo_override;
+  /* Was checking fs.spec_lo before params.spec_lo_override -- the opposite
+     priority from spec_up just above, so a manual Spec Lo entry was
+     silently ignored whenever the CSV already had a real lower spec
+     (reported: "changing Spec hi affects margin Up... changing spec lo
+     does not change margin Lo"). Override must win first, same as spec_up,
+     since spec_lo_override is also how the Data-filter's Lower-limit radio
+     feeds a value in (see getFilteredCondsAndParams()). */
+  var spec_lo_raw=(params.spec_lo_override!==null)?params.spec_lo_override:((fs.spec_lo!=null)?fs.spec_lo:null);
   var g_up=params.mu+dev_up+params.gb+params.drift;
   var g_lo=params.mu+dev_lo+params.gb+params.drift;
   var tll_up=(params.tll_hi_override!==null)?params.tll_hi_override:((spec_up!=null)?spec_up-g_up:null);
@@ -4396,12 +4403,21 @@ function saveCSV(withExcluded){
   var params=getParams();
   var flt=getDataFilter();
   conds=applyDataFilter(conds,params,flt);
+  /* TLL_lower/TLL_upper are always the *effective* value (override, when
+     set) -- unlike summary's Spec Hi/Lo, this column's own meaning has
+     always been "the applicable threshold, override or not," and Spec_lo/
+     Spec_hi (the real datasheet value) are already separate, unambiguous
+     columns. Still, add explicit TLL_lo_override/TLL_hi_override columns
+     (empty when unset) so an override is never silently indistinguishable
+     from a computed value in an exported file with no live tooltip. */
   var hdrs=['Condition','Freq_'+X_UNIT,'n','Mean','Std','k',
-            'TI_lower','TI_upper','TLL_lower','TLL_upper',
+            'TI_lower','TI_upper','TLL_lower','TLL_lo_override','TLL_upper','TLL_hi_override',
             'Pass','Method','Normality','W','p',
             'DEnv_up','DEnv_lo','Spec_lo','Spec_hi','Outliers'];
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var _loOv=(params.tll_lo_override!==null&&params.tll_lo_override!==undefined);
+  var _hiOv=(params.tll_hi_override!==null&&params.tll_hi_override!==undefined);
   conds.forEach(function(cd){
     (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(fs){
       var r=computeFreqResult(fs,params);
@@ -4415,7 +4431,9 @@ function saveCSV(withExcluded){
         r.ti_lo.toFixed(6),
         r.ti_up.toFixed(6),
         r.tll_lo!=null?r.tll_lo.toFixed(6):'',
+        _loOv?params.tll_lo_override:'',
         r.tll_up!=null?r.tll_up.toFixed(6):'',
+        _hiOv?params.tll_hi_override:'',
         (r.pass_up&&r.pass_lo)?'PASS':'FAIL',
         r.np_active?'NP-order-stat':'parametric-k',
         fs.norm,fs.W,fs.p,
@@ -4908,6 +4926,26 @@ function toggleStatPanel(){
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
 }
+/* Largest positive/negative outlier, split by sign, relative to the row's
+   own median -- same fix and same rationale as boxplot's identical helper:
+   a single run-on Outliers list can bury a small/subtle outlier in one
+   direction next to a much larger one in the other. Only ever draws from
+   fs.outlier_detail (the same fence-crossing set the Outliers column itself
+   already lists), never a separately-gated notion of "extreme". */
+function _maxDevCells(outlierDetail,center){
+  var maxPos=null,maxNeg=null;
+  (outlierDetail||[]).forEach(function(d){
+    var dev=d.v-center;
+    if(dev>=0){if(!maxPos||dev>maxPos.dev) maxPos={dev:dev,d:d};}
+    else{if(!maxNeg||dev<maxNeg.dev) maxNeg={dev:dev,d:d};}
+  });
+  function cell(m,sign){
+    if(!m) return '<span style="color:#aaa">&#8212;</span>';
+    var tag=m.d.s&&m.d.s!=='unknown'?' ('+m.d.s+')':'';
+    return (sign>0?'+':'')+m.dev.toFixed(4)+' <span style="color:#888">['+m.d.v.toFixed(4)+tag+']</span>';
+  }
+  return {pos:cell(maxPos,1),neg:cell(maxNeg,-1)};
+}
 function updateStatPanel(conds,params,force){
   var el=document.getElementById('stat_panel');if(!el||el.style.display==='none')return;
   var rb=document.getElementById('stat_refresh_table_btn');
@@ -4942,13 +4980,28 @@ function updateStatPanel(conds,params,force){
       var bg=pass?'':'background:#fff0f0';
       var tiStr=(r.np_active?'[NP] ':'')+
                '['+r.ti_lo.toFixed(4)+', '+r.ti_up.toFixed(4)+']';
+      /* A TLL override is a typed-in stand-in for the computed spec-minus-
+         budget threshold -- flagged the same "needs attention" orange used
+         throughout this codebase (GF badges, Spec override in summary) so
+         a manually-entered bound never looks identical to a real computed
+         one at a glance. Each side flags independently since only one may
+         be overridden at a time. */
+      function _tllSpan(v,isOv){
+        if(v===null) return null;
+        var s=v.toFixed(4);
+        if(!isOv) return s;
+        return '<span style="background:#fff0e8;border-bottom:2px solid #e0905a;'+
+          'color:#c04000;font-weight:bold" title="TLL override active (typed in, not computed from spec)">'+s+'</span>';
+      }
+      var _tllLoOv=(params.tll_lo_override!==null&&params.tll_lo_override!==undefined);
+      var _tllHiOv=(params.tll_hi_override!==null&&params.tll_hi_override!==undefined);
       var tllStr;
       if(r.tll_lo!==null&&r.tll_up!==null)
-        tllStr='['+r.tll_lo.toFixed(4)+', '+r.tll_up.toFixed(4)+']';
+        tllStr='['+_tllSpan(r.tll_lo,_tllLoOv)+', '+_tllSpan(r.tll_up,_tllHiOv)+']';
       else if(r.tll_lo!==null)
-        tllStr='Lo: '+r.tll_lo.toFixed(4);
+        tllStr='Lo: '+_tllSpan(r.tll_lo,_tllLoOv);
       else if(r.tll_up!==null)
-        tllStr='Hi: '+r.tll_up.toFixed(4);
+        tllStr='Hi: '+_tllSpan(r.tll_up,_tllHiOv);
       else
         tllStr='—';
       var ssuStr;
@@ -4964,13 +5017,15 @@ function updateStatPanel(conds,params,force){
       if(_hasLo&&_hasHi) marginStr='&#8595;'+_marginSpan(r.margin_lo)+'&nbsp;/&nbsp;&#8593;'+_marginSpan(r.margin_up);
       else if(_hasLo) marginStr=_marginSpan(r.margin_lo);
       else marginStr=_marginSpan(r.margin_up);
+      var outDet=fs.outlier_detail||[];
       var outCells='';
-      if(fs.outliers&&fs.outliers.length){
-        outCells='<td class="out"><b>'+fs.outliers.length+'</b>: '+
-          fs.outliers.map(function(v){return v.toFixed(4);}).join(', ')+'</td>';
+      if(outDet.length){
+        outCells='<td class="out"><b>'+outDet.length+'</b>: '+
+          outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</td>';
       } else {
         outCells='<td style="color:#aaa">—</td>';
       }
+      var devCells=_maxDevCells(outDet,fs.q2);
       rows.push('<tr style="'+bg+'">'+
         '<td>'+cd.condition+'</td>'+
         '<td>'+fs.freq.toFixed(4)+'</td>'+
@@ -4989,6 +5044,7 @@ function updateStatPanel(conds,params,force){
           :'<td style="font-size:11px;color:#555">k·s ('+r.k.toFixed(3)+')</td>')+
         '<td>'+normTag(fs)+'</td>'+
         outCells+
+        '<td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+
         '</tr>');
     });
   });
@@ -5001,7 +5057,10 @@ function updateStatPanel(conds,params,force){
     '<th>Mean</th><th>Std</th>'+
     '<th>TI Bounds</th><th>TLL Bounds</th>'+
     '<th>'+ssuHdr+'</th><th>'+marginHdr+'</th>'+
-    '<th>Pass</th><th>Method</th><th>Normality</th><th>Outliers</th></tr></thead><tbody>';
+    '<th>Pass</th><th>Method</th><th>Normality</th><th>Outliers</th>'+
+    '<th title="Most positive outlier, relative to the median">Max&nbsp;+&#916;</th>'+
+    '<th title="Most negative outlier, relative to the median">Max&nbsp;-&#916;</th>'+
+    '</tr></thead><tbody>';
   el.innerHTML=banner+hdr+rows.join('')+'</tbody></table>';
   }catch(e){
     el.innerHTML='<div style="color:red;padding:8px;font-family:monospace">'+
@@ -11433,16 +11492,20 @@ function saveCSV(withExcluded){
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
   var sumPar=getSumParams();
-  var rows=['Condition,Freq_MHz,Mean,Min,Max,TTL_upper,TTL_lower,Spec_hi,Spec_lo'];
+  /* Spec_hi/Spec_lo are always the real datasheet value -- a CSV can't carry
+     the live table's "override active" visual flag, so silently substituting
+     an override here would leave an exported file indistinguishable from
+     real spec data. Spec_hi_override/Spec_lo_override make any override
+     explicit and recoverable instead of hidden inside an unflagged number. */
+  var rows=['Condition,Freq_MHz,Mean,Min,Max,TTL_upper,TTL_lower,Spec_hi,Spec_hi_override,Spec_lo,Spec_lo_override'];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   active.forEach(function(cd){
     cd.freqs.forEach(function(f,i){
       if(f<fLo||f>fHi) return;
-      /* Same override-bypasses-spec semantics as _buildCondRows() -- see its comment. */
-      var hi=(sumPar.tll_hi_override!==null&&sumPar.tll_hi_override!==undefined)?sumPar.tll_hi_override:
-             (cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi;
-      var lo=(sumPar.tll_lo_override!==null&&sumPar.tll_lo_override!==undefined)?sumPar.tll_lo_override:
-             (cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
+      var realHi=(cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi;
+      var realLo=(cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
+      var hiOv=(sumPar.tll_hi_override!==null&&sumPar.tll_hi_override!==undefined);
+      var loOv=(sumPar.tll_lo_override!==null&&sumPar.tll_lo_override!==undefined);
       rows.push([
         esc(cd.condition),
         f.toFixed(4),
@@ -11451,8 +11514,10 @@ function saveCSV(withExcluded){
         cd.max_data[i]!=null?Number(cd.max_data[i]).toFixed(4):'',
         cd.uttl[i]!=null?Number(cd.uttl[i]).toFixed(4):'',
         cd.lttl[i]!=null?Number(cd.lttl[i]).toFixed(4):'',
-        hi!=null?hi:'',
-        lo!=null?lo:''
+        realHi!=null?realHi:'',
+        hiOv?sumPar.tll_hi_override:'',
+        realLo!=null?realLo:'',
+        loOv?sumPar.tll_lo_override:''
       ].join(','));
     });
   });
@@ -11666,19 +11731,24 @@ function _buildCondRows(condList,gfLabel,selTemps,params){
       if(stats.gf_n!==undefined&&stats.total_duts&&stats.total_duts>0){
         tot_n=Math.round(tot_n*stats.gf_n/stats.total_duts);
       }
-      /* A manual TLL override is documented (its own tooltip) as "bypasses
-         Spec Hi/Lo" -- applyDataFilter()'s Passing-only check already
-         treats it that way, so the Results Table's own Spec Hi/Lo (and the
-         Margin columns derived from them) must too, or the table shows a
+      /* A manual Spec override (its own tooltip: "bypasses Spec Hi/Lo") is
+         already honored by applyDataFilter()'s Passing-only check, so Margin
+         here must use the same effective value or the table would show a
          condition failing against the real spec while the filter already
-         passed it against the override -- reported by the user as "if I
-         override lower limit, should the table Spec Lo change? It's not." */
-      var sHi=(params.tll_hi_override!==null&&params.tll_hi_override!==undefined)?params.tll_hi_override:
-              (cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:
-              (cd.spec_hi!==undefined&&cd.spec_hi!==null?cd.spec_hi:null);
-      var sLo=(params.tll_lo_override!==null&&params.tll_lo_override!==undefined)?params.tll_lo_override:
-              (cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:
-              (cd.spec_lo!==undefined&&cd.spec_lo!==null?cd.spec_lo:null);
+         passed it against the override. But the *Spec Hi/Lo cell itself*
+         should never silently show a typed-in hypothetical with no visual
+         cue -- reported by the user, who then asked to work through the
+         right design: keep the real spec value retrievable (real_hi/real_lo)
+         and a flag (hi_is_override/lo_is_override) so the render step can
+         flag the override distinctly instead of masking it as fact. */
+      var realHi=(cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:
+                 (cd.spec_hi!==undefined&&cd.spec_hi!==null?cd.spec_hi:null);
+      var realLo=(cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:
+                 (cd.spec_lo!==undefined&&cd.spec_lo!==null?cd.spec_lo:null);
+      var hiOv=(params.tll_hi_override!==null&&params.tll_hi_override!==undefined);
+      var loOv=(params.tll_lo_override!==null&&params.tll_lo_override!==undefined);
+      var sHi=hiOv?params.tll_hi_override:realHi;
+      var sLo=loOv?params.tll_lo_override:realLo;
       var tUp=stats.uttl[fi];
       var tLo=stats.lttl[fi];
       rows.push({
@@ -11686,6 +11756,8 @@ function _buildCondRows(condList,gfLabel,selTemps,params){
         mean:stats.mean[fi],min:stats.min_data[fi],max:stats.max_data[fi],
         ttl_up:tUp,ttl_lo:tLo,mu:params.mu,denv:params.denv,
         spec_hi:sHi,spec_lo:sLo,
+        spec_hi_is_override:hiOv,spec_lo_is_override:loOv,
+        real_spec_hi:realHi,real_spec_lo:realLo,
         margin_up:(sHi!==null&&tUp!==null)?sHi-tUp:null,
         margin_lo:(sLo!==null&&tLo!==null)?tLo-sLo:null,
       });
@@ -11728,13 +11800,27 @@ function buildTable(){
     var str=m===null?'—':((m>=0?'+':'')+m.toFixed(4)+' '+(m>=0?'\u2714':'\u2718'));
     return '<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap;'+color+'">'+str+'</td>';
   }
+  /* Spec Hi/Lo shows the effective value (override, when set) so Margin
+     stays internally consistent with what applyDataFilter()'s Passing-only
+     check actually compares against -- but a typed-in override must never
+     look identical to the real datasheet spec, or someone screenshotting/
+     reading the table later has no way to tell the two apart. Flagged with
+     the same "needs attention" orange this codebase already uses for GF
+     badges and stale-refresh buttons; the real spec is in the tooltip. */
+  function specTd(v,isOverride,realV){
+    if(!isOverride) return td(v,4);
+    var title=' title="Spec override active -- real spec is '+fmt(realV,4)+'"';
+    return '<td'+title+' style="border:1px solid #eee;padding:2px 8px;text-align:right;'+
+      'white-space:nowrap;background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'
+      +fmt(v,4)+'</td>';
+  }
   var trs=rows.map(function(r){
     var failHi=showHi&&r.margin_up!==null&&r.margin_up<0;
     var failLo=showLo&&r.margin_lo!==null&&r.margin_lo<0;
     var bg=(failHi||failLo)?'background:#ffe8e8;border-left:3px solid #cc0000;':'';
     var cells=tdL(r.condition)+td(r.freq,4)+td(r.n,0)+td(r.mean,4)+td(r.min,4)+td(r.max,4);
-    if(showHi) cells+=td(r.ttl_up,4)+td(r.spec_hi,4)+marginTd(r.margin_up);
-    if(showLo) cells+=td(r.ttl_lo,4)+td(r.spec_lo,4)+marginTd(r.margin_lo);
+    if(showHi) cells+=td(r.ttl_up,4)+specTd(r.spec_hi,r.spec_hi_is_override,r.real_spec_hi)+marginTd(r.margin_up);
+    if(showLo) cells+=td(r.ttl_lo,4)+specTd(r.spec_lo,r.spec_lo_is_override,r.real_spec_lo)+marginTd(r.margin_lo);
     cells+=td(r.mu,4)+td(r.denv,4);
     return '<tr style="'+bg+'">'+cells+'</tr>';
   });
@@ -11758,17 +11844,25 @@ function exportTableCSV(){
   var dir=getTllDirection();
   var showHi=dir==='hi'||dir==='both';
   var showLo=dir==='lo'||dir==='both';
+  /* Spec Hi/Lo here is always the real datasheet value -- unlike the live
+     table's cell (which shows the effective/override value with a visual
+     flag), a CSV has no way to carry that flag, so silently substituting an
+     override would leave an exported file indistinguishable from real spec
+     data. A separate Spec_Override column makes any override explicit and
+     recoverable instead. Margin still follows the effective value, same as
+     the live table and the Passing-only filter, since that's the number
+     that's actually meaningful for pass/fail. */
   var hdrs=['Condition','GF_Status','Freq (MHz)','n','Mean','Min','Max'];
-  if(showHi) hdrs=hdrs.concat(['TTL Up','Spec Hi','Margin Up']);
-  if(showLo) hdrs=hdrs.concat(['TTL Lo','Spec Lo','Margin Lo']);
+  if(showHi) hdrs=hdrs.concat(['TTL Up','Spec Hi','Spec Hi Override','Margin Up']);
+  if(showLo) hdrs=hdrs.concat(['TTL Lo','Spec Lo','Spec Lo Override','Margin Lo']);
   hdrs=hdrs.concat(['MU','DEnv']);
   var lines=[hdrs.join(',')];
   rows.forEach(function(r){
     var cond='"'+String(r.condition).replace(/"/g,'""')+'"';
     var gf='"'+(r.gf||'')+'"';
     var vals=[cond,gf,fv(r.freq),r.n,fv(r.mean),fv(r.min),fv(r.max)];
-    if(showHi) vals=vals.concat([fv(r.ttl_up),fv(r.spec_hi),fv(r.margin_up)]);
-    if(showLo) vals=vals.concat([fv(r.ttl_lo),fv(r.spec_lo),fv(r.margin_lo)]);
+    if(showHi) vals=vals.concat([fv(r.ttl_up),fv(r.real_spec_hi),r.spec_hi_is_override?fv(r.spec_hi):'',fv(r.margin_up)]);
+    if(showLo) vals=vals.concat([fv(r.ttl_lo),fv(r.real_spec_lo),r.spec_lo_is_override?fv(r.spec_lo):'',fv(r.margin_lo)]);
     vals=vals.concat([fv(r.mu),fv(r.denv)]);
     lines.push(vals.join(','));
   });
