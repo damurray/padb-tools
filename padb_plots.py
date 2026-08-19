@@ -11432,13 +11432,17 @@ function saveCSV(withExcluded){
   var active=_getFilteredActive(!withExcluded);
   var fLo=parseFloat(document.getElementById('freq_lo').value);
   var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var sumPar=getSumParams();
   var rows=['Condition,Freq_MHz,Mean,Min,Max,TTL_upper,TTL_lower,Spec_hi,Spec_lo'];
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   active.forEach(function(cd){
     cd.freqs.forEach(function(f,i){
       if(f<fLo||f>fHi) return;
-      var hi=(cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi;
-      var lo=(cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
+      /* Same override-bypasses-spec semantics as _buildCondRows() -- see its comment. */
+      var hi=(sumPar.tll_hi_override!==null&&sumPar.tll_hi_override!==undefined)?sumPar.tll_hi_override:
+             (cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi;
+      var lo=(sumPar.tll_lo_override!==null&&sumPar.tll_lo_override!==undefined)?sumPar.tll_lo_override:
+             (cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
       rows.push([
         esc(cd.condition),
         f.toFixed(4),
@@ -11662,9 +11666,18 @@ function _buildCondRows(condList,gfLabel,selTemps,params){
       if(stats.gf_n!==undefined&&stats.total_duts&&stats.total_duts>0){
         tot_n=Math.round(tot_n*stats.gf_n/stats.total_duts);
       }
-      var sHi=(cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:
+      /* A manual TLL override is documented (its own tooltip) as "bypasses
+         Spec Hi/Lo" -- applyDataFilter()'s Passing-only check already
+         treats it that way, so the Results Table's own Spec Hi/Lo (and the
+         Margin columns derived from them) must too, or the table shows a
+         condition failing against the real spec while the filter already
+         passed it against the override -- reported by the user as "if I
+         override lower limit, should the table Spec Lo change? It's not." */
+      var sHi=(params.tll_hi_override!==null&&params.tll_hi_override!==undefined)?params.tll_hi_override:
+              (cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:
               (cd.spec_hi!==undefined&&cd.spec_hi!==null?cd.spec_hi:null);
-      var sLo=(cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:
+      var sLo=(params.tll_lo_override!==null&&params.tll_lo_override!==undefined)?params.tll_lo_override:
+              (cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:
               (cd.spec_lo!==undefined&&cd.spec_lo!==null?cd.spec_lo:null);
       var tUp=stats.uttl[fi];
       var tLo=stats.lttl[fi];
