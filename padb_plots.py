@@ -504,8 +504,11 @@ function resetFilters(){
   if(allHover){allHover.checked=true;allHover.indeterminate=false;}
   document.getElementById('freq_lo').value=FREQ_MIN;
   document.getElementById('freq_hi').value=FREQ_MAX;
-  document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
-  document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
+  /* Floor, not round-to-nearest -- rounding the true min up would clip its
+     own data point out of the "no filter" default, the same bug fixed for
+     the initial page-load value (see _floor_dec in padb_plots.py). */
+  document.getElementById('freq_lo_txt').value=(Math.floor(parseFloat(FREQ_MIN)*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(parseFloat(FREQ_MAX)*1000)/1000).toFixed(3);
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
@@ -1076,6 +1079,90 @@ def _ceil_dec(v: float, ndigits: int) -> float:
     """Round UP to ndigits decimals -- see _floor_dec, the upper-bound twin."""
     scale = 10**ndigits
     return math.ceil(v * scale) / scale
+
+
+def _freq_label_map(freqs, x_unit: str) -> dict:
+    """Map each frequency to a short display string, guaranteeing every
+    distinct frequency gets a distinct label.
+
+    boxplot's x-axis is categorical, keyed by this label string -- a plain
+    fixed-precision label (e.g. ``.3g`` once in GHz) can collapse two
+    genuinely different frequencies (e.g. a YTO/band-edge split a few kHz
+    apart) to the identical string. That's not just a cosmetic tie: since the
+    axis is categorical, both boxes then land on the same slot and render
+    fully overlapping, reading as "two samples at one frequency" when they're
+    really two distinct, correctly-computed boxes whose labels happened to
+    collide (see the project_boxplot_freq_label_collision memory).
+
+    Rather than raising precision globally (which would make every label
+    needlessly long), this only grows precision for the specific colliding
+    cluster, one significant digit at a time, until that cluster's labels are
+    distinct -- every other frequency keeps its normal short label.
+    """
+    def fmt(f: float, sig: int) -> str:
+        if x_unit == "MHz" and f >= 1000:
+            return f"{f / 1000:.{sig}g} GHz"
+        return f"{f:.{sig}g} {x_unit}"
+
+    labels: dict = {}
+
+    def resolve(sub: list, sig: int) -> None:
+        if len(sub) == 1:
+            labels[sub[0]] = fmt(sub[0], sig)
+            return
+        lbls = [fmt(f, sig) for f in sub]
+        if len(set(lbls)) == len(lbls):
+            for f, l in zip(sub, lbls):
+                labels[f] = l
+            return
+        if sig >= 10:
+            # Give up growing precision and disambiguate explicitly instead of
+            # silently colliding -- should not be reachable on real data.
+            counts: dict = {}
+            for l in lbls:
+                counts[l] = counts.get(l, 0) + 1
+            seen: dict = {}
+            for f, l in zip(sub, lbls):
+                if counts[l] > 1:
+                    seen[l] = seen.get(l, 0) + 1
+                    labels[f] = f"{l} ({seen[l]}/{counts[l]})"
+                else:
+                    labels[f] = l
+            return
+        groups: dict = {}
+        order = []
+        for f, l in zip(sub, lbls):
+            if l not in groups:
+                groups[l] = []
+                order.append(l)
+            groups[l].append(f)
+        for l in order:
+            resolve(groups[l], sig + 1)
+
+    uniq = sorted(set(float(f) for f in freqs))
+    ghz_group = [f for f in uniq if x_unit == "MHz" and f >= 1000]
+    ghz_set = set(ghz_group)
+    other_group = [f for f in uniq if f not in ghz_set]
+    if ghz_group:
+        resolve(ghz_group, 3)
+    if other_group:
+        resolve(other_group, 4)
+    return labels
+
+
+_PC_P_OPTS = ["0.80", "0.90", "0.95", "0.99", "0.9973"]
+_PC_C_OPTS = ["0.90", "0.95"]
+
+
+def _snap_pc_opt(val: float, opts: list) -> str:
+    """Snap val to the nearest P/C <select> option, returned as that option's
+    exact value STRING (e.g. "0.90", not 0.9). A resetFilters() that assigns
+    a bare float back to one of these <select>s (e.g. ``sel.value = 0.9``)
+    silently fails to match the option's literal ``value="0.90"`` attribute --
+    the browser sets selectedIndex to -1 and .value reads back as "" instead
+    of restoring the default. Always assign this string, not the raw float.
+    """
+    return min(opts, key=lambda o: abs(float(o) - val))
 
 
 def _short_x_label(x_label: str) -> str:
@@ -2011,8 +2098,11 @@ function resetFilters(){
   document.getElementById('pass_only').checked=false;
   document.getElementById('freq_lo').value=FREQ_MIN;
   document.getElementById('freq_hi').value=FREQ_MAX;
-  document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
-  document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
+  /* Floor, not round-to-nearest -- rounding the true min up would clip its
+     own data point out of the "no filter" default, the same bug fixed for
+     the initial page-load value (see _floor_dec in padb_plots.py). */
+  document.getElementById('freq_lo_txt').value=(Math.floor(parseFloat(FREQ_MIN)*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(parseFloat(FREQ_MAX)*1000)/1000).toFixed(3);
   update();
 }
 /* ---- localStorage state persistence ---- */
@@ -5260,6 +5350,61 @@ function update(){
   saveState();
 }
 
+/* Resets this view's own filter/config controls to their defaults. Does NOT
+   touch the Global Filter (localStorage 'padb_v2_excluded', shared across
+   scatter/stat_summary/boxplot/env_coverage/summary) -- that's a deliberately
+   additive, cross-view exclusion list a user can spend real effort building
+   up, so wiping it here would be surprising; use "Clear global filter"
+   (in the GF panel) for that specific action instead. */
+function resetFilters(){
+  _stClear();
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){c.checked=true;});
+    var allChk=document.getElementById('all_'+col);if(allChk){allChk.checked=true;allChk.indeterminate=false;}
+    var b=document.getElementById('badge_'+col);if(b)b.classList.remove('active');
+  });
+  document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=true;});
+  var allSer=document.getElementById('all_ser_panel');if(allSer){allSer.checked=true;allSer.indeterminate=false;}
+  var bSer=document.getElementById('badge_ser_panel');if(bSer)bSer.classList.remove('active');
+  document.querySelectorAll('.ss_port_chk').forEach(function(c){c.checked=true;});
+  var allPort=document.getElementById('all_ss_port_panel');if(allPort){allPort.checked=true;allPort.indeterminate=false;}
+  var bPort=document.getElementById('badge_ss_port_panel');if(bPort)bPort.classList.remove('active');
+  document.querySelectorAll('.env_chk').forEach(function(c){if(!c.disabled)c.checked=true;});
+  document.getElementById('freq_lo').value=FREQ_MIN;
+  document.getElementById('freq_hi').value=FREQ_MAX;
+  /* Floor/ceil, not round-to-nearest -- see the identical note on the
+     page-load default (_floor_dec/_ceil_dec in padb_plots.py). */
+  document.getElementById('freq_lo_txt').value=(Math.floor(parseFloat(FREQ_MIN)*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(parseFloat(FREQ_MAX)*1000)/1000).toFixed(3);
+  var logChk=document.getElementById('log_x_chk');if(logChk)logChk.checked=LOG_X;
+  var gbSel=document.getElementById('statGroupBySel');if(gbSel)gbSel.value='';
+  var allFlt=document.querySelector('input[name="data_flt"][value="all"]');if(allFlt)allFlt.checked=true;
+  var yhiEl=document.getElementById('flt_yhi');if(yhiEl)yhiEl.value=(Y_LIM?Y_LIM[1]:'');
+  var yloEl=document.getElementById('flt_ylo');if(yloEl)yloEl.value=(Y_LIM?Y_LIM[0]:'');
+  updateFilterLabel();
+  var pEl=document.getElementById('stat_P');if(pEl)pEl.value=DEFAULT_P;
+  var cEl=document.getElementById('stat_C');if(cEl)cEl.value=DEFAULT_C;
+  var nEl2=document.getElementById('stat_n');if(nEl2)nEl2.value=0;
+  var muEl=document.getElementById('stat_mu');if(muEl)muEl.value=DEFAULT_MU;
+  var duEl=document.getElementById('stat_denv_up');if(duEl)duEl.value=0;
+  var dlEl=document.getElementById('stat_denv_lo');if(dlEl)dlEl.value=0;
+  var gbEl2=document.getElementById('stat_gb');if(gbEl2)gbEl2.value=DEFAULT_GB;
+  var drEl=document.getElementById('stat_drift');if(drEl)drEl.value=0;
+  var slEl=document.getElementById('stat_spec_lo');if(slEl)slEl.value='';
+  var shEl=document.getElementById('stat_spec_hi');if(shEl)shEl.value='';
+  var thEl=document.getElementById('stat_tll_hi');if(thEl)thEl.value='';
+  var tlEl=document.getElementById('stat_tll_lo');if(tlEl)tlEl.value='';
+  var npEl=document.getElementById('np_ti_chk');if(npEl)npEl.checked=false;
+  var ptEl2=document.getElementById('show_pts_chk');if(ptEl2)ptEl2.checked=false;
+  var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)hsEl.checked=false;
+  var gfChk=document.getElementById('stat_gf_chk');if(gfChk)gfChk.checked=true;
+  /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
+     would keep re-applying the stale zoomed range even after Reset. */
+  Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
+  update();
+}
+
 /* ---- localStorage state persistence ---- */
 function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
 function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
@@ -5491,8 +5636,8 @@ def _build_stat_summary_html(
         f"var FREQ_MAX={freq_max!r};",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
-        f"var DEFAULT_P={default_P!r};",
-        f"var DEFAULT_C={default_C!r};",
+        f"var DEFAULT_P={_snap_pc_opt(default_P, _PC_P_OPTS)!r};",
+        f"var DEFAULT_C={_snap_pc_opt(default_C, _PC_C_OPTS)!r};",
         f"var DEFAULT_MU={default_mu!r};",
         f"var DEFAULT_GB={default_gb!r};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
@@ -5762,6 +5907,7 @@ def _build_stat_summary_html(
         '&nbsp;<span id="stat_gf_badge" style="font-size:11px;background:#fff0e8;'
         'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000"></span>'
         '</label>\n'
+        '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         f'  {_csv_btn("saveCSV")}\n'
         '</div>\n'
     )
@@ -6939,6 +7085,52 @@ function update(){
   saveState();
 }
 
+/* Resets this view's own filter/config controls to their defaults. Does NOT
+   touch the Global Filter (localStorage 'padb_v2_excluded', shared across
+   scatter/stat_summary/boxplot/env_coverage/summary) -- that's a deliberately
+   additive, cross-view exclusion list a user can spend real effort building
+   up, so wiping it here would be surprising; use the dedicated GF controls
+   for that specific action instead. Only the local "GF: ON/OFF" toggle
+   (whether this view currently applies the filter at all) resets. */
+function resetFilters(){
+  _stClear();
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    document.querySelectorAll('.'+dim.col_id).forEach(function(c){c.checked=true;});
+    var allEl=document.getElementById('all_'+dim.col_id);if(allEl){allEl.checked=true;allEl.indeterminate=false;}
+    updateBadge(dim.col_id);
+  });
+  document.querySelectorAll('.ec_ser_chk').forEach(function(c){c.checked=true;});
+  var allSer=document.getElementById('all_ec_ser_panel');if(allSer){allSer.checked=true;allSer.indeterminate=false;}
+  var bSer=document.getElementById('badge_ec_ser_panel');if(bSer){bSer.textContent='';bSer.classList.remove('active');}
+  document.querySelectorAll('.ec_port_chk').forEach(function(c){c.checked=true;});
+  var allPort=document.getElementById('all_ec_port_panel');if(allPort){allPort.checked=true;allPort.indeterminate=false;}
+  var bPort=document.getElementById('badge_ec_port_panel');if(bPort){bPort.textContent='';bPort.classList.remove('active');}
+  document.querySelectorAll('.ec_temp_chk').forEach(function(c){if(!c.disabled)c.checked=true;});
+  document.getElementById('ec_freq_lo').value=EC_FREQ_MIN;
+  document.getElementById('ec_freq_hi').value=EC_FREQ_MAX;
+  /* Floor/ceil, not round-to-nearest -- see the identical note on the
+     page-load default (_floor_dec/_ceil_dec in padb_plots.py). */
+  document.getElementById('ec_freq_lo_txt').value=(Math.floor(parseFloat(EC_FREQ_MIN)*1000)/1000).toFixed(3);
+  document.getElementById('ec_freq_hi_txt').value=(Math.ceil(parseFloat(EC_FREQ_MAX)*1000)/1000).toFixed(3);
+  var logChk=document.getElementById('ec_log_x_chk');if(logChk)logChk.checked=EC_LOG_X;
+  var gbSel=document.getElementById('ecGroupBySel');if(gbSel)gbSel.value='';
+  var seEl=document.getElementById('ec_show_excl');if(seEl)seEl.checked=false;
+  var pR=document.getElementById('ec_P_room');if(pR)pR.value=EC_DEFAULT_P;
+  var cR=document.getElementById('ec_C_room');if(cR)cR.value=EC_DEFAULT_C;
+  var pE=document.getElementById('ec_P_env');if(pE)pE.value=EC_DEFAULT_P;
+  var cE=document.getElementById('ec_C_env');if(cE)cE.value=EC_DEFAULT_C;
+  var nR=document.getElementById('ec_n_room');if(nR)nR.value='';
+  var nE=document.getElementById('ec_n_env');if(nE)nE.value='';
+  var muEl=document.getElementById('ec_mu');if(muEl)muEl.value=0;
+  var shEl=document.getElementById('ec_spec_hi');if(shEl)shEl.value='';
+  var slEl=document.getElementById('ec_spec_lo');if(slEl)slEl.value='';
+  _ecGfEnabled=true;_updateEcGfBadge();
+  /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
+     would keep re-applying the stale zoomed range even after Reset. */
+  Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
+  update();
+}
+
 /* ---- localStorage state persistence ---- */
 function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
 function _stSet(k,v){try{localStorage.setItem(STATE_KEY+k,v);}catch(e){}}
@@ -7430,6 +7622,7 @@ def _build_env_coverage_html(
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
         + ' this click instead"'
         + ' onclick="updateStatsTable(getGroupedConditions(),true)">Refresh&nbsp;table</button>\n'
+        + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         + f'  <button class="gf-toggle-btn" id="ec_gf_toggle_btn" onclick="toggleEcGf()">GF:&nbsp;ON</button>\n'
         + f'  {gf_badge_html}\n'
         + '</div>\n'
@@ -7539,6 +7732,9 @@ def _build_env_coverage_html(
         f"var EC_FREQ_MIN={freq_min!r};",
         f"var EC_FREQ_MAX={freq_max!r};",
         f"var EC_FREQ_VALS={_freq_vals_js};",
+        f"var EC_LOG_X={'true' if log_x else 'false'};",
+        f"var EC_DEFAULT_P={_snap_pc_opt(default_P, _PC_P_OPTS)!r};",
+        f"var EC_DEFAULT_C={_snap_pc_opt(default_C, _PC_C_OPTS)!r};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var PALETTE={json.dumps(palette)};",
         f"var ALL_TEMPS={json.dumps(non_room_temps)};",
@@ -9190,9 +9386,12 @@ function clearEverything(){
   /* Freq filter */
   var flo=document.getElementById('box_freq_lo');if(flo)flo.value=BOX_FREQ_MIN;
   var fhi=document.getElementById('box_freq_hi');if(fhi)fhi.value=BOX_FREQ_MAX;
-  /* Global filter */
-  try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
-  _loadBoxGlobalFilter();_updateBoxGfStatus();
+  /* Global filter is deliberately NOT cleared here -- it's a cross-view,
+     additive-by-design exclusion list (see "Set ... as GF" buttons' own
+     "adds to, doesn't replace" semantics) that can take real effort to build
+     up across scatter/stat_summary/boxplot. Wiping it as a side effect of a
+     per-view filter reset would be surprising and hard to undo; use the
+     dedicated "Clear global filter" button for that specific action. */
   /* Clear any manual Y zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Clear. */
   Plotly.relayout('plot',{'yaxis.autorange':true});
@@ -9707,15 +9906,17 @@ function loadState(){
 """
 
 
-def _aggregate_box_data_by_temp(df: pd.DataFrame, x_unit: str = "MHz") -> list:
+def _aggregate_box_data_by_temp(
+    df: pd.DataFrame, x_unit: str = "MHz", freq_label_map: dict | None = None
+) -> list:
     """Raw-measurement IQR box stats grouped by (condition, temperature, frequency)."""
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
-
-    def _freq_label(f: float) -> str:
-        # GHz auto-conversion only makes sense when the base unit really is MHz.
-        if x_unit == "MHz" and f >= 1000:
-            return f"{f / 1000:.3g} GHz"
-        return f"{f:.4g} {x_unit}"
+    # Accept a precomputed map so this function's freq_label values always
+    # match the caller's categoryarray (freq_cat_order) exactly -- computing
+    # it independently here would risk drifting out of sync with that order
+    # if the two ever used slightly different logic. See _freq_label_map's
+    # own docstring for why a plain fixed-precision label isn't safe here.
+    freq_label_map = freq_label_map or _freq_label_map(sorted_freqs, x_unit)
 
     def _box_stats(vals: list) -> dict:
         arr = np.sort(np.array(vals, dtype=float))
@@ -9772,7 +9973,7 @@ def _aggregate_box_data_by_temp(df: pd.DataFrame, x_unit: str = "MHz") -> list:
                 s["outlier_detail"] = [d for d in vals_detail if d["v"] < lf or d["v"] > hf]
                 s["vals_detail"] = vals_detail
                 s["freq"] = float(freq)
-                s["freq_label"] = _freq_label(freq)
+                s["freq_label"] = freq_label_map[freq]
                 s["vals"] = [round(v, 6) for v in vals]
                 freq_stats.append(s)
             if freq_stats:
@@ -10296,15 +10497,16 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
 
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
 
-    def _freq_label(f: float) -> str:
-        if x_unit == "MHz" and f >= 1000:
-            return f"{f / 1000:.3g} GHz"
-        return f"{f:.4g} {x_unit}"
+    # Adaptive-precision labels shared with _aggregate_box_data_by_temp (passed
+    # through explicitly below) so the categorical axis order here and each
+    # freq_stats entry's own freq_label can never drift out of sync -- see
+    # _freq_label_map's docstring for why a plain fixed-precision label risks
+    # colliding two genuinely distinct close-in-frequency points.
+    freq_label_map = _freq_label_map(sorted_freqs, x_unit)
+    df["_freq_cat"] = df["Frequency_MHz"].map(freq_label_map)
+    freq_cat_order = [freq_label_map[f] for f in sorted_freqs]
 
-    df["_freq_cat"] = df["Frequency_MHz"].map({f: _freq_label(f) for f in sorted_freqs})
-    freq_cat_order = [_freq_label(f) for f in sorted_freqs]
-
-    box_data = _aggregate_box_data_by_temp(df, x_unit=x_unit)
+    box_data = _aggregate_box_data_by_temp(df, x_unit=x_unit, freq_label_map=freq_label_map)
     stat_data_box = _aggregate_stat_data(df, cfg)
     all_temps = sorted(df["Temperature"].dropna().unique().tolist())
 
@@ -10890,8 +11092,11 @@ function resetFilters(){
   });
   document.getElementById('freq_lo').value=FREQ_MIN;
   document.getElementById('freq_hi').value=FREQ_MAX;
-  document.getElementById('freq_lo_txt').value=parseFloat(FREQ_MIN).toFixed(3);
-  document.getElementById('freq_hi_txt').value=parseFloat(FREQ_MAX).toFixed(3);
+  /* Floor, not round-to-nearest -- rounding the true min up would clip its
+     own data point out of the "no filter" default, the same bug fixed for
+     the initial page-load value (see _floor_dec in padb_plots.py). */
+  document.getElementById('freq_lo_txt').value=(Math.floor(parseFloat(FREQ_MIN)*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(parseFloat(FREQ_MAX)*1000)/1000).toFixed(3);
   var allRad=document.querySelector('input[name="sum_flt"][value="all"]');
   if(allRad){allRad.checked=true;toggleRangeInputs();}
   var dirRad=document.querySelector('input[name="sum_tll_dir"][value="'+SPEC_DIRECTION+'"]');
