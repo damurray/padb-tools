@@ -359,6 +359,32 @@ Verified headlessly against the exact reported symptom: before the fix, Margin�
 
 ---
 
+## `summary`'s Data-filter (Upper/Lower limit, Passing only) ignored the Temperature checkboxes (fixed 2026-08-19)
+
+Reported by the user against a real page: "setting the data filter to upper limit or lower limit seems to include or exclude table data outwith the prescribed limits. Math issue maybe."
+
+**Root cause**: `applyDataFilter()`'s `range_hi`/`range_lo`/`passing` branches read `cd.max_data`/`cd.min_data`/`cd.uttl`/`cd.lttl` directly off the raw condition record — fields computed across *every* temperature in the dataset, regardless of which Temperature checkboxes are currently selected. The Results Table, by contrast, already gets its Min/Max/TTL from `getSumCondData(cd, selTemps, params)`, which correctly recomputes those values from only the currently-selected temperatures. So deselecting a temperature (e.g. narrowing to Room-only) changed what the *table* displayed but not what the *filter* evaluated — a condition's real, all-temperature max could exceed the Upper-limit value even though its currently-visible (Room-only) max was well within it, and the filter would still hide it based on the invisible, no-longer-relevant temperature's data. This is the same class of bug as the earlier "boxplot Statistics Table never respected Group by" fix — two code paths computing the same conceptual thing differently, only one of them updated when a filter control changed.
+
+**Fix**: `applyDataFilter()` now calls the same `getSumCondData(cd, selTemps, sumPar)` the table already uses, for all three modes (`passing`, `range_hi`, `range_lo`), instead of reading `cd.*` fields directly. Added null-guards on the recomputed `max_data[i]`/`min_data[i]` (`stats.max_data[i]===null||stats.max_data[i]<=flt.yhi`) since the temperature-filtered recompute can legitimately produce `null` at an index with no data for the selected temps — the raw `cd.max_data` never did, so the original code had no reason to guard against it, but blindly comparing `null<=20` in JS evaluates true (null coerces to 0), which would have silently treated a missing point as passing.
+
+Verified against a synthetic 2-temp case (Room: 10/12/11, all within an Upper limit of 20; 20°C: 10/12/25, one DUT exceeding it) with both temps selected: condition correctly hidden (0 active, matching the existing `.every()` "hide if it fails anywhere" semantics). Deselecting the 20°C checkbox (Room-only view): condition now correctly reappears (previously stayed hidden, using stale all-temperature data even though the only *visible* temperature's data was fine). `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
+
+---
+
+## `summary`: stepping the Freq max box to an exact real frequency still excluded it (fixed 2026-08-19)
+
+Reported by the user: "using the freq max text box up/down keyboard arrow to step through frequency bands... setting the frequency to 750MHz in this box excludes 750MHz in the table until I increase the frequency max box to the next higher value."
+
+**First-layer cause**: `freqStep()` (the arrow-key handler) snaps to the exact real frequency from `FREQ_VALS`, then writes it into the text box via plain `.toFixed(3)` (round-to-nearest) — the same class of bug as the page-load-default rounding fix earlier in this doc. If the real frequency has more than 3 decimals of precision (e.g. `750.00003`, common floating-point noise from a real instrument sweep), rounding to nearest can land the displayed/re-parsed boundary *below* the true value, so the inclusive `f<=fHi` check then excludes the exact point the user just stepped to. Fixed identically to the earlier page-load fix: `freqStep()` now floors the low-side box and ceils the high-side box instead of rounding to nearest, across all 6 duplicated copies of this function (scatter, legacy `distribution()`, `stat_summary`, `env_coverage`, `boxplot` has no equivalent — plain number inputs, not a stepped slider — and `summary`).
+
+**Second, deeper cause found while verifying the first fix**: even after `freqStep()` correctly ceils the *text box* to `750.001`, the bug persisted — because `summary`'s own filtering functions (`buildTraces()`, `applyDataFilter()`, `saveCSV()`, `_buildCondRows()`, plus the `toggleLogX()`/`buildLayout()` display-range fallbacks) all read the frequency bound from the **raw slider element** (`document.getElementById('freq_hi').value`), not the text box. A browser silently snaps a programmatically-assigned slider `.value` to its `step` attribute — so after `freqStep()` set the slider to the real `750.00003`, reading it back gave a snapped `"750"`, undoing the text box's own correct ceiling and reproducing the exact same exclusion one layer down. `stat_summary` already avoids this (its own `getFilteredCondsAndParams()` explicitly prefers the text box), but `summary` never had the equivalent guard on any of its filtering functions.
+
+**Fix**: added `_sumFreqRange()` (new, near `toggleLogX()`) — the same "prefer the text box, fall back to the slider only if the text box is empty" pattern `stat_summary` already used — and switched every filtering/plotting function in `summary` from reading the slider directly to calling this. `_recomputeSpecSegments()` already did the right thing inline and was left alone; `resetFilters()`'s slider-value assignment and `saveState()`'s slider-value read are setters/persistence, not filtering, and were left alone too.
+
+Verified end-to-end on a synthetic 5-frequency dataset with a deliberate `750.00003` value: stepping the Freq max box from 725 to the next step correctly lands on `750.001` (ceiled) in the text box; `_sumFreqRange()` correctly returns `{lo:700, hi:750.001}` even though the raw slider itself still reads a snapped `"750"`; the Results Table now correctly includes the `750.0000` row; the plot's own trace data confirmed to include the real `750.00003` point. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
+
+---
+
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
 
 `accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.
@@ -522,6 +548,37 @@ Verified two ways: (1) `qa_js_segments.py` (new, permanent — promoted from a t
 
 ---
 
+## "Copy PADB Filter" rewritten to reflect the current view, not the GF (fixed 2026-08-19)
+
+The original implementation (above, added 2026-08-06) built its expression from the *Global Filter's exclusion list* — a `'Serial Number' NOT IN {...}`-style expression covering whatever DUTs had been manually excluded via GF. The user asked to improve it, and provided a real, working PADB filter expression as a template to match:
+```
+'Analytic-->Analytic (unit):AlcState' = "TRUE"
+AND ( 'Analytic-->Analytic (unit):Frequency' >= "337.49" AND 'Analytic-->Analytic (unit):Frequency' <= "2700.01" )
+AND 'Analytic-->Analytic (unit):Mode' = "0"
+AND 'Analytic-->Analytic (unit):Port' = "RF1"
+AND 'Analytic-->Analytic (unit):Upper Spec' != "-100.35"
+AND 'Analytic-->Analytic (unit):Test Step' IN {"0.0 Deg C","55.0 Deg C","Room"}
+```
+
+**Checked against the real ClockSpurs pod's own data before implementing** (`ClockSpurs_PADBToolTest_run_results\padb\ClockSpurs_PADBToolset.csv`, and the real generated boxplot's own `COND_DIMS`/`PADB_FIELD_PREFIX`): this specific pod has no `AlcState`/`Mode`/`Port` fields at all (`ALL_BOX_PORTS=[]`; real `COND_DIMS` are `SpurType`, `Upper Limit (<=)`, `Upper Spec (<=)`, `Upper Uncertainty (<=)`) — so those three field names in the template were evidently carried over from a different, differently-shaped pod the user had used as a syntax reference, not meant to be reproduced literally for ClockSpurs. The parts of the template that *do* correspond to real ClockSpurs fields (Frequency range, an `!=` exclusion, `Test Step`) matched the real `COND_DIMS`/`TEMPS_PRESENT` shape exactly, confirming the template's *syntax* was the real target, not its specific field names.
+
+**Real design correction found while matching the template**: the old code special-cased `'Serial Number'` and `'Test Step'` as prefix-free (no `PADB_FIELD_PREFIX:` in front). The user's template prefixes *every* field, including both of those — so the old no-prefix special-casing was simply wrong, not an intentional PADB quirk.
+
+**New implementation**: `copyPadbFilter()` now builds its expression entirely from the current view's own active filters (condition-dim checkboxes, Serial, Port, Frequency range, Temperature) — not the GF — via one shared `clauseFor(fieldRef, allVals, selVals)`:
+- Omit the clause entirely when nothing on that dimension is excluded (all or none selected).
+- `= "val"` when exactly one value is selected.
+- `!= "val"` when exactly one value is excluded (cheaper to state than listing everything that remains) — this is the case that produces the `!=` clause in the template.
+- `IN {"a","b",...}` otherwise, for the selected set.
+- Every field is qualified with `PADB_FIELD_PREFIX:`, including `Serial Number`, `Port`, and `Test Step` (correcting the old no-prefix special case). `Frequency` reuses the already-injected `PADB_FREQ_FIELD` constant (already fully qualified).
+- A COND_DIM's own label (e.g. `"Upper Spec (<=)"`) has its trailing `" (<=)"`/`" (>=)"` comparison-direction hint stripped before use — that's a Group-string display convention, not part of the real PADB field name.
+- Frequency range is only emitted when narrowed from the view's own full extent (`BOX_FREQ_MIN`/`BOX_FREQ_MAX`), reading the number-input box (not the raw slider — irrelevant here since boxplot's freq inputs are plain `<input type="number">` with no separate slider).
+- Temperature values are converted from CSV labels (`"30°C"`) to PADB's own `"Test Step"` format (`"30.0 Deg C"`) via the existing `csvTempToTestStep()`.
+- All active clauses join with `AND` (no `OR` blocks anymore, since this no longer needs to express a *set of excluded rows* — it expresses the single narrowed view state directly).
+
+Verified against a small synthetic dataset shaped exactly like the real ClockSpurs pod (`SpurType`, `Upper Spec (<=)`, `Serial Number`, `Test Step`, `Frequency`, using the pod's real `PADB_FIELD_PREFIX`): narrowing Upper Spec to exclude one of seven real values produced `'...(dBc):Upper Spec' != "-100.35"` — an exact match to the corresponding clause in the user's template; narrowing Temperature to 3 of 5 steps and Frequency to a sub-range produced the correctly-formatted `IN {...}` and parenthesized range clauses. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
+
+---
+
 ## "Group by" — collapsing fragmented conditions (stat_summary, summary, env_coverage; added 2026-08-06)
 
 Real motivation: when a pod's extraction includes `Upper Spec`/`Upper Uncertainty` as grouping items (see the segment tab-through section above), "condition" in these three views is the *full combination* of every Group key — including the per-unit-noisy `Upper Limit` text. A pod with 5 real SpurTypes but per-unit Limit variation can explode into 150+ near-duplicate legend entries that differ only in Limit/Uncertainty digits. "Group by" lets you collapse on a *single* dimension (e.g. "SpurType" alone) instead of the full combination — confirmed on real data: 151 fragmented conditions → 5 real SpurTypes.
@@ -673,6 +730,10 @@ Deliberately out of scope for Phase 1 (not started): the guided "what do you wan
 Per job: unschedules its Task Scheduler entry first if one exists (reuses `delete_task()` — an orphaned task pointing at a now-deleted job.json would otherwise just fail confusingly the next time it fires), then optionally removes `results_dir`, then deletes the job.json itself.
 
 **Shared results_dir is the real hazard here, not the job.json deletion itself**: `padb_make_v2_job.py` deliberately gives every plot job for one pod the *same* `results_dir` ("all plot jobs for one pod share one results_dir"). Deleting one plot job.json out of several must not `rmtree` output the surviving siblings still point at. Fixed by computing, before any deletion in the batch runs, the set of `results_dir` values referenced by every job.json **not** in this delete request — a results_dir already in that set is left alone (reported back as a `note`, not silently skipped) even if `delete_data` is checked. Verified against three cases via a Flask test-client harness (not the running dev server, to avoid touching whichever real job files happen to be in `data_dir`): a standalone job (job.json + results_dir both removed), a run-job-plus-plot-job pair sharing one results_dir (deleting just the run job keeps the results_dir, since the plot job.json still references it; deleting the remaining plot job afterward then removes it), and a nonexistent path (`error: "not found"`, doesn't fail the rest of the batch).
+
+**Web app job log now shows live progress, not just a bare "running" state (fixed 2026-08-19)**: confirmed 2026-08-13 while investigating why a job "looked stuck" in the web tool for ~18 minutes — it was genuinely just queued behind another PADB-R.exe instance (the cross-process exclusivity guard above, working correctly), not actually hung, but the live status panel showed nothing at all during that wait, indistinguishable from a real hang. Root cause: `_stream()` (the shared helper every job type's subprocess launch goes through) called `subprocess.Popen(cmd, stdout=PIPE, ...)` with no `-u` flag and no `PYTHONUNBUFFERED` env var. Python defaults to *block*-buffered (not line-buffered) stdout when writing to a pipe rather than a real terminal, so `padb_batch.py`'s own status prints (e.g. `"Waiting for existing PADB-R.exe (PID X) to exit..."`) could sit unflushed in the child process's stdout buffer for the entire wait — `_stream()`'s live reader (`for line in proc.stdout`) only ever saw them once the buffer filled or the process exited. Final log content was always complete and correct once a job finished (process exit flushes everything) — this only ever affected *live* visibility while a job was still running.
+
+**Fix**: `_stream()` now passes `env={**os.environ, "PYTHONUNBUFFERED": "1"}` to `Popen`, forcing the child Python process's stdout to be unbuffered regardless of terminal/pipe. Since this is the one shared function every job-launching code path already goes through, no other call site needed touching. `padb_run.py`'s own `_Tee` (which tees stdout to both console and log file) never calls `.flush()` itself — but `PYTHONUNBUFFERED=1` makes the underlying real stdout it wraps flush on every write at the interpreter level, so no change to `_Tee` was needed either.
 
 ---
 
@@ -928,10 +989,12 @@ Follow the established pattern:
 
 ## Run log files
 
-Every `padb_run.py` run writes a timestamped `padb_run_YYYYMMDD_HHMMSS.log` to `results_dir/`. Output is teed to both the console (when interactive) and the log file simultaneously, line-buffered. This means:
+Every `padb_run.py` run writes a timestamped `padb_run_YYYYMMDD_HHMMSS.log` to `results_dir/`. Output is teed to both the console (when interactive) and the log file simultaneously via `_Tee` (`padb_run.py`). This means:
 - Partial output is preserved even if the process crashes.
 - Task Scheduler overnight runs (no console) still produce a log.
 - Multiple runs accumulate separate log files — they do not overwrite each other.
+
+**Correction (2026-08-19):** this section previously claimed the tee was "line-buffered" — not true. `_Tee.write()` never calls `.flush()`, and when Python's stdout is piped (not a real terminal, e.g. the web app launching `padb_run.py` via `subprocess.Popen`), it defaults to *block*-buffered, not line-buffered — see "Web app job log now shows live progress" below for the real bug this caused and its fix.
 
 ---
 

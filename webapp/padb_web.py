@@ -29,6 +29,7 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import queue
 import shutil
 import subprocess
@@ -204,9 +205,20 @@ def _job_result_index_path(job_path: Path, cfg: dict) -> Path | None:
 
 def _stream(cmd: list[str], job_id: str) -> int:
     _append_log(job_id, f"$ {' '.join(cmd)}")
+    # Without this, Python defaults to block-buffered (not line-buffered)
+    # stdout when writing to a pipe rather than a real terminal -- status
+    # lines padb_run.py/padb_batch.py print (e.g. "Waiting for existing
+    # PADB-R.exe (PID X) to exit...") could sit unflushed for the entire
+    # wait, making a job that's correctly queued behind another PADB-R.exe
+    # instance look indistinguishable from a real hang in the live status
+    # panel. Confirmed root cause 2026-08-13 (project_webapp_stdout_buffering
+    # memory); final log content was always complete once a job finished
+    # (process exit flushes everything) -- this only affects live visibility.
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, cwd=str(TOOLS_DIR),
+        text=True, cwd=str(TOOLS_DIR), env=env,
     )
     with _jobs_lock:
         _jobs[job_id]["proc"] = proc

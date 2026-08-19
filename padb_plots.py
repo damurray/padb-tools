@@ -214,7 +214,17 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
   else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
-  txt.value=nv.toFixed(3);slider.value=nv;
+  /* Floor for lo / ceil for hi, not round-to-nearest -- nv is the exact real
+     frequency from FREQ_VALS, but display precision is only 3 decimals.
+     Rounding to nearest can land the displayed/re-parsed boundary on the
+     wrong side of that exact value (e.g. a true 750.0001 rounds to "750.000",
+     then re-parsing "750.000" as fHi=750.0 makes the inclusive f<=fHi check
+     fail for the real 750.0001 point) -- reported by the user: stepping
+     Freq max to 750 excluded the 750MHz row from the table until stepping
+     one further. Same root cause as _floor_dec/_ceil_dec's page-load fix,
+     just triggered by the arrow-key stepper instead of the default value. */
+  var nvR=which==='lo'?Math.floor(nv*1000)/1000:Math.ceil(nv*1000)/1000;
+  txt.value=nvR.toFixed(3);slider.value=nv;
   var _fsLo=parseFloat(document.getElementById('freq_lo_txt').value);
   var _fsHi=parseFloat(document.getElementById('freq_hi_txt').value);
   var _fsLog=isLogX();
@@ -1804,7 +1814,17 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
   else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
-  txt.value=nv.toFixed(3);slider.value=nv;update();
+  /* Floor for lo / ceil for hi, not round-to-nearest -- nv is the exact real
+     frequency from FREQ_VALS, but display precision is only 3 decimals.
+     Rounding to nearest can land the displayed/re-parsed boundary on the
+     wrong side of that exact value (e.g. a true 750.0001 rounds to "750.000",
+     then re-parsing "750.000" as fHi=750.0 makes the inclusive f<=fHi check
+     fail for the real 750.0001 point) -- reported by the user: stepping
+     Freq max to 750 excluded the 750MHz row from the table until stepping
+     one further. Same root cause as _floor_dec/_ceil_dec's page-load fix,
+     just triggered by the arrow-key stepper instead of the default value. */
+  var nvR=which==='lo'?Math.floor(nv*1000)/1000:Math.ceil(nv*1000)/1000;
+  txt.value=nvR.toFixed(3);slider.value=nv;update();
 }
 function freqKeyDown(e,which){
   if(e.key==='Enter')freqTxtChange(which);
@@ -5156,7 +5176,17 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
   else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
-  txt.value=nv.toFixed(3);slider.value=nv;
+  /* Floor for lo / ceil for hi, not round-to-nearest -- nv is the exact real
+     frequency from FREQ_VALS, but display precision is only 3 decimals.
+     Rounding to nearest can land the displayed/re-parsed boundary on the
+     wrong side of that exact value (e.g. a true 750.0001 rounds to "750.000",
+     then re-parsing "750.000" as fHi=750.0 makes the inclusive f<=fHi check
+     fail for the real 750.0001 point) -- reported by the user: stepping
+     Freq max to 750 excluded the 750MHz row from the table until stepping
+     one further. Same root cause as _floor_dec/_ceil_dec's page-load fix,
+     just triggered by the arrow-key stepper instead of the default value. */
+  var nvR=which==='lo'?Math.floor(nv*1000)/1000:Math.ceil(nv*1000)/1000;
+  txt.value=nvR.toFixed(3);slider.value=nv;
   var loV=parseFloat(document.getElementById('freq_lo_txt').value);
   var hiV=parseFloat(document.getElementById('freq_hi_txt').value);
   var log=isLogX();
@@ -6221,7 +6251,17 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'){if(nv>parseFloat(document.getElementById('env_freq_hi').value))return;}
   else{if(nv<parseFloat(document.getElementById('env_freq_lo').value))return;}
-  txt.value=nv.toFixed(3);slider.value=nv;update();
+  /* Floor for lo / ceil for hi, not round-to-nearest -- nv is the exact real
+     frequency from FREQ_VALS, but display precision is only 3 decimals.
+     Rounding to nearest can land the displayed/re-parsed boundary on the
+     wrong side of that exact value (e.g. a true 750.0001 rounds to "750.000",
+     then re-parsing "750.000" as fHi=750.0 makes the inclusive f<=fHi check
+     fail for the real 750.0001 point) -- reported by the user: stepping
+     Freq max to 750 excluded the 750MHz row from the table until stepping
+     one further. Same root cause as _floor_dec/_ceil_dec's page-load fix,
+     just triggered by the arrow-key stepper instead of the default value. */
+  var nvR=which==='lo'?Math.floor(nv*1000)/1000:Math.ceil(nv*1000)/1000;
+  txt.value=nvR.toFixed(3);slider.value=nv;update();
 }
 function freqKeyDown(e,which){
   if(e.key==='Enter')freqTxtChange(which);
@@ -6883,7 +6923,17 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'&&nv>parseFloat(document.getElementById('ec_freq_hi').value))return;
   if(which==='hi'&&nv<parseFloat(document.getElementById('ec_freq_lo').value))return;
-  txt.value=nv.toFixed(3);slider.value=nv;
+  /* Floor for lo / ceil for hi, not round-to-nearest -- nv is the exact real
+     frequency from FREQ_VALS, but display precision is only 3 decimals.
+     Rounding to nearest can land the displayed/re-parsed boundary on the
+     wrong side of that exact value (e.g. a true 750.0001 rounds to "750.000",
+     then re-parsing "750.000" as fHi=750.0 makes the inclusive f<=fHi check
+     fail for the real 750.0001 point) -- reported by the user: stepping
+     Freq max to 750 excluded the 750MHz row from the table until stepping
+     one further. Same root cause as _floor_dec/_ceil_dec's page-load fix,
+     just triggered by the arrow-key stepper instead of the default value. */
+  var nvR=which==='lo'?Math.floor(nv*1000)/1000:Math.ceil(nv*1000)/1000;
+  txt.value=nvR.toFixed(3);slider.value=nv;
   var loV=parseFloat(document.getElementById('ec_freq_lo_txt').value);
   var hiV=parseFloat(document.getElementById('ec_freq_hi_txt').value);
   var log=isLogX();
@@ -9718,62 +9768,76 @@ function csvTempToTestStep(t){
   var m=t.match(/^(\d+(?:\.\d+)?)\s*[°º]?C$/);
   return m?parseFloat(m[1]).toFixed(1)+' Deg C':t;
 }
+/* Builds a PADB-native filter expression that selects exactly the rows the
+   current view's own filters (condition-dim checkboxes, Serial, Port,
+   Frequency range, Temperature) currently narrow the plot to -- rewritten
+   from a GF-exclusion-list-based expression (which only ever covered a
+   manually-built Serial Number NOT IN {...} list) after the user provided a
+   real, working PADB filter expression as a template:
+     'Analytic-->Analytic (unit):Field' = "val"
+     'Analytic-->Analytic (unit):Field' != "val"     -- one value excluded
+     'Analytic-->Analytic (unit):Field' IN {"a","b"} -- several selected
+     ( 'Analytic-->Analytic (unit):Field' >= "lo" AND ... <= "hi" )
+   Every field -- including Serial Number, Port, Test Step, and Frequency --
+   is qualified with the same PADB_FIELD_PREFIX in that template, which is
+   why this version prefixes uniformly rather than special-casing Serial
+   Number/Test Step as prefix-free the way the old implementation did. */
 function copyPadbFilter(){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
-    if(!raw){alert('No global filter entries to copy.');return;}
-    var keys=(JSON.parse(raw).excluded||[]);
-    if(!keys.length){alert('No global filter entries to copy.');return;}
     var fp=typeof PADB_FIELD_PREFIX!=='undefined'?PADB_FIELD_PREFIX:'';
     var ff=typeof PADB_FREQ_FIELD!=='undefined'?PADB_FREQ_FIELD:'';
-    /* Group by condKey: collect serials, exact frequencies, and all temps */
-    var condGroups={};
-    keys.forEach(function(k){
-      var p=k.split('||');
-      var ser=p[0]||'',cond=p[1]||'',temp=p[2]||'',freqStr=p[3]||'';
-      var freq=parseFloat(freqStr);
-      var isManual=(temp==='manual');
-      if(!condGroups[cond]) condGroups[cond]={sers:new Set(),freqs:new Set(),temps:new Set(),isManual:isManual};
-      if(ser) condGroups[cond].sers.add(ser);
-      if(!isManual&&!isNaN(freq)&&freqStr) condGroups[cond].freqs.add(String(freq));
-      if(!isManual&&temp) condGroups[cond].temps.add(temp);
-      if(isManual) condGroups[cond].isManual=true;
+    var clauses=[];
+    /* PADB's own field labels sometimes carry a "(<=)"/"(>=)" comparison-
+       direction hint (e.g. "Upper Spec (<=)") -- that's a display
+       convention from the Group string, not part of the real field name
+       PADB's own filter syntax expects. */
+    function fieldName(col){return col.replace(/\s*\([<>]=\)\s*$/,'');}
+    /* Omit the clause entirely when nothing is excluded (all/none selected
+       is not a meaningful filter); "!=" only when excluding exactly one
+       value is cheaper to state than listing everything that remains. */
+    function clauseFor(fieldRef,allVals,selVals){
+      if(!allVals||!allVals.length) return null;
+      if(!selVals||selVals.length===0||selVals.length===allVals.length) return null;
+      if(selVals.length===1) return "'"+fieldRef+"' = \""+selVals[0]+"\"";
+      var excluded=allVals.filter(function(v){return selVals.indexOf(v)<0;});
+      if(excluded.length===1) return "'"+fieldRef+"' != \""+excluded[0]+"\"";
+      return "'"+fieldRef+"' IN {"+selVals.map(function(v){return '"'+v+'"';}).join(',')+"}";
+    }
+    (COND_DIMS||[]).forEach(function(dim){
+      var c=clauseFor(fp+':'+fieldName(dim.col),dim.vals||[],getSelected('box_cond_'+dim.col_id));
+      if(c) clauses.push(c);
     });
-    /* One inclusion block per condKey; multiple temps use AND per PADB syntax; blocks joined with OR */
-    var blocks=[];
-    Object.keys(condGroups).sort().forEach(function(condKey){
-      var grp=condGroups[condKey];
-      if(!grp.sers.size) return;
-      var inner=[];
-      /* Exact frequency match(es) */
-      if(grp.freqs.size>0&&ff){
-        var flist=Array.from(grp.freqs).sort(function(a,b){return parseFloat(a)-parseFloat(b);});
-        inner.push(flist.length===1
-          ?"'"+ff+"' = \""+flist[0]+"\""
-          :"'"+ff+"' IN {"+flist.map(function(f){return '"'+f+'"';}).join(',')+"}");
-      }
-      /* Condition parameter = clauses */
-      if(fp&&condKey){
-        condKey.split('|').forEach(function(kv){
-          var eq=kv.indexOf('=');if(eq<0) return;
-          var pname=kv.substring(0,eq).trim();
-          var pval=kv.substring(eq+1).trim();
-          if(pname&&pval) inner.push("'"+fp+':'+pname+"' = \""+pval+"\"");
-        });
-      }
-      /* Temperature clauses — PADB uses AND between multiple 'Test Step' values */
-      if(!grp.isManual&&grp.temps.size>0){
-        var tlist=Array.from(grp.temps).sort();
-        tlist.forEach(function(t){inner.push("'Test Step' = \""+csvTempToTestStep(t)+"\"");});
-      }
-      /* Serial clause */
-      var sers=Array.from(grp.sers).sort();
-      inner.push(sers.length===1
-        ?"'Serial Number' = \""+sers[0]+"\""
-        :"'Serial Number' IN {"+sers.map(function(s){return '"'+s+'"';}).join(',')+"}");
-      blocks.push(inner.length>1?'( '+inner.join(' AND ')+' )':inner[0]);
-    });
-    var expr=blocks.join('\r\n OR ');
+    /* Frequency range -- only emitted when narrowed from the full extent
+       BOX_FREQ_MIN/BOX_FREQ_MAX (reads the text/number box, not the raw
+       slider -- see the freq-range rounding notes elsewhere in this file
+       for why the box is the authoritative value). */
+    var fr=getBoxFreqRange();
+    var freqLo=isFinite(fr.lo)?fr.lo:BOX_FREQ_MIN,freqHi=isFinite(fr.hi)?fr.hi:BOX_FREQ_MAX;
+    var loNarrowed=freqLo>BOX_FREQ_MIN+1e-6,hiNarrowed=freqHi<BOX_FREQ_MAX-1e-6;
+    if(ff&&loNarrowed&&hiNarrowed){
+      clauses.push("( '"+ff+"' >= \""+freqLo.toFixed(2)+"\" AND '"+ff+"' <= \""+freqHi.toFixed(2)+"\" )");
+    } else if(ff&&loNarrowed){
+      clauses.push("'"+ff+"' >= \""+freqLo.toFixed(2)+"\"");
+    } else if(ff&&hiNarrowed){
+      clauses.push("'"+ff+"' <= \""+freqHi.toFixed(2)+"\"");
+    }
+    /* Serial Number and Port -- same prefix as every other field per the
+       user's template (the old code's no-prefix special case was wrong). */
+    var serC=clauseFor(fp+':Serial Number',getAllBoxSerials(),getSelectedBoxSerials());
+    if(serC) clauses.push(serC);
+    if(ALL_BOX_PORTS&&ALL_BOX_PORTS.length){
+      var portC=clauseFor(fp+':Port',getAllBoxPorts(),getSelectedBoxPorts());
+      if(portC) clauses.push(portC);
+    }
+    /* Temperature -- PADB calls this "Test Step"; convert CSV labels
+       ("30°C") to PADB's own format ("30.0 Deg C") first. */
+    var tempC=clauseFor(fp+':Test Step',
+      (TEMPS_PRESENT||[]).map(csvTempToTestStep),
+      getSelectedTemps().map(csvTempToTestStep));
+    if(tempC) clauses.push(tempC);
+
+    if(!clauses.length){alert('Nothing is currently narrowed in this view -- no filter to copy (it would select all data).');return;}
+    var expr=clauses.join('\r\nAND ');
     if(navigator.clipboard){
       navigator.clipboard.writeText(expr).then(function(){
         var btn=document.getElementById('box_padb_flt_btn');
@@ -10616,7 +10680,7 @@ def _build_box_interactive_html(
         ' onclick="copyResultsPath()">Copy results path</button>\n'
         + '  <button class="toggle-btn" id="box_padb_flt_btn"'
         ' style="background:#f0fff4;border-color:#080;color:#060"'
-        ' title="Under development -- copies a best-effort \'Serial Number\' NOT IN {...} expression; may not exactly match PADB\'s own filter syntax"'
+        ' title="Copies a PADB filter expression selecting exactly what this view\'s own filters (condition/Serial/Port/Frequency/Temperature) currently narrow the plot to"'
         ' onclick="copyPadbFilter()">Copy PADB Filter</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
@@ -10938,6 +11002,23 @@ function getSelected(col){
     .map(function(c){return c.value;});
 }
 
+/* The text box is the authoritative frequency bound, not the raw slider --
+   a browser silently snaps a programmatically-assigned slider .value to its
+   step attribute (here, (max-min)/1000), so a value landing between two
+   step increments (e.g. a real data point at 750.00003 after freqStep()
+   snaps the *slider* to plain 750) reads back rounded, which can then
+   exclude that exact point from an inclusive >=/<= comparison. Reported by
+   the user: stepping Freq max to 750 via the keyboard arrow excluded the
+   real 750MHz row from the table until stepping one further. Every
+   filtering/plotting function below must read this instead of the slider
+   directly -- matching the pattern stat_summary's own frequency filter
+   already uses for the identical reason. */
+function _sumFreqRange(){
+  var loTxt=document.getElementById('freq_lo_txt'),hiTxt=document.getElementById('freq_hi_txt');
+  var lo=loTxt&&loTxt.value!==''?parseFloat(loTxt.value):parseFloat(document.getElementById('freq_lo').value);
+  var hi=hiTxt&&hiTxt.value!==''?parseFloat(hiTxt.value):parseFloat(document.getElementById('freq_hi').value);
+  return {lo:lo,hi:hi};
+}
 /* ---- log X ---- */
 function isLogX(){return document.getElementById('log_x_chk').checked;}
 function toggleLogX(){
@@ -10954,8 +11035,8 @@ function toggleLogX(){
     range=log?[Math.log10(Math.max(cur[0],1e-9)),Math.log10(Math.max(cur[1],1e-9))]
              :[Math.pow(10,cur[0]),Math.pow(10,cur[1])];
   } else {
-    var lo=parseFloat(document.getElementById('freq_lo').value);
-    var hi=parseFloat(document.getElementById('freq_hi').value);
+    var _frTgl=_sumFreqRange();
+    var lo=_frTgl.lo,hi=_frTgl.hi;
     range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
   }
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
@@ -10992,7 +11073,17 @@ function freqStep(which,dir){
   var ni=Math.max(0,Math.min(fv.length-1,idx+dir)),nv=fv[ni];
   if(which==='lo'){if(nv>parseFloat(document.getElementById('freq_hi').value))return;}
   else{if(nv<parseFloat(document.getElementById('freq_lo').value))return;}
-  txt.value=nv.toFixed(3);slider.value=nv;update();
+  /* Floor for lo / ceil for hi, not round-to-nearest -- nv is the exact real
+     frequency from FREQ_VALS, but display precision is only 3 decimals.
+     Rounding to nearest can land the displayed/re-parsed boundary on the
+     wrong side of that exact value (e.g. a true 750.0001 rounds to "750.000",
+     then re-parsing "750.000" as fHi=750.0 makes the inclusive f<=fHi check
+     fail for the real 750.0001 point) -- reported by the user: stepping
+     Freq max to 750 excluded the 750MHz row from the table until stepping
+     one further. Same root cause as _floor_dec/_ceil_dec's page-load fix,
+     just triggered by the arrow-key stepper instead of the default value. */
+  var nvR=which==='lo'?Math.floor(nv*1000)/1000:Math.ceil(nv*1000)/1000;
+  txt.value=nvR.toFixed(3);slider.value=nv;update();
 }
 function freqKeyDown(e,which){
   if(e.key==='Enter')freqTxtChange(which);
@@ -11196,8 +11287,8 @@ function hexToRgba(hex,a){
 }
 function buildTraces(active,excl){
   excl=excl||[];
-  var freqLo=parseFloat(document.getElementById('freq_lo').value);
-  var freqHi=parseFloat(document.getElementById('freq_hi').value);
+  var _fr0=_sumFreqRange();
+  var freqLo=_fr0.lo,freqHi=_fr0.hi;
   var traces=[];
   /* Excluded conditions — dim gray bands rendered first (behind active) */
   excl.forEach(function(cd){
@@ -11279,8 +11370,8 @@ function buildTraces(active,excl){
     }
   });
   /* spec lines — per-frequency, drawn as segments per unique spec value */
-  var fLo=parseFloat(document.getElementById('freq_lo').value);
-  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var _fr1=_sumFreqRange();
+  var fLo=_fr1.lo,fHi=_fr1.hi;
   // specRanges[val] = {fMin, fMax} — frequency extent where that spec value applies
   function buildSpecRanges(listKey,fallback){
     var ranges={};
@@ -11337,8 +11428,8 @@ function buildLayout(){
   if(curX){
     range=curX;
   } else {
-    var lo=parseFloat(document.getElementById('freq_lo').value);
-    var hi=parseFloat(document.getElementById('freq_hi').value);
+    var _frLay=_sumFreqRange();
+    var lo=_frLay.lo,hi=_frLay.hi;
     range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
   }
   var curY=Y_LIM||_liveAxisRange('yaxis');
@@ -11449,20 +11540,35 @@ function toggleRangeInputs(){
 function applyDataFilter(active){
   var flt=getDataFilter();
   if(flt.mode==='all') return active;
-  var fLo=parseFloat(document.getElementById('freq_lo').value);
-  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var _fr2=_sumFreqRange();
+  var fLo=_fr2.lo,fHi=_fr2.hi;
+  /* Temperature-aware, matching what the Results Table itself shows --
+     cd.max_data/min_data/uttl/lttl are the RAW fields computed across every
+     temperature, regardless of which Temperature checkboxes are currently
+     selected. getSumCondData(cd,selTemps,params) is what _buildCondRows()
+     already calls to get the temp-filtered Min/Max/TTL the table displays,
+     so this filter reused the same call instead of reading cd.* directly --
+     otherwise deselecting a temperature (e.g. viewing Room only) left the
+     Upper/Lower-limit and Passing-only filters still deciding visibility
+     from the full, all-temperature data range, which could show a condition
+     whose *visible* (temp-filtered) data is actually outside the limit, or
+     hide one whose visible data is actually fine. Reported by the user:
+     "setting the data filter to upper limit or lower limit seems to
+     include or exclude table data outwith the prescribed limits." */
+  var selTemps=getSelTemps();
+  var sumPar=getSumParams();
   return active.filter(function(cd){
     var vis=[];cd.freqs.forEach(function(f,i){if(f>=fLo&&f<=fHi)vis.push(i);});
     if(!vis.length) return false;
+    var stats=getSumCondData(cd,selTemps,sumPar);
     if(flt.mode==='passing'){
-      var sumPar=getSumParams();
       var tllHiOv=sumPar.tll_hi_override;
       var tllLoOv=sumPar.tll_lo_override;
       return vis.every(function(i){
         var hi=tllHiOv!==null?tllHiOv:((cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi);
         var lo=tllLoOv!==null?tllLoOv:((cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo);
-        var uOk=(hi===null||cd.uttl[i]===null||Number(cd.uttl[i])<=hi);
-        var lOk=(lo===null||cd.lttl[i]===null||Number(cd.lttl[i])>=lo);
+        var uOk=(hi===null||stats.uttl[i]===null||Number(stats.uttl[i])<=hi);
+        var lOk=(lo===null||stats.lttl[i]===null||Number(stats.lttl[i])>=lo);
         return uOk&&lOk;
       });
     }
@@ -11475,12 +11581,12 @@ function applyDataFilter(active){
          making the filter silently do nothing (reported by the user: "setting
          a lower limit to 18dBm does nothing"). */
       return vis.every(function(i){
-        return cd.max_data[i]<=flt.yhi;
+        return stats.max_data[i]===null||stats.max_data[i]<=flt.yhi;
       });
     }
     if(flt.mode==='range_lo'){
       return vis.every(function(i){
-        return cd.min_data[i]>=flt.ylo;
+        return stats.min_data[i]===null||stats.min_data[i]>=flt.ylo;
       });
     }
     return true;
@@ -11489,8 +11595,8 @@ function applyDataFilter(active){
 function saveCSV(withExcluded){
   var savedGf=_sumGfExcluded;
   var active=_getFilteredActive(!withExcluded);
-  var fLo=parseFloat(document.getElementById('freq_lo').value);
-  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var _fr3=_sumFreqRange();
+  var fLo=_fr3.lo,fHi=_fr3.hi;
   var sumPar=getSumParams();
   /* Spec_hi/Spec_lo are always the real datasheet value -- a CSV can't carry
      the live table's "override active" visual flag, so silently substituting
@@ -11716,8 +11822,8 @@ function _getFilteredActive(useGf){
 }
 /* ---- results table helpers ---- */
 function _buildCondRows(condList,gfLabel,selTemps,params){
-  var fLo=parseFloat(document.getElementById('freq_lo').value);
-  var fHi=parseFloat(document.getElementById('freq_hi').value);
+  var _fr4=_sumFreqRange();
+  var fLo=_fr4.lo,fHi=_fr4.hi;
   var rows=[];
   condList.forEach(function(cd){
     var stats=getSumCondData(cd,selTemps,params);
