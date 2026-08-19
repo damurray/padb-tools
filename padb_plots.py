@@ -8501,7 +8501,10 @@ function getYFilter(){
   var tll_el=document.getElementById('box_tll_hi');
   var tll_hi=(tll_el&&tll_el.value!=='')?parseFloat(tll_el.value):null;
   if(tll_hi!==null&&isNaN(tll_hi)) tll_hi=null;
-  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi,ylo:isNaN(ylo)?-Infinity:ylo,tll_hi:tll_hi};
+  var tll_lo_el=document.getElementById('box_tll_lo');
+  var tll_lo=(tll_lo_el&&tll_lo_el.value!=='')?parseFloat(tll_lo_el.value):null;
+  if(tll_lo!==null&&isNaN(tll_lo)) tll_lo=null;
+  return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi,ylo:isNaN(ylo)?-Infinity:ylo,tll_hi:tll_hi,tll_lo:tll_lo};
 }
 function getBoxFreqRange(){
   var lo=parseFloat(document.getElementById('box_freq_lo').value);
@@ -8580,6 +8583,10 @@ function updateBoxFilterLabels(){
   var loWrap=document.getElementById('box_flt_lo_wrap');
   if(hiWrap) hiWrap.style.display=showHi?'':'none';
   if(loWrap) loWrap.style.display=showLo?'':'none';
+  var tllHiWrap=document.getElementById('box_tll_hi_wrap');
+  var tllLoWrap=document.getElementById('box_tll_lo_wrap');
+  if(tllHiWrap) tllHiWrap.style.display=showHi?'':'none';
+  if(tllLoWrap) tllLoWrap.style.display=showLo?'':'none';
   var checked=document.querySelector('input[name="box_flt"]:checked');
   if(checked&&((checked.value==='range_hi'&&!showHi)||(checked.value==='range_lo'&&!showLo))){
     var allRad=document.querySelector('input[name="box_flt"][value="all"]');
@@ -8799,7 +8806,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
   var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
   var passHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
-  var passLo=passActive?LO_SPEC:null;
+  var passLo=passActive?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
   var rlo=yActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
   var fr=getBoxFreqRange();
@@ -8946,12 +8953,19 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   if(!_boxHideSpec&&hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
     line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
-  /* Manual TLL override line */
+  /* Manual TLL override line(s) -- upper and lower are independent overrides,
+     each drawn only when set, same as Spec Hi/Lo above. */
   if(yFlt&&yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined&&_specOrder.length){
     var tllX=[_specOrder[0],_specOrder[_specOrder.length-1]];
     traces.push({type:'scatter',mode:(_specOrder.length<2?'markers':'lines'),x:tllX,y:[yFlt.tll_hi,yFlt.tll_hi],
       line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
       hovertemplate:'TLL↑ (manual): '+yFlt.tll_hi.toFixed(4)+'<extra></extra>'});
+  }
+  if(yFlt&&yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined&&_specOrder.length){
+    var tllLoX=[_specOrder[0],_specOrder[_specOrder.length-1]];
+    traces.push({type:'scatter',mode:(_specOrder.length<2?'markers':'lines'),x:tllLoX,y:[yFlt.tll_lo,yFlt.tll_lo],
+      line:{color:'darkred',dash:'dot',width:2},name:'TLL↓ (manual)',
+      hovertemplate:'TLL↓ (manual): '+yFlt.tll_lo.toFixed(4)+'<extra></extra>'});
   }
   return traces;
 }
@@ -9023,7 +9037,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var yFltActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
   var yFltActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
   var stPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
-  var stPassLo=passActive?LO_SPEC:null;
+  var stPassLo=passActive?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
   var fr=getBoxFreqRange();
   var rows=[];
   var tempActive=selTemps&&selTemps.length<TEMPS_PRESENT.length;
@@ -9252,7 +9266,7 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
   var yActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
   var yActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
   var olPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
-  var olPassLo=passActive?LO_SPEC:null;
+  var olPassLo=passActive?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
   var rlo=yActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
   var fr=getBoxFreqRange();
@@ -9499,6 +9513,8 @@ function clearEverything(){
   if(allFlt)allFlt.checked=true;
   var dirRad=document.querySelector('input[name="box_tll_dir"][value="'+SPEC_DIRECTION+'"]');
   if(dirRad)dirRad.checked=true;
+  var tllHiEl=document.getElementById('box_tll_hi');if(tllHiEl)tllHiEl.value='';
+  var tllLoElC=document.getElementById('box_tll_lo');if(tllLoElC)tllLoElC.value='';
   updateBoxFilterLabels();
   /* IQR k */
   var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value='1.5';
@@ -10044,6 +10060,7 @@ function saveState(){
   var yhiEl=document.getElementById('box_flt_yhi');if(yhiEl)_stSet('box_filter_yhi',yhiEl.value);
   var yloEl=document.getElementById('box_flt_ylo');if(yloEl)_stSet('box_filter_ylo',yloEl.value);
   var tllEl=document.getElementById('box_tll_hi');if(tllEl)_stSet('box_tll_hi',tllEl.value);
+  var tllLoEl=document.getElementById('box_tll_lo');if(tllLoEl)_stSet('box_tll_lo',tllLoEl.value);
   var kEl=document.getElementById('box_iqr_k');if(kEl)_stSet('box_iqr_k',kEl.value);
   var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)_stSet('box_hide_spec',hsEl.checked?'1':'0');
 }
@@ -10069,6 +10086,7 @@ function loadState(){
   var fyhi=_stGet('box_filter_yhi');var fyhiEl=document.getElementById('box_flt_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
   var fylo=_stGet('box_filter_ylo');var fyloEl=document.getElementById('box_flt_ylo');if(fylo!==null&&fyloEl)fyloEl.value=fylo;
   var tll=_stGet('box_tll_hi');var tllEl=document.getElementById('box_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
+  var tllLo=_stGet('box_tll_lo');var tllLoEl=document.getElementById('box_tll_lo');if(tllLo!==null&&tllLoEl)tllLoEl.value=tllLo;
   var iqr=_stGet('box_iqr_k');if(iqr!==null){var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value=iqr;}
   var hs=_stGet('box_hide_spec');if(hs!==null){var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)hsEl.checked=(hs==='1');}
 }
@@ -10383,8 +10401,11 @@ def _build_box_interactive_html(
         '  </span>\n'
         '  <span class="sep"></span>\n'
         + tll_selector_html +
-        '  <label title="Override TLL for Passing only filter and draw TLL line (bypasses Spec Hi)">'
-        'TLL&nbsp;override:<input type="number" id="box_tll_hi" step="0.001" placeholder="auto"'
+        '  <label id="box_tll_hi_wrap" title="Override TLL↑ for Passing only filter and draw TLL line (bypasses Spec Hi)">'
+        'TLL&#8593;&nbsp;override:<input type="number" id="box_tll_hi" step="0.001" placeholder="auto"'
+        ' style="width:74px" oninput="update()"></label>\n'
+        '  <label id="box_tll_lo_wrap" title="Override TLL↓ for Passing only filter and draw TLL line (bypasses Spec Lo)">'
+        'TLL&#8595;&nbsp;override:<input type="number" id="box_tll_lo" step="0.001" placeholder="auto"'
         ' style="width:74px" oninput="update()"></label>\n'
         '  <span class="sep"></span>\n'
         '  <label title="Show non-parametric (order-statistic) TI bounds in the Statistics Table'
@@ -10976,7 +10997,8 @@ function getSumParams(){
   function _i(id,def){var el=document.getElementById(id);return el?(parseInt(el.value)||def):def;}
   function _nn(id){var el=document.getElementById(id);if(!el||el.value==='')return null;var v=parseFloat(el.value);return isNaN(v)?null:v;}
   return {P:_n('sum_P',0.90),C:_n('sum_C',0.90),n_override:_i('sum_n',0),
-          mu:_n('sum_mu',0),denv:_n('sum_denv',0),tll_hi_override:_nn('sum_tll_hi')};
+          mu:_n('sum_mu',0),denv:_n('sum_denv',0),tll_hi_override:_nn('sum_tll_hi'),
+          tll_lo_override:_nn('sum_tll_lo')};
 }
 
 /* ---- serial filter ---- */
@@ -11236,12 +11258,16 @@ function buildTraces(active,excl){
       hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
   });
   }
-  /* Manual TLL override line */
+  /* Manual TLL override line(s) -- upper and lower are independent overrides */
   var _sumPar=getSumParams();
   if(_sumPar.tll_hi_override!==null&&isFinite(fLo)&&isFinite(fHi))
     traces.push({type:'scatter',x:[fLo,fHi],y:[_sumPar.tll_hi_override,_sumPar.tll_hi_override],
       mode:(fLo===fHi?'markers':'lines'),line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
       hovertemplate:'TLL↑ (manual): '+_sumPar.tll_hi_override.toFixed(4)+'<extra></extra>'});
+  if(_sumPar.tll_lo_override!==null&&isFinite(fLo)&&isFinite(fHi))
+    traces.push({type:'scatter',x:[fLo,fHi],y:[_sumPar.tll_lo_override,_sumPar.tll_lo_override],
+      mode:(fLo===fHi?'markers':'lines'),line:{color:'darkred',dash:'dot',width:2},name:'TLL↓ (manual)',
+      hovertemplate:'TLL↓ (manual): '+_sumPar.tll_lo_override.toFixed(4)+'<extra></extra>'});
   return traces;
 }
 
@@ -11293,6 +11319,8 @@ function resetFilters(){
   updateSumFilterLabels();
   var yhi=document.getElementById('sum_yhi');if(yhi)yhi.value='';
   var ylo=document.getElementById('sum_ylo');if(ylo)ylo.value='';
+  var tllHiRst=document.getElementById('sum_tll_hi');if(tllHiRst)tllHiRst.value='';
+  var tllLoRst=document.getElementById('sum_tll_lo');if(tllLoRst)tllLoRst.value='';
   var ec=document.getElementById('sum_show_excl_chk');if(ec)ec.checked=false;
   document.querySelectorAll('.sum_ser_chk').forEach(function(c){c.checked=true;});
   var aSer=document.getElementById('all_sum_ser');if(aSer){aSer.checked=true;aSer.indeterminate=false;}
@@ -11340,6 +11368,10 @@ function updateSumFilterLabels(){
   var loWrap=document.getElementById('sum_flt_lo_wrap');
   if(hiWrap) hiWrap.style.display=showHi?'':'none';
   if(loWrap) loWrap.style.display=showLo?'':'none';
+  var tllHiWrap=document.getElementById('sum_tll_hi_wrap');
+  var tllLoWrap=document.getElementById('sum_tll_lo_wrap');
+  if(tllHiWrap) tllHiWrap.style.display=showHi?'':'none';
+  if(tllLoWrap) tllLoWrap.style.display=showLo?'':'none';
   var checked=document.querySelector('input[name="sum_flt"]:checked');
   if(checked&&((checked.value==='range_hi'&&!showHi)||(checked.value==='range_lo'&&!showLo))){
     var allRad=document.querySelector('input[name="sum_flt"][value="all"]');
@@ -11366,9 +11398,10 @@ function applyDataFilter(active){
     if(flt.mode==='passing'){
       var sumPar=getSumParams();
       var tllHiOv=sumPar.tll_hi_override;
+      var tllLoOv=sumPar.tll_lo_override;
       return vis.every(function(i){
         var hi=tllHiOv!==null?tllHiOv:((cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi);
-        var lo=(cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo;
+        var lo=tllLoOv!==null?tllLoOv:((cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo);
         var uOk=(hi===null||cd.uttl[i]===null||Number(cd.uttl[i])<=hi);
         var lOk=(lo===null||cd.lttl[i]===null||Number(cd.lttl[i])>=lo);
         return uOk&&lOk;
@@ -11914,6 +11947,7 @@ function saveState(){
   var yhiEl=document.getElementById('sum_yhi');if(yhiEl)_stSet('sum_filter_yhi',yhiEl.value);
   var yloEl=document.getElementById('sum_ylo');if(yloEl)_stSet('sum_filter_ylo',yloEl.value);
   var tllEl=document.getElementById('sum_tll_hi');if(tllEl)_stSet('sum_tll_hi',tllEl.value);
+  var tllLoEl=document.getElementById('sum_tll_lo');if(tllLoEl)_stSet('sum_tll_lo',tllLoEl.value);
   var pEl=document.getElementById('sum_P');if(pEl)_stSet('sum_P',pEl.value);
   var cEl=document.getElementById('sum_C');if(cEl)_stSet('sum_C',cEl.value);
   var nEl=document.getElementById('sum_n');if(nEl)_stSet('sum_n',nEl.value);
@@ -11941,6 +11975,7 @@ function loadState(){
   var fyhi=_stGet('sum_filter_yhi');var fyhiEl=document.getElementById('sum_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
   var fylo=_stGet('sum_filter_ylo');var fyloEl=document.getElementById('sum_ylo');if(fylo!==null&&fyloEl)fyloEl.value=fylo;
   var tll=_stGet('sum_tll_hi');var tllEl=document.getElementById('sum_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
+  var tllLo=_stGet('sum_tll_lo');var tllLoEl=document.getElementById('sum_tll_lo');if(tllLo!==null&&tllLoEl)tllLoEl.value=tllLo;
   var sp=_stGet('sum_P');if(sp!==null){var pEl=document.getElementById('sum_P');if(pEl)pEl.value=sp;var lpEl=document.getElementById('lbl_sum_P');if(lpEl)lpEl.value=sp;}
   var sc=_stGet('sum_C');if(sc!==null){var cEl=document.getElementById('sum_C');if(cEl)cEl.value=sc;var lcEl=document.getElementById('lbl_sum_C');if(lcEl)lcEl.value=sc;}
   var sn=_stGet('sum_n');if(sn!==null){var nEl=document.getElementById('sum_n');if(nEl)nEl.value=sn;}
@@ -12263,8 +12298,11 @@ def _build_summary_html(
         + '  </span>\n'
         + '  <span class="sep"></span>\n'
         + tll_selector_html
-        + '  <label title="Override TLL for Passing only filter and draw TLL line">'
-        + 'TLL&nbsp;override:<input type="number" id="sum_tll_hi" step="0.001" placeholder="auto"'
+        + '  <label id="sum_tll_hi_wrap" title="Override TLL&#8593; for Passing only filter and draw TLL line">'
+        + 'TLL&#8593;&nbsp;override:<input type="number" id="sum_tll_hi" step="0.001" placeholder="auto"'
+        + ' style="width:74px" oninput="update()"></label>\n'
+        + '  <label id="sum_tll_lo_wrap" title="Override TLL&#8595; for Passing only filter and draw TLL line">'
+        + 'TLL&#8595;&nbsp;override:<input type="number" id="sum_tll_lo" step="0.001" placeholder="auto"'
         + ' style="width:74px" oninput="update()"></label>\n'
         + '  <span class="sep"></span>\n'
         + '  <label title="Show non-selected conditions as dim gray bands">'

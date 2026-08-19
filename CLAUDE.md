@@ -317,6 +317,23 @@ Verified against a synthetic case mirroring the real report exactly: DUT01 teste
 
 ---
 
+## TLL override lower side added to boxplot and summary (fixed 2026-08-19)
+
+Confirmed real gap tracked in the `project_tll_override_lower_missing` memory since 2026-08-14: the manual TLL override input only ever had an upper side (`box_tll_hi`/`sum_tll_hi`) — `getYFilter()`/`getSumParams()` only returned a `tll_hi`/`tll_hi_override` field, the "Passing only" filter's lower-bound check (`passLo`/`lo`) always fell back to the plain CSV `LO_SPEC`/`spec_lo` with no way to override it, and the manual TLL line trace only ever drew the upper line.
+
+**Scope correction from the memory (verified against current code, not assumed)**: the memory listed three views — boxplot, `env_coverage`, `summary`. Checking each:
+- `stat_summary` was never actually broken — it already has both `stat_tll_hi`/`stat_tll_lo` fully wired (`tll_lo_override` in `getFilteredCondsAndParams()`'s params, consumed by `computeFreqResult()`). Not part of this fix; presumably already fixed by the time the memory was written, or the memory's "three views" list simply predates it.
+- `env_coverage`'s `env_tll_hi` **does not belong to the real V2 `env_coverage` view at all** — it's rendered inside `_build_env_summary_html`, the `de_summary`-equivalent legacy path this codebase deliberately excludes from feature work everywhere else in this doc. The real `_build_env_coverage_html` has no TLL override control, upper or lower — confirmed directly reading its generated HTML. Since there's no existing one-sided feature to make symmetric there, and per user decision, **left untouched** — not a "fix," would have been a new feature on top of an excluded legacy view.
+- `boxplot` and `summary` were the two real gaps, fixed identically.
+
+**Fix, per view**: added a second input (`box_tll_lo` / `sum_tll_lo`) beside the existing one, each wrapped in its own `id="..._wrap"` label so the existing TLL-direction show/hide logic (`updateBoxFilterLabels()` / `updateSumFilterLabels()`, the same functions that already conditionally show/hide the Data-filter Upper/Lower-limit radios) now also governs these two wraps — both shown when direction is "Both," only the relevant one otherwise. `getYFilter()`/`getSumParams()` now return `tll_lo`/`tll_lo_override`; every consumer that read `tll_hi`/`tll_hi_override` to override `HI_SPEC`/`spec_hi` for the "Passing only" pass/fail check (three call sites in boxplot: `buildBoxTraces`, `updateStatsTable`, the outlier panel; one in `summary`: `applyDataFilter`) gained the symmetric `tll_lo`/`tll_lo_override` fallback for `LO_SPEC`/`spec_lo`. The manual TLL line trace gained a second, independent line for the lower override in both views. `saveState`/`loadState`/Reset (`clearEverything()`/`resetFilters()`) updated to persist and clear the new field alongside the existing one.
+
+**Explicitly not touched**: neither view's Results/Statistics Table or CSV export ever applied the *upper* override either (`getSumCondData()`'s TTL/Margin/Spec columns and `saveBoxCSV()`'s export both compute straight from `spec_hi`/`spec_lo`, ignoring any manual override even before this fix) — confirmed this is a separate, pre-existing limitation affecting both sides equally, not a new asymmetry introduced by adding the lower side, and out of scope here.
+
+Verified per view: **boxplot** — both wraps visible when TLL direction is "Both," switching direction to "hi"/"lo" correctly shows only the matching wrap; both manual TLL lines render at the entered values. **summary** — same wrap-visibility check; `getSumParams()` returns both overrides; both manual lines render; and critically, the override actually changes filtering (not just cosmetic): with "Passing only" active and an intentionally impossible lower override (`999999`), the active condition count dropped from 12 to 0, proving `applyDataFilter()`'s new `tllLoOv` fallback is genuinely read, not just displayed. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL) throughout.
+
+---
+
 ## Spec-mask rendering (`scatter` view, added 2026-07-22)
 
 `accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.
