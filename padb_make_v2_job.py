@@ -58,6 +58,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import padb_config
+import re
 from padb_run import parse_pod_analytics, _slugify_name
 from padb_simple import parse_pod_sections
 
@@ -72,6 +73,42 @@ def _y_label(sections: dict, analytic_index: int) -> str:
     if ":" in data_y:
         return data_y.rsplit(":", 1)[-1].strip()
     return data_y.strip() or "Value"
+
+
+def _clean_x_axis_label(raw: str) -> str:
+    """Strip the pod's own decoration from Data_ScatterPlot_XData_Label, e.g.
+    "~Vgg (V) (1 x 303)" -> "Vgg (V)" -- the leading "~" and trailing
+    "(rows x cols)" dimension suffix are never part of the real CSV column
+    name PADB writes."""
+    s = raw.strip().lstrip("~").strip()
+    return re.sub(r"\s*\(\d+\s*x\s*\d+\)\s*$", "", s).strip()
+
+
+def _x_col_override(raw_label: str | None) -> tuple[str, str, str] | None:
+    """Mirrors _load_scatter_for_stats()'s own x-axis auto-detection rule
+    (padb_plots.py): a column is only ever auto-picked if its name contains
+    "frequency" or "x value" (case-insensitive). If the pod's real swept
+    x-axis column doesn't match either substring -- e.g. "Vgg (V)" for an
+    Idd-vs-Vgg sweep -- auto-detection will silently zero out every row
+    ("No usable rows loaded") unless x_col/x_label/x_unit are set explicitly.
+    Returns (x_col, x_label, x_unit) when an override is needed, else None.
+
+    Real incident this was added for (2026-08-20): UHP-IddVsVgg's job.json
+    was hand-patched with this exact override, then silently lost the fix
+    the next time this generator regenerated the job.json from the pod --
+    the generator had no way to know the override was ever needed. This
+    closes that gap so regenerating never reintroduces the bug.
+    """
+    if not raw_label:
+        return None
+    label = _clean_x_axis_label(raw_label)
+    if not label:
+        return None
+    if "frequency" in label.lower() or "x value" in label.lower():
+        return None
+    m = re.search(r"\(([^)]+)\)\s*$", label)
+    x_unit = m.group(1).strip() if m else ""
+    return label, label, x_unit
 
 
 def _has_output_file_collision(all_analytics: list[dict]) -> bool:
@@ -224,6 +261,15 @@ def main() -> None:
             "index_title": _dev_tag(stem),
             "spec_direction": args.spec_direction,
         }
+        x_override = _x_col_override(a.get("x_axis_label"))
+        if x_override:
+            x_col, x_label, x_unit = x_override
+            plot_job["x_col"] = x_col
+            plot_job["x_label"] = x_label
+            plot_job["x_unit"] = x_unit
+            print(f"NOTE: [{name}]'s swept x-axis is {x_col!r}, not a Frequency/X-value column -- "
+                  f"setting \"x_col\"/\"x_label\"/\"x_unit\" on this plot job so column "
+                  f"auto-detection doesn't silently zero out every row.")
         if publish_root and args.module:
             plot_job["publish_to"] = f"{publish_root}\\{args.module}\\{stem}"
 

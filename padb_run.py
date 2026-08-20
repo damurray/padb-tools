@@ -207,7 +207,8 @@ def parse_pod_analytics(pod_path: Path) -> list[dict]:
                     analytics.append(current)
                 current = {"index": int(m.group(1)), "type": None,
                            "name": None, "output_file": None,
-                           "output_csv": True, "main_title": None}
+                           "output_csv": True, "main_title": None,
+                           "x_axis_label": None}
                 continue
             if current is None:
                 continue
@@ -225,6 +226,12 @@ def parse_pod_analytics(pod_path: Path) -> list[dict]:
                 current["output_csv"] = (val.strip() not in ("0", ""))
             elif key == "OutputConfig_MainTitle":
                 current["main_title"] = val or None
+            elif key == "Data_ScatterPlot_XData_Label":
+                # Raw pod value, e.g. "~Vgg (V) (1 x 303)" -- the swept x-axis
+                # column name PADB will actually write to the CSV header, before
+                # stripping the leading "~" and trailing "(R x C)" dimension
+                # suffix (see padb_make_v2_job.py's _clean_x_axis_label).
+                current["x_axis_label"] = val or None
 
     if current:
         analytics.append(current)
