@@ -31,6 +31,7 @@ import io
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -40,6 +41,7 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 
+import pandas as pd
 from flask import Flask, abort, jsonify, render_template, request, send_from_directory
 from werkzeug.utils import secure_filename
 
@@ -48,6 +50,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import padb_config  # noqa: E402
 import padb_convert_site  # noqa: E402
+import padb_plots as _pp  # noqa: E402
 from padb_run import parse_pod_analytics  # noqa: E402
 from padb_scheduler import (  # noqa: E402
     TASK_PREFIX, create_task, delete_task, discover_all_padb_tasks,
@@ -457,10 +460,188 @@ def generate_job():
     return jsonify(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode, jobs=jobs)
 
 
+# ---------------------------------------------------------------------------
+# Compare mode -- pair two already-extracted CSVs (e.g. two sites' own runs
+# of conceptually the same test) into a compare_csv V2 job (see padb_v2.py /
+# CLAUDE.md "Cross-site comparison"). Every CSV a user could pick from was
+# already produced by padb_run.py landing in a "padb" subfolder under some
+# job's own results_dir -- the same layout every job in this tool already
+# uses -- so discovery is a plain recursive glob, no new bookkeeping needed.
+# ---------------------------------------------------------------------------
+
+def _discover_extracted_csvs() -> list[dict]:
+    out = []
+    for p in sorted(DATA_DIR.glob("**/padb/*.csv")):
+        try:
+            rel = p.relative_to(DATA_DIR)
+        except ValueError:
+            rel = p
+        out.append({"path": str(p), "label": str(rel).replace("\\", "/")})
+    return out
+
+
+def _read_units(csv_path: Path) -> set[str]:
+    """Values of the CSV's own "Units" column (e.g. "dBc", "dBm") -- the
+    most direct available signal for whether two datasets even measure the
+    same kind of thing. Returns an empty set (never blocks on its own) if
+    the column is missing or unreadable -- absence of information isn't
+    proof of a mismatch."""
+    try:
+        header = pd.read_csv(csv_path, nrows=0, dtype=str)
+        header.columns = header.columns.str.strip()
+        if "Units" not in header.columns:
+            return set()
+        col = pd.read_csv(csv_path, usecols=["Units"], dtype=str)["Units"]
+    except Exception:
+        return set()
+    return set(col.dropna().str.strip().unique()) - {""}
+
+
+_COMPARE_SERIAL_RE = re.compile(r'(?:Serial Number|Serial No|Serial Num|Unit ID|DUT ID)\s*:\s*(\S+)', re.IGNORECASE)
+
+
+def _compare_side_stats(csv_path: Path) -> dict:
+    df = _pp._load_scatter_for_stats(csv_path)
+    if not len(df):
+        return {"rows": 0, "freq_min": None, "freq_max": None, "temps": [], "n_dut": None}
+    # A dedicated CSV "Serial" column is rare in this codebase's real pods --
+    # Serial Number is usually embedded in the Group text instead (see
+    # PADB_Analytic_Requirements.md's Group-string convention), which
+    # _load_scatter_for_stats doesn't parse on its own. Try the dedicated
+    # column first, fall back to a lightweight Group-text regex; if neither
+    # finds anything, report None (unknown) rather than a misleading 0.
+    n_dut = df["Serial"].astype(str).str.strip().replace("", pd.NA).dropna().nunique()
+    if not n_dut and "Group" in df.columns and df["Group"].notna().any():
+        def _extract_serial(g):
+            m = _COMPARE_SERIAL_RE.search(g) if isinstance(g, str) else None
+            return m.group(1) if m else None
+        n_dut = df["Group"].dropna().map(_extract_serial).dropna().nunique()
+    return {
+        "rows": int(len(df)),
+        "freq_min": float(df["Frequency_MHz"].min()),
+        "freq_max": float(df["Frequency_MHz"].max()),
+        "temps": sorted(df["Temperature"].dropna().unique().tolist()),
+        "n_dut": int(n_dut) if n_dut else None,
+    }
+
+
+def _compare_check(csv_a: Path, csv_b: Path) -> dict:
+    """Soft warnings never block; a units mismatch does, by David's explicit
+    design (2026-08-19) -- everything else about cross-site data is expected
+    to be imperfect (missing temps/ports, spec formatting differences,
+    near-miss frequency grids -- see the boxplot coverage-gap banner), but
+    comparing two genuinely different kinds of measurement (e.g. dBc vs
+    dBm) isn't a coverage gap, it's a different question entirely."""
+    warnings: list[str] = []
+    blocked = False
+    block_reason = None
+
+    units_a, units_b = _read_units(csv_a), _read_units(csv_b)
+    if units_a and units_b and not (units_a & units_b):
+        blocked = True
+        block_reason = (
+            f"Site A measures {', '.join(sorted(units_a))} but Site B measures "
+            f"{', '.join(sorted(units_b))} -- these are different kinds of measurement, "
+            f"comparing them directly would not be meaningful."
+        )
+
+    stats_a, stats_b = _compare_side_stats(csv_a), _compare_side_stats(csv_b)
+
+    if stats_a["rows"] == 0 or stats_b["rows"] == 0:
+        warnings.append("One side loaded 0 usable rows -- check the CSV's x-axis/value column detection (see padb_csv_check.py).")
+    elif stats_a["freq_max"] is not None and stats_b["freq_max"] is not None:
+        if stats_a["freq_max"] < stats_b["freq_min"] or stats_b["freq_max"] < stats_a["freq_min"]:
+            warnings.append(
+                f"Frequency ranges don't overlap at all (A: {stats_a['freq_min']:g}-{stats_a['freq_max']:g} MHz, "
+                f"B: {stats_b['freq_min']:g}-{stats_b['freq_max']:g} MHz)."
+            )
+
+    temps_a, temps_b = set(stats_a["temps"]), set(stats_b["temps"])
+    if temps_a and temps_b and temps_a != temps_b:
+        only_a = temps_a - temps_b
+        only_b = temps_b - temps_a
+        if only_a:
+            warnings.append(f"Temperature(s) only in Site A: {', '.join(sorted(only_a))}")
+        if only_b:
+            warnings.append(f"Temperature(s) only in Site B: {', '.join(sorted(only_b))}")
+
+    return {
+        "blocked": blocked,
+        "block_reason": block_reason,
+        "warnings": warnings,
+        "stats": {"a": stats_a, "b": stats_b},
+        "units": {"a": sorted(units_a), "b": sorted(units_b)},
+    }
+
+
+@app.route("/api/compare-csvs")
+def compare_csvs():
+    return jsonify(csvs=_discover_extracted_csvs())
+
+
+@app.route("/api/compare-preview", methods=["POST"])
+def compare_preview():
+    body = request.get_json(force=True) or {}
+    csv_a, csv_b = body.get("csv_a"), body.get("csv_b")
+    if not csv_a or not csv_b:
+        return jsonify(error="csv_a and csv_b are required"), 400
+    pa, pb = Path(csv_a), Path(csv_b)
+    if not pa.exists() or not pb.exists():
+        return jsonify(error="one or both CSVs not found"), 400
+    return jsonify(**_compare_check(pa, pb))
+
+
+@app.route("/api/compare-create", methods=["POST"])
+def compare_create():
+    body = request.get_json(force=True) or {}
+    csv_a, site_a = body.get("csv_a"), (body.get("site_a") or "").strip()
+    csv_b, site_b = body.get("csv_b"), (body.get("site_b") or "").strip()
+    primary_site = (body.get("primary_site") or "").strip()
+    override = bool(body.get("override"))
+    description = (body.get("description") or "").strip()
+
+    if not (csv_a and csv_b and site_a and site_b):
+        return jsonify(error="csv_a, csv_b, site_a, and site_b are all required"), 400
+    if site_a == site_b:
+        return jsonify(error="Site A and Site B must have different names"), 400
+    if primary_site not in (site_a, site_b):
+        return jsonify(error="primary_site must match one of the two site names"), 400
+    pa, pb = Path(csv_a), Path(csv_b)
+    if not pa.exists() or not pb.exists():
+        return jsonify(error="one or both CSVs not found"), 400
+
+    # Re-check server-side regardless of what the preview call already showed
+    # the browser -- never trust a block decision made only in JS.
+    check = _compare_check(pa, pb)
+    if check["blocked"] and not override:
+        return jsonify(error=check["block_reason"], blocked=True), 400
+
+    stem = re.sub(r"[^\w-]+", "_", f"compare_{site_a}_vs_{site_b}_{pa.stem}")
+    job_path = DATA_DIR / f"{stem}_v2_job.json"
+    n = 2
+    while job_path.exists():
+        job_path = DATA_DIR / f"{stem}_v2_job_{n}.json"
+        n += 1
+
+    cfg = {
+        "description": description or f"{site_a} vs {site_b} compare",
+        "title_prefix": description or f"{site_a} vs {site_b} Compare",
+        "compare_csv": {site_a: str(pa), site_b: str(pb)},
+        "primary_site": primary_site,
+        "results_dir": job_path.stem.replace("_v2_job", "") + "_results",
+        # Ad-hoc UI-created compare jobs default to local-only -- publishing
+        # to the shared network location needs an explicit, deliberate
+        # choice, not a side effect of trying this feature out.
+        "publish_to": "",
+    }
+    job_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
+    return jsonify(path=str(job_path), warnings=check["warnings"])
+
+
 def _job_kind(cfg: dict) -> str:
     if "pod" in cfg:
         return "run"
-    if "csv_path" in cfg or "analytic" in cfg:
+    if "csv_path" in cfg or "analytic" in cfg or "compare_csv" in cfg:
         return "plot"
     return "unknown"
 

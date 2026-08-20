@@ -316,6 +316,24 @@ Record these in a spreadsheet or use `qa_padb.py` which asserts the stat_summary
 
 ---
 
+## Cross-Site Comparison (`compare_csv` boxplot pages only)
+
+Only applies to a boxplot page built from a `compare_csv` job (`"Site"` appears as a real `COND_DIMS` entry). Skip this section entirely for a normal single-site page.
+
+### Coverage-gap banner
+- [ ] An amber banner appears near the top, above the plot, without needing to click anything
+- [ ] It lists real gaps only — a spec/limit value the two sites format with different trailing precision (e.g. `-100.00` vs `-100`) must **not** show up as a false gap on both sides at once
+
+### Site Population Check panel
+- [ ] "Site Population Check" button appears (only when `primary_site` is set and 2+ sites are present)
+- [ ] Opening it shows a one-line summary count, then three tables: **Per-DUT summary**, **Frequency clusters**, **Per-point detail**
+- [ ] Per-DUT summary's "Shared w/ other DUTs" and "Suggested triage" columns are populated for every DUT with at least one outside point
+- [ ] Frequency clusters table only lists `(site, temp, freq)` combinations with 2+ distinct DUTs affected — sorted by DUT count descending
+- [ ] Changing the live k×IQR control (same input boxplot's own outlier detection uses) and reopening the panel changes the fence bounds and verdicts accordingly
+- [ ] Toggling condition/serial/port/temperature filters and reopening the panel reflects the new selection
+
+---
+
 ## Known limitations (not regressions)
 
 - NP TI is set to null when the serial filter is active — this is by design.
@@ -324,4 +342,6 @@ Record these in a spreadsheet or use `qa_padb.py` which asserts the stat_summary
 - env_coverage TTU/TTL require Spec override inputs when the source CSV has null Upper_Limit/Lower_Limit columns.
 - env_coverage TTU/TTL lines may extend outside the visible Y range — the axis is scaled to UDE/LDE data only, not to TTU/TTL values.
 - GF Export/Import CSV's `Start_Freq`/`Stop_Freq`/`N_Points` columns are display-only context — the runtime exclusion match is on (serial, condition, temperature) only, so import does not reconstruct an exact frequency-by-frequency exclusion (by design, not a bug).
+- Site Population Check does not yet respect the plot's frequency-range/zoom filter — it scans every frequency in the current condition/serial/temp selection regardless of what the plot is currently zoomed to. Planned follow-up.
+- Site Population Check only compares exact-matching frequencies between the two sites — a frequency present in only one site's sweep reports `n/a` rather than attempting a near-match.
 - "Segment by: Spec"/"Segment by: Uncertainty" show zero segments if the pod's extraction didn't add `Upper/Lower Spec` or `Upper/Lower Uncertainty` as grouping items — this is a pod-authoring gap, not a code bug. "Segment by: Limit" always works.

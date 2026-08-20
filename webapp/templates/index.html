@@ -9,27 +9,28 @@
 <header>
   <h1>padb-tools</h1>
   <p class="subtitle">Local web UI &mdash; drop a pod, generate a job, run it.</p>
+  <label class="inline" id="tooltipToggleWrap"><input type="checkbox" id="tooltipToggle" checked> Show tooltip help</label>
 </header>
 
 <main>
   <section id="upload-section">
     <h2>1. Drop a .pod file</h2>
-    <div id="dropzone">
+    <div id="dropzone" title="Saves the pod into your data directory -- overwrites an existing pod of the same name (re-dropping an already-onboarded pod to regenerate its job.json is the normal case, not a collision to avoid).">
       <p>Drag a <code>.pod</code> file here, or click to choose one</p>
       <input type="file" id="fileInput" accept=".pod" hidden>
     </div>
     <div id="uploadResult" class="panel hidden">
       <h3 id="uploadPodName"></h3>
-      <table id="analyticsTable">
+      <table id="analyticsTable" title="Every Type=80/60/90 analytic found in the pod -- only Type=80 (Scatter) and Type=60 (Environmental) have usable CSV loaders in this tool.">
         <thead><tr><th>#</th><th>Type</th><th>Name</th><th>Output File</th></tr></thead>
         <tbody></tbody>
       </table>
       <div class="toolbar">
-        <label>Convert to
+        <label title="Target database site (e.g. AMC2) -- retags AnalyticName/OutputConfig_OutputFile so the converted pod's CSVs won't collide with the original site's output filenames.">Convert to
           <select id="convertPodSite"></select>
         </label>
-        <label class="inline"><input type="checkbox" id="convertPodForce"> Overwrite existing</label>
-        <button id="convertPodBtn">Convert Pod</button>
+        <label class="inline" title="Allow overwriting an already-converted pod of the same name."><input type="checkbox" id="convertPodForce"> Overwrite existing</label>
+        <button id="convertPodBtn" title="Writes a new, site-retagged copy of this pod (Device_Server/Device_Database + per-analytic name/output-file suffix) -- never modifies the original pod.">Convert Pod</button>
       </div>
       <pre id="convertPodLog" class="hidden"></pre>
     </div>
@@ -38,18 +39,18 @@
   <section id="generate-section" class="hidden">
     <h2>2. Generate a job.json</h2>
     <form id="generateForm">
-      <label>Mode
+      <label title="simple = native PADB PNG/PDF gallery, closest to the old PADB::Simple tool. legacy = static Plotly plots (V1). interactive (V2) = full interactive HTML with live filtering -- the modern default for a new pod.">Mode
         <select id="modeSelect">
           <option value="simple">simple</option>
           <option value="legacy">legacy</option>
           <option value="interactive">interactive (V2)</option>
         </select>
       </label>
-      <label>Module <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = --no-publish)"></label>
-      <label>Min date <input type="text" id="minDateInput" placeholder='e.g. "8 weeks ago" (optional)'></label>
-      <label>Max date <input type="text" id="maxDateInput" placeholder='e.g. "today" (optional)'></label>
-      <label><input type="checkbox" id="forceCheckbox"> Overwrite existing job file(s)</label>
-      <button type="submit">Generate Job</button>
+      <label title="Subfolder name under the publish share (e.g. MiniMoab). Leave blank to pass --no-publish and keep results local-only -- there's no way to guess the right subfolder safely, so this is required to actually publish.">Module <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = --no-publish)"></label>
+      <label title="Relative or absolute date sentinel resolved at run time (e.g. &quot;8 weeks ago&quot;, &quot;today&quot;, or a literal YYYY-MM-DD). Leave blank to use the pod's own baked-in date range unchanged.">Min date <input type="text" id="minDateInput" placeholder='e.g. "8 weeks ago" (optional)'></label>
+      <label title="Same sentinel rules as Min date.">Max date <input type="text" id="maxDateInput" placeholder='e.g. "today" (optional)'></label>
+      <label title="Allow overwriting an already-generated job.json of the same name -- off by default so a hand-tuned job.json is never silently clobbered."><input type="checkbox" id="forceCheckbox"> Overwrite existing job file(s)</label>
+      <button type="submit" title="Runs padb_make_job.py (simple/legacy) or padb_make_v2_job.py (interactive) against the dropped pod and writes the resulting job.json file(s) into your data directory.">Generate Job</button>
     </form>
     <div id="generateResult" class="panel hidden">
       <h3>Output</h3>
@@ -58,11 +59,45 @@
     </div>
   </section>
 
+  <section id="compare-section">
+    <details id="compareDetails" title="Pairs two already-extracted CSVs into one job that tags each row by site -- e.g. comparing a newly-stood-up site's early DUTs against an established site's population.">
+      <summary><h2>3. Compare two datasets</h2></summary>
+      <p class="hint">Pairs two already-extracted CSVs (e.g. Santa Rosa vs. a second site) into one job that tags each row by site and reuses the normal pipeline &mdash; see boxplot's "Site Population Check" and the coverage-gap banner once it's run. Mainly useful when first standing up a new site &mdash; collapsed by default since it's a corner case otherwise.</p>
+      <form id="compareForm">
+        <div class="toolbar">
+          <label title="Short label for this dataset in the merged output -- becomes a real 'Site' condition dimension on every generated view (filterable/groupable, e.g. boxplot's Group-by or condition checkboxes), so keep it short and distinct from Site B.">Site A name <input type="text" id="compareSiteAName" placeholder="e.g. SR" required></label>
+          <label title="Pick from CSVs already produced by a previous run job -- auto-discovered from every *_results/padb/*.csv already on disk, same layout every job in this tool writes to.">Site A CSV <select id="compareCsvA"></select></label>
+        </div>
+        <div class="toolbar">
+          <label title="Same as Site A name, for the second dataset -- must be different from Site A's name.">Site B name <input type="text" id="compareSiteBName" placeholder="e.g. AMC2" required></label>
+          <label title="Same discovery list as Site A CSV -- pick the second dataset's already-extracted CSV.">Site B CSV <select id="compareCsvB"></select></label>
+        </div>
+        <div class="toolbar">
+          <label title="Which site's own population is treated as the reference for boxplot's Site Population Check (k&times;IQR fence per frequency/temperature) -- has no effect on any other view or on the coverage-gap banner.">Primary site <select id="comparePrimarySite"></select></label>
+          <label title="Optional -- becomes this job's title/description. Defaults to '&lt;Site A&gt; vs &lt;Site B&gt; compare' if left blank.">Description <input type="text" id="compareDescription" placeholder="optional"></label>
+        </div>
+        <div class="toolbar">
+          <button type="button" id="compareCheckBtn" title="Loads both CSVs and checks compatibility: blocks on a genuine measurement-unit mismatch (e.g. dBc vs dBm), and warns (without blocking) on softer gaps like missing temperatures/ports or non-overlapping frequency ranges. Run this before Create &amp; Run -- it's required once per selection.">Check compatibility</button>
+          <button type="submit" id="compareCreateRunBtn" disabled title="Builds a compare_csv job.json (local-only by default -- publish_to is left empty) and queues it immediately, same as Run Selected below. Disabled until Check compatibility has run against the current selection.">Create &amp; Run</button>
+        </div>
+      </form>
+      <div id="compareResult" class="panel hidden">
+        <div id="compareBlock" class="block-banner hidden" title="A hard block -- comparing two genuinely different kinds of measurement isn't meaningful. Check the override box below if you want to proceed anyway."></div>
+        <div id="compareWarnings" class="warn-banner hidden" title="Soft gaps -- these never block Create &amp; Run, they're shown so you can decide whether the comparison still makes sense (e.g. one site missing a temperature/port the other has)."></div>
+        <table id="compareStatsTable" class="hidden" title="Quick side-by-side sanity check of what's actually in each CSV before you commit to running the compare job.">
+          <thead><tr><th></th><th>Site A</th><th>Site B</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <label id="compareOverrideWrap" class="inline hidden" title="Only shown when Check compatibility found a hard block. Checking this does not bypass anything else -- it just lets you proceed past the units-mismatch check specifically."><input type="checkbox" id="compareOverrideChk"> Override and proceed anyway</label>
+      </div>
+    </details>
+  </section>
+
   <section id="jobs-section">
-    <h2>3. Jobs</h2>
+    <h2>4. Jobs</h2>
     <div class="toolbar">
-      <button id="refreshJobsBtn">Refresh</button>
-      <label>Mode
+      <button id="refreshJobsBtn" title="Reload the job list, plus each job's Scheduled/Last Run/Results status, from disk and Windows Task Scheduler.">Refresh</button>
+      <label title="Filter the table by the job.json's own mode key.">Mode
         <select id="modeFilter">
           <option value="all">All</option>
           <option value="legacy">legacy</option>
@@ -70,26 +105,27 @@
           <option value="interactive">interactive</option>
         </select>
       </label>
-      <label>Kind
+      <label title="Run jobs call PADB-R.exe (padb_run.py, has a pod key). Plot jobs rebuild HTML from an already-extracted CSV only (padb_v2.py, no pod key) -- no PADB-R.exe involved, so they're not included in Select All Runnable.">Kind
         <select id="kindFilter">
           <option value="all">All</option>
           <option value="run">Run jobs</option>
           <option value="plot">Plot jobs</option>
         </select>
       </label>
-      <label>Name <input type="text" id="nameFilter" placeholder="filter by name…"></label>
-      <label class="inline"><input type="checkbox" id="dryRunCheckbox"> Dry run (skip PADB-R.exe)</label>
-      <button id="selectAllRunnableBtn" class="secondary">Select All Runnable</button>
-      <button id="runSelectedBtn">Run Selected</button>
+      <label title="Case-insensitive filter on job filename.">Name <input type="text" id="nameFilter" placeholder="filter by name…"></label>
+      <label class="inline" title="Passes --dry-run to padb_run.py for Run jobs, skipping the actual PADB-R.exe call -- still runs the publish step if results already exist on disk. No effect on Plot jobs (padb_v2.py has no dry-run equivalent).">
+        <input type="checkbox" id="dryRunCheckbox"> Dry run (skip PADB-R.exe)</label>
+      <button id="selectAllRunnableBtn" class="secondary" title="Checks every currently-visible Run job and unchecks everything else -- the safe way to bulk-select for Run Selected without also grabbing Plot jobs, which would just fail.">Select All Runnable</button>
+      <button id="runSelectedBtn" title="Queues every checked job. PADB-R.exe runs are strictly serialized (one at a time, others wait as queued); Run jobs are always queued ahead of Plot jobs regardless of selection order, since a Plot job may read a CSV its own Run job just produced.">Run Selected</button>
     </div>
     <div class="toolbar">
-      <label>Schedule
+      <label title="Weekly runs on the checked days below; Daily runs every day.">Schedule
         <select id="scheduleType">
           <option value="WEEKLY" selected>Weekly</option>
           <option value="DAILY">Daily</option>
         </select>
       </label>
-      <span id="dayCheckboxes">
+      <span id="dayCheckboxes" title="Only used when Schedule is set to Weekly.">
         <label class="day"><input type="checkbox" value="MON" checked>Mon</label>
         <label class="day"><input type="checkbox" value="TUE">Tue</label>
         <label class="day"><input type="checkbox" value="WED" checked>Wed</label>
@@ -98,24 +134,24 @@
         <label class="day"><input type="checkbox" value="SAT">Sat</label>
         <label class="day"><input type="checkbox" value="SUN">Sun</label>
       </span>
-      <label>at <input type="time" id="scheduleTime" value="02:00"></label>
-      <button id="scheduleSelectedBtn">Schedule Selected</button>
-      <button id="unscheduleSelectedBtn" class="secondary">Unschedule Selected</button>
+      <label title="Local time the scheduled task fires.">at <input type="time" id="scheduleTime" value="02:00"></label>
+      <button id="scheduleSelectedBtn" title="Creates/updates a Windows Task Scheduler entry per checked job, named PADB_&lt;job stem&gt; -- runs as your own user account (not SYSTEM) so network publish paths stay accessible.">Schedule Selected</button>
+      <button id="unscheduleSelectedBtn" class="secondary" title="Removes the Task Scheduler entry for each checked job, if one exists.">Unschedule Selected</button>
     </div>
     <div class="toolbar">
-      <label>Convert to
+      <label title="Target database site (e.g. AMC2) to convert the checked job(s) to.">Convert to
         <select id="convertJobSite"></select>
       </label>
-      <label class="inline"><input type="checkbox" id="convertJobForce"> Overwrite existing</label>
-      <button id="convertSelectedBtn">Convert Selected</button>
+      <label class="inline" title="Allow overwriting an already-converted job.json of the same name."><input type="checkbox" id="convertJobForce"> Overwrite existing</label>
+      <button id="convertSelectedBtn" title="Repoints each checked job's pod/results_dir/publish path to the target site -- auto-creates the site-converted pod first if it doesn't exist yet (prints when it does).">Convert Selected</button>
     </div>
     <div class="toolbar">
-      <label class="inline"><input type="checkbox" id="deleteDataCheckbox" checked> Also delete local results data</label>
-      <button id="deleteSelectedBtn" class="danger">Delete Selected</button>
+      <label class="inline" title="If unchecked, only the job.json file itself is deleted -- its results_dir is left on disk."><input type="checkbox" id="deleteDataCheckbox" checked> Also delete local results data</label>
+      <button id="deleteSelectedBtn" class="danger" title="Deletes the checked job.json file(s) and, optionally, their local results. Skips removing a results_dir that another surviving job.json still references (e.g. sibling plot jobs sharing one results_dir), so a shared directory is never pulled out from under a job you didn't select. Unschedules each job's Task Scheduler entry first if one exists.">Delete Selected</button>
       <span class="hint">Never removes the source .pod file or any already-published copy on the network share.</span>
     </div>
     <div id="jobsTableWrap" class="scroll-box">
-      <table id="jobsTable">
+      <table id="jobsTable" title="Scheduled/Last Run/Results are read from disk and Windows Task Scheduler on every Refresh -- Last Run reflects the last successful run (index.html is only written on success), not the last attempt.">
         <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th></tr></thead>
         <tbody></tbody>
       </table>
@@ -123,9 +159,9 @@
   </section>
 
   <section id="status-section">
-    <h2>4. Running Jobs</h2>
+    <h2>5. Running Jobs</h2>
     <p class="hint">PADB-R.exe runs are strictly serialized &mdash; only one job runs at a time, others wait as "queued."</p>
-    <div id="statusPanels"></div>
+    <div id="statusPanels" title="One card per job queued this session (cleared on page reload) -- badge shows queued/running/done/failed/cancelled, with a live tail of the job's own console output below it."></div>
   </section>
 </main>
 

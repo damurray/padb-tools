@@ -337,6 +337,10 @@ The V2 `summary` plot includes condition filter dropdowns for all dimensions fou
 - **Port** (RF1/RF2 or similar path-labelled values) — filter to a specific port
 - **Serial** — filter to specific DUTs (individual DUT min/max/mean bands)
 
+### Cross-site comparison (`compare_csv`) — no special pod authoring needed
+
+Comparing two sites' data (see `PADB_Tools_Guide.md` → **Cross-Site Comparison**) works on whatever Scatter CSV `padb_run.py` already produces for each site — there is no extra Grouping_Item, `Filter_Expression`, or other pod change required to make a pod "comparable." The two sites' pods don't even need to have identical Group dimensions, temperature coverage, or spec configuration; the tool tags each row's Group text with its site name and merges as-is, tolerating the mismatch (flagging it via the coverage-gap banner rather than requiring it be resolved first). The one thing that *does* matter: both CSVs' "Units" column (or resolved value column) should represent the same kind of measurement — comparing dBc against dBm, for instance, is blocked by the webapp's Compare panel as not meaningful, with an explicit override if you disagree.
+
 ---
 
 ## 7. Pod Requirements for padb_v2.py (Contributing a New Pod)

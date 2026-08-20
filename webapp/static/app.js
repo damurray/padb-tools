@@ -5,6 +5,39 @@ let allJobs = [];
 const activePolls = new Set();
 
 // ---------------------------------------------------------------------------
+// Tooltip help toggle
+// ---------------------------------------------------------------------------
+
+// Native title-attribute tooltips can only be suppressed by removing the
+// attribute itself (CSS has no effect on them) -- so the real text is
+// stashed in a data- attribute the first time an element is seen, and
+// title is added/removed from that backup based on the current preference.
+// Idempotent and safe to call repeatedly, including on elements whose
+// tooltip was created after page load (job table rows, status cards) --
+// already-processed elements have no title left to (re-)back up, so a
+// second call just re-applies the current preference from the stash.
+let _tooltipsEnabled = true;
+function applyTooltipPref() {
+  document.querySelectorAll("[title]").forEach(el => {
+    if (el.dataset.tooltipText === undefined) el.dataset.tooltipText = el.getAttribute("title");
+  });
+  document.querySelectorAll("[data-tooltip-text]").forEach(el => {
+    if (_tooltipsEnabled) el.setAttribute("title", el.dataset.tooltipText);
+    else el.removeAttribute("title");
+  });
+}
+
+const tooltipToggle = document.getElementById("tooltipToggle");
+_tooltipsEnabled = localStorage.getItem("padb_web_tooltips") !== "0";
+tooltipToggle.checked = _tooltipsEnabled;
+applyTooltipPref();
+tooltipToggle.addEventListener("change", () => {
+  _tooltipsEnabled = tooltipToggle.checked;
+  localStorage.setItem("padb_web_tooltips", _tooltipsEnabled ? "1" : "0");
+  applyTooltipPref();
+});
+
+// ---------------------------------------------------------------------------
 // Upload / drop
 // ---------------------------------------------------------------------------
 
@@ -105,6 +138,163 @@ document.getElementById("generateForm").addEventListener("submit", async e => {
 });
 
 // ---------------------------------------------------------------------------
+// Compare mode
+// ---------------------------------------------------------------------------
+
+let comparePreviewOk = false; // true once a preview call has run against the current selection
+
+async function loadCompareCsvs() {
+  const res = await fetch("/api/compare-csvs");
+  const data = await res.json();
+  for (const id of ["compareCsvA", "compareCsvB"]) {
+    const sel = document.getElementById(id);
+    sel.innerHTML = "";
+    for (const c of data.csvs) {
+      const opt = document.createElement("option");
+      opt.value = c.path;
+      opt.textContent = c.label;
+      sel.appendChild(opt);
+    }
+  }
+}
+
+function updateComparePrimarySiteOptions() {
+  const nameA = document.getElementById("compareSiteAName").value.trim();
+  const nameB = document.getElementById("compareSiteBName").value.trim();
+  const sel = document.getElementById("comparePrimarySite");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  for (const name of [nameA, nameB]) {
+    if (!name) continue;
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    sel.appendChild(opt);
+  }
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+}
+["compareSiteAName", "compareSiteBName"].forEach(id =>
+  document.getElementById(id).addEventListener("input", updateComparePrimarySiteOptions)
+);
+
+function invalidateComparePreview() {
+  comparePreviewOk = false;
+  document.getElementById("compareCreateRunBtn").disabled = true;
+}
+["compareCsvA", "compareCsvB", "compareSiteAName", "compareSiteBName"].forEach(id =>
+  document.getElementById(id).addEventListener("change", invalidateComparePreview)
+);
+document.getElementById("compareOverrideChk")?.addEventListener("change", refreshCompareCreateEnabled);
+
+function refreshCompareCreateEnabled() {
+  const btn = document.getElementById("compareCreateRunBtn");
+  const blocked = !document.getElementById("compareBlock").classList.contains("hidden");
+  const overrideChk = document.getElementById("compareOverrideChk");
+  btn.disabled = !comparePreviewOk || (blocked && !(overrideChk && overrideChk.checked));
+}
+
+function fmtCompareStat(s) {
+  if (!s || s.rows === 0) return "0 usable rows";
+  const freq = `${s.freq_min.toFixed(1)}–${s.freq_max.toFixed(1)} MHz`;
+  const temps = s.temps.join(", ") || "—";
+  const dut = s.n_dut == null ? "unknown" : s.n_dut;
+  return `${s.rows.toLocaleString()} rows | ${freq} | Temps: ${temps} | DUTs: ${dut}`;
+}
+
+document.getElementById("compareCheckBtn").addEventListener("click", async () => {
+  const csv_a = document.getElementById("compareCsvA").value;
+  const csv_b = document.getElementById("compareCsvB").value;
+  if (!csv_a || !csv_b) {
+    alert("Pick a CSV for both Site A and Site B");
+    return;
+  }
+  const res = await fetch("/api/compare-preview", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ csv_a, csv_b }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Compare check failed: " + data.error);
+    return;
+  }
+  document.getElementById("compareResult").classList.remove("hidden");
+
+  const blockEl = document.getElementById("compareBlock");
+  if (data.blocked) {
+    blockEl.textContent = data.block_reason;
+    blockEl.classList.remove("hidden");
+    document.getElementById("compareOverrideWrap").classList.remove("hidden");
+    document.getElementById("compareOverrideChk").checked = false;
+  } else {
+    blockEl.classList.add("hidden");
+    document.getElementById("compareOverrideWrap").classList.add("hidden");
+  }
+
+  const warnEl = document.getElementById("compareWarnings");
+  if (data.warnings && data.warnings.length) {
+    warnEl.innerHTML = "<b>Coverage/compatibility warnings:</b><ul>" +
+      data.warnings.map(w => `<li>${w}</li>`).join("") + "</ul>";
+    warnEl.classList.remove("hidden");
+  } else {
+    warnEl.classList.add("hidden");
+  }
+
+  const statsTable = document.getElementById("compareStatsTable");
+  statsTable.querySelector("tbody").innerHTML =
+    `<tr><td>Units</td><td>${(data.units.a || []).join(", ") || "—"}</td><td>${(data.units.b || []).join(", ") || "—"}</td></tr>` +
+    `<tr><td>Summary</td><td>${fmtCompareStat(data.stats.a)}</td><td>${fmtCompareStat(data.stats.b)}</td></tr>`;
+  statsTable.classList.remove("hidden");
+
+  comparePreviewOk = true;
+  refreshCompareCreateEnabled();
+});
+
+document.getElementById("compareForm").addEventListener("submit", async e => {
+  e.preventDefault();
+  if (!comparePreviewOk) {
+    alert("Run \"Check compatibility\" first");
+    return;
+  }
+  const body = {
+    csv_a: document.getElementById("compareCsvA").value,
+    site_a: document.getElementById("compareSiteAName").value.trim(),
+    csv_b: document.getElementById("compareCsvB").value,
+    site_b: document.getElementById("compareSiteBName").value.trim(),
+    primary_site: document.getElementById("comparePrimarySite").value,
+    description: document.getElementById("compareDescription").value.trim(),
+    override: document.getElementById("compareOverrideChk")?.checked || false,
+  };
+  const res = await fetch("/api/compare-create", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Compare job creation failed: " + data.error);
+    return;
+  }
+  if (data.warnings && data.warnings.length) {
+    console.log("Compare job created with warnings:", data.warnings);
+  }
+  const execRes = await fetch("/api/execute-job", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ paths: [data.path], dry_run: false }),
+  });
+  const execData = await execRes.json();
+  if (!execRes.ok) {
+    alert("Compare job created but failed to queue: " + execData.error);
+    return;
+  }
+  for (const jobId of execData.job_ids) startPolling(jobId);
+  loadJobs();
+});
+
+loadCompareCsvs();
+
+// ---------------------------------------------------------------------------
 // Jobs list / execute
 // ---------------------------------------------------------------------------
 
@@ -144,6 +334,7 @@ function renderJobsTable() {
       `<td class="wrap">${scheduledCell}</td><td>${job.last_run || ""}</td><td>${resultsCell}</td>`;
     tbody.appendChild(tr);
   }
+  applyTooltipPref(); // Results link's title is only known once rendered here
 }
 
 function selectedJobPaths() {
@@ -367,9 +558,11 @@ function ensureStatusCard(jobId) {
     card.className = "status-card";
     card.id = "status-" + jobId;
     card.innerHTML = `<h4></h4><span class="badge"></span><span class="elapsed"></span>` +
-      `<span class="results-link"></span><button class="abort-btn">Abort</button><pre class="logtail"></pre>`;
+      `<span class="results-link"></span><button class="abort-btn" title="Kills the running process immediately -- a PADB-R.exe extraction in progress is killed too, not gracefully stopped.">Abort</button>` +
+      `<pre class="logtail" title="Tail of this job's own console output, updated every ~2s while queued/running."></pre>`;
     card.querySelector(".abort-btn").addEventListener("click", () => abortJob(jobId));
     document.getElementById("statusPanels").prepend(card);
+    applyTooltipPref(); // abort-btn/logtail titles are only known once created here
   }
   return card;
 }

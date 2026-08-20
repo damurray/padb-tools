@@ -68,7 +68,8 @@ None of these controls change the underlying result file — you're only changin
 - **TLL display (Both / Upper only / Lower only)** — only appears when the data has no built-in spec limit; lets you pick which side of the tolerance band to display.
 - **Data filter (All data / Passing only / Upper limit / Lower limit)** — trims which raw points feed into the box statistics.
 - **Show points** — overlays every individual measurement as a small dot on top of its box, so you can see the raw data behind the summary.
-- **Global Filter buttons** — this is the page where you actually *set* the Global Filter: "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" (these add to, not replace, whatever's already set), plus "Clear global filter", "Export GF CSV" / "Import GF CSV" (save/reload your exclusion list as a file), and "Copy PADB Filter" (a starting point for pasting into PADB itself — still a work in progress, may not be exact).
+- **Global Filter buttons** — this is the page where you actually *set* the Global Filter: "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" (these add to, not replace, whatever's already set), plus "Clear global filter", "Export GF CSV" / "Import GF CSV" (save/reload your exclusion list as a file), and "Copy PADB Filter" (builds a real PADB filter expression matching whatever this page is currently narrowed to — condition, Serial, Port, Frequency, Temperature — ready to paste into PADB's own filter box).
+- **Site Population Check** — only appears on a page comparing two sites (see **Cross-Site Comparison** below). Tests each new-site DUT's value at each frequency/temperature against the established site's own range there, with a per-DUT summary and a table flagging any frequency where multiple DUTs are affected at once (the strongest signal that something's off with the station/setup, not any one DUT).
 
 ---
 
@@ -124,6 +125,21 @@ None of these controls change the underlying result file — you're only changin
 - **Delta vs. Absolute toggle** — switch between "shift from room temperature" and "actual measured value" views.
 - **Spur type filter** — for pods with multiple spur types, isolate one or a few at a time.
 - **Delta summary table** — a small table below the chart with per-type statistics.
+
+---
+
+## Cross-Site Comparison
+
+Some result pages combine data from two sites — e.g. an established site's data against a newer site's first production units — instead of just one. You'll know because the Boxplot page will have an extra "Site Population Check" button, and "Site" will show up as its own filter dimension alongside the usual conditions.
+
+**What Site Population Check tells you:** for each new-site DUT, whether its measurements at each frequency/temperature fall inside the range the established site's own units produced there. Anything outside that range is worth a look — the table it shows breaks that down further:
+- If one specific DUT is flagged repeatedly across many frequencies, while its own site's other units look fine — that's likely a bad unit.
+- If *several different* units from the new site are all flagged at the *same* frequency — that points at something about the site/station/fixture, not any one unit, since it's unlikely several independent units would fail identically by coincidence.
+- A DUT flagged as "below" the established range (rather than toward the side that would actually fail spec) usually isn't a compliance problem — it's just a real difference worth being aware of (e.g. a calibration offset), not something urgent.
+
+The table's "Suggested triage" column reflects this reasoning, but it's a suggestion to guide where you look first, not a final verdict — use your own judgment alongside it.
+
+There's also an always-visible amber banner near the top noting anything one site has that the other doesn't (e.g. a temperature or port the new site hasn't tested yet) — worth checking whether that's expected for where that site's test plan currently stands.
 
 ---
 

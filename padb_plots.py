@@ -9562,6 +9562,203 @@ function toggleDeltaPanel(){
     updateDeltaOutlierPanel(selConds,selTemps,getSelectedBoxSerials());
   }
 }
+/* ---- Site Population Check: for a cross-site (compare_csv) page, does a
+   non-primary-site DUT's value at each frequency/temperature fall inside
+   the k×IQR fence built from the primary site's own population at that
+   same frequency/temperature? Reuses computeBoxStats/getIqrK -- the exact
+   same fence already used for this view's own within-dataset outlier
+   detection -- rather than a separate statistical method. */
+function toggleSitePanel(){
+  var panel=document.getElementById('box_site_panel');
+  var btn=document.getElementById('box_site_toggle_btn');
+  if(!panel||!btn) return;
+  var show=panel.style.display==='none';
+  panel.style.display=show?'':'none';
+  btn.textContent=(show?'▼':'▸')+' Site Population Check';
+  if(show) updateSitePanel();
+}
+/* Which direction is "toward failing" for this measurement, if determinable.
+   Reuses getTllDirection() (data-beats-config, respects a live TLL-selector
+   override) rather than reading SPEC_DIRECTION directly -- 'hi' means an
+   upper-limit-only spec (higher values are worse), 'lo' means lower-limit-
+   only (lower values are worse). 'both'/'none' return null: with a two-sided
+   spec neither direction is unambiguously "the bad one", so this doesn't
+   editorialize when it can't tell. */
+function _siteTowardFailDir(){
+  var d=getTllDirection();
+  if(d==='hi') return 'high';
+  if(d==='lo') return 'low';
+  return null;
+}
+/* Suggested (not asserted) triage tag for one DUT's rollup -- see CLAUDE.md
+   "Site Population Check triage hierarchy" for the reasoning behind each
+   rule. Order matters: "shared across DUTs" is checked first because a
+   station/systemic issue is the most consequential misread if missed
+   (it taints every DUT from that site, not just one). */
+function _siteTriageTag(d, towardFail){
+  if(!d.outside) return null;
+  var mostlyShared=d.sharedCount/d.outside>0.5;
+  var mostlyHigh=d.high/d.outside>0.5;
+  var mostlyLow=d.low/d.outside>0.5;
+  var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
+  if(mostlyShared) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(badDir===true && d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
+  if(badDir===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
+  if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
+  return {label:'Ambiguous (two-sided spec)',cls:'sev-med'};
+}
+function updateSitePanel(){
+  var el=document.getElementById('box_site_panel');
+  if(!el||el.style.display==='none') return;
+  try{
+    if(!PRIMARY_SITE){el.innerHTML='<i style="color:#888">No comparison site configured for this page.</i>';return;}
+    var selConds=getSelectedConds(),selSerials=getSelectedBoxSerials(),selTemps=getSelectedTemps();
+    var selCondSet={};selConds.forEach(function(c){selCondSet[c]=true;});
+    var k=getIqrK();
+    var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
+    var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+    var primaryBuckets={},otherPoints=[];
+    BOX_DATA.forEach(function(cd){
+      if(!cd.site) return;
+      if(selCondSet[cd.condition]!==true) return;
+      if(selTemps.indexOf(cd.temp)<0) return;
+      (cd.freq_stats||[]).forEach(function(fs){
+        (fs.vals_detail||[]).forEach(function(d){
+          if(selSerials.indexOf(d.s)<0) return;
+          if(gfActive){
+            var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);
+            if(boxGfFocus?!_ig:_ig) return;
+          }
+          if(cd.site===PRIMARY_SITE){
+            var bk=cd.temp+'|'+fs.freq;
+            (primaryBuckets[bk]=primaryBuckets[bk]||[]).push(d.v);
+          } else {
+            otherPoints.push({site:cd.site,serial:d.s,port:d.p,temp:cd.temp,freq:fs.freq,freqLabel:fs.freq_label,value:d.v});
+          }
+        });
+      });
+    });
+    if(!otherPoints.length){
+      el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current filter/selection.</i>';
+      return;
+    }
+    var towardFail=_siteTowardFailDir();
+    var rows=otherPoints.map(function(p){
+      var pv=primaryBuckets[p.temp+'|'+p.freq]||[];
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
+      var s=computeBoxStats(pv,k);
+      var dir=null,dist=0;
+      if(p.value>s.hi_w){dir='high';dist=p.value-s.hi_w;}
+      else if(p.value<s.lo_w){dir='low';dist=s.lo_w-p.value;}
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:s.lo_w,hi:s.hi_w,n:pv.length};
+    });
+
+    /* Per-frequency clusters: how many distinct DUTs are OUTSIDE at the
+       exact same (site,temp,freq) -- multiple independent DUTs failing the
+       same spot points at the station/fixture/calibration, not any one
+       DUT, and is arguably more urgent than a single bad DUT since it
+       taints every DUT measured there. */
+    var freqMap={};
+    rows.forEach(function(r){
+      if(r.verdict!=='OUTSIDE') return;
+      var key=r.p.site+'|'+r.p.temp+'|'+r.p.freq;
+      var e=freqMap[key]||(freqMap[key]={serials:new Set(),freqLabel:r.p.freqLabel||r.p.freq,site:r.p.site,temp:r.p.temp});
+      e.serials.add(r.p.serial);
+    });
+
+    /* Per-DUT rollup: breadth (how many freqs affected) and direction split
+       (toward-fail vs away-from-fail) are what separate "likely bad DUT"
+       from "likely benign" from "likely a shared station issue". */
+    var dutMap={};
+    rows.forEach(function(r){
+      var key=r.p.site+'|'+r.p.serial;
+      var d=dutMap[key]||(dutMap[key]={site:r.p.site,serial:r.p.serial,checked:0,outside:0,high:0,low:0,maxDist:0,freqKeys:[]});
+      d.checked++;
+      if(r.verdict==='OUTSIDE'){
+        d.outside++;
+        if(r.dir==='high') d.high++; else d.low++;
+        if(r.dist>d.maxDist) d.maxDist=r.dist;
+        d.freqKeys.push(r.p.temp+'|'+r.p.freq);
+      }
+    });
+    Object.keys(dutMap).forEach(function(key){
+      var d=dutMap[key];
+      var shared=0;
+      d.freqKeys.forEach(function(tf){
+        var fk=freqMap[d.site+'|'+tf];
+        if(fk&&fk.serials.size>1) shared++;
+      });
+      d.sharedCount=shared;
+      d.tag=_siteTriageTag(d,towardFail);
+    });
+
+    var rank={OUTSIDE:0,inside:1,'n/a':2};
+    rows.sort(function(a,b){
+      if(rank[a.verdict]!==rank[b.verdict]) return rank[a.verdict]-rank[b.verdict];
+      return (b.dist||0)-(a.dist||0);
+    });
+    var nOutside=rows.filter(function(r){return r.verdict==='OUTSIDE';}).length;
+    var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
+    var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
+      ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations.)';
+    var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
+      '</b> non-'+PRIMARY_SITE+' point(s) fall outside the '+PRIMARY_SITE+' k×IQR fence at their own frequency/temperature'+
+      (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency/temperature, fence not meaningful)':'')+
+      '.'+dirNote+'</div>';
+
+    var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
+      .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
+    if(dutRows.length){
+      html+='<div style="font-weight:600;margin:8px 0 2px">Per-DUT summary (suggested triage, not a verdict -- use judgment)</div>';
+      html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th><th>Outside</th><th>%</th>'+
+        '<th>High</th><th>Low</th><th>Max dist</th><th>Shared w/ other DUTs</th><th>Suggested triage</th></tr></thead><tbody>';
+      dutRows.forEach(function(d){
+        var pct=(100*d.outside/d.checked).toFixed(0)+'%';
+        var tagTd=d.tag?'<td class="'+d.tag.cls+'">'+d.tag.label+'</td>':'<td>&mdash;</td>';
+        html+='<tr><td>'+d.site+'</td><td>'+d.serial+'</td><td>'+d.checked+'</td><td>'+d.outside+'</td><td>'+pct+'</td>'+
+          '<td>'+d.high+'</td><td>'+d.low+'</td><td>'+d.maxDist.toFixed(4)+'</td>'+
+          '<td>'+(d.sharedCount?d.sharedCount+' of '+d.outside:'&mdash;')+'</td>'+tagTd+'</tr>';
+      });
+      html+='</tbody></table>';
+    }
+
+    var freqClusters=Object.keys(freqMap).map(function(k){return freqMap[k];})
+      .filter(function(e){return e.serials.size>1;})
+      .sort(function(a,b){return b.serials.size-a.serials.size;});
+    if(freqClusters.length){
+      html+='<div style="font-weight:600;margin:8px 0 2px">Frequency clusters -- multiple DUTs affected at the same spot (points at a station/fixture/calibration issue, not a single DUT)</div>';
+      html+='<table class="stbl"><thead><tr><th>Site</th><th>Temp</th><th>Freq</th><th>DUTs affected</th><th>Serials</th></tr></thead><tbody>';
+      freqClusters.forEach(function(e){
+        html+='<tr><td>'+e.site+'</td><td>'+e.temp+'</td><td>'+e.freqLabel+'</td><td class="sev-hi">'+e.serials.size+'</td>'+
+          '<td>'+Array.from(e.serials).join(', ')+'</td></tr>';
+      });
+      html+='</tbody></table>';
+    } else {
+      html+='<div style="font-size:12px;color:#666;margin:6px 0">No frequency shows more than one DUT affected -- no systemic/station-level pattern detected in the current selection.</div>';
+    }
+
+    html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
+    html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Temp</th><th>Freq</th>'+
+      '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      var p=r.p;
+      var vTd=r.verdict==='OUTSIDE'
+        ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>'
+        :r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>';
+      html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td><td>'+(p.port||'')+'</td><td>'+p.temp+'</td>'+
+        '<td>'+(p.freqLabel||p.freq)+'</td><td>'+p.value.toFixed(4)+'</td>'+
+        '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
+        '<td>'+(r.dir||'&mdash;')+'</td>'+
+        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
+    });
+    html+='</tbody></table>';
+    el.innerHTML=html;
+  }catch(e){
+    el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>';
+  }
+}
 /* ---- Longform primary-dim filter (HarmonicNumber or SpurType) ---- */
 function updateBoxHarmonic(){
   var harm=document.getElementById('box_harm_sel').value;
@@ -10160,6 +10357,7 @@ function update(){
   updateStatsTable(selConds,yFlt,selBoxSers,selTemps);
   updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
   updateDeltaOutlierPanel(selConds,selTemps,selBoxSers);
+  updateSitePanel();
   _recomputeSpecSegments();
   saveState();
 }
@@ -10322,6 +10520,8 @@ def _build_box_interactive_html(
     tll_selector_html: str = "",
     help_panel_html: str = "",
     freq_cat_vals: list = None,
+    primary_site: str | None = None,
+    coverage_gap_html: str = "",
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -10364,6 +10564,9 @@ def _build_box_interactive_html(
         ".stbl td{padding:3px 8px;border:1px solid #ddd;white-space:nowrap;}"
         ".stbl tr:hover td{background:#f5f5ff;}"
         ".out{color:#c00;font-size:11px;}"
+        ".sev-hi{background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold;}"
+        ".sev-med{background:#fffbe0;color:#8a6d00;}"
+        ".sev-lo{color:#666;}"
         ".box_lf_bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;"
         "padding:5px 14px;background:#f5f5f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
         ".box_lf_panel{display:flex;flex-wrap:wrap;gap:4px;padding:4px 14px;"
@@ -10605,7 +10808,18 @@ def _build_box_interactive_html(
         f"var PADB_FIELD_PREFIX={json.dumps(padb_field_prefix)};",
         f"var PADB_FREQ_FIELD={json.dumps(padb_freq_field)};",
         f"var RESULTS_DIR_PATH={json.dumps(results_dir_abs_path)};",
+        f"var PRIMARY_SITE={json.dumps(primary_site)};",
     ])
+
+    site_btn_html = ""
+    if primary_site:
+        site_btn_html = (
+            '  <button class="toggle-btn" id="box_site_toggle_btn"'
+            ' title="Tests each non-primary-site DUT\'s value at each frequency/temperature'
+            ' against the k&times;IQR fence built from the primary site\'s (' + primary_site + ')'
+            ' own population at that frequency/temperature -- uses the k&times;IQR control above"'
+            ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>\n'
+        )
 
     return (
         "<!DOCTYPE html>\n<html>\n<head>\n"
@@ -10635,6 +10849,7 @@ def _build_box_interactive_html(
             ) if box_lf_rows else ""
         )
         + ctrl_bar + env_bar + filter_bar
+        + coverage_gap_html
         + '<div id="plot"></div>\n'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
         + '  <button class="toggle-btn" id="box_stat_toggle_btn"'
@@ -10649,6 +10864,7 @@ def _build_box_interactive_html(
         ' onclick="toggleOutlierPanel()">&#9658; Outlier Detail</button>\n'
         + '  <button class="toggle-btn" id="box_delta_toggle_btn"'
         ' onclick="toggleDeltaPanel()">&#9658; Delta Outlier Detail</button>\n'
+        + site_btn_html
         + '  <button class="toggle-btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
         ' title="Set currently selected conditions + serials as the global exclusion filter -- adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)"'
@@ -10694,6 +10910,7 @@ def _build_box_interactive_html(
         + '<div id="box_stat_panel" style="display:none;overflow-x:auto;padding:4px"></div>\n'
         + '<div id="box_outlier_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_delta_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
+        + '<div id="box_site_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + f"<script>\n{constants}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
     )
@@ -10827,6 +11044,73 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         df["_serial_id"] = "unknown"
         df["_port"] = ""
 
+    # Cross-site comparison (compare_csv in job.json tags each row's Group
+    # text "Site: <name>" before this function ever sees it -- see padb_v2.py
+    # _build_compare_csv). Extracted independently of cond_keys/COND_DIMS so
+    # a Site with only 1 distinct value (or excluded by some other rule)
+    # still resolves correctly here.
+    _site_re_box = re.compile(r'Site:\s*(\S+)')
+    if "Group" in df.columns:
+        df["_site"] = df["Group"].map(
+            lambda g: (_site_re_box.search(g).group(1) if pd.notna(g) and _site_re_box.search(g) else None)
+        )
+    else:
+        df["_site"] = None
+    all_sites = sorted(df["_site"].dropna().unique().tolist())
+    primary_site = cfg.get("primary_site")
+    site_compare_enabled = bool(primary_site) and primary_site in all_sites and len(all_sites) > 1
+    coverage_gap_html = ""
+    if site_compare_enabled:
+        def _norm_val(v):
+            # Different sites' own PADB extractions can format the identical
+            # numeric spec/limit/uncertainty value with different trailing
+            # precision (confirmed real: one real pod's SR CSV writes
+            # "Upper Spec (<=): -100.00", its AMC2 CSV writes "-100" for the
+            # same value) -- comparing raw strings across sites would report
+            # that as a false coverage gap. Normalize anything numeric-
+            # looking before diffing; non-numeric values (e.g. SpurType
+            # names) compare as plain strings, unaffected.
+            try:
+                return round(float(v), 6)
+            except (TypeError, ValueError):
+                return v
+
+        def _site_coverage_gaps(dim_label: str, series) -> list:
+            tmp = pd.DataFrame({"_site": df["_site"], "_v": series})
+            tmp["_norm"] = tmp["_v"].map(lambda v: _norm_val(v) if pd.notna(v) else None)
+            by_site = tmp.groupby("_site")["_norm"].apply(lambda s: set(s.dropna().unique()))
+            all_vals = set().union(*by_site.tolist()) if len(by_site) else set()
+            # One display string per normalized value -- doesn't matter which
+            # site's own formatting it borrows, since post-normalization
+            # they're the same value.
+            display = {}
+            for norm, raw in zip(tmp["_norm"], tmp["_v"]):
+                if norm is not None and norm not in display:
+                    display[norm] = raw
+            def _sort_key(v):
+                return (0, v) if isinstance(v, (int, float)) else (1, str(v))
+            lines = []
+            for site in all_sites:
+                missing = sorted((all_vals - by_site.get(site, set())), key=_sort_key)
+                if missing:
+                    shown = ", ".join(str(display.get(v, v)) for v in missing)
+                    lines.append(f"<b>{site}</b> has no {dim_label} data for: {shown}")
+            return lines
+        _gap_lines = []
+        _gap_lines += _site_coverage_gaps("Temperature", df["Temperature"])
+        if (df["_port"] != "").any():
+            _gap_lines += _site_coverage_gaps("Port", df["_port"].where(df["_port"] != ""))
+        for _key in cond_keys:
+            if _key == "Site":
+                continue
+            _gap_lines += _site_coverage_gaps(_key, df["Group"].map(lambda g, _k=_key: group_kv.get(g, {}).get(_k)))
+        if _gap_lines:
+            coverage_gap_html = (
+                '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
+                'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
+                '<b>Coverage gap across sites:</b> ' + ' &nbsp;|&nbsp; '.join(_gap_lines) + '</div>'
+            )
+
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
 
     # Adaptive-precision labels shared with _aggregate_box_data_by_temp (passed
@@ -10839,6 +11123,10 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     freq_cat_order = [freq_label_map[f] for f in sorted_freqs]
 
     box_data = _aggregate_box_data_by_temp(df, x_unit=x_unit, freq_label_map=freq_label_map)
+    if site_compare_enabled:
+        for cd in box_data:
+            m = _site_re_box.search(cd["condition"])
+            cd["site"] = m.group(1) if m else None
     stat_data_box = _aggregate_stat_data(df, cfg)
     all_temps = sorted(df["Temperature"].dropna().unique().tolist())
 
@@ -10923,6 +11211,8 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         tll_selector_html=box_tll_selector_html,
         help_panel_html=help_panel_html,
         freq_cat_vals=[float(f) for f in sorted_freqs],
+        primary_site=primary_site if site_compare_enabled else None,
+        coverage_gap_html=coverage_gap_html,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")

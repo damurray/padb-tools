@@ -62,6 +62,7 @@ Different schema — this one drives `padb_v2.py`, not `padb_run.py`:
 - `spec_direction`: `"lo"`/`"hi"`/`"both"`/`"none"`/`"auto"` — set explicitly if the pod has no configured spec limits but you know the measurement is one-sided. Only sets the *default*: a real CSV limit always overrides it, and `summary`/`stat_boxplot` show a live Both/Upper/Lower selector on top of it whenever the CSV has no limit at all.
 - `x_label`/`x_unit` — override if the x-axis isn't carrier frequency in MHz (e.g. phase-noise offset in Hz).
 - `publish_to` — omit for the default `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>`; set `""` to opt out, or a path to publish elsewhere.
+- Comparing two sites instead of a single extraction? Use `"compare_csv": {"SiteA": "path...", "SiteB": "path..."}` + `"primary_site"` instead of a single CSV — see `PADB_Tools_Guide.md` → **Cross-Site Comparison**. The webapp's collapsed-by-default "Compare two datasets" panel can build and run this job for you without hand-writing it.
 
 ## 4. Build the interactive views
 ```

@@ -380,10 +380,11 @@ Each entry in `secondary_plots` produces one self-contained HTML file.
 - **Data filter: All data / Passing only / Upper limit / Lower limit** — "Upper limit"/"Lower limit" are two independent radios (added 2026-08-04, replacing a single relabeled "range" radio that couldn't represent both bounds when direction is "Both"), each shown only when relevant to the current TLL direction. Unlike `summary`'s filter (which hides whole condition traces), this one trims individual raw sample points *before* Q1/Q2/Q3/whiskers are computed — "Upper limit" removes samples above the typed-in value, "Lower limit" removes samples below it.
 - **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band. See **Segment-by Tab-Through** below.
 - **Show points** — overlay individual per-DUT measurement points on each box trace (size 5, semi-transparent). Points for serials excluded by the serial filter are shown in grey; outliers remain as open-circle markers for visual distinction. Hovering a scatter point shows the serial number and value.
-- **Global Filter (GF) buttons** — "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" each *add* to the current GF (they don't replace it — use "Clear global filter" first to start over). **Export GF CSV** / **Import GF CSV** round-trip the current GF through a human-readable CSV; import re-merges (adds to) the current filter, same as the "Set ... as GF" buttons. **Copy PADB Filter** generates a best-effort `NOT IN {...}` expression for pasting into PADB's own filter box — flagged as under development, may not exactly match PADB's filter syntax in every case. See **Global Filter (GF)** below for what GF actually does across views.
+- **Global Filter (GF) buttons** — "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" each *add* to the current GF (they don't replace it — use "Clear global filter" first to start over). **Export GF CSV** / **Import GF CSV** round-trip the current GF through a human-readable CSV; import re-merges (adds to) the current filter, same as the "Set ... as GF" buttons. **Copy PADB Filter** builds a real PADB filter expression (`'Field' = "value"` / `!=` / `IN {...}`, joined with `AND`) reflecting the *current view's own active filters* — condition dims, Serial, Port, Frequency range, Temperature — not the Global Filter's exclusion list. Verified to match PADB's real filter syntax against a hand-provided reference expression. See **Global Filter (GF)** below for what GF actually does across views.
 - **Log X toggle**
 - **Help (ⓘ) panel** — see **In-Page Help Panel** below.
-- **Statistics Table toggle** — scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality, NP TI bounds, outliers with serial numbers. This table is purely descriptive (no spec/TLL columns), so it has no direction-dependent columns to toggle.
+- **Statistics Table toggle** — scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality, NP TI bounds, outliers with serial numbers, plus `Max +Δ`/`Max -Δ` columns splitting outliers by sign relative to the median. Purely descriptive (no spec/TLL columns), so it has no direction-dependent columns to toggle.
+- **Site Population Check** (only rendered on a `compare_csv` page — see **Cross-Site Comparison** below) — tests each non-primary-site DUT's value at each frequency/temperature against the k×IQR fence built from the primary site's own population at that same point. Includes a per-DUT rollup and a per-frequency "multiple DUTs affected" cluster table to help distinguish a bad DUT from a station/calibration issue — see that section for the full triage logic.
 - **CSV export**
 - **Outlier hover** — shows value and serial number of each outlier point
 
@@ -605,7 +606,9 @@ Opens `http://127.0.0.1:5000` in the default browser. Every route shells out to 
 - **Execute job(s)** — a jobs table with checkboxes and **Run Selected**. A single background worker + queue serializes every PADB-R.exe launch, since two concurrent instances interfere with and stall each other (see **Cross-Process PADB-R.exe Exclusivity**, below). Run jobs execute before plot jobs in a mixed selection, and a queued or running job can be **aborted**. For a V2 `*_run_job.json`, once extraction succeeds the worker automatically runs every sibling `*_v2_job.json` plot job in turn — the full V2 flow in one click.
 - **Schedule/unschedule job(s)** — calls the same `padb_scheduler.py` functions the desktop Scheduler GUI uses, so a task created from either place is indistinguishable to the other.
 - **Convert pod/job between sites** — calls `padb_convert_site.py`'s functions directly (see **Converting Between Database Sites** below).
-- The jobs table's **Kind** column distinguishes `run` jobs (have a `pod` key, runnable via `padb_run.py`) from `plot` jobs (have `csv_path`/`analytic`, only runnable via `padb_v2.py`) — use **Select All Runnable** to bulk-select only `run` jobs for an unattended batch, rather than hand-picking across a long list. **Scheduled**/**Last Run**/**Results** columns mirror the desktop Scheduler and the actual `results_dir/index.html` on disk.
+- **Compare two datasets** — collapsed by default (a corner case, mainly useful the first time a new site comes online). Pick two already-extracted CSVs (auto-discovered from every `*_results/padb/*.csv` on disk), name each site, pick the primary, and **Create & Run** in one step — builds a `compare_csv` job.json (local-only by default) and queues it immediately. Validates first: a measurement-unit mismatch (e.g. dBc vs. dBm) blocks with an explanation and an explicit override to proceed anyway; softer gaps (missing temperatures/ports, non-overlapping frequency ranges) only warn. See **Cross-Site Comparison** below for what the resulting job actually does.
+- The jobs table's **Kind** column distinguishes `run` jobs (have a `pod` key, runnable via `padb_run.py`) from `plot` jobs (have `csv_path`/`analytic`/`compare_csv`, only runnable via `padb_v2.py`) — use **Select All Runnable** to bulk-select only `run` jobs for an unattended batch, rather than hand-picking across a long list. **Scheduled**/**Last Run**/**Results** columns mirror the desktop Scheduler and the actual `results_dir/index.html` on disk.
+- **Show tooltip help** checkbox (top of the page) — toggles hover tooltips across every section on/off; the preference is remembered across reloads (`localStorage`).
 
 ---
 
@@ -935,6 +938,36 @@ Repoints `"pod"`, and substitutes the old pod stem for the new one everywhere it
 
 ---
 
+## Cross-Site Comparison (`compare_csv`)
+
+Compares data from two sites (e.g. Santa Rosa vs. a newly-stood-up site's early production units) without hand-merging CSVs — mainly useful once, when first standing up a new site, not an everyday tool.
+
+**job.json keys** (V2 plot job):
+```json
+"compare_csv": {"SR": "path/to/sr.csv", "AMC2": "path/to/amc2.csv"},
+"primary_site": "SR"
+```
+`compare_csv` overrides `csv_path`/`--csv` entirely (2+ site names required). `primary_site` defaults to the first key when omitted — it's the reference population for boxplot's Site Population Check (below); it has no effect on any other view.
+
+**How it works:** each site's own scatter CSV is read as-is and tagged with `"  Site: <name>"` appended to its raw `Group` text, then concatenated into one merged CSV before the normal single-CSV pipeline runs completely unchanged. "Site" becomes a real, filterable/groupable condition dimension for free — every existing filter, Group-by, and spec-detection function already treats whatever's in `Group` text as a condition dimension. Deliberately tolerant of imperfect cross-site data: mismatched columns, one site missing spec limits entirely, or narrower temperature/port coverage than the other site are all expected, not errors.
+
+**Coverage-gap banner** — an always-visible note above the boxplot (not a togglable panel) listing what one site has that the other doesn't, e.g. `"AMC2 has no Temperature data for: 20°C, 30°C | AMC2 has no Port data for: RF2"`, so you can decide whether a gap means the newer site's test plan needs widening. Numeric values (specs/limits/uncertainties) are compared after normalizing for formatting differences between sites (e.g. `"-100.00"` vs `"-100"` for the same value never falsely shows as a gap).
+
+**Boxplot "Site Population Check"** — for the current filter selection, buckets every primary-site point by `(temperature, frequency)`, builds a Tukey k×IQR fence from each bucket (the same fence and live k×IQR control already used for this view's own outlier detection), then tests every non-primary-site point at that same point against it. Points with fewer than 4 primary-site samples at that exact (temp, freq) are reported `n/a`, not silently dropped — a fence isn't meaningful below that.
+
+Three tables, in order:
+1. **Per-DUT summary** — checked/outside counts, high/low direction split, max deviation distance, and how many of that DUT's outside points are *shared* with another DUT at the same (temp, freq). Includes a **suggested triage tag** (not a verdict): "Likely station/systemic" (majority shared with other DUTs — the most consequential misread if missed, since it taints every DUT from that site) beats "Likely bad DUT" (toward-failing, not shared) beats "Isolated — worth a look" beats "Below population (benign)" (away from the side that would fail spec) beats "Ambiguous" (spec is two-sided or unconfigured, direction can't be inferred).
+2. **Frequency clusters** — every `(site, temp, freq)` where 2+ distinct DUTs are simultaneously outside, sorted by DUT count descending. Multiple independent DUTs failing at the identical spot is the strongest available signal for a station/fixture/calibration issue, not a bad DUT.
+3. **Per-point detail** — every checked point with its verdict, direction (high/low), and distance from the fence, for drill-down.
+
+Direction is reported relative to spec when determinable (reuses the live TLL-direction selector): for a one-sided spec, the side that moves toward failing is flagged differently from the side that can't fail spec but still indicates a real population difference (e.g. a site calibration offset).
+
+**Webapp UI**: a collapsed-by-default "Compare two datasets" panel (see **Web App** above) lets you pick two already-extracted CSVs, name each site, pick the primary, and Create & Run in one step — no hand-written job.json needed. It validates before running: a genuine measurement-unit mismatch (e.g. dBc vs. dBm) blocks by default with an explanation, with an explicit override to proceed anyway; softer gaps (missing temps/ports, non-overlapping frequency ranges) only warn, never block.
+
+**Scope**: only `boxplot` has the Site Population Check today. The other five V2 views render a `compare_csv`-merged dataset fine (Site is just a condition dimension to them too) but have no dedicated comparison feature yet.
+
+---
+
 ## Limitations and Known Issues
 
 - **No serial filter for de_summary.** The Environmental CSV is pre-aggregated across all DUTs; per-DUT data is not available in this file format.
@@ -958,5 +991,9 @@ Repoints `"pod"`, and substitutes the old pod stem for the new one everywhere it
 - **PADB-R.exe requires a desktop session.** It is a WinForms application and will not run in a headless SSH session.
 
 - **Publish destination.** A simple directory copy. Requires write access to the network share. Large result sets (many large CSVs, many PDFs) may be slow.
+
+- **Site Population Check doesn't yet respect the plot's frequency-range/zoom filter.** It scans every frequency in the current condition/serial/temp selection regardless of what `box_freq_lo`/`box_freq_hi` (or a drag-zoom) currently narrows the plot to. Planned follow-up, not yet built.
+
+- **Site Population Check compares only exact-matching frequencies between sites.** It does not attempt to match frequencies that are close-but-not-identical between two sites' sweeps (a real, confirmed case exists: one site's sweep had 335 distinct frequency points vs. the other's 334, one of which didn't line up). A point at a site-unique frequency simply reports `n/a`, not a false match.
 
 - **`"mode": "interactive"` does not invoke V2 automatically.** It's a label plus a printed hint after extraction — you still run `padb_v2.py` yourself as a second command (see **V2 Two-Step Workflow**). V2's job.json schema is structurally different from `padb_run.py`'s (different `results_dir`/CSV semantics), and `generate_report()` takes one CSV per call while a `padb_run.py` job's analytics list can produce several — wiring this into one command was a deliberate scope cut, not a missed feature.

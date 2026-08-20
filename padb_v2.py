@@ -42,6 +42,14 @@ Job JSON schema:
     "env_coverage_y_label": "",             # y-axis label override for env_coverage when env_coverage_csv is set
     "env_coverage_y_lim": null,             # y-axis limits override [lo, hi] for env_coverage when env_coverage_csv is set
     "env_coverage_freq_scale": 1.0,         # freq_scale override for env_coverage when env_coverage_csv is set
+    "compare_csv": {"SR": "path/to/sr.csv", "AMC2": "path/to/amc2.csv"},
+                                             # optional: merge 2+ sites' own scatter CSVs into
+                                             # one, tagging each row "Site: <name>" so Site
+                                             # becomes a normal condition dimension everywhere.
+                                             # Overrides csv_path when present.
+    "primary_site": "SR",                   # which compare_csv site's population defines the
+                                             # boxplot "Site Population Check" fence. Defaults
+                                             # to the first key in compare_csv when omitted.
     "publish_to": ""                         # network path; omit key entirely to use the
                                               # default padb-tools-results share, or set to
                                               # "" / false / null to opt out of publishing
@@ -919,6 +927,47 @@ def _resolve_csv_path(csv_path: Path) -> Path:
     return csv_path
 
 
+def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> Path:
+    """
+    Merge two or more sites' own scatter CSVs into one, tagging each row's
+    Group text with "  Site: <name>" before any downstream Group parsing
+    happens. Every filter/Group-by/spec-detection function in padb_plots.py
+    already treats whatever's in the Group column as a condition dimension,
+    so "Site" becomes a real, filterable dimension for free -- no changes
+    needed anywhere downstream of this merge.
+
+    Deliberately tolerant of "less than perfect" cross-site data: sites are
+    allowed to have different columns (pd.concat unions them, missing ones
+    become NaN), different Group dimensions (a site missing a key just gets
+    no _grp_ value for it), and one site having no spec limits at all.
+    """
+    if not isinstance(compare_csv, dict) or len(compare_csv) < 2:
+        sys.exit('"compare_csv" must be an object mapping 2+ site names to CSV paths')
+    dfs = []
+    for site_name, rel_path in compare_csv.items():
+        p = Path(rel_path)
+        if not p.is_absolute():
+            p = (job_dir / rel_path).resolve()
+        p = _resolve_csv_path(p)
+        if not p.exists():
+            sys.exit(f"compare_csv: site {site_name!r} CSV not found: {p}")
+        df = pd.read_csv(p, dtype=str)
+        df.columns = df.columns.str.strip()
+        group_col = next((c for c in df.columns if c.strip().lower() == "group"), None)
+        if group_col is None:
+            df["Group"] = f"Site: {site_name}"
+        else:
+            df[group_col] = df[group_col].fillna("").astype(str).str.rstrip() + f"  Site: {site_name}"
+        print(f"  compare_csv: site {site_name!r} -- {len(df):,} rows from {p.name}", flush=True)
+        dfs.append(df)
+    merged = pd.concat(dfs, ignore_index=True, sort=False)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    out_path = output_dir / "_compare_merged.csv"
+    merged.to_csv(out_path, index=False)
+    print(f"  compare_csv: merged {len(merged):,} total rows from {len(compare_csv)} site(s) -> {out_path.name}", flush=True)
+    return out_path
+
+
 def _run_padb_for_csv(cfg: dict, job_dir: Path) -> Path:
     """
     Run PADB to produce the scatter CSV if not already available.
@@ -977,6 +1026,11 @@ def main(argv: list[str] | None = None) -> None:
     # Locate scatter CSV
     if args.csv:
         csv_path = Path(args.csv).resolve()
+    elif cfg.get("compare_csv"):
+        if not cfg.get("primary_site"):
+            cfg["primary_site"] = next(iter(cfg["compare_csv"]))
+        csv_path = _build_compare_csv(cfg["compare_csv"], job_dir, output_dir)
+        print(f"  CSV  : {csv_path.name} (merged compare_csv, primary_site={cfg['primary_site']!r})")
     elif cfg.get("csv_path"):
         csv_path = _resolve_csv_path(Path(cfg["csv_path"]).resolve())
         print(f"  CSV  : {csv_path.name} (from job json)")

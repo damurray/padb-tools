@@ -14,6 +14,15 @@ body {
 }
 
 header h1 { margin-bottom: 0; }
+#tooltipToggleWrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.85rem;
+  color: #666;
+  margin-top: 0.3rem;
+  cursor: pointer;
+}
 .subtitle { color: #666; margin-top: 0.2rem; }
 
 section {
@@ -46,6 +55,27 @@ h2 { font-size: 1.1rem; }
   margin-top: 1rem;
 }
 .hidden { display: none; }
+
+.warn-banner {
+  background: #fff8e1;
+  border: 1px solid #e0c05a;
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  margin-top: 0.6rem;
+  color: #6b5a00;
+  font-size: 0.9rem;
+}
+.warn-banner ul { margin: 0.3rem 0 0; padding-left: 1.2rem; }
+.block-banner {
+  background: #fee2e2;
+  border: 1px solid #dc2626;
+  border-radius: 6px;
+  padding: 0.6rem 1rem;
+  margin-top: 0.6rem;
+  color: #7f1d1d;
+  font-weight: 600;
+  font-size: 0.9rem;
+}
 
 table {
   width: 100%;
@@ -193,6 +223,15 @@ pre {
 .job-file summary {
   cursor: pointer;
   font-weight: 600;
+}
+
+#compareDetails summary {
+  cursor: pointer;
+  list-style-position: outside;
+}
+#compareDetails summary h2 {
+  display: inline;
+  margin: 0;
 }
 
 .hint { color: #666; font-size: 0.85rem; }
