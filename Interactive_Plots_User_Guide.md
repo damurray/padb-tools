@@ -130,7 +130,7 @@ None of these controls change the underlying result file — you're only changin
 
 ## Cross-Site Comparison
 
-Some result pages combine data from two sites — e.g. an established site's data against a newer site's first production units — instead of just one. You'll know because the Boxplot page will have an extra "Site Population Check" button, and "Site" will show up as its own filter dimension alongside the usual conditions.
+Some result pages combine data from two sites — e.g. an established site's data against a newer site's first production units — instead of just one. You'll know because the Boxplot page will have an extra "Site Population Check" button, and "Site" will show up as its own filter dimension alongside the usual conditions. Want to build one of these yourself? See `Compare_Mode_Cheatsheet.md` for the one-page steps.
 
 **What Site Population Check tells you:** for each new-site DUT, whether its measurements at each frequency/temperature fall inside the range the established site's own units produced there. Anything outside that range is worth a look — the table it shows breaks that down further:
 - If one specific DUT is flagged repeatedly across many frequencies, while its own site's other units look fine — that's likely a bad unit.

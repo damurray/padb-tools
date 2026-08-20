@@ -940,7 +940,7 @@ Repoints `"pod"`, and substitutes the old pod stem for the new one everywhere it
 
 ## Cross-Site Comparison (`compare_csv`)
 
-Compares data from two sites (e.g. Santa Rosa vs. a newly-stood-up site's early production units) without hand-merging CSVs — mainly useful once, when first standing up a new site, not an everyday tool.
+Compares data from two sites (e.g. Santa Rosa vs. a newly-stood-up site's early production units) without hand-merging CSVs — mainly useful once, when first standing up a new site, not an everyday tool. `Compare_Mode_Cheatsheet.md` has the one-page version of everything below.
 
 **job.json keys** (V2 plot job):
 ```json

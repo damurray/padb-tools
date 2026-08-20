@@ -21,6 +21,7 @@ You're looking at this because you've been handed a `.pod` file and need interac
 | "I generated new plots — how do I manually verify they're correct before publishing?" | `QA_Checklist.md` |
 | "Just give me the exact steps to run Simple mode, one page, nothing else" | `Simple_Mode_Cheatsheet.md` |
 | "Just give me the exact steps to run Interactive/V2 mode, one page, nothing else" | `Interactive_Mode_Cheatsheet.md` |
+| "Just give me the exact steps to compare two sites' data, one page, nothing else" | `Compare_Mode_Cheatsheet.md` |
 | "I was just sent a results link — how do I use the interactive plot controls?" | `Interactive_Plots_User_Guide.md` (no pipeline/job.json knowledge assumed) |
 | "I just want a job.json generated from a pod, not written by hand" | `padb_make_job.py` (Simple/Legacy/Interactive extract job) — see `CLAUDE.md` → **`padb_make_job.py`** |
 | "I want the full Interactive/V2 job set generated from a pod, not hand-written" | `padb_make_v2_job.py` — see `CLAUDE.md` → **`padb_make_v2_job.py`** |
