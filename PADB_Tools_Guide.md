@@ -962,6 +962,8 @@ Three tables, in order:
 
 Direction is reported relative to spec when determinable (reuses the live TLL-direction selector): for a one-sided spec, the side that moves toward failing is flagged differently from the side that can't fail spec but still indicates a real population difference (e.g. a site calibration offset).
 
+All three tables respect the plot's current frequency window (`box_freq_lo`/`box_freq_hi`, the same range a drag-zoom already syncs to) — narrowing the view to investigate a specific cluster narrows the check to match, with a note in the summary line when the window is less than the full range.
+
 **Webapp UI**: a collapsed-by-default "Compare two datasets" panel (see **Web App** above) lets you pick two already-extracted CSVs, name each site, pick the primary, and Create & Run in one step — no hand-written job.json needed. It validates before running: a genuine measurement-unit mismatch (e.g. dBc vs. dBm) blocks by default with an explanation, with an explicit override to proceed anyway; softer gaps (missing temps/ports, non-overlapping frequency ranges) only warn, never block.
 
 **Scope**: only `boxplot` has the Site Population Check today. The other five V2 views render a `compare_csv`-merged dataset fine (Site is just a condition dimension to them too) but have no dedicated comparison feature yet.
@@ -991,8 +993,6 @@ Direction is reported relative to spec when determinable (reuses the live TLL-di
 - **PADB-R.exe requires a desktop session.** It is a WinForms application and will not run in a headless SSH session.
 
 - **Publish destination.** A simple directory copy. Requires write access to the network share. Large result sets (many large CSVs, many PDFs) may be slow.
-
-- **Site Population Check doesn't yet respect the plot's frequency-range/zoom filter.** It scans every frequency in the current condition/serial/temp selection regardless of what `box_freq_lo`/`box_freq_hi` (or a drag-zoom) currently narrows the plot to. Planned follow-up, not yet built.
 
 - **Site Population Check compares only exact-matching frequencies between sites.** It does not attempt to match frequencies that are close-but-not-identical between two sites' sweeps (a real, confirmed case exists: one site's sweep had 335 distinct frequency points vs. the other's 334, one of which didn't line up). A point at a site-unique frequency simply reports `n/a`, not a false match.
 

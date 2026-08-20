@@ -9615,6 +9615,12 @@ function updateSitePanel(){
     var selConds=getSelectedConds(),selSerials=getSelectedBoxSerials(),selTemps=getSelectedTemps();
     var selCondSet={};selConds.forEach(function(c){selCondSet[c]=true;});
     var k=getIqrK();
+    // Scope to the plot's current frequency window -- box_freq_lo/box_freq_hi
+    // is the same range a drag-zoom already syncs to (see _onPlotRelayout),
+    // so zooming in to investigate a cluster narrows this panel too instead
+    // of always scanning the whole dataset regardless of what's on screen.
+    var fr=getBoxFreqRange();
+    var freqWindowed=fr.lo>BOX_FREQ_MIN+1e-9||fr.hi<BOX_FREQ_MAX-1e-9;
     var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
     var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
     var primaryBuckets={},otherPoints=[];
@@ -9623,6 +9629,7 @@ function updateSitePanel(){
       if(selCondSet[cd.condition]!==true) return;
       if(selTemps.indexOf(cd.temp)<0) return;
       (cd.freq_stats||[]).forEach(function(fs){
+        if(fs.freq<fr.lo||fs.freq>fr.hi) return;
         (fs.vals_detail||[]).forEach(function(d){
           if(selSerials.indexOf(d.s)<0) return;
           if(gfActive){
@@ -9639,7 +9646,8 @@ function updateSitePanel(){
       });
     });
     if(!otherPoints.length){
-      el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current filter/selection.</i>';
+      el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current filter/selection'+
+        (freqWindowed?' and frequency window ('+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+')':'')+'.</i>';
       return;
     }
     var towardFail=_siteTowardFailDir();
@@ -9701,10 +9709,11 @@ function updateSitePanel(){
     var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
       ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations.)';
+    var winNote=freqWindowed?' Scoped to the current frequency window ('+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+' '+X_UNIT+') -- reset/zoom out to check the full range.':'';
     var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
       '</b> non-'+PRIMARY_SITE+' point(s) fall outside the '+PRIMARY_SITE+' k×IQR fence at their own frequency/temperature'+
       (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency/temperature, fence not meaningful)':'')+
-      '.'+dirNote+'</div>';
+      '.'+dirNote+winNote+'</div>';
 
     var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
       .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});

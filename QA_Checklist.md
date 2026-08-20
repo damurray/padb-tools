@@ -331,6 +331,7 @@ Only applies to a boxplot page built from a `compare_csv` job (`"Site"` appears 
 - [ ] Frequency clusters table only lists `(site, temp, freq)` combinations with 2+ distinct DUTs affected — sorted by DUT count descending
 - [ ] Changing the live k×IQR control (same input boxplot's own outlier detection uses) and reopening the panel changes the fence bounds and verdicts accordingly
 - [ ] Toggling condition/serial/port/temperature filters and reopening the panel reflects the new selection
+- [ ] Narrowing the frequency range (drag-zoom or the min/max number inputs) and reopening the panel scopes all three tables to that window, with a note in the summary line; resetting to the full range removes the note and restores the full-dataset counts
 
 ---
 
@@ -342,6 +343,5 @@ Only applies to a boxplot page built from a `compare_csv` job (`"Site"` appears 
 - env_coverage TTU/TTL require Spec override inputs when the source CSV has null Upper_Limit/Lower_Limit columns.
 - env_coverage TTU/TTL lines may extend outside the visible Y range — the axis is scaled to UDE/LDE data only, not to TTU/TTL values.
 - GF Export/Import CSV's `Start_Freq`/`Stop_Freq`/`N_Points` columns are display-only context — the runtime exclusion match is on (serial, condition, temperature) only, so import does not reconstruct an exact frequency-by-frequency exclusion (by design, not a bug).
-- Site Population Check does not yet respect the plot's frequency-range/zoom filter — it scans every frequency in the current condition/serial/temp selection regardless of what the plot is currently zoomed to. Planned follow-up.
 - Site Population Check only compares exact-matching frequencies between the two sites — a frequency present in only one site's sweep reports `n/a` rather than attempting a near-match.
 - "Segment by: Spec"/"Segment by: Uncertainty" show zero segments if the pod's extraction didn't add `Upper/Lower Spec` or `Upper/Lower Uncertainty` as grouping items — this is a pod-authoring gap, not a code bug. "Segment by: Limit" always works.
