@@ -424,6 +424,18 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
     mechanism and must stay unconditional -- see cross-contamination note
     above) but flagged with a WARNING, since that means PADB likely did not
     actually write fresh output this run despite returning success.
+
+    Exception to the above: run_padb() always passes -dir <results_padb>, so
+    PADB's real output for this run already lands directly in results_padb,
+    never in R-Plots (see the -dir gotcha in CLAUDE.md). A stale R-Plots file
+    sharing a stem with an already-fresh (this-run) results_padb file is a
+    leftover from something else entirely (typically a manual GUI session,
+    which does default-save to R-Plots) and is skipped rather than collected
+    -- otherwise it would silently overwrite PADB's genuinely fresh -dir
+    output with old data. Real fix for a bug found 2026-08-20: a stale
+    UHP-IddVsVgg R-Plots leftover (from an earlier manual run) was clobbering
+    every subsequent automated re-extraction's genuinely fresh CSV, and the
+    same pattern showed up in 11 of 16 recent run logs across other jobs too.
     """
     output_dir_raw = cfg.get("padb_output_dir", "")
     if not output_dir_raw:
@@ -445,6 +457,30 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
 
     fresh = [(f, _matched_stem(f.stem)) for f in output_dir.iterdir() if f.is_file()]
     fresh = [(f, s) for f, s in fresh if s is not None]
+
+    # run_padb() always passes -dir <results_padb>, so PADB's real output for
+    # THIS run already lands directly in results_padb -- never in R-Plots.
+    # A stale R-Plots file sharing an analytic's stem (e.g. left over from an
+    # earlier manual GUI session, which does default-save to R-Plots) must
+    # never be allowed to clobber that already-fresh direct write. Skip any
+    # R-Plots candidate that predates this run if results_padb already holds
+    # a fresh (this-run) file for the same stem.
+    ignored: list[str] = []
+    if run_start is not None:
+        def _dest_already_fresh(stem: str) -> bool:
+            return any(
+                p.is_file() and _matched_stem(p.stem) == stem and p.stat().st_mtime >= run_start
+                for p in results_padb.iterdir()
+            )
+
+        kept = []
+        for f, s in fresh:
+            if f.stat().st_mtime < run_start and _dest_already_fresh(s):
+                ignored.append(f.name)
+            else:
+                kept.append((f, s))
+        fresh = kept
+
     active_stems = {s for _, s in fresh}
 
     removed = [
@@ -469,12 +505,17 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
         print(f"  Collected {len(copied)} file(s) from {output_dir.name}/")
         for name in sorted(copied):
             print(f"    {name}")
-    else:
+    elif not ignored:
         print(f"  No matching files in {output_dir.name}/ -- check PADB log")
     if stale:
         print(f"  WARNING: {len(stale)} collected file(s) predate this PADB-R.exe run "
               f"-- PADB may not have written fresh output despite returning success:")
         for name in sorted(stale):
+            print(f"    {name}")
+    if ignored:
+        print(f"  Ignored {len(ignored)} stale {output_dir.name}/ file(s) that predate this run "
+              f"-- results_padb already has fresh -dir output for the same analytic:")
+        for name in sorted(ignored):
             print(f"    {name}")
 
 
