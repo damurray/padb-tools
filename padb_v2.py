@@ -548,12 +548,68 @@ def render_summary(
     freq_min  = freq_vals[0] if freq_vals else 0.0
     freq_max  = freq_vals[-1] if freq_vals else 1.0
 
+    # Cross-site comparison (compare_csv tags each row's Group text "Site: <name>"
+    # before this function ever sees it -- see _build_compare_csv). "Site" already
+    # flows through as a normal cond_cols/cond_keys dimension (same free-ride as
+    # every other view), so this only needs to compute the coverage-gap banner --
+    # the Site Population Check panel itself is built entirely client-side from
+    # DATA/cond_keys, same as boxplot/stat_summary.
+    all_sites = sorted({r["cond_keys"].get("Site") for r in records if r["cond_keys"].get("Site")})
+    primary_site = cfg.get("primary_site")
+    site_compare_enabled = bool(primary_site) and primary_site in all_sites and len(all_sites) > 1
+    coverage_gap_html = ""
+    if site_compare_enabled:
+        def _norm_val(v):
+            # Same rationale as boxplot's/stat_summary's identical helper:
+            # different sites' own PADB extractions can format the same
+            # numeric value with different trailing precision -- compare
+            # numerically when possible so that never shows up as a false gap.
+            try:
+                return round(float(v), 6)
+            except (TypeError, ValueError):
+                return v
+
+        def _site_coverage_gaps(dim_label: str, series) -> list:
+            tmp = pd.DataFrame({"_site": df["_grp_Site"], "_v": series})
+            tmp["_norm"] = tmp["_v"].map(lambda v: _norm_val(v) if pd.notna(v) else None)
+            by_site = tmp.groupby("_site")["_norm"].apply(lambda s: set(s.dropna().unique()))
+            all_vals = set().union(*by_site.tolist()) if len(by_site) else set()
+            display = {}
+            for norm, raw in zip(tmp["_norm"], tmp["_v"]):
+                if norm is not None and norm not in display:
+                    display[norm] = raw
+            def _sort_key(v):
+                return (0, v) if isinstance(v, (int, float)) else (1, str(v))
+            lines = []
+            for site in all_sites:
+                missing = sorted((all_vals - by_site.get(site, set())), key=_sort_key)
+                if missing:
+                    shown = ", ".join(str(display.get(v, v)) for v in missing)
+                    lines.append(f"<b>{site}</b> has no {dim_label} data for: {shown}")
+            return lines
+
+        _gap_lines = []
+        _gap_lines += _site_coverage_gaps("Temperature", df["Temperature"])
+        for _col in cond_cols:
+            _label = _col.removeprefix("_grp_")
+            if _label == "Site":
+                continue
+            _gap_lines += _site_coverage_gaps(_label, df[_col])
+        if _gap_lines:
+            coverage_gap_html = (
+                '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
+                'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
+                '<b>Coverage gap across sites:</b> ' + ' &nbsp;|&nbsp; '.join(_gap_lines) + '</div>'
+            )
+
     _pp._build_summary_html(
         records, cond_dims, cfg, output_html,
         hi_spec=hi_spec_global, lo_spec=lo_spec_global,
         freq_min=freq_min, freq_max=freq_max, freq_vals=freq_vals,
         temps_all=temps_all,
         help_panel_html=help_panel_html,
+        primary_site=primary_site if site_compare_enabled else None,
+        coverage_gap_html=coverage_gap_html,
     )
 
 

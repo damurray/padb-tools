@@ -12335,6 +12335,224 @@ function _updateSumGfBadge(){
 window.addEventListener('storage',function(e){
   if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadSumGlobalFilter();update();}
 });
+
+/* ---- Site Population Check: for a cross-site (compare_csv) page, does a
+   non-primary-site DUT's value at each frequency fall inside the 1.5xIQR
+   fence built from the primary site's own population at that same
+   frequency? Mirrors boxplot's/stat_summary's identical feature (see
+   CLAUDE.md "Site Population Check triage hierarchy" for the reasoning
+   behind each triage rule) but adapted to this view's own data shape:
+   cd.dut_vals[freq_idx][dut_idx] is each DUT's mean blended ACROSS ALL
+   TEMPERATURES present in that condition (see render_summary()'s own
+   comment on dut_vals), not a single temperature's raw points -- so this
+   check compares each DUT's own cross-temperature mean, not a per-
+   temperature raw value like boxplot's version does. No per-DUT Port
+   field exists in dut_info here either (only {s: serial}), so Port isn't
+   shown in the per-point table on this view. */
+function toggleSitePanel(){
+  var panel=document.getElementById('sum_site_panel');
+  var btn=document.getElementById('sum_site_toggle_btn');
+  if(!panel||!btn) return;
+  var show=panel.style.display==='none';
+  panel.style.display=show?'':'none';
+  btn.textContent=(show?'▼':'▸')+' Site Population Check';
+  if(show) updateSitePanel();
+}
+/* Which direction is "toward failing" for this measurement, if determinable.
+   Reuses getTllDirection() (data-beats-config, respects this view's own
+   live TLL-selector override) same as boxplot's version. */
+function _siteTowardFailDir(){
+  var d=getTllDirection();
+  if(d==='hi') return 'high';
+  if(d==='lo') return 'low';
+  return null;
+}
+/* Suggested (not asserted) triage tag -- identical rules to boxplot's/
+   stat_summary's _siteTriageTag(). Order matters: "shared across DUTs" is
+   checked first since a station/systemic issue is the most consequential
+   misread if missed (it taints every DUT from that site, not just one). */
+function _siteTriageTag(d,towardFail){
+  if(!d.outside) return null;
+  var mostlyShared=d.sharedCount/d.outside>0.5;
+  var mostlyHigh=d.high/d.outside>0.5;
+  var mostlyLow=d.low/d.outside>0.5;
+  var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
+  if(mostlyShared) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(badDir===true&&d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
+  if(badDir===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
+  if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
+  return {label:'Ambiguous (two-sided spec)',cls:'sev-med'};
+}
+/* Same percentile/fence method used throughout this codebase's other Site
+   Population Check copies -- 1.5xIQR, fixed (this view has no k-factor-
+   style control to make it configurable). */
+function _siteFence(vals){
+  var n=vals.length,sorted=vals.slice().sort(function(a,b){return a-b;});
+  function pct(p){var i=(p/100)*(n-1),lo=Math.floor(i);return lo+1<n?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo];}
+  var q1=pct(25),q3=pct(75),iqr=q3-q1;
+  return {lo_w:q1-1.5*iqr,hi_w:q3+1.5*iqr,n:n};
+}
+function updateSitePanel(){
+  var el=document.getElementById('sum_site_panel');
+  if(!el||el.style.display==='none') return;
+  try{
+    if(!PRIMARY_SITE){el.innerHTML='<i style="color:#888">No comparison site configured for this page.</i>';return;}
+    /* Deliberately getActive() (checkbox-filtered raw DATA), not
+       getGroupedConditions() -- "Group by" pools every record that shares
+       one dimension's value, including across sites, which would merge
+       two sites' populations together before this check ever sees them. */
+    var active=getActive();
+    var fr=_sumFreqRange();
+    var freqWindowed=fr.lo>FREQ_MIN+1e-9||fr.hi<FREQ_MAX-1e-9;
+    var allSers=getSumAllSerials(),selSers=getSumSelectedSerials();
+    var serFlt=allSers.length>1&&selSers.length<allSers.length;
+    var effSers=serFlt?selSers:allSers;
+    var gfEl=document.getElementById('sum_gf_chk');
+    var gfOn=!gfEl||gfEl.checked;
+    var hasGf=gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size>0;
+    var gfMode=localStorage.getItem('padb_v2_gf_mode')||'exclude';
+    var primaryBuckets={},otherPoints=[];
+    active.forEach(function(cd){
+      var site=cd.cond_keys?cd.cond_keys['Site']:null;
+      if(!site) return;
+      if(!cd.dut_info||!cd.dut_info.length||!cd.dut_vals||!cd.dut_vals.length) return;
+      var coarseKey=hasGf?_sumCoarseCondKey(cd.condition):null;
+      (cd.freqs||[]).forEach(function(freq,fi){
+        if(freq<fr.lo||freq>fr.hi) return;
+        var row=cd.dut_vals[fi]||[];
+        cd.dut_info.forEach(function(di,di_idx){
+          if(effSers.indexOf(di.s)<0) return;
+          if(coarseKey!==null){
+            var inGf=_sumGfCoarseExcluded.has(di.s+'||'+coarseKey);
+            if(gfMode==='focus'?!inGf:inGf) return;
+          }
+          var v=row[di_idx];
+          if(v===null||v===undefined) return;
+          if(site===PRIMARY_SITE){
+            (primaryBuckets[freq]=primaryBuckets[freq]||[]).push(v);
+          } else {
+            otherPoints.push({site:site,serial:di.s,freq:freq,value:v});
+          }
+        });
+      });
+    });
+    if(!otherPoints.length){
+      el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current filter/selection'+
+        (freqWindowed?' and frequency window ('+fr.lo.toFixed(3)+'-'+fr.hi.toFixed(3)+')':'')+'.</i>';
+      return;
+    }
+    var towardFail=_siteTowardFailDir();
+    var rows=otherPoints.map(function(p){
+      var pv=primaryBuckets[p.freq]||[];
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
+      var fen=_siteFence(pv);
+      var dir=null,dist=0;
+      if(p.value>fen.hi_w){dir='high';dist=p.value-fen.hi_w;}
+      else if(p.value<fen.lo_w){dir='low';dist=fen.lo_w-p.value;}
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:fen.lo_w,hi:fen.hi_w,n:fen.n};
+    });
+
+    var freqMap={};
+    rows.forEach(function(r){
+      if(r.verdict!=='OUTSIDE') return;
+      var key=r.p.site+'|'+r.p.freq;
+      var e=freqMap[key]||(freqMap[key]={serials:new Set(),freq:r.p.freq,site:r.p.site});
+      e.serials.add(r.p.serial);
+    });
+
+    var dutMap={};
+    rows.forEach(function(r){
+      var key=r.p.site+'|'+r.p.serial;
+      var d=dutMap[key]||(dutMap[key]={site:r.p.site,serial:r.p.serial,checked:0,outside:0,high:0,low:0,maxDist:0,freqKeys:[]});
+      d.checked++;
+      if(r.verdict==='OUTSIDE'){
+        d.outside++;
+        if(r.dir==='high') d.high++; else d.low++;
+        if(r.dist>d.maxDist) d.maxDist=r.dist;
+        d.freqKeys.push(r.p.freq);
+      }
+    });
+    Object.keys(dutMap).forEach(function(key){
+      var d=dutMap[key];
+      var shared=0;
+      d.freqKeys.forEach(function(f){
+        var fk=freqMap[d.site+'|'+f];
+        if(fk&&fk.serials.size>1) shared++;
+      });
+      d.sharedCount=shared;
+      d.tag=_siteTriageTag(d,towardFail);
+    });
+
+    var rank={OUTSIDE:0,inside:1,'n/a':2};
+    rows.sort(function(a,b){
+      if(rank[a.verdict]!==rank[b.verdict]) return rank[a.verdict]-rank[b.verdict];
+      return (b.dist||0)-(a.dist||0);
+    });
+    var nOutside=rows.filter(function(r){return r.verdict==='OUTSIDE';}).length;
+    var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
+    var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
+      ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations.)';
+    var winNote=freqWindowed?' Scoped to the current frequency window ('+fr.lo.toFixed(3)+'-'+fr.hi.toFixed(3)+' '+X_UNIT+') -- reset/widen the range to check the full sweep.':'';
+    var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
+      '</b> non-'+PRIMARY_SITE+' point(s) fall outside the '+PRIMARY_SITE+' 1.5&times;IQR fence at their own frequency'+
+      (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency, fence not meaningful)':'')+
+      '.'+dirNote+winNote+
+      ' Each point is a DUT\'s mean blended across all temperatures present in its condition (this view\'s own per-DUT data has no per-temperature breakdown -- see boxplot\'s Site Population Check for that).</div>';
+
+    var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
+      .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
+    if(dutRows.length){
+      html+='<div style="font-weight:600;margin:8px 0 2px">Per-DUT summary (suggested triage, not a verdict -- use judgment)</div>';
+      html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th><th>Outside</th><th>%</th>'+
+        '<th>High</th><th>Low</th><th>Max dist</th><th>Shared w/ other DUTs</th><th>Suggested triage</th></tr></thead><tbody>';
+      dutRows.forEach(function(d){
+        var pct=(100*d.outside/d.checked).toFixed(0)+'%';
+        var tagTd=d.tag?'<td class="'+d.tag.cls+'">'+d.tag.label+'</td>':'<td>&mdash;</td>';
+        html+='<tr><td>'+d.site+'</td><td>'+d.serial+'</td><td>'+d.checked+'</td><td>'+d.outside+'</td><td>'+pct+'</td>'+
+          '<td>'+d.high+'</td><td>'+d.low+'</td><td>'+d.maxDist.toFixed(4)+'</td>'+
+          '<td>'+(d.sharedCount?d.sharedCount+' of '+d.outside:'&mdash;')+'</td>'+tagTd+'</tr>';
+      });
+      html+='</tbody></table>';
+    }
+
+    var freqClusters=Object.keys(freqMap).map(function(k){return freqMap[k];})
+      .filter(function(e){return e.serials.size>1;})
+      .sort(function(a,b){return b.serials.size-a.serials.size;});
+    if(freqClusters.length){
+      html+='<div style="font-weight:600;margin:8px 0 2px">Frequency clusters -- multiple DUTs affected at the same spot (points at a station/fixture/calibration issue, not a single DUT)</div>';
+      html+='<table class="stbl"><thead><tr><th>Site</th><th>Freq</th><th>DUTs affected</th><th>Serials</th></tr></thead><tbody>';
+      freqClusters.forEach(function(e){
+        html+='<tr><td>'+e.site+'</td><td>'+e.freq+'</td><td class="sev-hi">'+e.serials.size+'</td>'+
+          '<td>'+Array.from(e.serials).join(', ')+'</td></tr>';
+      });
+      html+='</tbody></table>';
+    } else {
+      html+='<div style="font-size:12px;color:#666;margin:6px 0">No frequency shows more than one DUT affected -- no systemic/station-level pattern detected in the current selection.</div>';
+    }
+
+    html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
+    html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Freq</th>'+
+      '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+    rows.forEach(function(r){
+      var p=r.p;
+      var vTd=r.verdict==='OUTSIDE'
+        ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>'
+        :r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>';
+      html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td>'+
+        '<td>'+p.freq+'</td><td>'+p.value.toFixed(4)+'</td>'+
+        '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
+        '<td>'+(r.dir||'&mdash;')+'</td>'+
+        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
+    });
+    html+='</tbody></table>';
+    el.innerHTML=html;
+  }catch(e){
+    el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>';
+  }
+}
+
 /* Extract serial from a condition string (Serial Number: X pattern) */
 function _sumSerFromCond(cond){
   var m=(cond||'').match(/Serial Number:\s*(\S+)/i);
@@ -12768,6 +12986,7 @@ function update(){
     _setTableBtnStale(rb,true);
   }
   _recomputeSpecSegments();
+  updateSitePanel();
   saveState();
 }
 
@@ -12855,6 +13074,8 @@ def _build_summary_html(
     freq_vals: list,
     temps_all: list = [],
     help_panel_html: str = "",
+    primary_site: str | None = None,
+    coverage_gap_html: str = "",
 ) -> None:
     """Assemble and write the interactive summary-plot HTML from pre-built records."""
     title   = cfg.get("title", output_html.stem)
@@ -12992,6 +13213,7 @@ def _build_summary_html(
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in freq_vals))};",
         f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var PRIMARY_SITE={json.dumps(primary_site)};",
     ])
 
     css = (
@@ -13030,6 +13252,14 @@ def _build_summary_html(
         ".csv-btn{font-size:13px;padding:3px 12px;border:1px solid #0066cc;border-radius:3px;"
         "cursor:pointer;background:#e8f4ff;color:#0066cc;}"
         ".csv-btn:hover{background:#cce4ff;}"
+        ".stbl{border-collapse:collapse;font-size:12px;width:100%;}"
+        ".stbl th{background:#e8eaf6;padding:4px 8px;text-align:left;border:1px solid #ccc;"
+        "white-space:nowrap;position:sticky;top:0;}"
+        ".stbl td{padding:3px 8px;border:1px solid #ddd;white-space:nowrap;}"
+        ".stbl tr:hover td{background:#f5f5ff;}"
+        ".sev-hi{background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold;}"
+        ".sev-med{background:#fffbe0;color:#8a6d00;}"
+        ".sev-lo{color:#666;}"
         + _CSV_DROPDOWN_CSS
     )
 
@@ -13076,6 +13306,19 @@ def _build_summary_html(
         )
     else:
         temp_stat_bar_html = ""
+
+    site_btn_html = ""
+    if primary_site:
+        site_btn_html = (
+            '  <button class="reset-btn" id="sum_site_toggle_btn"'
+            ' title="Tests each non-primary-site DUT\'s value (averaged across all its temperatures'
+            ' in this condition, same as this view\'s own Mean) at each frequency against the'
+            ' 1.5&times;IQR fence built from the primary site\'s (' + primary_site + ') own'
+            ' population at that frequency -- summary\'s per-DUT data is blended across temperatures,'
+            ' not per-temperature like boxplot\'s version"'
+            ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>\n'
+        )
+
     html = (
         "<!DOCTYPE html>\n<html>\n<head>\n"
         f'<meta charset="utf-8"><title>{title}</title>\n'
@@ -13157,12 +13400,15 @@ def _build_summary_html(
         + '  <span id="sum_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
         + 'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
         + 'margin-left:4px"></span>\n'
+        + site_btn_html
         + f'  {_csv_btn("saveCSV")}\n'
         + '</div>\n'
         + '<p style="font-size:12px;color:#666;margin:0 8px 4px">'
         + 'Shaded band&nbsp;=&nbsp;Min–Max &nbsp;|&nbsp; Solid&nbsp;=&nbsp;Mean'
         + ' &nbsp;|&nbsp; Dashed&nbsp;=&nbsp;TTL estimate'
         + ' &nbsp;|&nbsp; Red dashed&nbsp;=&nbsp;Spec limit</p>\n'
+        + '<div id="sum_site_panel" style="display:none;overflow-x:auto;padding:0 8px 16px"></div>\n'
+        + coverage_gap_html
         + '<div id="plot"></div>\n'
         + '<div style="margin:4px 8px 2px;display:flex;gap:8px;align-items:center">\n'
         + '  <b style="font-size:13px">Results Table</b>\n'
