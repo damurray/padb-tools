@@ -1378,10 +1378,23 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     else:
         log_x = freq_min > 0 and (freq_max / freq_min) >= 100
 
-    # Group-by <option> tags
+    # Group-by <option> tags. Default to whichever candidate dimension has
+    # the smallest (most legend-friendly) cardinality, not just the first one
+    # _detect_group_cols() happened to find -- with no explicit default, the
+    # browser selects the first <option>, which can be a dimension with up to
+    # 100 distinct values (that function's own cap) and dominate the plot
+    # with a huge legend on first load. Mirrors the same adaptive-default fix
+    # already applied to boxplot's Group-by selector.
+    if group_cols:
+        _default_grp_col = min(
+            group_cols, key=lambda cl: df[cl[0]].replace("", pd.NA).nunique(dropna=True)
+        )[0]
+    else:
+        _default_grp_col = "Station"
     grp_opts = "\n".join(
-        f'<option value="{c}">{lbl}</option>' for c, lbl in group_cols
-    ) if group_cols else '<option value="Station">Test Station</option>'
+        f'<option value="{c}"{" selected" if c == _default_grp_col else ""}>{lbl}</option>'
+        for c, lbl in group_cols
+    ) if group_cols else '<option value="Station" selected>Test Station</option>'
 
     # Checkbox panels — one per filter dimension (skip Test_Step; handled by env_bar)
     panels: list[str] = []
@@ -9149,10 +9162,16 @@ function _specFromStats(selConds,freqToLabel){
    plot's DUT/port-pooled box, since a pooled box spans every real condition
    that DUT/port was tested under. Returns {gk: fs_arr} -- gk is the serial
    or port value, fs_arr is a freq-ordered array of per-group box stats. */
-function _computeBoxGroupedByColId(colId,selBoxSers,selTemps,yFlt,fr,k,
+function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
   var freqVals={},freqSet={},freqLabels={};
   BOX_DATA.forEach(function(cd){
+    /* Real bug found 2026-08-21: this never checked selConds at all, so
+       deselecting condition-dimension checkboxes (e.g. every SpurType) had
+       no effect whenever Group by was set to Serial Number/Port -- the plot
+       (via buildPortSerialTraces) and this table both pool a DUT/port's data
+       ACROSS every condition regardless of which ones are checked. */
+    if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
     (cd.freq_stats||[]).forEach(function(f){
       if(f.freq<fr.lo||f.freq>fr.hi) return;
@@ -9191,9 +9210,9 @@ function _computeBoxGroupedByColId(colId,selBoxSers,selTemps,yFlt,fr,k,
   });
   return result;
 }
-function buildPortSerialTraces(colId,selBoxSers,selTemps,yFlt,fr,k,
+function buildPortSerialTraces(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
-  var grouped=_computeBoxGroupedByColId(colId,selBoxSers,selTemps,yFlt,fr,k,
+  var grouped=_computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
   var groups=Object.keys(grouped).sort();
   var condIdxMap={};groups.forEach(function(g,i){condIdxMap[g]=i;});
@@ -9256,7 +9275,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var _bxGrpEl=document.getElementById('box_group_by');
   var _bxGrpId=_bxGrpEl?_bxGrpEl.value:'';
   if(_bxGrpId==='__port__'||_bxGrpId==='__serial__'){
-    return buildPortSerialTraces(_bxGrpId,selBoxSers,selTemps,yFlt,fr,k,
+    return buildPortSerialTraces(_bxGrpId,selConds,selBoxSers,selTemps,yFlt,fr,k,
       serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
   }
   var traces=[];
@@ -9504,7 +9523,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
     var portActiveSt=allPortsSt.length>1&&selPortsSt.length<allPortsSt.length;
     var rhiSt=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rloSt=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
-    var grouped=_computeBoxGroupedByColId(_bxGrpIdSt,selBoxSers,selTemps,yFlt,fr,getIqrK(),
+    var grouped=_computeBoxGroupedByColId(_bxGrpIdSt,selConds,selBoxSers,selTemps,yFlt,fr,getIqrK(),
       serActive,portActiveSt,selPortsSt,_gfActiveSt,_gfFocusSt,passActive,stPassLo,stPassHi,rhiSt,rloSt);
     Object.keys(grouped).sort().forEach(function(gk){
       grouped[gk].forEach(function(fs){
@@ -10970,13 +10989,27 @@ def _build_box_interactive_html(
 
     sep_div = '<div class="sep"></div>'
     # Group By: Condition + Temperature Step + Port + Serial + cond_dims
-    grp_opts = '<option value="">Condition</option>\n'
+    # Default to Condition, except: with a lot of raw (fragmented) conditions,
+    # a Condition-grouped legend is bigger than the plot itself on first
+    # load -- auto-default to Serial Number instead once the raw condition
+    # count crosses the same cardinality this codebase already treats as
+    # "large" for boxplot (STATS_TABLE_AUTO_THRESHOLD=150, the Statistics
+    # Table's own auto-refresh gate). Condition stays the default below that,
+    # since it's the more analytically useful view for the common case of a
+    # pod with only a handful of real conditions.
+    _n_raw_conds = len({cd["condition"] for cd in box_data})
+    _default_serial = (
+        _n_raw_conds > 150 and all_box_serials and len(all_box_serials) > 1
+    )
+    grp_opts = f'<option value=""{"" if _default_serial else " selected"}>Condition</option>\n'
     if len(all_temps) > 1:
         grp_opts += '<option value="__temp__">Temperature Step</option>\n'
     if all_box_ports and len(all_box_ports) > 1:
         grp_opts += '<option value="__port__">Port</option>\n'
     if all_box_serials and len(all_box_serials) > 1:
-        grp_opts += '<option value="__serial__">Serial Number</option>\n'
+        grp_opts += (
+            f'<option value="__serial__"{" selected" if _default_serial else ""}>Serial Number</option>\n'
+        )
     grp_opts += ''.join(
         f'<option value="{d["col_id"]}">{d["label"]}</option>\n' for d in cond_dims
     )
@@ -11214,7 +11247,7 @@ def _build_box_interactive_html(
         ' onclick="setFilterAsGf()">Set filter as GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_gf_btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
-        ' title="Set IQR outlier points as the global exclusion filter -- adds to the existing filter, doesn\'t replace it"'
+        ' title="Set IQR outlier points as the global exclusion filter -- checked independently at each currently-selected Temperature checkbox (not Room-only), so narrow the Temperature filter first if you only want outliers from specific temperature(s). Adds to the existing filter, doesn\'t replace it"'
         ' onclick="applyGlobalFilter()">Set outliers as GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_delta_gf_btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
