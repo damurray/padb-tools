@@ -8909,11 +8909,16 @@ function updateBadge(col){
 function getSelectedConds(){
   var allConds=[];
   BOX_DATA.forEach(function(cd){if(allConds.indexOf(cd.condition)<0) allConds.push(cd.condition);});
-  /* Longform checkboxes take precedence when present */
+  /* Longform checkboxes take precedence when present. All start checked (see
+     _build_box_interactive_html), so an empty result here only ever means the
+     user explicitly unchecked every one -- show nothing, matching the
+     per-dimension dropdown fallback below (0 selected on any dim = 0 shown),
+     not everything. Real bug found 2026-08-20: this used to fall back to
+     allConds when checked.length was 0, silently ignoring an explicit
+     "deselect all" and showing every condition instead. */
   var lfChks=document.querySelectorAll('.box_cond_lf_chk');
   if(lfChks.length){
-    var checked=Array.from(document.querySelectorAll('.box_cond_lf_chk:checked')).map(function(c){return c.value;});
-    return checked.length?checked:allConds;
+    return Array.from(document.querySelectorAll('.box_cond_lf_chk:checked')).map(function(c){return c.value;});
   }
   /* Fallback: per-dimension dropdowns */
   if(!COND_DIMS||!COND_DIMS.length) return allConds;
