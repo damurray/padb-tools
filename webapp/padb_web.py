@@ -48,6 +48,7 @@ from werkzeug.utils import secure_filename
 TOOLS_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(TOOLS_DIR))
 
+import padb_batch  # noqa: E402
 import padb_config  # noqa: E402
 import padb_convert_site  # noqa: E402
 import padb_plots as _pp  # noqa: E402
@@ -670,7 +671,7 @@ def list_jobs():
             "path": str(p),
             "name": p.name,
             "description": cfg.get("description", ""),
-            "mode": cfg.get("mode", "legacy" if kind == "run" else "v2 plot"),
+            "mode": cfg.get("mode", "legacy" if kind == "run" else "interactive"),
             "pod": cfg.get("pod", ""),
             "kind": kind,
             "index_path": index_path,
@@ -880,6 +881,63 @@ def job_abort(job_id):
     # If still queued (never dequeued yet), _worker() checks cancel_requested
     # itself and skips straight to "cancelled" without launching anything.
     return jsonify(ok=True)
+
+
+@app.route("/api/orphaned-padb")
+def orphaned_padb():
+    """Batch-invoked (has "-f <switchfile>") PADB-R.exe processes currently
+    running system-wide, for the manual "Clean up orphaned PADB-R" button.
+    Uses padb_batch's own idle-GUI-exempt detection so a PADB-R window
+    someone has open by hand (no switches) is never listed here.
+
+    Deliberately does not try to auto-exclude a PID this webapp instance's
+    own _jobs thinks is legitimately still running -- PADB-R.exe is a
+    grandchild of the tracked Popen (padb_run.py -> padb_batch.py's own
+    subprocess.run), and reliably walking that ancestry is more complexity
+    than a manual, confirm-before-kill button needs. Instead this reports
+    whether ANY job in this instance is currently marked running, so the
+    confirm dialog can warn accordingly and let the user make the final call
+    (same reasoning as the existing per-job Abort button, just system-wide).
+
+    A batch PADB-R.exe found here isn't necessarily orphaned in the sense of
+    "nothing owns it" -- it could legitimately be this instance's own
+    in-progress job. It's flagged for review here because this button exists
+    specifically for the case documented in wait_for_exclusive_padb_r(): a
+    Flask process that died mid-run leaves its child PADB-R.exe running,
+    invisible to the fresh process that replaces it.
+    """
+    exe_name = Path(DEFAULTS["padb_exe"]).name
+    pids = padb_batch._running_batch_pids(exe_name)
+    cmdlines = padb_batch._process_command_lines(exe_name) if pids else {}
+    with _jobs_lock:
+        any_running_here = any(j["status"] == "running" for j in _jobs.values())
+    processes = [{"pid": pid, "cmdline": cmdlines.get(pid, "")} for pid in pids]
+    return jsonify(processes=processes, has_running_job_here=any_running_here)
+
+
+@app.route("/api/orphaned-padb/kill", methods=["POST"])
+def kill_orphaned_padb():
+    """Kill specific PADB-R.exe PIDs by number, as selected in the confirm
+    dialog -- never a blind "kill everything named PADB-R.exe" sweep, so an
+    idle GUI window (already excluded from /api/orphaned-padb's own list,
+    but this endpoint takes raw PIDs and could in principle be called with
+    anything) can't be taken out by a stale/replayed request. /T also takes
+    down PADB-R.exe's own R-Host.exe child processes, the other half of the
+    cleanup this button exists for."""
+    body = request.get_json(force=True) or {}
+    pids = [str(p) for p in (body.get("pids") or [])]
+    results = []
+    for pid in pids:
+        cp = subprocess.run(
+            ["taskkill", "/PID", pid, "/T", "/F"],
+            capture_output=True, text=True,
+        )
+        results.append({
+            "pid": pid,
+            "ok": cp.returncode == 0,
+            "output": (cp.stdout + cp.stderr).strip(),
+        })
+    return jsonify(results=results)
 
 
 @app.route("/api/job-status/<job_id>")

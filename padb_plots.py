@@ -1191,6 +1191,54 @@ def _short_x_label(x_label: str) -> str:
     return "Freq" if short == "Frequency" else short
 
 
+def _has_segmentable_spec(df: pd.DataFrame) -> bool:
+    """Whether the "Segment by: Spec/Limit/Uncertainty" control has anything
+    to offer for this dataset -- true iff at least one of the three key-pairs
+    (Spec_Hi/Lo, Upper/Lower_Limit, Unc_Hi/Lo) has more than one distinct
+    value across the whole dataset. All 6 V2 views previously rendered this
+    control unconditionally regardless of whether any key would ever produce
+    more than the single degenerate "segment" (the Prev/Next bar already
+    hid itself for the *selected* key with <2 segments, but the selector
+    itself -- letting you pick among 3 keys that could all be equally
+    pointless -- stayed visible always). Checked once per render from the
+    same source df every view already loads, before any per-view
+    aggregation, so this can't drift out of sync with what each view's own
+    segment-detection would actually find.
+    """
+    for col in ("Spec_Hi", "Spec_Lo", "Upper_Limit", "Lower_Limit", "Unc_Hi", "Unc_Lo"):
+        if col in df.columns and df[col].nunique(dropna=True) > 1:
+            return True
+    return False
+
+
+def _segment_by_html(has_segments: bool) -> str:
+    """The 'Segment by: Spec/Limit/Uncertainty' control plus its Prev/Next
+    tab bar, identical across all 6 V2 views. Omitted entirely (not merely
+    hidden) when has_segments is False, i.e. _has_segmentable_spec(df) found
+    no key with real variation -- every consumer either null-checks these
+    elements already (_recomputeSpecSegments) or is only reachable via an
+    onchange handler on the select itself (segKeyChange), so omitting the
+    markup outright is safe. Includes its own leading separator; the
+    surrounding HTML's next separator (before hover/help controls) stays
+    unconditional, so hiding this doesn't leave a double gap.
+    """
+    if not has_segments:
+        return ""
+    return (
+        '<div class="sep"></div>\n'
+        '<label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+        '  <option value="spec">Spec</option>\n'
+        '  <option value="limit">Limit</option>\n'
+        '  <option value="uncertainty">Uncertainty</option>\n'
+        '</select></label>\n'
+        '<div id="segTabBar" style="display:none;white-space:nowrap">\n'
+        '  <button class="reset-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+        '  <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+        '  <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+        '</div>\n'
+    )
+
+
 def _checkbox_panel(col: str, label: str, vals: list[str]) -> str:
     """Build a collapsible checkbox-dropdown filter widget for one dimension."""
     items = "".join(
@@ -1329,6 +1377,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     x_unit    = cfg.get("x_unit", "MHz")
     y_lim     = cfg.get("y_lim")
     log_x_cfg = cfg.get("log_x", None)   # None = auto-detect
+    has_segments = _has_segmentable_spec(df)
 
     group_cols = _detect_group_cols(df)
 
@@ -1541,17 +1590,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '  <label><input type="checkbox" id="hide_spec_chk" onchange="update()">'
         ' Hide&nbsp;spec&nbsp;lines</label>\n'
         f'{band_section_html}'
-        '  <div class="sep"></div>\n'
-        '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
-        '    <option value="spec">Spec</option>\n'
-        '    <option value="limit">Limit</option>\n'
-        '    <option value="uncertainty">Uncertainty</option>\n'
-        '  </select></label>\n'
-        '  <div id="segTabBar" style="display:none;white-space:nowrap">\n'
-        '    <button class="reset-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
-        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
-        '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
-        '  </div>\n'
+        f'{_segment_by_html(has_segments)}'
         '  <div class="sep"></div>\n'
         f'  {hover_panel_html}\n'
         f'  {help_panel_html}\n'
@@ -2225,6 +2264,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
 
     x_unit = cfg.get("x_unit", "MHz")
     x_label = cfg.get("x_label", "Frequency (MHz)")
+    has_segments = _has_segmentable_spec(df)
 
     # -------------------------------------------------------------------------
     # 0.  KDE helpers
@@ -5834,6 +5874,7 @@ def _build_stat_summary_html(
     x_unit = cfg.get("x_unit", "MHz")
     y_lim = cfg.get("y_lim")
     log_x_cfg = cfg.get("log_x", None)
+    has_segments = _has_segmentable_spec(df)
 
     freq_min = float(df["Frequency_MHz"].min()) if len(df) else 0.0
     freq_max = float(df["Frequency_MHz"].max()) if len(df) else 1.0
@@ -6198,17 +6239,21 @@ def _build_stat_summary_html(
         + f'  {freq_lo_html}\n'
         + f'  {freq_hi_html}\n'
         + f'  {log_x_html}\n'
-        + f'  {sep}\n'
-        + '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
-        '    <option value="spec">Spec</option>\n'
-        '    <option value="limit">Limit</option>\n'
-        '    <option value="uncertainty">Uncertainty</option>\n'
-        '  </select></label>\n'
-        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
-        '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
-        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
-        '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
-        '  </span>\n'
+        + (
+            (
+                f'  {sep}\n'
+                '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+                '    <option value="spec">Spec</option>\n'
+                '    <option value="limit">Limit</option>\n'
+                '    <option value="uncertainty">Uncertainty</option>\n'
+                '  </select></label>\n'
+                '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+                '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+                '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+                '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+                '  </span>\n'
+            ) if has_segments else ''
+        )
         + f'  {sep}\n  {help_panel_html}\n'
         + '</div>\n'
     )
@@ -7880,6 +7925,7 @@ def _build_env_coverage_html(
     x_label: str = "Frequency (MHz)",
     x_unit: str = "MHz",
     help_panel_html: str = "",
+    has_segments: bool = True,
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -8050,17 +8096,21 @@ def _build_env_coverage_html(
         + f'  {freq_hi_html}\n'
         + f'  {sep}\n'
         + f'  {log_x_html}\n'
-        + f'  {sep}\n'
-        + '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
-        '    <option value="spec">Spec</option>\n'
-        '    <option value="limit">Limit</option>\n'
-        '    <option value="uncertainty">Uncertainty</option>\n'
-        '  </select></label>\n'
-        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
-        '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
-        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
-        '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
-        '  </span>\n'
+        + (
+            (
+                f'  {sep}\n'
+                '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+                '    <option value="spec">Spec</option>\n'
+                '    <option value="limit">Limit</option>\n'
+                '    <option value="uncertainty">Uncertainty</option>\n'
+                '  </select></label>\n'
+                '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+                '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+                '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+                '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+                '  </span>\n'
+            ) if has_segments else ''
+        )
         + f'  {sep}\n'
         + f'  <label title="Show non-selected conditions as dim gray bands">'
         + f'<input type="checkbox" id="ec_show_excl" onchange="update()">'
@@ -10884,6 +10934,7 @@ def _build_box_interactive_html(
     freq_cat_vals: list = None,
     primary_site: str | None = None,
     coverage_gap_html: str = "",
+    has_segments: bool = True,
 ) -> str:
     css = (
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
@@ -11139,18 +11190,22 @@ def _build_box_interactive_html(
         f' value="{_ceil_dec(box_freq_max, 3):.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
-        '  <span class="sep"></span>\n'
-        '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
-        '    <option value="spec">Spec</option>\n'
-        '    <option value="limit">Limit</option>\n'
-        '    <option value="uncertainty">Uncertainty</option>\n'
-        '  </select></label>\n'
-        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
-        '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
-        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
-        '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
-        '  </span>\n'
-        f'  {help_panel_html}\n'
+        + (
+            (
+                '  <span class="sep"></span>\n'
+                '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+                '    <option value="spec">Spec</option>\n'
+                '    <option value="limit">Limit</option>\n'
+                '    <option value="uncertainty">Uncertainty</option>\n'
+                '  </select></label>\n'
+                '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+                '    <button class="filter-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+                '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+                '    <button class="filter-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+                '  </span>\n'
+            ) if has_segments else ''
+        )
+        + f'  {help_panel_html}\n'
         f'  {_csv_btn("saveBoxCSV")}\n'
         '</div>\n'
     )
@@ -11309,6 +11364,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     padb_freq_field = (padb_field_prefix + ":Frequency") if padb_field_prefix else ""
     y_lim = cfg.get("y_lim")
     lo_spec, hi_spec = _get_spec(df, cfg)
+    has_segments = _has_segmentable_spec(df)
 
     # Same rule as the summary view: a detected CSV limit always wins (no
     # selector). With no CSV limit, always show the live TLL-direction
@@ -11589,6 +11645,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         freq_cat_vals=[float(f) for f in sorted_freqs],
         primary_site=primary_site if site_compare_enabled else None,
         coverage_gap_html=coverage_gap_html,
+        has_segments=has_segments,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -13114,6 +13171,7 @@ def _build_summary_html(
     help_panel_html: str = "",
     primary_site: str | None = None,
     coverage_gap_html: str = "",
+    has_segments: bool = True,
 ) -> None:
     """Assemble and write the interactive summary-plot HTML from pre-built records."""
     title   = cfg.get("title", output_html.stem)
@@ -13382,17 +13440,21 @@ def _build_summary_html(
         + (" checked" if log_x else "")
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
         + band_section_html
-        + f'  {sep}\n'
-        + '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
-        '    <option value="spec">Spec</option>\n'
-        '    <option value="limit">Limit</option>\n'
-        '    <option value="uncertainty">Uncertainty</option>\n'
-        '  </select></label>\n'
-        '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
-        '    <button class="reset-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
-        '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
-        '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
-        '  </span>\n'
+        + (
+            (
+                f'  {sep}\n'
+                '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+                '    <option value="spec">Spec</option>\n'
+                '    <option value="limit">Limit</option>\n'
+                '    <option value="uncertainty">Uncertainty</option>\n'
+                '  </select></label>\n'
+                '  <span id="segTabBar" style="display:none;white-space:nowrap">\n'
+                '    <button class="reset-btn" id="segTabPrev" onclick="segTab(-1)">&#8592; Prev</button>\n'
+                '    <span id="segTabLabel" style="font-size:12px;margin:0 6px"></span>\n'
+                '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
+                '  </span>\n'
+            ) if has_segments else ''
+        )
         + f'  {sep}\n'
         + f'  {help_panel_html}\n'
         + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'

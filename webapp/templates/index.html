@@ -39,18 +39,17 @@
   <section id="generate-section" class="hidden">
     <h2>2. Generate a job.json</h2>
     <form id="generateForm">
-      <label title="simple = native PADB PNG/PDF gallery, closest to the old PADB::Simple tool. legacy = static Plotly plots (V1). interactive (V2) = full interactive HTML with live filtering -- the modern default for a new pod.">Mode
+      <label title="simple = native PADB PNG/PDF gallery, closest to the old PADB::Simple tool. interactive = full interactive HTML with live filtering -- the default for a new pod.">Mode
         <select id="modeSelect">
           <option value="simple">simple</option>
-          <option value="legacy">legacy</option>
-          <option value="interactive">interactive (V2)</option>
+          <option value="interactive">interactive</option>
         </select>
       </label>
       <label title="Subfolder name under the publish share (e.g. MiniMoab). Leave blank to pass --no-publish and keep results local-only -- there's no way to guess the right subfolder safely, so this is required to actually publish.">Module <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = --no-publish)"></label>
       <label title="Relative or absolute date sentinel resolved at run time (e.g. &quot;8 weeks ago&quot;, &quot;today&quot;, or a literal YYYY-MM-DD). Leave blank to use the pod's own baked-in date range unchanged.">Min date <input type="text" id="minDateInput" placeholder='e.g. "8 weeks ago" (optional)'></label>
       <label title="Same sentinel rules as Min date.">Max date <input type="text" id="maxDateInput" placeholder='e.g. "today" (optional)'></label>
       <label title="Allow overwriting an already-generated job.json of the same name -- off by default so a hand-tuned job.json is never silently clobbered."><input type="checkbox" id="forceCheckbox"> Overwrite existing job file(s)</label>
-      <button type="submit" title="Runs padb_make_job.py (simple/legacy) or padb_make_v2_job.py (interactive) against the dropped pod and writes the resulting job.json file(s) into your data directory.">Generate Job</button>
+      <button type="submit" title="Runs padb_make_job.py (simple) or padb_make_v2_job.py (interactive) against the dropped pod and writes the resulting job.json file(s) into your data directory.">Generate Job</button>
     </form>
     <div id="generateResult" class="panel hidden">
       <h3>Output</h3>
@@ -161,6 +160,9 @@
   <section id="status-section">
     <h2>5. Running Jobs</h2>
     <p class="hint">PADB-R.exe runs are strictly serialized &mdash; only one job runs at a time, others wait as "queued."</p>
+    <div class="toolbar">
+      <button id="cleanupPadbBtn" class="secondary" title="Finds PADB-R.exe processes launched in batch mode (-f switchfile) system-wide -- never an idle GUI window opened by hand. Exists for the case where a Flask restart orphans a still-running extraction, invisible to the fresh process's own empty queue. Shows exactly what it found before killing anything.">Clean up orphaned PADB-R</button>
+    </div>
     <div id="statusPanels" title="One card per job queued this session (cleared on page reload) -- badge shows queued/running/done/failed/cancelled, with a live tail of the job's own console output below it."></div>
   </section>
 </main>

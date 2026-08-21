@@ -581,6 +581,43 @@ async function abortJob(jobId) {
   if (!res.ok) alert("Abort failed: " + data.error);
 }
 
+document.getElementById("cleanupPadbBtn").addEventListener("click", async () => {
+  const res = await fetch("/api/orphaned-padb");
+  const data = await res.json();
+  if (!res.ok) {
+    alert("Could not check for orphaned PADB-R processes: " + (data.error || res.status));
+    return;
+  }
+  if (!data.processes.length) {
+    alert("No batch PADB-R.exe processes found (idle GUI windows opened by hand don't count).");
+    return;
+  }
+  let msg = `Found ${data.processes.length} batch PADB-R.exe process(es):\n\n` +
+    data.processes.map(p => `PID ${p.pid}: ${p.cmdline}`).join("\n");
+  if (data.has_running_job_here) {
+    msg += `\n\nWARNING: this browser session currently has a job marked as running. ` +
+      `If one of the PIDs above belongs to it, killing it will fail that job -- check the ` +
+      `status panel below before proceeding if you're not sure.`;
+  }
+  msg += `\n\nKill all of these now? This also kills each one's own R-Host.exe helper process.`;
+  if (!confirm(msg)) return;
+  const killRes = await fetch("/api/orphaned-padb/kill", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pids: data.processes.map(p => p.pid) }),
+  });
+  const killData = await killRes.json();
+  if (!killRes.ok) {
+    alert("Cleanup failed: " + killData.error);
+    return;
+  }
+  const failed = killData.results.filter(r => !r.ok);
+  alert(failed.length
+    ? `Killed ${killData.results.length - failed.length} of ${killData.results.length}. Failed:\n` +
+      failed.map(f => `PID ${f.pid}: ${f.output}`).join("\n")
+    : `Killed all ${killData.results.length} process(es).`);
+});
+
 async function poll(jobId) {
   const res = await fetch(`/api/job-status/${jobId}`);
   const data = await res.json();

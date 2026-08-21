@@ -282,6 +282,7 @@ def render_env_coverage(
     help_panel_html = _pp._build_help_panel_html(
         df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
     )
+    has_segments = _pp._has_segmentable_spec(df)
 
     all_freqs = sorted(set(f for cd in env_data for f in cd["freqs"] if f is not None))
     freq_min = float(min(all_freqs)) if all_freqs else 0.0
@@ -319,6 +320,7 @@ def render_env_coverage(
         x_label=cfg.get("x_label", "Frequency (MHz)"),
         x_unit=cfg.get("x_unit", "MHz"),
         help_panel_html=help_panel_html,
+        has_segments=has_segments,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -547,6 +549,7 @@ def render_summary(
     freq_vals = sorted(float(f) for f in df["Frequency_MHz"].dropna().unique())
     freq_min  = freq_vals[0] if freq_vals else 0.0
     freq_max  = freq_vals[-1] if freq_vals else 1.0
+    has_segments = _pp._has_segmentable_spec(df)
 
     # Cross-site comparison (compare_csv tags each row's Group text "Site: <name>"
     # before this function ever sees it -- see _build_compare_csv). "Site" already
@@ -610,6 +613,7 @@ def render_summary(
         help_panel_html=help_panel_html,
         primary_site=primary_site if site_compare_enabled else None,
         coverage_gap_html=coverage_gap_html,
+        has_segments=has_segments,
     )
 
 
