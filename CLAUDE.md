@@ -1210,6 +1210,40 @@ David asked whether this button (boxplot) was Room-only, paired conceptually wit
 
 ---
 
+## Boxplot: "Excl outliers: Room/ΔEnv" didn't affect "Show Points" or the Statistics Table (fixed 2026-08-21)
+
+Reported directly: with "Excl outliers: Room" checked, the box itself correctly shrank (Q1/Q2/Q3/whiskers recomputed from the fence-trimmed population), but turning on "Show Points" still overlaid every raw point, including the ones just excluded from the box — and the Statistics Table's own row for that condition still reported the pre-exclusion `n`. User confirmed the expectation directly ("should I not expect the outliers to be removed?") before the fix.
+
+**Root cause**: `buildBoxTraces()` computed `bs`/`boxDet` (the fence-trimmed set, when exclusion is active) to build the box shape itself, but the per-DUT scatter overlay and the `fs` record handed to the Statistics Table both kept reading the original, untrimmed `detail`/`vals_detail` — two different populations silently in play at once, one for the box, one for everything downstream of it.
+
+**Fix**: `buildBoxTraces()`'s per-frequency `fs.push(...)` now carries `n:bs.n` and `vals_detail:boxDet` (the same fence-trimmed set the box shape itself uses) instead of the raw `detail.length`/`detail` — so "Show Points" and the Statistics Table can no longer disagree with what the box is actually showing. `updateStatsTable()`'s own filtered-recompute branch (the "any filter active" path) got the identical fix: it now separately tracks `s` (the full-population fence, used to *detect* outliers) and `bs`/`boxDet` (the post-exclusion population used for everything reported in the row — mean/std/Q1/Q2/Q3/n), with `boxDet` falling back to the full `detail` if exclusion would otherwise leave zero points at that frequency.
+
+Verified against a real boxplot page: with "Excl outliers: Room" checked, "Show Points" now correctly omits the fence-excluded raw dots, and the Statistics Table's `n` for that row now matches the box's own trimmed count instead of the pre-exclusion total. `qa_padb.py` baseline unchanged (37/4).
+
+---
+
+## Boxplot Statistics Table "Freq" header didn't follow `x_label` (fixed 2026-08-21)
+
+A small, separate gap found while investigating the above: the Statistics Table's column header was hardcoded `'Freq('+X_UNIT+')'` regardless of `x_label` — every other on-page control (filter labels, hover text) already used `X_SHORT_LABEL` for this (see the 2026-08-10 fix), the table header alone was missed. Fixed to `X_SHORT_LABEL+'('+X_UNIT+')'`, matching every other label on the page. (Also confirmed, while here: the table's `Max +Δ`/`Max -Δ` columns are deliberately relative to the row's own **median**, not a fixed/absolute deviation — this is by design, not a bug, and was confirmed correct by the user directly.)
+
+---
+
+## Boxplot/scatter/stat_summary/env_coverage/summary: Reset silently left GF stuck in Inspect mode across unrelated datasets — "Clear everything" appeared to do nothing (fixed 2026-08-21)
+
+Reported: "can we put a reset button on the box plot that works like the scatter reset" — followed immediately by "this one came up with no data showing" after actually trying the boxplot's existing "Clear everything" button. Two direct reproduction attempts against real data (narrowed conditions, zoomed frequency range, non-default Group by) both correctly recovered full data after `clearEverything()` — genuinely inconclusive, since neither hit a true zero-trace state. The real cause turned out to be a piece of page state neither reproduction attempt had touched.
+
+**Root cause**: `padb_v2_gf_mode` ('exclude' vs 'focus'/"Inspect") is, like the GF exclusion list itself, a **global, non-scoped `localStorage` key shared across every results page from the same browser origin** — not scoped per-`results_dir` the way almost every other control's saved state is (`STATE_KEY = 'padb_' + results_dir`). Toggling "Inspect" while looking at one pod's results (e.g. testing GF Inspect mode on a ClockSpurs page, exactly as this session did earlier) leaves Inspect mode silently active when a *completely different, unrelated* results page is opened next. Since Inspect mode only shows GF-*matched* points, and that GF list was built against a different dataset's serials/conditions, essentially nothing on the new page matches — the plot renders with only a couple of housekeeping traces (spec-line references, no real box/point data), looking exactly like "no data."
+
+**Confirmed via headless reproduction**: manually setting `padb_v2_gf_mode='focus'` plus an unrelated GF exclusion entry against a real UHP-IddVsVgg boxplot page dropped it from ~114 traces to 2, with the page's own GF status text correctly (but easy to miss) reading "... — INSPECT MODE". Critically, `clearEverything()` **did not fix it** — it left `padb_v2_gf_mode` completely untouched (by the same "don't disturb GF" convention that already, correctly, protects the actual exclusion list), so trace count stayed at 2 after clicking Reset. This is a real, confirmed trap: the one button a lost user reaches for to escape a confusing state doesn't actually escape this particular one.
+
+**Fix**: every view's Reset/Clear function (`resetFilters()` in scatter/stat_summary/env_coverage/summary, `clearEverything()` in boxplot) now explicitly resets `padb_v2_gf_mode` back to `'exclude'` and refreshes that view's own GF status display (`_updateGfIndicator()`/`_loadStatGlobalFilter()`/`_loadEcGlobalFilter()`/`_loadSumGlobalFilter()`/`_updateBoxGfStatus()`) — **the actual GF exclusion list itself is still deliberately left untouched**, unchanged from the existing "Clear global filter" is the only thing that wipes it" convention. This is a narrow, deliberate distinction: GF *Mode* is a view-toggle a user can get stuck in with no visible fix; the GF *exclusion list* is accumulated work that Reset must never destroy as a side effect. Only Mode needed fixing.
+
+**Second, smaller gap found and fixed in the same investigation**: boxplot's `clearEverything()` never reset the "Group by" `<select>` at all — every other control was explicitly reset, Group by was simply never mentioned. Combined with the new adaptive Group-by default (2026-08-21, above), there wasn't even a fixed literal to reset it *to* — fixed by adding a `DEFAULT_GROUP_BY` JS constant (computed server-side, identical logic to the adaptive default already used at page-load: `'__serial__'` above the 150-condition threshold, `''`/Condition below it) and having `clearEverything()` set `box_group_by.value = DEFAULT_GROUP_BY`. Scatter/stat_summary/env_coverage/summary's own Group-by selects already reset to `''` in their existing `resetFilters()` — only boxplot had this gap, presumably because its adaptive default was added after those other resets were already written.
+
+Verified end-to-end on the real UHP-IddVsVgg boxplot page: reproduced the exact stuck-Inspect-mode failure (114 → 2 traces), then confirmed `clearEverything()` now recovers to the full 114 traces, `padb_v2_gf_mode` reads back `'exclude'`, the GF status text drops the "INSPECT MODE" suffix, and `box_group_by` resets to its correct page-default value. `qa_padb.py` baseline unchanged (37/4).
+
+---
+
 ## Webapp: "Legacy" retired from job generation; "V2" wording dropped from the UI (2026-08-21)
 
 David: "I no longer need legacy plot support... interactive does not need to display any reference to v2." Scoped deliberately narrow, confirmed via `AskUserQuestion`:

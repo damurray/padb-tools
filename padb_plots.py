@@ -519,6 +519,13 @@ function resetFilters(){
      the initial page-load value (see _floor_dec in padb_plots.py). */
   document.getElementById('freq_lo_txt').value=(Math.floor(parseFloat(FREQ_MIN)*1000)/1000).toFixed(3);
   document.getElementById('freq_hi_txt').value=(Math.ceil(parseFloat(FREQ_MAX)*1000)/1000).toFixed(3);
+  /* GF *Mode* (Inspect vs Exclude) is a global, non-scoped localStorage key
+     shared across every results page from this browser origin -- leaving it
+     in Inspect from a different, unrelated dataset silently hides almost
+     everything here (its GF list matches nothing in this data). Reset always
+     puts Mode back to Exclude; the GF exclusion list itself is untouched. */
+  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  _updateGfIndicator();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
@@ -5759,6 +5766,13 @@ function resetFilters(){
   var ptEl2=document.getElementById('show_pts_chk');if(ptEl2)ptEl2.checked=false;
   var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)hsEl.checked=false;
   var gfChk=document.getElementById('stat_gf_chk');if(gfChk)gfChk.checked=true;
+  /* GF *Mode* (Inspect vs Exclude) is a global, non-scoped localStorage key
+     shared across every results page from this browser origin -- leaving it
+     in Inspect from a different, unrelated dataset silently hides almost
+     everything here (its GF list matches nothing in this data). Reset always
+     puts Mode back to Exclude; the GF exclusion list itself is untouched. */
+  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  _loadStatGlobalFilter();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
@@ -7620,7 +7634,15 @@ function resetFilters(){
   var muEl=document.getElementById('ec_mu');if(muEl)muEl.value=0;
   var shEl=document.getElementById('ec_spec_hi');if(shEl)shEl.value='';
   var slEl=document.getElementById('ec_spec_lo');if(slEl)slEl.value='';
-  _ecGfEnabled=true;_updateEcGfBadge();
+  _ecGfEnabled=true;
+  /* GF *Mode* (Inspect vs Exclude) is a global, non-scoped localStorage key
+     shared across every results page from this browser origin -- leaving it
+     in Inspect from a different, unrelated dataset silently hides almost
+     everything here (its GF list matches nothing in this data). Reset always
+     puts Mode back to Exclude; the GF exclusion list itself is untouched. */
+  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  _loadEcGlobalFilter();
+  _updateEcGfBadge();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
@@ -9371,9 +9393,15 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         var bs={n:bsRaw.n,mean:bsRaw.mean,q1:bsRaw.q1,q2:bsRaw.q2,q3:bsRaw.q3,
                 lo_w:Math.min.apply(null,whiskerVals),hi_w:Math.max.apply(null,whiskerVals),
                 outliers:bsRaw.outliers};
+        /* Real bug found 2026-08-21: vals_detail was always the full,
+           unfiltered set regardless of excl, so "Show points" kept showing
+           every point (including ones just excluded from Q1/Q2/Q3 above) --
+           the box shrank correctly but the raw dots overlaid on it didn't
+           match. n likewise always reported the pre-exclusion count. Both
+           now follow the same active set (boxDet) the box itself uses. */
         fs.push({freq:f.freq,freq_label:f.freq_label,
-          n:detail.length,mean:bs.mean,q1:bs.q1,q2:bs.q2,q3:bs.q3,lo_w:bs.lo_w,hi_w:bs.hi_w,
-          outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:detail});
+          n:bs.n,mean:bs.mean,q1:bs.q1,q2:bs.q2,q3:bs.q3,lo_w:bs.lo_w,hi_w:bs.hi_w,
+          outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),vals_detail:boxDet});
       });
     } else {
       fs=cd.freq_stats.filter(function(f){return f.freq>=fr.lo&&f.freq<=fr.hi;});
@@ -9594,19 +9622,29 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
     });
-  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive){
+  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive||isExclRoom()||isExclDEnv()){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rlo=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+    var exclRoomSt=isExclRoom(),exclDEnvSt=isExclDEnv();
     var fltLabel=gfFocusActive?'GF Focus':
                  (serActive&&(yFltActive||yFltActiveLo))?'Serial+Y-filtered':
                  serActive?'Serial-filtered':
                  passActive?'Passing only':
                  tempActive?'Temp-filtered':
                  yFltActiveLo?'Y-filtered [lo='+rlo.toFixed(3)+']':
-                 'Y-filtered [hi='+rhi.toFixed(3)+']';
+                 yFltActive?'Y-filtered [hi='+rhi.toFixed(3)+']':
+                 (exclRoomSt||exclDEnvSt)?'Outliers excluded':
+                 'Filtered';
     BOX_DATA.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
       if(selTemps&&selTemps.indexOf(cd.temp)<0) return;
+      /* Same exclusion buildBoxTraces() already applies to the box shape --
+         real bug found 2026-08-21: this table never read isExclRoom()/
+         isExclDEnv() at all, so "Excl outliers: Room/DEnv temps" only ever
+         visibly changed the box's own Q1/Q2/Q3 on the plot, never this
+         table's numbers (and, separately, never the "Show points" overlay
+         either -- see buildBoxTraces()'s own vals_detail fix). */
+      var exclSt=cd.temp==='Room'?exclRoomSt:exclDEnvSt;
       (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(f){
         if(f.freq<fr.lo||f.freq>fr.hi) return;
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
@@ -9619,16 +9657,20 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
         var fv=detail.map(function(d){return d.v;});
         var s=computeBoxStats(fv,getIqrK());
         if(!s) return;
-        var variance=fv.reduce(function(acc,v){return acc+(v-s.mean)*(v-s.mean);},0)/(fv.length>1?fv.length-1:1);
-        var std=Math.sqrt(variance);
         var outDet=detail.filter(function(d){return d.v<s.lo_w||d.v>s.hi_w;});
+        var boxDet=exclSt?detail.filter(function(d){return d.v>=s.lo_w&&d.v<=s.hi_w;}):detail;
+        if(!boxDet.length) boxDet=detail;
+        var bv=boxDet.map(function(d){return d.v;});
+        var bs=computeBoxStats(bv,getIqrK())||s;
+        var variance=bv.reduce(function(acc,v){return acc+(v-bs.mean)*(v-bs.mean);},0)/(bv.length>1?bv.length-1:1);
+        var std=Math.sqrt(variance);
         var outStr=outDet.length?
           '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
-        var devCells=_maxDevCells(outDet,s.q2);
-        rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+s.n+'</td>'+
-          '<td>'+s.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
-          '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
+        var devCells=_maxDevCells(outDet,bs.q2);
+        rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+bs.n+'</td>'+
+          '<td>'+bs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
+          '<td>'+bs.q1.toFixed(4)+'</td><td>'+bs.q2.toFixed(4)+'</td><td>'+bs.q3.toFixed(4)+'</td>'+
           '<td><em style="color:#888">'+fltLabel+'</em></td>'+
           (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
           '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
@@ -10243,12 +10285,26 @@ function clearEverything(){
   /* Freq filter */
   var flo=document.getElementById('box_freq_lo');if(flo)flo.value=BOX_FREQ_MIN;
   var fhi=document.getElementById('box_freq_hi');if(fhi)fhi.value=BOX_FREQ_MAX;
+  /* Group by -- back to this page's own adaptive default, not just whatever
+     was last selected. */
+  var grpEl=document.getElementById('box_group_by');if(grpEl)grpEl.value=DEFAULT_GROUP_BY;
   /* Global filter is deliberately NOT cleared here -- it's a cross-view,
      additive-by-design exclusion list (see "Set ... as GF" buttons' own
      "adds to, doesn't replace" semantics) that can take real effort to build
      up across scatter/stat_summary/boxplot. Wiping it as a side effect of a
      per-view filter reset would be surprising and hard to undo; use the
      dedicated "Clear global filter" button for that specific action. */
+  /* GF *Mode* (Inspect vs Exclude) is a different thing from the exclusion
+     list above -- it's a global, non-scoped localStorage key shared across
+     every results page from this browser origin (see toggleGfMode()). Real
+     incident: leaving Inspect mode active on one page (e.g. after testing it
+     on a different pod's results) and then opening a totally unrelated
+     dataset silently hides almost everything -- the GF list from the other
+     page matches nothing here, and Inspect mode only shows GF-matched points.
+     That's exactly the "no data" trap Reset exists to escape, so -- unlike
+     the exclusion list itself -- Reset always puts Mode back to Exclude. */
+  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  _updateBoxGfStatus();
   /* Clear any manual zoom/pan on both axes -- Y because buildLayout()'s
      _liveAxisRange() would otherwise keep re-applying the stale zoomed
      range even after Clear; X because although box_freq_lo/hi are already
@@ -11240,6 +11296,7 @@ def _build_box_interactive_html(
         f"var PADB_FREQ_FIELD={json.dumps(padb_freq_field)};",
         f"var RESULTS_DIR_PATH={json.dumps(results_dir_abs_path)};",
         f"var PRIMARY_SITE={json.dumps(primary_site)};",
+        f"var DEFAULT_GROUP_BY={json.dumps('__serial__' if _default_serial else '')};",
     ])
 
     site_btn_html = ""
@@ -12204,6 +12261,13 @@ function resetFilters(){
   var nEl=document.getElementById('sum_n');if(nEl)nEl.value='0';
   var muEl=document.getElementById('sum_mu');if(muEl)muEl.value='0';
   var dvEl=document.getElementById('sum_denv');if(dvEl)dvEl.value='0';
+  /* GF *Mode* (Inspect vs Exclude) is a global, non-scoped localStorage key
+     shared across every results page from this browser origin -- leaving it
+     in Inspect from a different, unrelated dataset silently hides almost
+     everything here (its GF list matches nothing in this data). Reset always
+     puts Mode back to Exclude; the GF exclusion list itself is untouched. */
+  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  _loadSumGlobalFilter();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
