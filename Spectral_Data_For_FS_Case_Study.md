@@ -42,6 +42,8 @@ Worth noting: extraction time doesn't track CSV byte size — the 1.24 GB file f
 
 **Claude:** Understood — no changes, no more digging right now. Saved a memory note to revisit after your training session: whether `_collect_padb_outputs()`'s stem-based matching in R-Plots ever silently serves stale data as if it were a fresh extraction, versus just harmlessly re-collecting genuinely-current files.
 
+**Update (2026-08-20):** revisited, and the answer is yes — it genuinely could, and did. A stale R-Plots leftover (typically from a manual GUI session) sharing a stem with an analytic that has real fresh `-dir` output could silently clobber that fresh output with the old file. Confirmed via a real incident on `UHP-IddVsVgg` (a stale leftover overwrote every subsequent automated re-extraction's genuinely fresh, larger CSV, run after run) and found in 11 of 16 recent run logs across several jobs when audited afterward. Fixed the same day — see `CLAUDE.md` → **`_collect_padb_outputs()` clears stale files before copying fresh ones** for the fix and its verification.
+
 ---
 
 ## Second incident: "why are there two box plots at one frequency?"
@@ -74,5 +76,5 @@ What that means for a fix: tightening `_freq_label()`'s precision so two genuine
 - **A clean log is not the same as a verified claim.** "Return code 0" and a plausible elapsed time both looked like evidence of success — neither actually proved that fresh work happened. The first answer given was wrong, and it was backed by a real log.
 - **Domain experience caught what the log missed.** The correction didn't come from re-reading the code more carefully — it came from someone who actually knows how long this pod takes in the GUI, noticing the numbers didn't add up.
 - **The fix for "I'm not sure, but I doubt it" is a concrete check, not a stronger opinion.** Comparing the run's own timestamp against the collected files' modification times turned a disagreement into a provable fact in one step.
-- **Not every confirmed finding needs an immediate fix.** The real open question — can a run silently serve stale data as success — was worth writing down precisely and deferring, not rushing to patch under time pressure before training.
+- **Not every confirmed finding needs an immediate fix.** The real open question — can a run silently serve stale data as success — was worth writing down precisely and deferring, not rushing to patch under time pressure before training. (It was revisited after training and confirmed real — see the update above.)
 - **A display bug and a data bug can look identical from the outside.** "Two box plots at one frequency" sounded like a data problem (duplicate measurements, or a real aggregation collapsing two points together). It was neither — the underlying statistics were computed correctly and independently; only the on-screen label rounding made two distinct frequencies collide onto the same spot. Worth checking which layer a symptom actually lives in before assuming where the fix belongs.

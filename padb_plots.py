@@ -9700,7 +9700,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   }
   var npHdr=showNp?'<th>NP&nbsp;TI&nbsp;Bounds</th>':'';
   el.innerHTML='<table class="stbl"><thead><tr>'+
-    '<th>Condition</th><th>Freq('+X_UNIT+')</th><th>n&nbsp;DUTs</th>'+
+    '<th>Condition</th><th>'+X_SHORT_LABEL+'('+X_UNIT+')</th><th>n&nbsp;DUTs</th>'+
     '<th>Mean</th><th>Std</th><th>Q1</th><th>Median</th><th>Q3</th>'+
     '<th>Normality</th>'+npHdr+'<th>Outliers</th>'+
     '<th title="Most positive outlier, relative to the median">Max&nbsp;+&#916;</th>'+

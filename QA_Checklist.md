@@ -78,7 +78,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] Switching back to "Condition" (the default) restores the original per-condition traces
 
 ### Segment by
-- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next buttons jump the frequency range to each contiguous spec band
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present **only if the dataset has a frequency-varying Spec/Limit/Uncertainty** (whole control is omitted for a flat-spec dataset, as of 2026-08-21); when present, Prev/Next buttons jump the frequency range to each contiguous spec band
 - [ ] Selecting "Spec" or "Uncertainty" shows zero segments (Prev/Next hidden) if the pod's extraction didn't include those as grouping items — expected, not a bug
 - [ ] Segment boundaries respect the current condition/serial/Group-by selection
 
@@ -102,6 +102,11 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 ### Condition filter (outer)
 - [ ] Longform condition list visible (all 14 conditions as checkboxes)
 - [ ] Uncheck one condition → that column of boxes disappears
+- [ ] Uncheck **every** condition → plot shows nothing (not everything) — regression check for a real bug fixed 2026-08-20 where deselecting all conditions silently fell back to showing all of them
+
+### Group by
+- [ ] "Group by" selector present (Condition / Temperature Step / Port / Serial Number / any condition dimension) — defaults to Condition unless the pod has 150+ raw conditions, in which case it defaults to Serial Number
+- [ ] With Group by set to **Serial Number** or **Port**, the condition-dimension checkboxes above still work — unchecking a condition narrows the plot and Statistics Table in this mode too, and unchecking every condition shows nothing here as well (regression check for a real bug fixed 2026-08-21 where Group-by-Serial/Port ignored the condition filter entirely)
 
 ### Harmonic / Port inner filter
 - [ ] Harmonic dropdown selects all or subset of harmonics by checking/unchecking longform rows
@@ -129,10 +134,11 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] CSV download works
 
 ### Segment by
-- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present **only if the dataset actually has a frequency-varying Spec/Limit/Uncertainty** (as of 2026-08-21, the whole control is omitted, not just Prev/Next, for a flat/constant-spec dataset — check both a staircase-spec pod and a flat-spec one if available); when present, Prev/Next jumps the frequency range to each contiguous spec band
 
 ### Global Filter (GF) buttons
 - [ ] "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" each **add** to the existing GF rather than replacing it (set GF twice from different selections, confirm both sets of exclusions remain)
+- [ ] "Set outliers as GF" checks outliers at **each currently-selected Temperature checkbox independently**, not Room-only — with all temps checked, confirm the resulting GF includes outliers from non-Room temps too; narrow to just Room first to get Room-only outliers
 - [ ] "Clear global filter" empties it
 - [ ] "Export GF CSV" downloads a CSV with `Serial,Condition,Temperature,Start_Freq,Stop_Freq,N_Points` columns
 - [ ] "Import GF CSV" on a previously-exported file re-merges (adds to) the current GF without erroring
@@ -175,7 +181,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] If all spur types were previously saved as deselected, they are all restored to checked on load
 
 ### Segment by
-- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band (no "Group by" equivalent exists for this view)
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present **only if the dataset has a frequency-varying Spec/Limit/Uncertainty** (whole control is omitted for a flat-spec dataset, as of 2026-08-21); when present, Prev/Next jumps the frequency range to each contiguous spec band (no "Group by" equivalent exists for this view)
 
 ### Help panel
 - [ ] ⓘ Help button opens a panel explaining Filter/Segment by
@@ -217,7 +223,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] "Show excluded" has no visible effect while Group by is active (expected — it compares by object identity, meaningless for pooled conditions)
 
 ### Segment by
-- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band, respecting the current Group-by selection
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present **only if the dataset has a frequency-varying Spec/Limit/Uncertainty** (whole control is omitted for a flat-spec dataset, as of 2026-08-21); when present, Prev/Next jumps the frequency range to each contiguous spec band, respecting the current Group-by selection
 
 ### Room/ΔEnv shared population (2026-08-08)
 - [ ] Deselect one DUT via the Serial filter → Room `n` and ΔEnv `n` drop together (both, not just ΔEnv)
@@ -265,7 +271,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] "Show excluded" has no visible effect while Group by is active (expected)
 
 ### Segment by
-- [ ] "Segment by: Spec / Limit / Uncertainty" selector present; Prev/Next jumps the frequency range to each contiguous spec band, respecting the current Group-by selection
+- [ ] "Segment by: Spec / Limit / Uncertainty" selector present **only if the dataset has a frequency-varying Spec/Limit/Uncertainty** (whole control is omitted for a flat-spec dataset, as of 2026-08-21); when present, Prev/Next jumps the frequency range to each contiguous spec band, respecting the current Group-by selection
 
 ### Help panel
 - [ ] ⓘ Help button opens a panel explaining Filter/Group by/Segment by
@@ -316,9 +322,9 @@ Record these in a spreadsheet or use `qa_padb.py` which asserts the stat_summary
 
 ---
 
-## Cross-Site Comparison (`compare_csv` boxplot pages only)
+## Cross-Site Comparison (`compare_csv` boxplot/stat_summary/summary pages only)
 
-Only applies to a boxplot page built from a `compare_csv` job (`"Site"` appears as a real `COND_DIMS` entry). Skip this section entirely for a normal single-site page.
+Applies to a boxplot, `stat_summary`, or `summary` page built from a `compare_csv` job (`"Site"` appears as a real `COND_DIMS` entry) — the Site Population Check reached `stat_summary` and `summary` on 2026-08-19/21, not just boxplot. Skip this section entirely for `env_coverage`/`distribution` pages or a normal single-site page.
 
 ### Coverage-gap banner
 - [ ] An amber banner appears near the top, above the plot, without needing to click anything
@@ -326,6 +332,7 @@ Only applies to a boxplot page built from a `compare_csv` job (`"Site"` appears 
 
 ### Site Population Check panel
 - [ ] "Site Population Check" button appears (only when `primary_site` is set and 2+ sites are present)
+- [ ] On `summary`, the panel's own text notes it's comparing each DUT's mean blended *across all temperatures in its condition*, not a single temperature's raw points (this view has no per-temperature breakdown) — don't expect it to line up exactly with boxplot's per-temperature version on the same data
 - [ ] Opening it shows a one-line summary count, then three tables: **Per-DUT summary**, **Frequency clusters**, **Per-point detail**
 - [ ] Per-DUT summary's "Shared w/ other DUTs" and "Suggested triage" columns are populated for every DUT with at least one outside point
 - [ ] Frequency clusters table only lists `(site, temp, freq)` combinations with 2+ distinct DUTs affected — sorted by DUT count descending

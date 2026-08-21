@@ -12,7 +12,7 @@ Each site needs its own scatter CSV already produced by the normal extract step 
 py C:\apps\padb\tools\webapp\padb_web.py
 ```
 - Open **"3. Compare two datasets"** — collapsed by default, click the header to expand.
-- Pick a CSV for **Site A** and **Site B** (auto-discovered from every already-extracted CSV on disk), give each a short name (e.g. `SR` / `AMC2`), and pick the **Primary site** — the reference population for the boxplot check.
+- Pick a CSV for **Site A** and **Site B** (auto-discovered from every already-extracted CSV on disk), give each a short name (e.g. `SR` / `AMC2`), and pick the **Primary site** — the reference population for the Site Population Check.
 - Click **Check compatibility** first. It always warns (never blocks) on soft gaps — missing temperatures/ports, non-overlapping frequency ranges. It **blocks** only on a genuine measurement-unit mismatch (e.g. dBc vs. dBm) — check **Override and proceed anyway** if you're sure that's what you actually want.
 - Click **Create & Run**. Builds the job.json and queues it — no hand-written file needed. New jobs default to **local-only** (no publish) on purpose.
 
@@ -32,7 +32,7 @@ py C:\apps\padb\tools\webapp\padb_web.py
 }
 ```
 - `compare_csv` replaces `csv_path` entirely — 2+ site names required. Every backslash doubled, same as any other job.json.
-- `primary_site` defaults to the first key if omitted. It only matters for the boxplot check (below) — no effect on any other view.
+- `primary_site` defaults to the first key if omitted. It only matters for the Site Population Check (below, on boxplot/`stat_summary`/`summary`) — no effect on any other view.
 - Omit `"views"` for the normal auto-detection (Room-only → `scatter`+`boxplot`; multi-temp → all six) — same rule as any other V2 job.
 - Set `publish_to` explicitly (even to a real path) — an ad-hoc comparison shouldn't silently inherit the default publish location.
 
@@ -45,7 +45,7 @@ No separate extraction step — both CSVs already exist. Re-run this alone any t
 
 ## 5. Review — what's different from a normal V2 page
 
-Open `results_dir\index.html` → the boxplot view. Two things only appear here, not on a single-site page:
+Open `results_dir\index.html` → the boxplot, `stat_summary`, or `summary` view. Two things only appear on these three, not on a single-site page or on `env_coverage`/`distribution`:
 - **Coverage-gap banner** (always visible, above the plot) — lists what one site has that the other doesn't (e.g. missing temperatures/ports). Numeric formatting differences between sites (e.g. `-100.00` vs `-100`) never falsely show up as a gap.
 - **"Site Population Check" button** — tests each non-primary-site DUT's value at each frequency/temperature against the k×IQR fence built from the primary site's own population there (same fence/k×IQR control the page's own outlier detection already uses). Three tables, in order:
   1. **Per-DUT summary** — checked/outside counts, high/low split, and a **suggested triage tag**: station/systemic issue (shared with other DUTs) beats bad DUT (isolated, toward-failing) beats isolated-worth-a-look beats below-population/benign beats ambiguous. A suggestion, not a verdict.
@@ -57,5 +57,5 @@ See `Interactive_Plots_User_Guide.md` → **Cross-Site Comparison** for the plai
 
 ## 6. Known gaps
 
-- Only `boxplot` has the Site Population Check. The other five views render the merged data fine (Site is just a filterable condition dimension to them too) but have no dedicated comparison feature yet.
+- `boxplot`, `stat_summary`, and `summary` have the Site Population Check. `env_coverage` and `distribution` render the merged data fine (Site is just a filterable condition dimension to them too) but have no dedicated comparison feature yet.
 - The check compares only exact-matching frequencies between the two sites' sweeps — a frequency present in only one site reports `n/a`, not a near-match guess.
