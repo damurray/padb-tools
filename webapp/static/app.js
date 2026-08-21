@@ -148,6 +148,7 @@ async function loadCompareCsvs() {
   const data = await res.json();
   for (const id of ["compareCsvA", "compareCsvB"]) {
     const sel = document.getElementById(id);
+    const prevValue = sel.value; // preserve selection across a refresh, if it still exists
     sel.innerHTML = "";
     for (const c of data.csvs) {
       const opt = document.createElement("option");
@@ -155,6 +156,7 @@ async function loadCompareCsvs() {
       opt.textContent = c.label;
       sel.appendChild(opt);
     }
+    if (prevValue && [...sel.options].some(o => o.value === prevValue)) sel.value = prevValue;
   }
 }
 
@@ -293,6 +295,17 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
 });
 
 loadCompareCsvs();
+// Real reported bug: the CSV list was only ever fetched once, at initial page
+// load -- a job that finished (e.g. a fresh extraction) after the page
+// loaded but before the panel was opened never appeared in the dropdown
+// until a full browser reload. <details> fires a native "toggle" event on
+// every open/close; refresh on open so the list is always current.
+const compareDetailsEl = document.getElementById("compareDetails");
+if (compareDetailsEl) {
+  compareDetailsEl.addEventListener("toggle", () => {
+    if (compareDetailsEl.open) loadCompareCsvs();
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Jobs list / execute
@@ -359,17 +372,28 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
     return;
   }
   const dryRun = document.getElementById("dryRunCheckbox").checked;
-  const res = await fetch("/api/execute-job", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paths, dry_run: dryRun }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    alert("Execute failed: " + data.error);
-    return;
+  // Disabled for the round trip only -- this guards against a rapid
+  // double-click queuing the same job twice (the server also dedups by path
+  // against anything already queued/running, since a click well after this
+  // button re-enables -- e.g. an impatient re-click while the job is still
+  // running -- wouldn't be caught by this alone).
+  const btn = document.getElementById("runSelectedBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/execute-job", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths, dry_run: dryRun }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Execute failed: " + data.error);
+      return;
+    }
+    for (const jobId of data.job_ids) startPolling(jobId);
+  } finally {
+    btn.disabled = false;
   }
-  for (const jobId of data.job_ids) startPolling(jobId);
 });
 
 // ---------------------------------------------------------------------------

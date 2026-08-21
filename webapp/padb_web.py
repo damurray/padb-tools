@@ -834,6 +834,23 @@ def execute_job():
         job_path = Path(p)
         if not job_path.exists():
             return jsonify(error=f"job not found: {p}"), 400
+        # Real reported bug: nothing stopped the same job.json from being
+        # queued twice -- a double-click on "Run Selected", or the user
+        # clicking it again later while the first run is still going (the
+        # checkboxes stay checked and the button stays enabled the whole
+        # time), silently launched a second, fully redundant run of the same
+        # job, showing up as an apparent duplicate in the Running Jobs panel.
+        # If a queued/running entry already exists for this exact path,
+        # re-attach to it instead of creating a new one.
+        existing_id = None
+        with _jobs_lock:
+            for jid, j in _jobs.items():
+                if j["path"] == str(job_path) and j["status"] in ("queued", "running"):
+                    existing_id = jid
+                    break
+        if existing_id is not None:
+            job_ids.append(existing_id)
+            continue
         job_id = _new_job_id()
         with _jobs_lock:
             _jobs[job_id] = {
