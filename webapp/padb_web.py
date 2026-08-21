@@ -35,6 +35,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import webbrowser
@@ -207,6 +208,22 @@ def _job_result_index_path(job_path: Path, cfg: dict) -> Path | None:
     return _job_index_path(job_path.parent, cfg)
 
 
+def _tail_new_lines(path: Path, pos: int, job_id: str) -> int:
+    """Append any log lines written to `path` since byte offset `pos`,
+    returning the new offset."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            f.seek(pos)
+            chunk = f.read()
+            new_pos = f.tell()
+    except OSError:
+        return pos
+    if chunk:
+        for line in chunk.splitlines():
+            _append_log(job_id, line)
+    return new_pos
+
+
 def _stream(cmd: list[str], job_id: str) -> int:
     _append_log(job_id, f"$ {' '.join(cmd)}")
     # Without this, Python defaults to block-buffered (not line-buffered)
@@ -220,20 +237,41 @@ def _stream(cmd: list[str], job_id: str) -> int:
     # (process exit flushes everything) -- this only affects live visibility.
     env = os.environ.copy()
     env["PYTHONUNBUFFERED"] = "1"
-    proc = subprocess.Popen(
-        cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, cwd=str(TOOLS_DIR), env=env,
-    )
+    # Real incident 2026-08-21: redirecting the child's stdout to a live PIPE
+    # this process reads (the old code here) means the pipe's read end is
+    # only ever referenced by THIS process. Restarting the webapp (e.g. to
+    # pick up a code change) force-kills it -- Windows then closes that pipe,
+    # and the still-running child's very next print() raises an unhandled
+    # OSError ("the pipe is being closed"), killing an otherwise-independent,
+    # possibly minutes-into-a-real-extraction OS process for no reason a user
+    # would expect. Confirmed via direct repro: a Popen(..., stdout=PIPE)
+    # child died within one print cycle of a force-killed parent (even a
+    # fully detached one, and even with CREATE_BREAKAWAY_FROM_JOB, ruling out
+    # job-object cascade as the cause); an otherwise-identical child with
+    # stdout redirected to a real file survived and kept running indefinitely.
+    # Fix: redirect to a real temp file instead -- the child's own inherited
+    # handle to it stays valid even after the parent's is torn down -- and
+    # tail that file for the live status panel instead of reading a pipe.
+    log_path = Path(tempfile.gettempdir()) / f"padb_web_job_{job_id}.log"
+    with open(log_path, "w", encoding="utf-8", errors="replace") as logf:
+        proc = subprocess.Popen(
+            cmd, stdout=logf, stderr=subprocess.STDOUT,
+            text=True, cwd=str(TOOLS_DIR), env=env,
+        )
     with _jobs_lock:
         _jobs[job_id]["proc"] = proc
     try:
-        for line in proc.stdout:  # type: ignore[union-attr]
-            _append_log(job_id, line.rstrip("\n"))
-        proc.wait()
+        pos = 0
+        while proc.poll() is None:
+            pos = _tail_new_lines(log_path, pos, job_id)
+            time.sleep(0.5)
+        _tail_new_lines(log_path, pos, job_id)  # final flush past the last poll
         return proc.returncode
     finally:
         with _jobs_lock:
             _jobs[job_id]["proc"] = None
+        with contextlib.suppress(OSError):
+            log_path.unlink()
 
 
 def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict) -> tuple[bool, str | None]:
