@@ -9721,6 +9721,27 @@ function _dupRunCount(items,keyFn){
   items.forEach(function(d){var k=keyFn(d);seen[k]=(seen[k]||0)+1;if(seen[k]>1) extra++;});
   return extra;
 }
+/* Per-DUT duplicate breakdown, as an array of "label×count" strings --
+   e.g. ["US65080419×2","US66060602×2"] -- for whichever DUTs genuinely
+   have more than one raw row. Real gap found by the user reviewing this
+   feature: a single summed total (e.g. "3") reads as "one DUT has 3
+   copies", when it's actually "three separate DUTs each have 2 copies" --
+   indistinguishable from the total alone. keyFn defines what counts as
+   one genuine measurement (see _dupRunCount's own comment on why this
+   needs condition+port, not just serial); labelFn picks what to display
+   per group (normally just the serial). DUTs with exactly one row are
+   omitted entirely, not listed as "×1". */
+function _dupBreakdown(items,keyFn,labelFn){
+  if(!items||!items.length) return [];
+  var groups={},order=[];
+  items.forEach(function(d){
+    var k=keyFn(d);
+    if(!groups[k]){groups[k]={count:0,label:labelFn(d)};order.push(k);}
+    groups[k].count++;
+  });
+  return order.filter(function(k){return groups[k].count>1;})
+    .map(function(k){return groups[k].label+'×'+groups[k].count;});
+}
 function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var el=document.getElementById('box_stat_panel');
   if(!el||el.style.display==='none') return;
@@ -10295,7 +10316,10 @@ function updateSitePanel(){
     var rows=otherPoints.map(function(p){
       var pvItems=primaryBuckets[p.temp+'|'+p.freq]||[];
       var pv=pvItems.map(function(it){return it.v;});
-      var pvDup=_dupRunCount(pvItems,function(d){return d.s+'|'+d.cond+'|'+(d.p||'');});
+      /* Per-DUT breakdown, not a single summed total -- "3" read as "one
+         DUT has 3 copies" when it actually meant "three separate DUTs
+         each have 2 copies", indistinguishable from the total alone. */
+      var pvDup=_dupBreakdown(pvItems,function(d){return d.s+'|'+d.cond+'|'+(d.p||'');},function(d){return d.s;});
       if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,pvDup:pvDup};
       var s=computeBoxStats(pv,k);
       var dir=null,dist=0;
@@ -10441,7 +10465,7 @@ function updateSitePanel(){
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Temp</th><th>Freq</th>'+
       '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th>'+
-      '<th title="How many of the '+PRIMARY_SITE+' fence&#39;s own n reference points at this temp/frequency are a repeat run of the same DUT/condition, not an independent DUT.">'+PRIMARY_SITE+' dup pts</th>'+
+      '<th title="Which of the '+PRIMARY_SITE+' fence\'s own reference DUTs at this temp/frequency have more than one raw row (serial×count) -- a DUT not listed here contributed exactly one.">'+PRIMARY_SITE+' dup pts</th>'+
       '<th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
     rows.forEach(function(r){
       var p=r.p;
@@ -10453,7 +10477,7 @@ function updateSitePanel(){
         '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
-        '<td>'+(r.pvDup?'<span class="out">'+r.pvDup+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
+        '<td>'+(r.pvDup&&r.pvDup.length?'<span class="out">'+r.pvDup.join(', ')+'</span>':'<span style="color:#aaa">&mdash;</span>')+'</td>'+
         '<td>'+(r.dir||'&mdash;')+'</td>'+
         '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
     });
@@ -10489,7 +10513,7 @@ function saveSitePopulationCSV(outsideOnly){
       r.lo!==undefined?r.lo.toFixed(6):'',
       r.hi!==undefined?r.hi.toFixed(6):'',
       r.n!==undefined?r.n:'',
-      r.pvDup||0,
+      esc(r.pvDup&&r.pvDup.length?r.pvDup.join('; '):''),
       r.dir||'',
       r.dist?r.dist.toFixed(6):'',
       r.verdict].join(','));
