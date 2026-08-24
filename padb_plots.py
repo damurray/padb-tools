@@ -5241,6 +5241,8 @@ function _siteFence(vals){
   var q1=pct(25),q3=pct(75),iqr=q3-q1;
   return {lo_w:q1-1.5*iqr,hi_w:q3+1.5*iqr,n:n};
 }
+var _lastSiteRows=[];
+var _lastSiteMeta={};
 function updateSitePanel(){
   var el=document.getElementById('stat_site_panel');
   if(!el||el.style.display==='none') return;
@@ -5338,6 +5340,8 @@ function updateSitePanel(){
       if(rank[a.verdict]!==rank[b.verdict]) return rank[a.verdict]-rank[b.verdict];
       return (b.dist||0)-(a.dist||0);
     });
+    _lastSiteRows=rows;
+    _lastSiteMeta={freqWindowed:freqWindowed,frLo:fLo,frHi:fHi};
     var nOutside=rows.filter(function(r){return r.verdict==='OUTSIDE';}).length;
     var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
@@ -5348,6 +5352,10 @@ function updateSitePanel(){
       (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency, fence not meaningful)':'')+
       '.'+dirNote+winNote+
       ' Scoped to Room temperature only -- stat_summary\'s per-DUT population is Room-only by design, so non-Room points can\'t be compared here (see boxplot\'s Site Population Check for a per-temperature check).</div>';
+    html+='<div style="margin:0 0 8px">'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button>'+
+      '</div>';
 
     var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
       .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
@@ -5401,6 +5409,58 @@ function updateSitePanel(){
   }catch(e){
     el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>';
   }
+}
+/* Export the Site Population Check's own per-point detail -- reuses
+   _lastSiteRows (cached at the end of updateSitePanel(), after sorting)
+   rather than recomputing, so the export can never show a different
+   population than whatever's currently on screen. Mirrors boxplot's own
+   saveSitePopulationCSV(), adapted to this view's shape: Room-only (no
+   Temp column), since stat_summary's per-DUT population is Room-only by
+   design -- see boxplot's version for the multi-temp equivalent. No
+   per-point SR-dup tracking either: stat_summary's dut_vals are already
+   averaged per (condition,DUT,freq) server-side, so there's no raw-
+   measurement-level duplicate left to report at this resolution. */
+function saveSitePopulationCSV(outsideOnly){
+  if(!_lastSiteRows||!_lastSiteRows.length){
+    alert('Open Site Population Check first -- nothing to export yet.');
+    return;
+  }
+  var rows=outsideOnly?_lastSiteRows.filter(function(r){return r.verdict==='OUTSIDE';}):_lastSiteRows;
+  if(!rows.length){
+    alert('No OUTSIDE points in the current filter/selection.');
+    return;
+  }
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var hdrs=['Site','Serial','Port','Freq_'+X_UNIT,'Value',
+    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n',
+    'Dir','Dist','Verdict'];
+  var out=[hdrs.join(',')];
+  rows.forEach(function(r){
+    var p=r.p;
+    out.push([esc(p.site),esc(p.serial),esc(p.port||''),p.freq,
+      p.value.toFixed(6),
+      r.lo!==undefined?r.lo.toFixed(6):'',
+      r.hi!==undefined?r.hi.toFixed(6):'',
+      r.n!==undefined?r.n:'',
+      r.dir||'',
+      r.dist?r.dist.toFixed(6):'',
+      r.verdict].join(','));
+  });
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var meta=['# PADB Export','# Plot: '+TITLE+' -- Site Population Check','# Generated: '+ts,
+    '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),
+    '# Primary site: '+PRIMARY_SITE,
+    '# Rows: '+rows.length,
+    '# Frequency window: '+(_lastSiteMeta.freqWindowed?(_lastSiteMeta.frLo.toFixed(3)+'-'+_lastSiteMeta.frHi.toFixed(3)+' '+X_UNIT):'full range'),
+    '# Note: per-DUT rollup and frequency-cluster summaries are not included -- this is the per-point detail table only.',
+    '#'
+  ].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url;
+  a.download=(TITLE+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 
 /* ---- data filter ---- */
@@ -12748,6 +12808,8 @@ function _siteFence(vals){
   var q1=pct(25),q3=pct(75),iqr=q3-q1;
   return {lo_w:q1-1.5*iqr,hi_w:q3+1.5*iqr,n:n};
 }
+var _lastSiteRows=[];
+var _lastSiteMeta={};
 function updateSitePanel(){
   var el=document.getElementById('sum_site_panel');
   if(!el||el.style.display==='none') return;
@@ -12844,6 +12906,8 @@ function updateSitePanel(){
       if(rank[a.verdict]!==rank[b.verdict]) return rank[a.verdict]-rank[b.verdict];
       return (b.dist||0)-(a.dist||0);
     });
+    _lastSiteRows=rows;
+    _lastSiteMeta={freqWindowed:freqWindowed,frLo:fr.lo,frHi:fr.hi};
     var nOutside=rows.filter(function(r){return r.verdict==='OUTSIDE';}).length;
     var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
@@ -12854,6 +12918,10 @@ function updateSitePanel(){
       (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency, fence not meaningful)':'')+
       '.'+dirNote+winNote+
       ' Each point is a DUT\'s mean blended across all temperatures present in its condition (this view\'s own per-DUT data has no per-temperature breakdown -- see boxplot\'s Site Population Check for that).</div>';
+    html+='<div style="margin:0 0 8px">'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button>'+
+      '</div>';
 
     var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
       .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
@@ -12907,6 +12975,58 @@ function updateSitePanel(){
   }catch(e){
     el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>';
   }
+}
+/* Export the Site Population Check's own per-point detail -- reuses
+   _lastSiteRows (cached at the end of updateSitePanel(), after sorting)
+   rather than recomputing, so the export can never show a different
+   population than whatever's currently on screen. Mirrors boxplot's own
+   saveSitePopulationCSV(), adapted to this view's shape: each point is a
+   DUT's mean blended across all temperatures (no Temp column), and there
+   is no per-DUT Port field on this view either -- see the docstring above
+   updateSitePanel(). No per-point SR-dup tracking either: dut_vals here
+   are already one blended value per (condition,DUT,freq), so there's no
+   raw-measurement-level duplicate left to report at this resolution. */
+function saveSitePopulationCSV(outsideOnly){
+  if(!_lastSiteRows||!_lastSiteRows.length){
+    alert('Open Site Population Check first -- nothing to export yet.');
+    return;
+  }
+  var rows=outsideOnly?_lastSiteRows.filter(function(r){return r.verdict==='OUTSIDE';}):_lastSiteRows;
+  if(!rows.length){
+    alert('No OUTSIDE points in the current filter/selection.');
+    return;
+  }
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var hdrs=['Site','Serial','Freq_'+X_UNIT,'Value',
+    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n',
+    'Dir','Dist','Verdict'];
+  var out=[hdrs.join(',')];
+  rows.forEach(function(r){
+    var p=r.p;
+    out.push([esc(p.site),esc(p.serial),p.freq,
+      p.value.toFixed(6),
+      r.lo!==undefined?r.lo.toFixed(6):'',
+      r.hi!==undefined?r.hi.toFixed(6):'',
+      r.n!==undefined?r.n:'',
+      r.dir||'',
+      r.dist?r.dist.toFixed(6):'',
+      r.verdict].join(','));
+  });
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var meta=['# PADB Export','# Plot: '+TITLE+' -- Site Population Check','# Generated: '+ts,
+    '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),
+    '# Primary site: '+PRIMARY_SITE,
+    '# Rows: '+rows.length,
+    '# Frequency window: '+(_lastSiteMeta.freqWindowed?(_lastSiteMeta.frLo.toFixed(3)+'-'+_lastSiteMeta.frHi.toFixed(3)+' '+X_UNIT):'full range'),
+    '# Note: per-DUT rollup and frequency-cluster summaries are not included -- this is the per-point detail table only.',
+    '#'
+  ].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url;
+  a.download=(TITLE+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 
 /* Extract serial from a condition string (Serial Number: X pattern) */
