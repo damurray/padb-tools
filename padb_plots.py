@@ -9241,6 +9241,36 @@ function computeBoxStats(vals,k){
 function getIqrK(){var el=document.getElementById('box_iqr_k');return el?Math.max(0.5,parseFloat(el.value)||1.5):1.5;}
 function isExclRoom(){var el=document.getElementById('box_excl_room_chk');return el&&el.checked;}
 function isExclDEnv(){var el=document.getElementById('box_excl_denv_chk');return el&&el.checked;}
+function isCollapseDup(){var el=document.getElementById('box_collapse_dup_chk');return el&&el.checked;}
+/* Average exact-identity repeat measurements into one point before any
+   quantile/fence calculation runs on `items` -- opt-in (see box_collapse_dup_chk),
+   since this changes the box's actual shape/n, not just a display column
+   (that's the "Dup runs" column's job). keyFn defaults to serial+port, correct
+   whenever `items` is already scoped to one raw condition+temp+freq (the
+   ordinary per-condition path); the Group-by Serial/Port branch pools across
+   conditions first, so it passes a keyFn that also includes the item's own
+   tagged _cond/_temp -- otherwise two points from genuinely different
+   SpurTypes at the same frequency would get averaged together, which is
+   exactly the condition-pooling mistake _dupRunCount's own fix avoids. */
+function _collapseDupRuns(items,keyFn){
+  if(!items||items.length<2) return items||[];
+  keyFn=keyFn||function(d){return (d.s||'unknown')+'|'+(d.p||'');};
+  var groups={},order=[];
+  items.forEach(function(d){
+    var k=keyFn(d);
+    if(!groups[k]){groups[k]=[];order.push(k);}
+    groups[k].push(d);
+  });
+  return order.map(function(k){
+    var g=groups[k];
+    if(g.length===1) return g[0];
+    var sum=0;g.forEach(function(d){sum+=d.v;});
+    var rep=g[0];
+    var out={};for(var key in rep) out[key]=rep[key];
+    out.v=sum/g.length;
+    return out;
+  });
+}
 /* Normalize "_cond" string "A: 1  B: 2" → "A=1|B=2" for cross-plot global filter keys */
 function condToKey(cond){
   return (cond||'').split(/  +/).map(function(p){return p.replace(/\s*:\s*/,'=').trim();}).filter(Boolean).sort().join('|');
@@ -9374,6 +9404,14 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
     var fs_arr=sortedFreqs.map(function(freq){
       var items=freqVals[gk][freq]||[];
       if(!items.length) return null;
+      /* This branch already pools across every selected condition at this
+         frequency (that's the point of Group by), so a genuine duplicate
+         here means the SAME original (condition,temp,port-or-serial) --
+         not just "another item in this array" -- otherwise two points from
+         different SpurTypes would get incorrectly averaged together. */
+      if(isCollapseDup()) items=_collapseDupRuns(items,function(d){
+        return d._cond+'|'+d._temp+'|'+(colId==='__port__'?d.s:(d.p||''));
+      });
       var vals=items.map(function(d){return d.v;});
       var bs=computeBoxStats(vals,k); if(!bs) return null;
       var outDet=items.filter(function(d){return d.v<bs.lo_w||d.v>bs.hi_w;});
@@ -9481,6 +9519,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
           if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return false;}
           return true;
         });
+        if(isCollapseDup()) detail=_collapseDupRuns(detail);
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
         var s=computeBoxStats(fv,k);
@@ -9753,7 +9792,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
     });
-  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive||isExclRoom()||isExclDEnv()){
+  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive||isExclRoom()||isExclDEnv()||isCollapseDup()){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rlo=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var exclRoomSt=isExclRoom(),exclDEnvSt=isExclDEnv();
@@ -9765,6 +9804,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
                  yFltActiveLo?'Y-filtered [lo='+rlo.toFixed(3)+']':
                  yFltActive?'Y-filtered [hi='+rhi.toFixed(3)+']':
                  (exclRoomSt||exclDEnvSt)?'Outliers excluded':
+                 isCollapseDup()?'Dup runs collapsed':
                  'Filtered';
     BOX_DATA.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
@@ -9784,6 +9824,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
             return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
               &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi));
           });
+        if(isCollapseDup()) detail=_collapseDupRuns(detail);
         if(!detail.length) return;
         var fv=detail.map(function(d){return d.v;});
         var s=computeBoxStats(fv,getIqrK());
@@ -10537,6 +10578,7 @@ function clearEverything(){
   /* Checkboxes */
   var exEl=document.getElementById('box_excl_room_chk');if(exEl)exEl.checked=false;
   var exEl2=document.getElementById('box_excl_denv_chk');if(exEl2)exEl2.checked=false;
+  var dupEl=document.getElementById('box_collapse_dup_chk');if(dupEl)dupEl.checked=false;
   var ptEl=document.getElementById('box_show_pts_chk');if(ptEl)ptEl.checked=false;
   /* Freq filter */
   var flo=document.getElementById('box_freq_lo');if(flo)flo.value=BOX_FREQ_MIN;
@@ -11493,6 +11535,9 @@ def _build_box_interactive_html(
         '  <label title="Exclude non-room temperature outliers from Q1/Q2/Q3 calculation">'
         '<input type="checkbox" id="box_excl_denv_chk" onchange="update()">'
         '&nbsp;&#916;Env&nbsp;temps</label>\n'
+        '  <label title="Average a DUT\'s exact repeat measurements (same DUT, same condition, same port, same temperature, same frequency) into one point before computing Q1/Q2/Q3/whiskers -- off by default, so a heavily-repeated DUT keeps its current extra weight unless you opt in">'
+        '<input type="checkbox" id="box_collapse_dup_chk" onchange="update()">'
+        '&nbsp;Collapse&nbsp;dup&nbsp;runs</label>\n'
         '  <span class="sep"></span>\n'
         f'  <label>{_short_x_label(x_label)}&thinsp;min&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_lo"'
         f' value="{_floor_dec(box_freq_min, 3):.3f}" step="any"'
