@@ -280,7 +280,8 @@ def render_env_coverage(
     k_table = _pp._build_k_table()
     env_data, cond_dims, non_room_temps, all_serials, all_ports = _pp._aggregate_env_coverage_data(df, cfg)
     help_panel_html = _pp._build_help_panel_html(
-        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims],
+        pod_filter_expression=cfg.get("pod_filter_expression", ""),
     )
     has_segments = _pp._has_segmentable_spec(df)
 
@@ -387,7 +388,8 @@ def render_summary(
             cond_dims.append({"col": label, "col_id": col_id, "label": label, "vals": vals})
 
     help_panel_html = _pp._build_help_panel_html(
-        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims],
+        pod_filter_expression=cfg.get("pod_filter_expression", ""),
     )
 
     # Identify serial column so per-DUT means can be embedded for GF support

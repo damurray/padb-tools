@@ -270,6 +270,13 @@ def main() -> None:
             print(f"NOTE: [{name}]'s swept x-axis is {x_col!r}, not a Frequency/X-value column -- "
                   f"setting \"x_col\"/\"x_label\"/\"x_unit\" on this plot job so column "
                   f"auto-detection doesn't silently zero out every row.")
+        filter_expr = a.get("filter_expression")
+        if filter_expr:
+            plot_job["pod_filter_expression"] = filter_expr
+            print(f"NOTE: [{name}] has a pod-level Filter_Expression -- setting "
+                  f"\"pod_filter_expression\" on this plot job so the generated page's Help "
+                  f"panel can tell viewers this analytic's extraction was already pre-scoped, "
+                  f"since padb-tools has no way to show that otherwise.")
         if publish_root and args.module:
             plot_job["publish_to"] = f"{publish_root}\\{args.module}\\{stem}"
 

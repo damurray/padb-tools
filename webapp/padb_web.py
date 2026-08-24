@@ -656,22 +656,48 @@ def compare_create():
         return jsonify(error=check["block_reason"], blocked=True), 400
 
     stem = re.sub(r"[^\w-]+", "_", f"compare_{site_a}_vs_{site_b}_{pa.stem}")
+    new_compare_csv = {site_a: str(pa), site_b: str(pb)}
     job_path = DATA_DIR / f"{stem}_v2_job.json"
+    reused_cfg: dict = {}
     n = 2
     while job_path.exists():
+        # Real reported bug: re-creating the *same* comparison (same CSV
+        # pair + primary site) through this panel -- the natural way to
+        # "re-run" a compare job, since there's no other UI for it -- forked
+        # a brand new job_2/job_3/... file every single time instead of
+        # reusing the existing one. The Jobs table then shows the original
+        # job's "Last Run" as permanently stale, since it's never the file
+        # that's actually re-executed -- a different, identically-described
+        # job silently takes its place. Only fork when the existing file at
+        # this exact path is a genuinely different comparison (matches
+        # padb_make_job.py's own "freely overwrite the same thing, never
+        # silently fork" convention for re-onboarding a pod).
+        try:
+            existing_cfg = json.loads(job_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            existing_cfg = {}
+        if (existing_cfg.get("compare_csv") == new_compare_csv
+                and existing_cfg.get("primary_site") == primary_site):
+            reused_cfg = existing_cfg
+            break
         job_path = DATA_DIR / f"{stem}_v2_job_{n}.json"
         n += 1
 
     cfg = {
-        "description": description or f"{site_a} vs {site_b} compare",
-        "title_prefix": description or f"{site_a} vs {site_b} Compare",
-        "compare_csv": {site_a: str(pa), site_b: str(pb)},
+        **reused_cfg,
+        "description": description or reused_cfg.get("description") or f"{site_a} vs {site_b} compare",
+        "title_prefix": description or reused_cfg.get("title_prefix") or f"{site_a} vs {site_b} Compare",
+        "compare_csv": new_compare_csv,
         "primary_site": primary_site,
         "results_dir": job_path.stem.replace("_v2_job", "") + "_results",
         # Ad-hoc UI-created compare jobs default to local-only -- publishing
         # to the shared network location needs an explicit, deliberate
-        # choice, not a side effect of trying this feature out.
-        "publish_to": "",
+        # choice, not a side effect of trying this feature out. Reusing an
+        # existing job (reused_cfg above) keeps whatever publish_to it
+        # already had -- e.g. a user who hand-edited in a real destination
+        # after confirming the comparison looked right shouldn't have that
+        # silently reset back to local-only on the next re-run.
+        "publish_to": reused_cfg.get("publish_to", ""),
     }
     job_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     return jsonify(path=str(job_path), warnings=check["warnings"])

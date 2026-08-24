@@ -18,6 +18,7 @@ cfg keys (all optional unless noted):
 """
 from __future__ import annotations
 
+import html
 import json
 import math
 import re
@@ -1270,6 +1271,7 @@ def _build_help_panel_html(
     btn_class: str = "filter-btn", panel_class: str = "filter-panel",
     toggle_fn: str = "togglePanel", panel_id: str = "panel_help",
     wrap_class: str = "filter-wrap",
+    pod_filter_expression: str = "",
 ) -> str:
     """Build a collapsible "Help" filter-panel button explaining the ctrl-bar
     controls, plus a dynamic check for inverted Upper/Lower Spec or Limit rows
@@ -1307,6 +1309,17 @@ def _build_help_panel_html(
     _detect_group_cols()'s return value -- used to name which condition
     values the inverted rows fall under. Reuses the filter-btn/filter-panel/
     togglePanel('id') machinery already present in every view -- no new JS.
+
+    pod_filter_expression: the pod's own per-analytic Filter_Expression
+    (verbatim, e.g. "'...:Test Step' = \"Room\""), when the caller's cfg has
+    one under "pod_filter_expression" (set automatically by
+    padb_make_v2_job.py when the source pod has one). This filter is applied
+    by PADB-R.exe at extraction time, before this analytic's CSV is ever
+    written -- padb-tools has no other way to show a viewer that the data on
+    this page was already pre-scoped, since the excluded rows never exist
+    anywhere downstream of the pod. Empty string (the default) renders
+    nothing, so every existing page's output is unchanged unless this is
+    explicitly set.
     """
     n_total = len(df)
     inv_mask = pd.Series(False, index=df.index)
@@ -1360,7 +1373,19 @@ def _build_help_panel_html(
             'neither filtered nor grouped can still pool into these segments, '
             'producing extra or oddly narrow bands.</li>'
         )
+    pod_filter_html = ""
+    if pod_filter_expression:
+        pod_filter_html = (
+            '<p style="margin:0 0 8px;padding:6px 8px;background:#fff8e6;'
+            'border-left:3px solid #d4a017;font-size:12px">'
+            '&#9432;&nbsp;<b>This analytic\'s PADB extraction was pre-scoped by the pod '
+            'author.</b> Rows outside this filter were never extracted and cannot be '
+            'recovered on this page:<br>'
+            f'<code style="font-size:11px;word-break:break-word">{html.escape(pod_filter_expression)}</code>'
+            '</p>'
+        )
     body = (
+        f'{pod_filter_html}'
         '<b>Controls on this page</b>'
         f'<ul style="margin:4px 0 8px 18px;padding:0">{"".join(bullets)}</ul>'
         f'{inv_html}'
@@ -1478,7 +1503,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'<hr class="fdiv">{hover_items}</div></div>'
     ) if hover_col_list else ""
 
-    help_panel_html = _build_help_panel_html(df, group_cols)
+    help_panel_html = _build_help_panel_html(
+        df, group_cols, pod_filter_expression=cfg.get("pod_filter_expression", "")
+    )
 
     # Frequency band preset buttons
     freq_bands = cfg.get("freq_bands", [])
@@ -2651,6 +2678,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         btn_class="dist-filter-btn", panel_class="dist-filter-panel",
         toggle_fn="toggleDistPanel", panel_id="dist_panel_help",
         wrap_class="dist-filter-wrap",
+        pod_filter_expression=cfg.get("pod_filter_expression", ""),
     )
 
     # -------------------------------------------------------------------------
@@ -4041,7 +4069,14 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         # value per freq, as spec_by_freq below does) so client-side segment detection can
         # respect GF's per-DUT exclusion -- excluding a DUT must also drop its own
         # spec/limit/uncertainty contribution at that frequency, not just its measured value.
-        _room_dut_agg = {"Value": ("Value", "mean"), "_port": ("_port", "first")}
+        # "_n_raw" retains the pre-average raw-row count per (DUT, freq) --
+        # the averaging above is exactly what makes repeat test runs stop
+        # inflating n (by design, see this function's own docstring), but it
+        # also erases the fact that they happened at all. Kept here so the
+        # Statistics Table's "Dup runs" column can still show it -- this
+        # value can't be recovered client-side once shipped, since the JSON
+        # sent to the browser only ever carries the already-averaged mean.
+        _room_dut_agg = {"Value": ("Value", "mean"), "_n_raw": ("Value", "count"), "_port": ("_port", "first")}
         for _c in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"):
             if _c in room_df.columns:
                 _room_dut_agg[_c] = (_c, "first")
@@ -4088,6 +4123,8 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
             n = len(dut_vals)
             if n == 0:
                 continue
+            dut_n_raw = _fdf["_n_raw"].values if "_n_raw" in _fdf.columns else [1] * n
+            dup_runs = int(sum(max(0, int(c) - 1) for c in dut_n_raw))
 
             mean_v = float(np.mean(dut_vals))
             s_v    = float(np.std(dut_vals, ddof=1)) if n > 1 else 0.0
@@ -4145,6 +4182,7 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
             freq_stats.append({
                 "freq":     float(freq),
                 "n":        int(n),
+                "dup_runs": dup_runs,
                 "mean":     round(mean_v, 6),
                 "s":        round(s_v, 6),
                 "q1":       round(q1, 6),
@@ -5960,7 +5998,8 @@ def _build_stat_summary_html(
             cond_dims.append({"col": key, "col_id": col_id, "label": key, "vals": vals})
 
     help_panel_html = _build_help_panel_html(
-        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims],
+        pod_filter_expression=cfg.get("pod_filter_expression", ""),
     )
 
     # Cross-site comparison (compare_csv tags each row's Group text "Site: <name>"
@@ -9259,7 +9298,12 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
         var gk=colId==='__port__'?(d.p||''):d.s;
         if(!freqVals[gk]) freqVals[gk]={};
         if(!freqVals[gk][f.freq]) freqVals[gk][f.freq]=[];
-        freqVals[gk][f.freq].push(d);
+        /* Tag with the original condition/temp (a fresh shallow copy --
+           never mutates the shared BOX_DATA entry) so a later dup-run count
+           can tell "pooled from a different condition at the same nominal
+           frequency" apart from "same DUT, same condition, genuine repeat
+           run" -- see _dupRunCount's own comment. */
+        freqVals[gk][f.freq].push(Object.assign({},d,{_cond:cd.condition,_temp:cd.temp}));
       });
     });
   });
@@ -9559,6 +9603,25 @@ function _maxDevCells(outlierDetail,center){
   }
   return {pos:cell(maxPos,1),neg:cell(maxNeg,-1)};
 }
+/* Count "extra" rows beyond one-per-distinct-key within a population --
+   surfaces how much a row's n/mean/quantiles are inflated by genuine
+   repeat test runs (same DUT re-measured at the identical point) rather
+   than independent DUTs. Default key is serial alone, correct whenever
+   the population is already scoped to one raw condition+temp (the
+   ungrouped Statistics Table rows). Call sites that pool a DUT's data
+   ACROSS conditions (Group by: Serial/Port, and the Site Population
+   Check's own SR reference bucket, which spans every selected condition
+   at a given frequency) pass a keyFn that also includes the original
+   condition -- otherwise pooling itself would be miscounted as a
+   duplicate run, since every item in a serial-grouped array already
+   shares the same serial by construction. */
+function _dupRunCount(items,keyFn){
+  if(!items||!items.length) return 0;
+  keyFn=keyFn||function(d){return d.s||'unknown';};
+  var seen={},extra=0;
+  items.forEach(function(d){var k=keyFn(d);seen[k]=(seen[k]||0)+1;if(seen[k]>1) extra++;});
+  return extra;
+}
 function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var el=document.getElementById('box_stat_panel');
   if(!el||el.style.display==='none') return;
@@ -9614,7 +9677,15 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<span style="color:#aaa">&#8212;</span>';
         var devCells=_maxDevCells(outDet,fs.q2);
         var gkLabel=(_bxGrpIdSt==='__port__'?'Port: ':'Serial: ')+gk;
+        /* Pooled across conditions by construction (every item here shares
+           the same serial/port), so a repeat-serial key would always count
+           everything past the first item as "duplicate" -- key on the
+           original (condition, temp) instead, tagged onto each item by
+           _computeBoxGroupedByColId, so pooling itself isn't mistaken for a
+           repeat test run. */
+        var dupRuns=_dupRunCount(fs.vals_detail||[],function(d){return (d._cond||'')+'|'+(d._temp||'');});
         rows.push('<tr><td>'+gkLabel+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
+          '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
           '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)</td>'+
@@ -9668,7 +9739,9 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
         var devCells=_maxDevCells(outDet,bs.q2);
+        var dupRuns=_dupRunCount(boxDet);
         rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+bs.n+'</td>'+
+          '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+bs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+bs.q1.toFixed(4)+'</td><td>'+bs.q2.toFixed(4)+'</td><td>'+bs.q3.toFixed(4)+'</td>'+
           '<td><em style="color:#888">'+fltLabel+'</em></td>'+
@@ -9695,7 +9768,15 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
             npCell='<td style="color:#aaa;font-size:11px">'+(fs.np_ti_lo==null?'n&nbsp;too&nbsp;small':'Normal&nbsp;(k·s)')+'</td>';
         }
         var devCells=_maxDevCells(outDet,fs.q2);
+        /* dup_runs is precomputed server-side (Python) for this branch --
+           unlike the other branches, BOX_STATS' own per-DUT array is
+           already averaged down to one value per DUT (see
+           _aggregate_stat_data's docstring), so the raw repeat-run count
+           this column exists to show would otherwise be lost by the time
+           it reaches the client. */
+        var dupRuns=fs.dup_runs||0;
         rows.push('<tr><td>'+cd.condition+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
+          '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+fs.s.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
           '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
@@ -9731,7 +9812,9 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<span class="out"><b>'+outDet2.length+'</b>: '+outDet2.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
         var devCells2=_maxDevCells(outDet2,s.q2);
+        var dupRuns2=_dupRunCount(detail);
         rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+s.n+'</td>'+
+          '<td>'+(dupRuns2?'<span class="out">'+dupRuns2+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+s.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
           '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(no&nbsp;normality&nbsp;test&nbsp;at&nbsp;non-Room&nbsp;temps)</td>'+
@@ -9743,6 +9826,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var npHdr=showNp?'<th>NP&nbsp;TI&nbsp;Bounds</th>':'';
   el.innerHTML='<table class="stbl"><thead><tr>'+
     '<th>Condition</th><th>'+X_SHORT_LABEL+'('+X_UNIT+')</th><th>n&nbsp;DUTs</th>'+
+    '<th title="Extra raw rows beyond one-per-DUT at this exact point -- a genuine repeat test run, not an additional independent DUT. Included in n above (not yet excluded from it).">Dup&nbsp;runs</th>'+
     '<th>Mean</th><th>Std</th><th>Q1</th><th>Median</th><th>Q3</th>'+
     '<th>Normality</th>'+npHdr+'<th>Outliers</th>'+
     '<th title="Most positive outlier, relative to the median">Max&nbsp;+&#916;</th>'+
@@ -10052,6 +10136,11 @@ function _siteTriageTag(d, towardFail){
   if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
   return {label:'Ambiguous (two-sided spec)',cls:'sev-med'};
 }
+/* Cache the last computed rows so a dedicated export button can
+   reuse EXACTLY what's on screen, rather than a second, parallel
+   recompute that could drift out of sync with it. */
+var _lastSiteRows=[];
+var _lastSiteMeta={};
 function updateSitePanel(){
   var el=document.getElementById('box_site_panel');
   if(!el||el.style.display==='none') return;
@@ -10083,9 +10172,15 @@ function updateSitePanel(){
           }
           if(cd.site===PRIMARY_SITE){
             var bk=cd.temp+'|'+fs.freq;
-            (primaryBuckets[bk]=primaryBuckets[bk]||[]).push(d.v);
+            /* Keep serial+condition+port, not just the value -- the fence
+               population can itself span every selected condition (and
+               both ports) at this frequency (same pooling as Group by:
+               Serial), so a dup-run count here must key on the full
+               (serial,condition,port) identity too, or pooling across
+               SpurTypes/ports would be misread as a repeat test run. */
+            (primaryBuckets[bk]=primaryBuckets[bk]||[]).push({s:d.s,v:d.v,cond:cd.condition,p:d.p});
           } else {
-            otherPoints.push({site:cd.site,serial:d.s,port:d.p,temp:cd.temp,freq:fs.freq,freqLabel:fs.freq_label,value:d.v});
+            otherPoints.push({site:cd.site,serial:d.s,port:d.p,cond:cd.condition,temp:cd.temp,freq:fs.freq,freqLabel:fs.freq_label,value:d.v});
           }
         });
       });
@@ -10097,13 +10192,15 @@ function updateSitePanel(){
     }
     var towardFail=_siteTowardFailDir();
     var rows=otherPoints.map(function(p){
-      var pv=primaryBuckets[p.temp+'|'+p.freq]||[];
-      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
+      var pvItems=primaryBuckets[p.temp+'|'+p.freq]||[];
+      var pv=pvItems.map(function(it){return it.v;});
+      var pvDup=_dupRunCount(pvItems,function(d){return d.s+'|'+d.cond+'|'+(d.p||'');});
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,pvDup:pvDup};
       var s=computeBoxStats(pv,k);
       var dir=null,dist=0;
       if(p.value>s.hi_w){dir='high';dist=p.value-s.hi_w;}
       else if(p.value<s.lo_w){dir='low';dist=s.lo_w-p.value;}
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:s.lo_w,hi:s.hi_w,n:pv.length};
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:s.lo_w,hi:s.hi_w,n:pv.length,pvDup:pvDup};
     });
 
     /* Per-frequency clusters: how many distinct DUTs are OUTSIDE at the
@@ -10125,8 +10222,22 @@ function updateSitePanel(){
     var dutMap={};
     rows.forEach(function(r){
       var key=r.p.site+'|'+r.p.serial;
-      var d=dutMap[key]||(dutMap[key]={site:r.p.site,serial:r.p.serial,checked:0,outside:0,high:0,low:0,maxDist:0,freqKeys:[]});
+      var d=dutMap[key]||(dutMap[key]={site:r.p.site,serial:r.p.serial,checked:0,outside:0,high:0,low:0,maxDist:0,freqKeys:[],allPoints:[]});
       d.checked++;
+      /* Full point identity -- condition AND port, not just temp/freq.
+         Real bug found by the user comparing real per-DUT totals against
+         known test-procedure repeat counts: without "cond" here, a DUT
+         measured under several different SpurTypes/conditions that happen
+         to share overlapping nominal frequencies was massively
+         over-counted as "duplicate runs" -- that's condition pooling
+         (the whole point of this compare check), not a repeat test pass.
+         Without "port" too, an RF1 and RF2 measurement at the identical
+         frequency would also be misread as a duplicate of each other.
+         Keeps freqLabel alongside the key (not just a plain string) so a
+         genuinely-repeated point can also be reported by its human-readable
+         frequency, not just counted. */
+      d.allPoints.push({key:r.p.cond+'|'+(r.p.port||'')+'|'+r.p.temp+'|'+r.p.freq,
+        freqLabel:r.p.freqLabel||String(r.p.freq), freq:r.p.freq});
       if(r.verdict==='OUTSIDE'){
         d.outside++;
         if(r.dir==='high') d.high++; else d.low++;
@@ -10142,6 +10253,23 @@ function updateSitePanel(){
         if(fk&&fk.serials.size>1) shared++;
       });
       d.sharedCount=shared;
+      /* How many of THIS DUT's own checked points are a genuine repeat run
+         at the exact same (condition,port,temp,freq) on its own site --
+         distinct from pvDup (below), which is about the SR reference
+         population, not the DUT being checked. Also collect which
+         frequencies those repeats actually landed on (deduplicated -- the
+         same frequency can be the repeated point under more than one
+         condition/temp, and this column is about "which frequencies",
+         not "how many (condition,temp,freq) combinations"). */
+      var _cnt={};
+      d.allPoints.forEach(function(pt){_cnt[pt.key]=(_cnt[pt.key]||0)+1;});
+      var _dup=0;var _repFreqs={};
+      d.allPoints.forEach(function(pt){
+        if(_cnt[pt.key]>1) _repFreqs[pt.freqLabel]=pt.freq;
+      });
+      Object.keys(_cnt).forEach(function(k){if(_cnt[k]>1) _dup+=_cnt[k]-1;});
+      d.dupRuns=_dup;
+      d.repeatedFreqs=Object.keys(_repFreqs).sort(function(a,b){return _repFreqs[a]-_repFreqs[b];});
       d.tag=_siteTriageTag(d,towardFail);
     });
 
@@ -10150,6 +10278,8 @@ function updateSitePanel(){
       if(rank[a.verdict]!==rank[b.verdict]) return rank[a.verdict]-rank[b.verdict];
       return (b.dist||0)-(a.dist||0);
     });
+    _lastSiteRows=rows;
+    _lastSiteMeta={freqWindowed:freqWindowed,frLo:fr.lo,frHi:fr.hi};
     var nOutside=rows.filter(function(r){return r.verdict==='OUTSIDE';}).length;
     var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
@@ -10159,17 +10289,33 @@ function updateSitePanel(){
       '</b> non-'+PRIMARY_SITE+' point(s) fall outside the '+PRIMARY_SITE+' k×IQR fence at their own frequency/temperature'+
       (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency/temperature, fence not meaningful)':'')+
       '.'+dirNote+winNote+'</div>';
+    html+='<div style="margin:0 0 8px">'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button>'+
+      '</div>';
 
     var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
       .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
     if(dutRows.length){
       html+='<div style="font-weight:600;margin:8px 0 2px">Per-DUT summary (suggested triage, not a verdict -- use judgment)</div>';
-      html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th><th>Outside</th><th>%</th>'+
+      html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th>'+
+        '<th title="Of this DUT&#39;s Checked points, how many are a genuine repeat run at the identical (condition,port,temp,frequency) on its own site -- included in Checked above, not yet excluded from it. Does NOT count a DUT tested under more distinct conditions/SpurTypes than others -- see Genuinely repeated freqs.">Dup&nbsp;runs</th>'+
+        '<th title="Which frequencies actually have a genuine repeat -- same DUT, same condition, same port, same temperature, more than one row. A frequency shared across several different SpurTypes/conditions does NOT count here.">Genuinely&nbsp;repeated&nbsp;freqs</th>'+
+        '<th>Outside</th><th>%</th>'+
         '<th>High</th><th>Low</th><th>Max dist</th><th>Shared w/ other DUTs</th><th>Suggested triage</th></tr></thead><tbody>';
       dutRows.forEach(function(d){
         var pct=(100*d.outside/d.checked).toFixed(0)+'%';
         var tagTd=d.tag?'<td class="'+d.tag.cls+'">'+d.tag.label+'</td>':'<td>&mdash;</td>';
-        html+='<tr><td>'+d.site+'</td><td>'+d.serial+'</td><td>'+d.checked+'</td><td>'+d.outside+'</td><td>'+pct+'</td>'+
+        var repFreqs=d.repeatedFreqs||[];
+        var REP_CAP=15;
+        var repTd=!repFreqs.length?'<span style="color:#aaa">&mdash;</span>':
+          '<span title="'+repFreqs.length+' distinct frequenc'+(repFreqs.length===1?'y':'ies')+' with a genuine repeat">'+
+          repFreqs.slice(0,REP_CAP).join(', ')+
+          (repFreqs.length>REP_CAP?' <i>(+'+(repFreqs.length-REP_CAP)+' more)</i>':'')+'</span>';
+        html+='<tr><td>'+d.site+'</td><td>'+d.serial+'</td><td>'+d.checked+'</td>'+
+          '<td>'+(d.dupRuns?'<span class="out">'+d.dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
+          '<td>'+repTd+'</td>'+
+          '<td>'+d.outside+'</td><td>'+pct+'</td>'+
           '<td>'+d.high+'</td><td>'+d.low+'</td><td>'+d.maxDist.toFixed(4)+'</td>'+
           '<td>'+(d.sharedCount?d.sharedCount+' of '+d.outside:'&mdash;')+'</td>'+tagTd+'</tr>';
       });
@@ -10193,7 +10339,9 @@ function updateSitePanel(){
 
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Temp</th><th>Freq</th>'+
-      '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+      '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th>'+
+      '<th title="How many of the '+PRIMARY_SITE+' fence&#39;s own n reference points at this temp/frequency are a repeat run of the same DUT/condition, not an independent DUT.">'+PRIMARY_SITE+' dup pts</th>'+
+      '<th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
     rows.forEach(function(r){
       var p=r.p;
       var vTd=r.verdict==='OUTSIDE'
@@ -10204,6 +10352,7 @@ function updateSitePanel(){
         '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
+        '<td>'+(r.pvDup?'<span class="out">'+r.pvDup+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
         '<td>'+(r.dir||'&mdash;')+'</td>'+
         '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
     });
@@ -10212,6 +10361,53 @@ function updateSitePanel(){
   }catch(e){
     el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>';
   }
+}
+/* Export the Site Population Check's own per-point detail -- reuses
+   _lastSiteRows (cached at the end of updateSitePanel(), after sorting)
+   rather than recomputing, so the export can never show a different
+   population than whatever's currently on screen. */
+function saveSitePopulationCSV(outsideOnly){
+  if(!_lastSiteRows||!_lastSiteRows.length){
+    alert('Open Site Population Check first -- nothing to export yet.');
+    return;
+  }
+  var rows=outsideOnly?_lastSiteRows.filter(function(r){return r.verdict==='OUTSIDE';}):_lastSiteRows;
+  if(!rows.length){
+    alert('No OUTSIDE points in the current filter/selection.');
+    return;
+  }
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var hdrs=['Site','Serial','Port','Temp','Freq_'+X_UNIT,'Freq_Label','Value',
+    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n',PRIMARY_SITE+'_dup_pts',
+    'Dir','Dist','Verdict'];
+  var out=[hdrs.join(',')];
+  rows.forEach(function(r){
+    var p=r.p;
+    out.push([esc(p.site),esc(p.serial),esc(p.port||''),esc(p.temp),p.freq.toFixed(4),esc(p.freqLabel||p.freq),
+      p.value.toFixed(6),
+      r.lo!==undefined?r.lo.toFixed(6):'',
+      r.hi!==undefined?r.hi.toFixed(6):'',
+      r.n!==undefined?r.n:'',
+      r.pvDup||0,
+      r.dir||'',
+      r.dist?r.dist.toFixed(6):'',
+      r.verdict].join(','));
+  });
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var meta=['# PADB Export','# Plot: '+BOX_TITLE+' -- Site Population Check','# Generated: '+ts,
+    '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),
+    '# Primary site: '+PRIMARY_SITE,
+    '# Rows: '+rows.length,
+    '# Frequency window: '+(_lastSiteMeta.freqWindowed?(_lastSiteMeta.frLo.toFixed(3)+'-'+_lastSiteMeta.frHi.toFixed(3)+' '+X_UNIT):'full range'),
+    '# Note: per-DUT rollup and frequency-cluster summaries are not included -- this is the per-point detail table only.',
+    '#'
+  ].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob);
+  var a=document.createElement('a');
+  a.href=url;
+  a.download=(BOX_TITLE+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 /* ---- Longform primary-dim filter (HarmonicNumber or SpurType) ---- */
 function updateBoxHarmonic(){
@@ -11637,7 +11833,8 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         for key, v in sorted(dim_vals.items()) if len(v) > 1
     ]
     help_panel_html = _build_help_panel_html(
-        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims]
+        df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims],
+        pod_filter_expression=cfg.get("pod_filter_expression", ""),
     )
 
     # Harmonic extraction for longform panel

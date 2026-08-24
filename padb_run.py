@@ -208,7 +208,7 @@ def parse_pod_analytics(pod_path: Path) -> list[dict]:
                 current = {"index": int(m.group(1)), "type": None,
                            "name": None, "output_file": None,
                            "output_csv": True, "main_title": None,
-                           "x_axis_label": None}
+                           "x_axis_label": None, "filter_expression": None}
                 continue
             if current is None:
                 continue
@@ -232,6 +232,15 @@ def parse_pod_analytics(pod_path: Path) -> list[dict]:
                 # stripping the leading "~" and trailing "(R x C)" dimension
                 # suffix (see padb_make_v2_job.py's _clean_x_axis_label).
                 current["x_axis_label"] = val or None
+            elif key == "Filter_Expression":
+                # Per-analytic PADB extraction filter (e.g. "'...:Test Step' =
+                # \"Room\"") -- applied by PADB-R.exe against the Oracle
+                # database before a single row is written to this analytic's
+                # CSV. Captured here purely so padb_make_v2_job.py can bake it
+                # into the generated job.json as "pod_filter_expression" for
+                # display in the Help panel -- padb-tools never evaluates or
+                # acts on this expression itself.
+                current["filter_expression"] = val or None
 
     if current:
         analytics.append(current)
