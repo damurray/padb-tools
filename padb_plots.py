@@ -6529,6 +6529,8 @@ def _build_stat_summary_html(
         + stat_bar
         + env_bar
         + filter_bar
+        + coverage_gap_html
+        + '<div id="plot"></div>\n'
         + '<div style="padding:4px 8px 2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
         + '<button class="toggle-btn" id="stat_toggle_btn" onclick="toggleStatPanel()">'
         + '&#9658; Statistics Table</button>'
@@ -6542,8 +6544,6 @@ def _build_stat_summary_html(
         + '</div>\n'
         + '<div id="stat_panel" style="display:none;padding:0 4px 16px"></div>\n'
         + '<div id="stat_site_panel" style="display:none;overflow-x:auto;padding:0 8px 16px"></div>\n'
-        + coverage_gap_html
-        + '<div id="plot"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"
