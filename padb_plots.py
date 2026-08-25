@@ -8341,6 +8341,23 @@ def _build_env_coverage_html(
         'Dotted line: TTU/TTL (= Spec &minus; UDE &minus; M.U. / Spec + LDE + M.U.)'
         '</div>\n'
     )
+    # Static disclaimer, not a data-dependent check like the coverage-gap
+    # banner above -- UDE/LDE/TTU/TTL are all k-factor tolerance-interval
+    # math (see _k_one_sided), which assumes a reasonably well-behaved,
+    # low-noise per-DUT delta population. With few DUTs, high measurement
+    # noise, or non-normal deltas, the computed bounds can swing widely or
+    # mislead -- always true of this method, not something worth detecting
+    # per-dataset, so shown unconditionally rather than gated on a check.
+    noise_disclaimer_html = (
+        '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
+        'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
+        '&#9888;&nbsp;<b>Statistical note:</b> UDE/LDE/TTU/TTL are tolerance-interval '
+        'calculations that assume a reasonably well-behaved, low-noise per-DUT '
+        'population. With few DUTs, high measurement noise, or visibly scattered '
+        'deltas, these bounds can become unstable or misleading -- treat them as a '
+        'guide, not a guarantee, and check the underlying scatter/boxplot views '
+        'before trusting a tight-looking band on noisy data.</div>\n'
+    )
 
     _freq_vals_js = json.dumps(sorted(set(freq_vals))) if freq_vals else "[]"
     constants = "\n".join([
@@ -8373,6 +8390,7 @@ def _build_env_coverage_html(
         "</head>\n<body>\n"
         '<div id="filter-backdrop" onclick="closeAllFilterPanels()"></div>\n'
         + ctrl_bar
+        + noise_disclaimer_html
         + room_bar
         + env_bar
         + temp_bar
@@ -9705,18 +9723,23 @@ function _maxDevCells(outlierDetail,center){
 /* Count "extra" rows beyond one-per-distinct-key within a population --
    surfaces how much a row's n/mean/quantiles are inflated by genuine
    repeat test runs (same DUT re-measured at the identical point) rather
-   than independent DUTs. Default key is serial alone, correct whenever
+   than independent DUTs. Default key is serial+port, correct whenever
    the population is already scoped to one raw condition+temp (the
-   ungrouped Statistics Table rows). Call sites that pool a DUT's data
-   ACROSS conditions (Group by: Serial/Port, and the Site Population
-   Check's own SR reference bucket, which spans every selected condition
-   at a given frequency) pass a keyFn that also includes the original
-   condition -- otherwise pooling itself would be miscounted as a
-   duplicate run, since every item in a serial-grouped array already
-   shares the same serial by construction. */
+   ungrouped Statistics Table rows) -- port must be part of the default
+   too, not just serial: those rows aren't port-scoped by the enclosing
+   loop, so a DUT's genuinely distinct RF1/RF2 measurements at the same
+   condition+temp+freq would otherwise be miscounted as a duplicate of
+   each other (real bug found by the user; matches _collapseDupRuns()'s
+   own default, which already had this right). Call sites that pool a
+   DUT's data ACROSS conditions (Group by: Serial/Port, and the Site
+   Population Check's own SR reference bucket, which spans every
+   selected condition at a given frequency) pass a keyFn that also
+   includes the original condition -- otherwise pooling itself would be
+   miscounted as a duplicate run, since every item in a serial-grouped
+   array already shares the same serial by construction. */
 function _dupRunCount(items,keyFn){
   if(!items||!items.length) return 0;
-  keyFn=keyFn||function(d){return d.s||'unknown';};
+  keyFn=keyFn||function(d){return (d.s||'unknown')+'|'+(d.p||'');};
   var seen={},extra=0;
   items.forEach(function(d){var k=keyFn(d);seen[k]=(seen[k]||0)+1;if(seen[k]>1) extra++;});
   return extra;
@@ -9802,8 +9825,15 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
            everything past the first item as "duplicate" -- key on the
            original (condition, temp) instead, tagged onto each item by
            _computeBoxGroupedByColId, so pooling itself isn't mistaken for a
-           repeat test run. */
-        var dupRuns=_dupRunCount(fs.vals_detail||[],function(d){return (d._cond||'')+'|'+(d._temp||'');});
+           repeat test run. Real bug found by the user: this was missing
+           the "other" dimension (serial when grouped by port, port when
+           grouped by serial) entirely, so a DUT's genuinely distinct RF1
+           and RF2 rows at the same condition/temp got miscounted as a
+           duplicate of each other. Mirrors the exact conditional
+           _collapseDupRuns() already uses for this same branch. */
+        var dupRuns=_dupRunCount(fs.vals_detail||[],function(d){
+          return (d._cond||'')+'|'+(d._temp||'')+'|'+(_bxGrpIdSt==='__port__'?d.s:(d.p||''));
+        });
         rows.push('<tr><td>'+gkLabel+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
