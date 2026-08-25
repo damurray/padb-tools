@@ -13963,6 +13963,16 @@ def _build_summary_html(
         + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         + '  <span id="n_groups"></span>\n'
         + "</div>\n"
+        + (
+            '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
+            'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
+            '&#9888;&nbsp;<b>Statistical note:</b> the TTL&#8593;/TTL&#8595; (Total Tolerance '
+            'Limit) bands here are tolerance-interval calculations that assume a reasonably '
+            'well-behaved, low-noise per-DUT population. With few DUTs, high measurement '
+            'noise, or visibly scattered per-condition data, these bounds can become unstable '
+            'or misleading -- treat them as a guide, not a guarantee, and check the underlying '
+            'scatter/boxplot views before trusting a tight-looking band on noisy data.</div>\n'
+        )
         + temp_stat_bar_html
         + '<div class="flt-bar" onclick="event.stopPropagation()">\n'
         + '  <b>Data&nbsp;filter:</b>\n'
