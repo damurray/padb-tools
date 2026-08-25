@@ -48,10 +48,11 @@ No separate extraction step — both CSVs already exist. Re-run this alone any t
 Open `results_dir\index.html` → the boxplot, `stat_summary`, or `summary` view. Two things only appear on these three, not on a single-site page or on `env_coverage`/`distribution`:
 - **Coverage-gap banner** (always visible, above the plot) — lists what one site has that the other doesn't (e.g. missing temperatures/ports). Numeric formatting differences between sites (e.g. `-100.00` vs `-100`) never falsely show up as a gap.
 - **"Site Population Check" button** — tests each non-primary-site DUT's value at each frequency/temperature against the k×IQR fence built from the primary site's own population there (same fence/k×IQR control the page's own outlier detection already uses). Three tables, in order:
-  1. **Per-DUT summary** — checked/outside counts, high/low split, and a **suggested triage tag**: station/systemic issue (shared with other DUTs) beats bad DUT (isolated, toward-failing) beats isolated-worth-a-look beats below-population/benign beats ambiguous. A suggestion, not a verdict.
+  1. **Per-DUT summary** — checked/outside counts, high/low split, and a **suggested triage tag**: station/systemic issue (shared with other DUTs) beats bad DUT (isolated, toward-failing) beats isolated-worth-a-look beats below-population/benign beats ambiguous. A suggestion, not a verdict. **Boxplot only** (added 2026-08-24): also **Dup runs** / **Genuinely repeated freqs** columns — a DUT's "Checked" count can be inflated either by genuinely broader condition coverage or by real repeat measurements, and these columns tell the two apart instead of leaving it ambiguous.
   2. **Frequency clusters** — every point where 2+ distinct DUTs are simultaneously outside. Several independent DUTs failing at the identical spot points at the station/fixture, not any one DUT.
-  3. **Per-point detail** — every checked point, for drill-down.
+  3. **Per-point detail** — every checked point, for drill-down. **Boxplot only**: an **"SR dup pts"** column lists which primary-site reference DUTs at that point have more than one raw row (e.g. `US65080419×2`), so you can tell if the fence's own `n` is inflated by a repeated unit.
 - Narrowing the frequency range (drag-zoom or the number inputs) scopes all three tables to that window — a note in the summary line says so.
+- **Export CSV (All)** / **Export CSV (Outside only)** (added 2026-08-24, all three views) download the per-point detail table as-is, with a metadata header (timestamp, primary site, frequency window).
 
 See `Interactive_Plots_User_Guide.md` → **Cross-Site Comparison** for the plain-language version, and `PADB_Tools_Guide.md` → **Cross-Site Comparison (`compare_csv`)** for the full mechanism.
 

@@ -1284,3 +1284,71 @@ Real incident, reported directly: a ClockSpurs cross-site compare build (`padb_v
 **What this does and doesn't fix**: the underlying extraction/plot build/publish now completes correctly on disk even if the webapp is restarted mid-run. What it can't fix: the webapp's own in-memory `_jobs` tracking is still wiped by a restart (by design — see "status panels are ephemeral per-browser-session" elsewhere in this file), so a job that outlives a restart won't show as "done" in the UI or appear in a fresh Running Jobs panel; check the results folder directly (or reopen the job later once its `index.html`/`last_run` timestamp reflects the completed run) rather than expecting the status panel to pick back up.
 
 Verified end-to-end with the real `_stream()` function (not a synthetic pipe/file toy — the actual function this fix lives in), driven from a background thread exactly as the real worker thread does: launched a 180-second dummy child via `_stream()`, confirmed the live temp-file tail was already populating the job's in-memory log (`tick 0`...`tick 12`), force-killed the *harness* process (standing in for the webapp) mid-run, and confirmed the child kept running and writing (`tick 24`...`tick 28` and climbing) well past that point — the exact failure mode reproduced and then shown fixed. `qa_padb.py` baseline unchanged (37/4, unaffected since this is webapp-only).
+
+---
+
+## Boxplot: "Dup runs" tracking, Site Population Check CSV export, pod Filter_Expression visibility (added 2026-08-24)
+
+Prompted by a real question: "if a DUT does have duplicate runs, do you have a proposition for how to deal with that?" — starting point was that boxplot's `n` (Statistics Table and Site Population Check alike) is a raw row count, not a distinct-DUT count, so a DUT with a genuine repeat measurement at a point silently gets extra weight in `n`/mean/Q1/Q2/Q3 with no visible signal that it happened.
+
+**"Dup runs" column, boxplot Statistics Table**: new column on all three row-population branches (default/`BOX_STATS`, filtered/excl-outliers, Group-by Serial/Port) showing how many *extra* raw rows exist beyond one-per-DUT in that row's own population — informational only at this point, no change to `n`/mean/quantiles (a deliberate first step, confirmed with the user before going further: "column only, no stats change"). The default `BOX_STATS` branch needed a server-side addition (`_aggregate_stat_data()`'s new `dup_runs` field) since that branch pre-averages each DUT's repeats before the JSON ever reaches the browser — the raw count would otherwise be unrecoverable client-side.
+
+**"Genuinely repeated freqs" + "Dup runs" columns, Site Population Check per-DUT summary; "SR dup pts", per-point detail**: same underlying duplicate-detection logic, applied to the cross-site comparison feature. Real bug found comparing these against known real per-DUT totals on the SR-vs-AMC2 ClockSpurs dataset: the initial version keyed duplicates on `(temp, freq)` only, so a DUT measured under several pooled SpurTypes/conditions sharing overlapping frequencies was massively over-counted as "duplicate runs" — that's condition pooling (the whole point of the compare check), not a repeat test pass. Fixed to key on the full `(condition, port, temp, freq)` identity, matching the fix already needed for the Group-by:Serial/Port branch above. Verified against real data: baseline DUTs correctly show 0 dup runs across 60 real conditions; two outlier DUTs show a genuine partial repeat (382 distinct frequencies, capped at 2×) layered on top of genuinely broader SpurType coverage (145/120 distinct conditions vs. 60 baseline) — not a clean "ran N times" pattern, which is exactly the kind of thing this column exists to distinguish.
+
+**CSV export**: new "Export CSV (All)" / "Export CSV (Outside only)" buttons on the Site Population Check's per-point detail table — none of this data was previously exportable in any form. `_lastSiteRows`/`_lastSiteMeta` cache the panel's own computed rows right after sorting, so the export can never show a different population than whatever's currently on screen.
+
+**Pod `Filter_Expression` visibility**: each `[PADBAnalyticN]` section in a pod can carry its own `Filter_Expression` (a native PADB extraction-time filter, e.g. `Filter_Expression='...Test Step' = "Room"`), applied by PADB-R.exe against the Oracle database before a row is ever written to that analytic's CSV. Functionally this always "worked" — anything it excluded was never in the CSV for any downstream code to see — but Interactive-mode pages never displayed it anywhere, so a viewer had no way to know an analytic's data was already pre-scoped by the pod author short of opening the `.pod` file directly. `parse_pod_analytics()` (`padb_run.py`) now captures it; `padb_make_v2_job.py` bakes it into each generated plot job.json as `"pod_filter_expression"` when present; `_build_help_panel_html()` (`padb_plots.py`) renders it as a new amber note in the Help panel, threaded through all 6 view builders via a `pod_filter_expression: str = ""` parameter (empty default, so no existing page's output changes unless a pod actually has one).
+
+---
+
+## Site Population Check CSV export extended to `stat_summary` and `summary` (added 2026-08-24)
+
+Parity follow-up to the boxplot export above. Deliberately did **not** port boxplot's "Dup runs"/"Genuinely repeated freqs" columns to these two views: their per-DUT data (`dut_vals`) is already averaged per `(condition, DUT, frequency)` server-side before either view's JS ever runs — unlike boxplot, which reads raw unaggregated CSV rows — so there is no raw-measurement-level duplicate left to detect at this resolution. Adding those columns would make them render as 0/— unconditionally on every dataset, for every DUT, which is accurate but useless clutter rather than a real fix; confirmed this reasoning with the user before implementing rather than silently adding dead columns.
+
+Each export mirrors boxplot's per-point detail CSV, adapted to its own view's actual data shape: `stat_summary` keeps a Port column (its `dut_vals` carry per-DUT port) and is Room-only (no Temp column, matching its Room-only-by-design per-DUT population); `summary` omits Port entirely (no per-DUT port field exists in its `dut_info`) and is likewise temperature-blind (each point is a DUT's mean already blended across every temperature in its condition). Verified via a real headless-browser click-through against freshly rendered pages for both views.
+
+---
+
+## Boxplot: opt-in "Collapse dup runs" toggle (added 2026-08-24)
+
+The natural next step after "Dup runs" display-only tracking, discussed and agreed with the user as a follow-up rather than folded into the display-only column above: a checkbox (default off, same UI pattern as the existing "Excl outliers: Room/ΔEnv" checkboxes) that averages a DUT's exact-identity repeats — same DUT, same condition, same port, same temperature, same frequency — into one point *before* Q1/Q2/Q3/whiskers/outliers are computed, giving a heavily-repeated DUT the same "one DUT, one vote" weight everywhere else in the box already gets.
+
+Applied everywhere a raw per-measurement array feeds a box statistic: `buildBoxTraces()`'s own recompute (the plot itself), the Statistics Table's filtered/excl-outliers branch, and the Group-by Serial/Port pooling branch (`_computeBoxGroupedByColId()`, shared by the plot and the table) — the latter needed a condition+temp-aware identity, same reasoning as the Dup-runs fix, since that branch already pools across every selected condition and a naive per-array collapse would wrongly average two different SpurTypes together. The Statistics Table's default (`BOX_STATS`) branch needed no change: it's already pre-averaged per DUT server-side, so checking the box there routes into the filtered branch instead (`isCollapseDup()` added to that branch-selection condition).
+
+Verified with a synthetic dataset (one DUT with a real duplicate row at one frequency, three clean DUTs): unchecked shows the true raw `n=5` (duplicate counted twice) with `Q1=10.00`/`Q3=10.30`; checked shows `n=4` with `Q1=10.075`/`Q3=10.375` — and that collapsed result exactly matches what the page's independent, server-side-pre-averaged default branch already computes for the same data, a strong correctness cross-check. Confirmed both the Statistics Table and the actual Plotly trace data (`gd.data[0].q1/median/q3`) update on toggle; unaffected frequencies (no duplicates) are byte-identical before and after.
+
+---
+
+## Site Population Check: "SR dup pts" changed from a summed total to a per-DUT breakdown (fixed 2026-08-24)
+
+Real ambiguity found by the user reading a live page: a single summed total (e.g. `"3"`) is indistinguishable between "one DUT has 3 copies" and "three separate DUTs each have 2 copies" — on the real ClockSpurs SR-vs-AMC2 dataset it turned out to be the latter (three specific SR DUTs, each independently duplicated, identically across every SpurType), which the old column had no way to convey on its own; it took a manual data dump to tell which one it was.
+
+Replaced the summed count with `_dupBreakdown()` (new, next to `_dupRunCount()`): returns `"serial×count"` for each DUT that genuinely has more than one raw row, omitting DUTs with exactly one (no `"×1"` noise). Same identity key as before (condition+port, not just serial) — only the output shape changed, from a count to a list. Updated the per-point detail table's cell, its header tooltip, and the CSV export's column to join the list with `"; "`.
+
+Verified with a synthetic SR population (7 clean DUTs + 3 DUTs each with a real duplicate row): the column now reads `"SRDUP1×2, SRDUP2×2, SRDUP3×2"` instead of the old ambiguous `"3"` — confirmed via a real headless-browser click-through of the actual generated page.
+
+---
+
+## Boxplot: "Dup runs" was missing Port from its identity, causing false positives on multi-port DUTs (fixed 2026-08-25)
+
+Follow-up question from the user ("if a DUT has two ports, will it show a larger n DUTs for the same test points?") led to auditing every `_dupRunCount()` call site for port-awareness — and found a real bug: `_dupRunCount()`'s **default** key (used by 2 of its 3 call sites: the filtered-branch `boxDet` and the non-Room `BOX_DATA` pass) was `d.s` alone, and one explicit `keyFn` (the Group-by Serial/Port branch's own Statistics Table row) used `_cond+'|'+_temp` with no port either. Neither of the ungrouped branches is port-scoped by the enclosing loop, so a DUT's genuinely distinct RF1 and RF2 measurements at the same condition/temp/frequency were being counted as a duplicate of each other — exactly backwards, since RF1 vs. RF2 is the textbook case of "not a duplicate, a different independent measurement." `_collapseDupRuns()`'s own default already had this right (`(d.s||'unknown')+'|'+(d.p||'')`); `_dupRunCount()`'s default and docstring were simply wrong about port not mattering.
+
+**Fix**: changed `_dupRunCount()`'s default key to include port, matching `_collapseDupRuns()`; fixed the Group-by branch's explicit `keyFn` to conditionally include the "other" dimension (serial when grouped by port, port when grouped by serial), mirroring the exact conditional `_collapseDupRuns()` already used for that same branch.
+
+Verified with a synthetic dataset isolating the two cases: DUT01 with RF1/RF2 (2 ports, no real duplicate) alongside DUT02 with a genuine single-port duplicate row, plus two clean DUTs. Both the default and filtered branches now correctly report **Dup runs = 1** (only DUT02's real repeat) — before the fix, this would have shown 2, incorrectly counting DUT01's RF1/RF2 pair too.
+
+---
+
+## Noise-sensitivity disclaimer added to env_coverage, distribution, stat_summary, and summary (added 2026-08-25)
+
+Requested directly by the user: a disclaimer on `env_coverage` "stating calculations don't work well on noisy data," then extended to the other three views once the pattern was established. Each is a **static, always-visible** amber note (same "needs attention" styling as the compare-mode coverage-gap banner) — deliberately *not* a per-dataset check like the coverage-gap banner, since the caveat (tolerance-interval/KDE math assumes a reasonably well-behaved, low-noise population; few DUTs, high measurement noise, or non-normal/scattered data can make the bounds unstable or misleading) is always true of the statistical method itself, not something worth detecting per-dataset.
+
+Wording is tailored per view, not copy-pasted boilerplate: `env_coverage` names UDE/LDE/TTU/TTL; `distribution` names the KDE curves (`scipy.stats.gaussian_kde`, Silverman bandwidth) and the ΔEnv Tolerance Interval panel beneath them; `stat_summary` names Normality/TI/TLL/DEnv; `summary` names the TTL↑/TTL↓ (Total Tolerance Limit) bands. `boxplot` was deliberately left out of this rollout — it already has a real, working fix (Collapse dup runs) for its own version of this problem, rather than just a caveat. Each was verified via a real build, placed at a consistent relative position (right after the main control bar / before the plot, matching each view's own existing layout conventions — `distribution`'s sits right before its pre-existing multimodal-mode warning).
+
+---
+
+## stat_summary: Statistics Table pushed the plot out of view when opened (fixed 2026-08-25)
+
+Real gap found by the user: `stat_summary` was the one view where the Statistics Table's container (`#stat_panel`) sat **before** the plot's `<div>` in the page, instead of after it. Boxplot and `env_coverage` both put the plot first and the table below, so opening their tables just adds content below an already-visible, fixed-position plot. In `stat_summary`, opening the table inserted a block above the plot instead, pushing it further down the page — with enough rows, far enough to scroll out of view, giving the impression the plot and table couldn't be shown together at all.
+
+**Fix**: reordered to match boxplot/`env_coverage`: `coverage_gap_html` → plot → toggle-buttons row → `stat_panel` → `stat_site_panel`. Verified headlessly: the plot's on-screen position (`getBoundingClientRect().top`) is identical before and after opening the table, and the table still populates correctly.
