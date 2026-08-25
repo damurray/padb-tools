@@ -3486,7 +3486,18 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         '  <div class="sep"></div>\n'
         '  <span id="n_pts"></span>\n'
         "</div>\n"
-        '<div id="multimodal_warn">'
+        + (
+            '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
+            'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
+            '&#9888;&nbsp;<b>Statistical note:</b> these curves are kernel density estimates '
+            '(KDE), which assume a reasonably well-behaved, low-noise sample. With few DUTs '
+            'or noisy/scattered raw values, a KDE can look smoother or narrower than the real '
+            'underlying spread, and the &Delta;Env Tolerance Interval below it inherits the '
+            'same sensitivity -- treat the curve shape and TI bounds as a guide, not a '
+            'guarantee, and check the underlying scatter/boxplot views before trusting a '
+            'tight-looking distribution on noisy data.</div>\n'
+        )
+        + '<div id="multimodal_warn">'
         '&#9888; Multiple Spur Types selected in Absolute mode '
         '&#8212; distributions span different spur levels and will appear multimodal. '
         'Select a single Spur Type, or switch to ΔTemp view.'
@@ -6497,12 +6508,24 @@ def _build_stat_summary_html(
             ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>'
         )
 
+    noise_disclaimer_html = (
+        '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
+        'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
+        '&#9888;&nbsp;<b>Statistical note:</b> Normality, TI bounds, and TLL/DEnv here rely on '
+        'k-factor (or non-parametric) tolerance-interval math, which assumes a reasonably '
+        'well-behaved, low-noise population. With few DUTs, high measurement noise, or a '
+        'Non-normal Normality result, these bounds can become unstable or misleading -- treat '
+        'them as a guide, not a guarantee, and check the underlying scatter/boxplot views '
+        'before trusting a tight-looking interval on noisy data.</div>\n'
+    )
+
     html = (
         "<!DOCTYPE html>\n<html>\n<head>\n"
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
         + ctrl_bar
+        + noise_disclaimer_html
         + stat_bar
         + env_bar
         + filter_bar
