@@ -800,11 +800,12 @@ def generate_report(
         print(f"    Rows: {len(df_ec):,}  |  Temps: {sorted(df_ec['Temperature'].unique())}",
               flush=True)
 
+    room_values = set(cfg.get("room_values", ["Room"]))
+    is_room_only = set(df["Temperature"].dropna().unique()) <= room_values
+
     if "views" in cfg:
         views = cfg["views"]
     else:
-        room_values = set(cfg.get("room_values", ["Room"]))
-        is_room_only = set(df["Temperature"].dropna().unique()) <= room_values
         if is_room_only:
             views = ["scatter", "boxplot"]
             if cfg.get("room_only_full_views", False):
@@ -813,6 +814,15 @@ def generate_report(
         else:
             views = list(_VIEW_FN.keys())
     generated: list[Path] = []
+
+    def _view_label(view: str) -> str:
+        # "Scatter"/"Summary" default to "(All Temps)" -- correct for the common
+        # multi-temp case, but actively wrong when the data is genuinely Room-only
+        # (e.g. via room_only_full_views). stat_summary is always "(Room)" by
+        # design regardless of what other temps exist, so it's not affected.
+        if is_room_only and view in ("scatter", "summary"):
+            return _VIEW_LABELS[view].replace("(All Temps)", "(Room)")
+        return _VIEW_LABELS[view]
 
     for view in views:
         fn = _VIEW_FN.get(view)
@@ -825,13 +835,13 @@ def generate_report(
         out_html = output_dir / html_name
 
         if view == "env_coverage" and df_ec is not None:
-            view_cfg = _cfg_for_view(cfg_ec, {"title": f"{prefix} — {_VIEW_LABELS[view]}"})
+            view_cfg = _cfg_for_view(cfg_ec, {"title": f"{prefix} — {_view_label(view)}"})
             use_df = df_ec
         else:
-            view_cfg = _cfg_for_view(cfg, {"title": f"{prefix} — {_VIEW_LABELS[view]}"})
+            view_cfg = _cfg_for_view(cfg, {"title": f"{prefix} — {_view_label(view)}"})
             use_df = df
 
-        print(f"  Rendering {_VIEW_LABELS[view]} -> {html_name}", flush=True)
+        print(f"  Rendering {_view_label(view)} -> {html_name}", flush=True)
         try:
             fn(use_df, view_cfg, out_html)
             generated.append(out_html)
@@ -839,7 +849,7 @@ def generate_report(
             print(f"    [ERROR] {exc}", flush=True)
             _write_placeholder(out_html, view_cfg["title"], f"Error: {exc}")
 
-    _write_index(output_dir, prefix, generated, cfg)
+    _write_index(output_dir, prefix, generated, cfg, is_room_only=is_room_only)
 
     if "publish_to" in cfg:
         if cfg["publish_to"]:
@@ -873,7 +883,8 @@ def _index_group_key(stem: str) -> tuple[str, str | None]:
     return stem, None
 
 
-def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dict) -> None:
+def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dict,
+                  is_room_only: bool = False) -> None:
     # Merge newly generated files with any pre-existing HTML files in the directory
     # so multiple job runs into the same output dir all appear in the index.
     existing = sorted(
@@ -897,11 +908,23 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
         def _view_rank(view: str | None) -> int:
             return _VIEW_ORDER.index(view) if view in _VIEW_ORDER else len(_VIEW_ORDER)
 
+        def _index_label(p: Path, view: str | None) -> str:
+            # Only correct the label for files from *this* run (html_files) --
+            # for pre-existing entries from an earlier run against a different
+            # analytic, we don't know that analytic's temp coverage without
+            # reloading its CSV, so they keep whatever label they were written
+            # with (same as before this fix).
+            if view is None:
+                return p.stem.replace("_", " ")
+            if is_room_only and view in ("scatter", "summary") and p in html_files:
+                return _VIEW_LABELS[view].replace("(All Temps)", "(Room)")
+            return _VIEW_LABELS.get(view, p.stem.replace("_", " "))
+
         sections = []
         for group_key in sorted(groups, key=str.lower):
             entries = sorted(groups[group_key], key=lambda pv: _view_rank(pv[1]))
             items = "".join(
-                f'<li><a href="{p.name}">{_VIEW_LABELS.get(view, p.stem.replace("_", " "))}</a></li>'
+                f'<li><a href="{p.name}">{_index_label(p, view)}</a></li>'
                 for p, view in entries
             )
             sections.append(f'<h3>{group_key.replace("_", " ")}</h3>\n<ul>{items}</ul>')
@@ -964,6 +987,26 @@ def _resolve_csv_path(csv_path: Path) -> Path:
     replaces spaces with underscores and can normalize hyphens/dots too).
     A predicted csv_path (e.g. from padb_make_v2_job.py) can drift from
     reality -- this gives it one more chance before failing outright.
+
+    Real incident this stricter matching was added for (2026-08-26): the
+    original fallback used a fixed 15-character prefix of the predicted
+    stem to fuzzy-match, e.g. "EP6_Closed_Loop" for
+    "EP6_Closed_Loop_Phase_Noise_DCFM_at_Defined_Offsets_AMC2" -- but every
+    scatter analytic in a multi-analytic pod commonly shares that same short
+    prefix. When PADB genuinely never wrote the predicted CSV at all (here:
+    OutputConfig_OutputCSV was off for this one AMC2 analytic, confirmed by
+    only .txt/.pdf siblings existing, no .csv), this silently substituted a
+    completely different, unrelated analytic's CSV -- specifically the
+    pod's full continuous-sweep "DCFM" trace (288MB, sorts alphabetically
+    first) in place of the small "DCFM at Defined Offsets" one -- producing
+    a 213MB HTML mislabeled with the wrong analytic's title, no warning
+    beyond an easy-to-miss log line. Replaced the length-based slug with a
+    token-based check: every "word" in the predicted stem (split on
+    non-alphanumeric boundaries) must appear in the candidate's own stem, so
+    a candidate missing "Defined"/"Offsets" (or carrying the wrong
+    "EFC"/"DCFM") can never match. No safe candidate -> return csv_path
+    unchanged, so the caller's own "CSV not found" error path fires instead
+    of a silent wrong-data substitution.
     """
     if csv_path.exists():
         return csv_path
@@ -979,12 +1022,19 @@ def _resolve_csv_path(csv_path: Path) -> Path:
                   f"'{found.name}' (matched via PADB filename normalization)")
             return found
 
-    slug = csv_path.stem[:15]
-    matches = sorted(parent.glob(f"{slug}*.csv")) if slug else []
-    if matches:
+    predicted_tokens = set(re.findall(r"[A-Za-z0-9]+", csv_path.stem.lower()))
+    candidates = []
+    for p in sorted(parent.glob("*.csv")):
+        candidate_tokens = set(re.findall(r"[A-Za-z0-9]+", p.stem.lower()))
+        if predicted_tokens <= candidate_tokens:
+            candidates.append(p)
+    if candidates:
+        # Shortest stem among token-superset matches is the tightest fit
+        # (closest to the predicted name, least extra content).
+        best = min(candidates, key=lambda p: len(p.stem))
         print(f"  CSV  : predicted '{csv_path.name}' not found -- using "
-              f"'{matches[0].name}' (fuzzy prefix match)")
-        return matches[0]
+              f"'{best.name}' (fuzzy token match)")
+        return best
 
     return csv_path
 

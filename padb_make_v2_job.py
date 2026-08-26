@@ -98,16 +98,37 @@ def _x_col_override(raw_label: str | None) -> tuple[str, str, str] | None:
     the next time this generator regenerated the job.json from the pod --
     the generator had no way to know the override was ever needed. This
     closes that gap so regenerating never reintroduces the bug.
+
+    Second real incident (2026-08-26): matching the "frequency" substring is
+    correct for *finding* the right column (the load function's own rule),
+    but this function used to treat that match alone as proof the column was
+    also the default carrier-frequency-in-MHz axis, and skipped overriding
+    the label entirely. A phase-noise pod's x-axis column
+    ("Frequency Offset (Hz)") does contain "frequency" -- so the column
+    itself loaded correctly -- but is a genuinely different quantity (offset
+    from carrier, not absolute carrier frequency) in a genuinely different
+    unit (Hz, not MHz). The generated job.json silently defaulted to
+    "Frequency (MHz)"/"MHz", off by a factor of 1e6 and semantically wrong,
+    with no [WARN] anywhere since the column itself never failed to load.
+    Now only treated as "no override needed" when the label's own unit is
+    missing or genuinely "MHz" and it isn't an "offset" quantity -- the
+    narrow case this default was actually written for.
     """
     if not raw_label:
         return None
     label = _clean_x_axis_label(raw_label)
     if not label:
         return None
-    if "frequency" in label.lower() or "x value" in label.lower():
-        return None
     m = re.search(r"\(([^)]+)\)\s*$", label)
     x_unit = m.group(1).strip() if m else ""
+    matches_default_col = "frequency" in label.lower() or "x value" in label.lower()
+    looks_like_default_mhz_freq = (
+        matches_default_col
+        and (not x_unit or x_unit.lower() == "mhz")
+        and "offset" not in label.lower()
+    )
+    if looks_like_default_mhz_freq:
+        return None
     return label, label, x_unit
 
 
