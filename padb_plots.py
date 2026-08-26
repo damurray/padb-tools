@@ -1401,6 +1401,83 @@ def _build_help_panel_html(
     )
 
 
+def _decimate_dense_series(
+    df: pd.DataFrame,
+    x_col: str,
+    val_col: str,
+    partition_cols: list[str],
+    threshold: int,
+    target: int,
+    log_x: bool,
+) -> tuple[pd.DataFrame, int, int]:
+    """Reduce each independent (partition_cols) series -- e.g. one DUT under
+    one carrier condition, sweeping a dense continuous offset-frequency axis
+    -- down to roughly `target` rows via min/max-envelope bucketing along
+    x_col, when that series exceeds `threshold` rows. A series at or below
+    threshold is returned untouched.
+
+    Min/max-envelope (not stride/every-Nth-point decimation) is deliberate:
+    it can never silently drop a narrow spike or glitch, since both the
+    highest and lowest value in every bucket are always kept -- only the
+    "boring middle" of a bucket (points between the two extremes) is
+    discarded. Each partition's true first/last x sample is also always
+    kept, so the visible frequency range can never shrink just because
+    neither endpoint happened to also be that bucket's value extreme.
+
+    Buckets are log-spaced along x_col when log_x is True (matches how a
+    multi-decade offset-frequency sweep is actually viewed -- linear
+    buckets would put almost every point in the last decade and leave the
+    rest of the sweep under-sampled).
+
+    Returns (result_df, series_decimated_count, series_total_count) so the
+    caller can log what happened without re-deriving it.
+    """
+    if not len(df):
+        return df, 0, 0
+    groups = (
+        df.groupby(partition_cols, dropna=False, sort=False)
+        if partition_cols else [((), df)]
+    )
+    out_parts: list[pd.DataFrame] = []
+    n_series = 0
+    n_decimated = 0
+    for _, sub in groups:
+        n_series += 1
+        if len(sub) <= threshold:
+            out_parts.append(sub)
+            continue
+        n_decimated += 1
+        x = sub[x_col].to_numpy(dtype=float)
+        vals = sub[val_col].to_numpy(dtype=float)
+        xmin_idx = sub[x_col].idxmin()
+        xmax_idx = sub[x_col].idxmax()
+        xmin, xmax = float(np.nanmin(x)), float(np.nanmax(x))
+        n_buckets = max(1, target // 2)
+        if xmax > xmin:
+            if log_x and xmin > 0:
+                edges = np.logspace(math.log10(xmin), math.log10(xmax), n_buckets + 1)
+            else:
+                edges = np.linspace(xmin, xmax, n_buckets + 1)
+            bucket_idx = np.clip(np.searchsorted(edges, x, side="right") - 1, 0, n_buckets - 1)
+        else:
+            # Degenerate: every row shares the same x value -- no real axis
+            # to bucket along, so just fall through to a single bucket
+            # (min/max of Value across all of them is still preserved).
+            bucket_idx = np.zeros(len(x), dtype=int)
+        keep_positions: set[int] = set()
+        for b in np.unique(bucket_idx):
+            idxs = np.flatnonzero(bucket_idx == b)
+            bvals = vals[idxs]
+            keep_positions.add(int(idxs[int(np.nanargmin(bvals))]))
+            keep_positions.add(int(idxs[int(np.nanargmax(bvals))]))
+        kept = sub.iloc[sorted(keep_positions)]
+        kept = pd.concat([kept, sub.loc[[xmin_idx, xmax_idx]]])
+        kept = kept[~kept.index.duplicated(keep="first")]
+        out_parts.append(kept)
+    result = pd.concat(out_parts) if out_parts else df
+    return result, n_decimated, n_series
+
+
 def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     """Build a fully self-contained interactive HTML for accuracy-vs-frequency."""
     lo_spec, hi_spec = _get_spec(df, cfg)
@@ -1412,6 +1489,50 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     has_segments = _has_segmentable_spec(df)
 
     group_cols = _detect_group_cols(df)
+
+    # Dense continuous-sweep decimation: a genuinely swept x-axis (e.g. a
+    # phase-noise offset-frequency trace with thousands of raw points per
+    # DUT/condition) embeds every one of those points into the page today --
+    # for a large enough pod that produces a multi-hundred-MB HTML no browser
+    # can practically render. Opt-out via "scatter_decimate": "off"; force it
+    # regardless of row count via "always". Threshold/target are per-series
+    # (per unique combination of group_cols -- e.g. one DUT under one carrier
+    # condition), not a total across the whole file.
+    decimate_mode = cfg.get("scatter_decimate", "auto")
+    decimation_banner_html = ""
+    if decimate_mode != "off" and "Frequency_MHz" in df.columns and "Value" in df.columns:
+        _dec_threshold = int(cfg.get("scatter_decimate_threshold", 2000))
+        _dec_target = int(cfg.get("scatter_decimate_target", 3000))
+        _dec_freq_min = float(df["Frequency_MHz"].min())
+        _dec_freq_max = float(df["Frequency_MHz"].max())
+        _dec_log_x = (log_x_cfg if log_x_cfg is not None
+                      else (_dec_freq_min > 0 and (_dec_freq_max / _dec_freq_min) >= 100))
+        _dec_threshold_eff = 0 if decimate_mode == "always" else _dec_threshold
+        _n_rows_before = len(df)
+        df, _n_decimated, _n_series = _decimate_dense_series(
+            df, "Frequency_MHz", "Value", [c for c, _ in group_cols],
+            _dec_threshold_eff, _dec_target, _dec_log_x,
+        )
+        if _n_decimated:
+            print(f"    Decimated {_n_decimated} of {_n_series} series "
+                  f"(> {_dec_threshold_eff} pts each) to ~{_dec_target} pts "
+                  f"each (min/max envelope) -- {len(df):,} rows embedded "
+                  f"(was {_n_rows_before:,})", flush=True)
+            # Always visible, not tucked in Help -- a viewer comparing this
+            # page against the raw CSV or a native PADB render needs to know
+            # up front that what they're looking at isn't every raw point.
+            decimation_banner_html = (
+                '<div style="background:#fff8e1;border:1px solid #e0c05a;'
+                'border-radius:4px;padding:6px 12px;margin:4px 0;font-size:12px;'
+                'color:#6b5a00">'
+                f'<b>Decimated for display:</b> {_n_decimated} of {_n_series} '
+                f'trace(s) exceeded {_dec_threshold_eff:,} points and were reduced '
+                f'to ~{_dec_target:,} representative points each (min/max preserved '
+                'per bucket, so spikes/outliers are never dropped -- only the '
+                f'in-between density is). {_n_rows_before:,} raw points -> '
+                f'{len(df):,} embedded. Full-resolution data is still in the '
+                'source CSV / Simple-mode native render.</div>'
+            )
 
     # Temperature env_bar: if Test_Step has >1 unique value, show it as an inline
     # env_bar (green bar) rather than as a collapsible filter-panel dropdown.
@@ -1641,6 +1762,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '&nbsp;Inspect</label>\n'
         '  <span id="n_points"></span>\n'
         "</div>\n"
+        + decimation_banner_html
         + env_bar_html + "\n"
         + '<div id="plot"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
