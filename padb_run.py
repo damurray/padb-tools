@@ -420,118 +420,90 @@ def _analytic_stems(analytics: list[dict]) -> set[str]:
 def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
                            run_start: float | None = None) -> None:
     """
-    Copy files written to padb_output_dir into results_padb, selecting only
-    files whose stem matches a known analytic OutputFile or AnalyticName.
+    Report what PADB-R.exe actually wrote directly into results_padb via
+    -dir -- deliberately does NOT fall back to scanning padb_output_dir
+    (R-Plots, PADB's own default save location) for a missing analytic's
+    output anymore.
 
-    Before copying, clears any existing results_padb files for stems that
-    have fresh output this run -- otherwise every invocation (repeated real
-    runs of the same job) piles its collected files on top of the last, and
-    an analytic that legitimately paginates into many PNGs (one card per PNG
-    in Simple mode) accumulates stale duplicates from past runs indefinitely.
-    Stems with NO fresh match this run are left untouched -- e.g. a CSV
-    manually placed in results_padb because PADB never writes one for that
-    analytic (see the clock-spurs SummaryPlot gotcha in CLAUDE.md) survives.
+    Real incident this was changed for (2026-08-27): R-Plots is a shared
+    folder that any concurrent or prior manual GUI session (or an unrelated
+    job, or a different site's pod) also writes to by default, with nothing
+    to distinguish "this run's genuine output" from "someone else's
+    leftover" beyond filename matching. A manual AMC2 GUI session wrote to
+    the exact same un-suffixed R-Plots filename an SR analytic's own output
+    used -- the R-Plots fallback that used to exist here silently copied
+    that AMC2 data into the SR job's own results_padb, producing a
+    "compare_csv SR vs AMC" job that was actually comparing AMC against
+    itself. The fallback had a same-run mtime check (see git history) that
+    correctly protected a stem already given genuine -dir output this run,
+    but an analytic that never gets real -dir output at all -- which does
+    happen for some output types/analytics, confirmed on a real pod -- had
+    nothing to protect it and always fell through to whatever R-Plots had,
+    right or wrong, with only a WARNING that was easy to miss.
 
-    This replaces the previous timestamp-based sweep so that parallel PADB
-    jobs writing to the same R-Plots directory do not cross-contaminate each
-    other's results. Selection is by stem match only, not by mtime -- but if
-    run_start is given, a stem-matched file whose mtime predates the PADB-R.exe
-    invocation is still collected (stem matching is the real selection
-    mechanism and must stay unconditional -- see cross-contamination note
-    above) but flagged with a WARNING, since that means PADB likely did not
-    actually write fresh output this run despite returning success.
-
-    Exception to the above: run_padb() always passes -dir <results_padb>, so
-    PADB's real output for this run already lands directly in results_padb,
-    never in R-Plots (see the -dir gotcha in CLAUDE.md). A stale R-Plots file
-    sharing a stem with an already-fresh (this-run) results_padb file is a
-    leftover from something else entirely (typically a manual GUI session,
-    which does default-save to R-Plots) and is skipped rather than collected
-    -- otherwise it would silently overwrite PADB's genuinely fresh -dir
-    output with old data. Real fix for a bug found 2026-08-20: a stale
-    UHP-IddVsVgg R-Plots leftover (from an earlier manual run) was clobbering
-    every subsequent automated re-extraction's genuinely fresh CSV, and the
-    same pattern showed up in 11 of 16 recent run logs across other jobs too.
+    New policy: results_padb is the only trusted source. If an analytic's
+    -dir output never lands there, that's reported as a real, unresolved
+    gap instead of being silently patched from a shared folder -- it means
+    a pod config issue (date range, TestRun_RunStatus, a Filter_Expression
+    zeroing out every row -- see "No data were selected by filtering" in
+    CLAUDE.md's gotchas), a genuine database/site data gap, or this output
+    type not supporting -dir redirection at all. Whichever it is, it needs
+    investigating at the source, not masking. (The one legitimate use of
+    R-Plots -- an analytic PADB never writes a CSV for via any path, e.g.
+    the clock-spurs SummaryPlot gotcha -- is unaffected: that CSV is placed
+    into results_padb by hand, once, and this function never touches an
+    existing results_padb file for a stem it has nothing fresh to report.)
     """
-    output_dir_raw = cfg.get("padb_output_dir", "")
-    if not output_dir_raw:
-        return
-    output_dir = Path(output_dir_raw)
-    if not output_dir.exists():
-        print(f"  WARNING: padb_output_dir not found: {output_dir}")
-        return
-
     known_stems = _analytic_stems(analytics)
     if not known_stems:
-        print(f"  WARNING: no analytic stems found -- skipping R-Plots collection")
+        print("  WARNING: no analytic stems found -- cannot verify PADB output")
         return
+
+    results_padb.mkdir(parents=True, exist_ok=True)
 
     def _matched_stem(stem: str) -> str | None:
         return next((s for s in known_stems if stem == s or stem.startswith(s + "_")), None)
 
-    results_padb.mkdir(parents=True, exist_ok=True)
+    present = [f for f in results_padb.iterdir() if f.is_file() and _matched_stem(f.stem)]
+    present_stems = {_matched_stem(f.stem) for f in present}
 
-    fresh = [(f, _matched_stem(f.stem)) for f in output_dir.iterdir() if f.is_file()]
-    fresh = [(f, s) for f, s in fresh if s is not None]
+    # _analytic_stems() deliberately gives each analytic *two* candidate
+    # stems (its AnalyticName and its OutputConfig_OutputFile, since PADB
+    # may use either as the real filename base) -- an analytic only counts
+    # as missing if NEITHER of its own stems was found, not per-stem, or
+    # every analytic whose output happens to use just one of the two naming
+    # conventions would falsely show as missing under its other name.
+    missing_analytics: list[str] = []
+    for a in analytics:
+        label = a.get("name") or a.get("output_file") or "?"
+        own_stems = {
+            v.replace(" ", "_") for v in (a.get("output_file") or "", a.get("name") or "") if v
+        }
+        own_stems |= {s.replace("-", "_") for s in own_stems}
+        if not (own_stems & present_stems):
+            missing_analytics.append(label)
 
-    # run_padb() always passes -dir <results_padb>, so PADB's real output for
-    # THIS run already lands directly in results_padb -- never in R-Plots.
-    # A stale R-Plots file sharing an analytic's stem (e.g. left over from an
-    # earlier manual GUI session, which does default-save to R-Plots) must
-    # never be allowed to clobber that already-fresh direct write. Skip any
-    # R-Plots candidate that predates this run if results_padb already holds
-    # a fresh (this-run) file for the same stem.
-    ignored: list[str] = []
-    if run_start is not None:
-        def _dest_already_fresh(stem: str) -> bool:
-            return any(
-                p.is_file() and _matched_stem(p.stem) == stem and p.stat().st_mtime >= run_start
-                for p in results_padb.iterdir()
-            )
+    stale = [f.name for f in present
+             if run_start is not None and f.stat().st_mtime < run_start]
 
-        kept = []
-        for f, s in fresh:
-            if f.stat().st_mtime < run_start and _dest_already_fresh(s):
-                ignored.append(f.name)
-            else:
-                kept.append((f, s))
-        fresh = kept
-
-    active_stems = {s for _, s in fresh}
-
-    removed = [
-        f for f in results_padb.iterdir()
-        if f.is_file() and _matched_stem(f.stem) in active_stems
-    ]
-    for f in removed:
-        f.unlink()
-
-    copied: list[str] = []
-    stale: list[str] = []
-    for f, _ in fresh:
-        dest = results_padb / f.name
-        shutil.copy2(str(f), str(dest))
-        copied.append(f.name)
-        if run_start is not None and f.stat().st_mtime < run_start:
-            stale.append(f.name)
-
-    if removed:
-        print(f"  Cleared {len(removed)} stale file(s) from a previous run")
-    if copied:
-        print(f"  Collected {len(copied)} file(s) from {output_dir.name}/")
-        for name in sorted(copied):
+    if present:
+        print(f"  Found {len(present)} file(s) in {results_padb.name}/ (written directly via -dir):")
+        for name in sorted(f.name for f in present):
             print(f"    {name}")
-    elif not ignored:
-        print(f"  No matching files in {output_dir.name}/ -- check PADB log")
+    else:
+        print(f"  No files found in {results_padb.name}/ -- check PADB log")
     if stale:
-        print(f"  WARNING: {len(stale)} collected file(s) predate this PADB-R.exe run "
+        print(f"  WARNING: {len(stale)} file(s) predate this PADB-R.exe run "
               f"-- PADB may not have written fresh output despite returning success:")
         for name in sorted(stale):
             print(f"    {name}")
-    if ignored:
-        print(f"  Ignored {len(ignored)} stale {output_dir.name}/ file(s) that predate this run "
-              f"-- results_padb already has fresh -dir output for the same analytic:")
-        for name in sorted(ignored):
+    if missing_analytics:
+        print(f"  WARNING: {len(missing_analytics)} analytic(s) produced no output in "
+              f"{results_padb.name}/ at all -- this is a pod, database, or code issue "
+              f"to investigate, not something to silently work around (check "
+              f"TestRun_RunStatus, the date range, Filter_Expression, or whether this "
+              f"output type supports -dir):")
+        for name in sorted(missing_analytics):
             print(f"    {name}")
 
 
@@ -591,8 +563,9 @@ def run_padb(cfg: dict, run_pod: Path, results_padb: Path,
         if logs_dir:
             f.write(f"PADB session logs: {logs_dir}\n")
 
-    # Collect PADB outputs from the actual write location.
-    # PADB-R writes to its configured R-Plots directory, not to -dir.
+    # Verify what PADB-R actually wrote directly into results_padb via -dir --
+    # no R-Plots fallback (see that function's docstring for why this
+    # changed 2026-08-27).
     _collect_padb_outputs(cfg, analytics or [], results_padb, run_start=run_start)
 
     return cp.returncode, cp.stdout or "", cp.stderr or ""
