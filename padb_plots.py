@@ -18,6 +18,7 @@ cfg keys (all optional unless noted):
 """
 from __future__ import annotations
 
+import base64
 import html
 import json
 import math
@@ -78,6 +79,32 @@ def _csv_btn(fn: str = "saveCSV") -> str:
 # JS for accuracy_vs_freq interactive plot (raw string — no Python escaping)
 # ---------------------------------------------------------------------------
 _AV_FREQ_JS = r"""
+/* Binary-encoded Frequency_MHz/Value (opt-in "binary_encode" job.json key --
+   see _encode_f32_b64 in padb_plots.py): decoded once, right after DATA/
+   FREQ_B64/VALUE_B64 are parsed (the constants block calls this directly --
+   function declarations are hoisted, so this is callable even though its
+   own definition appears later in the same <script> block). Reconstitutes
+   the exact same DATA[i].Frequency_MHz/.Value shape the rest of this file
+   already expects, so nothing downstream needs to know binary encoding is
+   on. NaN (float32's representation of a missing Value) is explicitly
+   converted back to a real `null`, not left as NaN, since existing code
+   throughout this view checks for missing values with `=== null`. */
+function _decodeF32B64(b64){
+  if(!b64) return null;
+  var bin=atob(b64), len=bin.length, bytes=new Uint8Array(len);
+  for(var i=0;i<len;i++) bytes[i]=bin.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+function _reconstituteBinaryData(){
+  var freqArr=_decodeF32B64(typeof FREQ_B64!=='undefined'?FREQ_B64:'');
+  var valArr=_decodeF32B64(typeof VALUE_B64!=='undefined'?VALUE_B64:'');
+  if(!freqArr && !valArr) return;
+  for(var i=0;i<DATA.length;i++){
+    if(freqArr){var f=freqArr[i];DATA[i].Frequency_MHz=isNaN(f)?null:f;}
+    if(valArr){var v=valArr[i];DATA[i].Value=isNaN(v)?null:v;}
+  }
+}
+
 /* Zoom/pan persistence across filter changes: Plotly.react() (what every
    update() call ends up doing) recomputes autorange from the new trace data
    by default, discarding any manual zoom -- confirmed empirically that
@@ -1401,6 +1428,24 @@ def _build_help_panel_html(
     )
 
 
+def _encode_f32_b64(series: "pd.Series") -> str:
+    """Encode a numeric pandas Series as little-endian float32 bytes,
+    base64-encoded for embedding as a plain string in a <script> block --
+    the JS-side counterpart (_decodeF32B64 in _AV_FREQ_JS) reads it straight
+    into a Float32Array with no parsing per value, unlike JSON where every
+    number is a text token the browser has to tokenize and convert one at a
+    time. float32 has ~7 significant decimal digits -- a real, deliberate
+    precision reduction from JSON's full float64 text, but well within what
+    any dBm/dBc/Hz measurement value in this codebase actually needs.
+    NaN survives the round-trip as float32 NaN; the JS side converts it back
+    to a real `null` (not left as NaN) so every existing null-check in the
+    rest of this view's JS keeps working unchanged -- this function's job is
+    purely how the bytes travel, never what a missing value means.
+    """
+    arr = pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float32)
+    return base64.b64encode(arr.astype("<f4").tobytes()).decode("ascii")
+
+
 def _decimate_dense_series(
     df: pd.DataFrame,
     x_col: str,
@@ -1568,6 +1613,26 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     # Columns to embed as JSON
     json_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"] + [c for c, _ in group_cols]
     json_cols = [c for c in json_cols if c in df.columns]
+
+    # Binary encoding (opt-in, "binary_encode": true in job.json): Frequency_MHz
+    # and Value repeat on every single row and are the dominant size driver for
+    # a large point count -- embedding them as base64 float32 bytes instead of
+    # JSON text (no repeated key name per row, no per-value text tokenizing on
+    # load) shrinks both file size and parse time for exactly the large-dataset
+    # case this flag exists for. Every other column (Group dimensions, spec
+    # limits) stays as ordinary JSON -- low-cardinality strings that don't
+    # benefit from this and would only complicate the JS reconstitution for no
+    # real gain. Reconstituted back into DATA[i].Frequency_MHz/.Value in JS
+    # immediately after DATA is parsed (see constants below), so every other
+    # line of this view's JS keeps reading DATA the exact same way whether
+    # binary encoding is on or off.
+    binary_encode = bool(cfg.get("binary_encode", False))
+    freq_b64 = value_b64 = ""
+    if binary_encode:
+        freq_b64 = _encode_f32_b64(df["Frequency_MHz"])
+        value_b64 = _encode_f32_b64(df["Value"]) if "Value" in df.columns else ""
+        json_cols = [c for c in json_cols if c not in ("Frequency_MHz", "Value")]
+
     records = json.loads(df[json_cols].to_json(orient="records"))
 
     freq_min  = float(df["Frequency_MHz"].min())
@@ -1643,6 +1708,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
 
     constants = "\n".join([
         f"var DATA={json.dumps(records)};",
+        f"var FREQ_B64={json.dumps(freq_b64)};",
+        f"var VALUE_B64={json.dumps(value_b64)};",
+        "_reconstituteBinaryData();",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
         f"var Y_LABEL={json.dumps(y_label)};",
