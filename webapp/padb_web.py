@@ -52,6 +52,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 import padb_batch  # noqa: E402
 import padb_config  # noqa: E402
 import padb_convert_site  # noqa: E402
+import padb_make_v2_job  # noqa: E402
 import padb_plots as _pp  # noqa: E402
 from padb_run import parse_pod_analytics  # noqa: E402
 from padb_scheduler import (  # noqa: E402
@@ -676,6 +677,22 @@ def _read_units(csv_path: Path) -> set[str]:
 _COMPARE_SERIAL_RE = re.compile(r'(?:Serial Number|Serial No|Serial Num|Unit ID|DUT ID)\s*:\s*(\S+)', re.IGNORECASE)
 
 
+def _detect_x_axis_col(csv_path: Path) -> str | None:
+    """The real CSV column _load_scatter_for_stats() would auto-pick as this
+    CSV's x-axis -- same "frequency"/"x value" substring rule (padb_plots.py)
+    -- read straight from the header, no pod involved. Returns None if no
+    matching column exists at all."""
+    try:
+        header = pd.read_csv(csv_path, nrows=0, dtype=str)
+    except Exception:
+        return None
+    for col in header.columns:
+        cl = col.strip().lower()
+        if "frequency" in cl or "x value" in cl:
+            return col.strip()
+    return None
+
+
 def _compare_side_stats(csv_path: Path) -> dict:
     df = _pp._load_scatter_for_stats(csv_path)
     if not len(df):
@@ -721,15 +738,44 @@ def _compare_check(csv_a: Path, csv_b: Path) -> dict:
             f"comparing them directly would not be meaningful."
         )
 
+    # X-axis (usually frequency/offset) cross-check -- checks the QUANTITY
+    # and its unit/scale together (the raw column name, e.g. "Frequency
+    # Offset (Hz)" vs "Frequency (MHz)"), not just whether both sides happen
+    # to load a column at all. Real incident this was added for (2026-08-28):
+    # a compare job's generated job.json silently defaulted to "Frequency
+    # (MHz)"/"MHz" while the real underlying data was "Frequency Offset
+    # (Hz)" -- a display-only mislabeling in that specific case since both
+    # sides used the identical real column, but the same root cause could
+    # just as easily merge two sides that use genuinely different x-axis
+    # scales (e.g. Hz vs kHz) with no conversion applied at all -- this
+    # blocks on that combination specifically, since _build_compare_csv()
+    # just concatenates raw values with no unit-aware scaling.
+    x_col_a, x_col_b = _detect_x_axis_col(csv_a), _detect_x_axis_col(csv_b)
+    if x_col_a and x_col_b and x_col_a.lower() != x_col_b.lower():
+        blocked = True
+        block_reason = (
+            f"Site A's x-axis column is \"{x_col_a}\" but Site B's is \"{x_col_b}\" -- "
+            f"these may be different quantities or scales (e.g. Hz vs kHz), and this tool "
+            f"does not convert between them -- merging them directly would silently "
+            f"compare non-equivalent values."
+        )
+
     stats_a, stats_b = _compare_side_stats(csv_a), _compare_side_stats(csv_b)
+    # (x_col, x_label, x_unit) to bake into the created job.json, or None if
+    # Site A's x-axis is the tool's own default (carrier frequency in MHz,
+    # no override needed) -- reused below for the warning text's unit
+    # suffix too, so both the compatibility check and the generated job.json
+    # can never disagree about what unit this data is actually in.
+    x_override = padb_make_v2_job._x_col_override(x_col_a) if x_col_a else None
+    x_unit = x_override[2] if x_override else "MHz"
 
     if stats_a["rows"] == 0 or stats_b["rows"] == 0:
         warnings.append("One side loaded 0 usable rows -- check the CSV's x-axis/value column detection (see padb_csv_check.py).")
     elif stats_a["freq_max"] is not None and stats_b["freq_max"] is not None:
         if stats_a["freq_max"] < stats_b["freq_min"] or stats_b["freq_max"] < stats_a["freq_min"]:
             warnings.append(
-                f"Frequency ranges don't overlap at all (A: {stats_a['freq_min']:g}-{stats_a['freq_max']:g} MHz, "
-                f"B: {stats_b['freq_min']:g}-{stats_b['freq_max']:g} MHz)."
+                f"Frequency ranges don't overlap at all (A: {stats_a['freq_min']:g}-{stats_a['freq_max']:g} {x_unit}, "
+                f"B: {stats_b['freq_min']:g}-{stats_b['freq_max']:g} {x_unit})."
             )
 
     temps_a, temps_b = set(stats_a["temps"]), set(stats_b["temps"])
@@ -747,6 +793,11 @@ def _compare_check(csv_a: Path, csv_b: Path) -> dict:
         "warnings": warnings,
         "stats": {"a": stats_a, "b": stats_b},
         "units": {"a": sorted(units_a), "b": sorted(units_b)},
+        # None when Site A's x-axis is the tool's own default (carrier
+        # frequency in MHz) -- compare_create() only bakes x_col/x_label/
+        # x_unit into the generated job.json when this is set, so a normal
+        # frequency-swept compare job's output is unchanged.
+        "x_override": {"x_col": x_override[0], "x_label": x_override[1], "x_unit": x_override[2]} if x_override else None,
     }
 
 
@@ -836,6 +887,20 @@ def compare_create():
         # silently reset back to local-only on the next re-run.
         "publish_to": reused_cfg.get("publish_to", ""),
     }
+    if check.get("x_override"):
+        # Real incident (2026-08-28): a hand-authored compare job.json for a
+        # phase-noise pod silently defaulted to "Frequency (MHz)"/"MHz"
+        # while the real data was "Frequency Offset (Hz)" -- off by a
+        # factor of 1e6 in what the axis label implied. Auto-setting this
+        # here (mirroring padb_make_v2_job.py's own pod-based auto-detection,
+        # just fed from the CSV's own header instead of a pod file, since a
+        # compare job has no pod at all) means every future compare job
+        # created through this panel gets it right without anyone having to
+        # remember to copy it over from a sibling job by hand. Only applied
+        # when not already reused from an existing job.json, so a
+        # deliberately hand-tuned override survives a re-run untouched.
+        for k in ("x_col", "x_label", "x_unit"):
+            cfg.setdefault(k, check["x_override"][k])
     job_path.write_text(json.dumps(cfg, indent=2), encoding="utf-8")
     return jsonify(path=str(job_path), warnings=check["warnings"])
 
