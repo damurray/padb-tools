@@ -645,17 +645,30 @@ document.getElementById("cleanupPadbBtn").addEventListener("click", async () => 
     return;
   }
   if (!data.processes.length) {
-    alert("No batch PADB-R.exe processes found (idle GUI windows opened by hand don't count).");
+    alert("Nothing to clean up (idle GUI windows opened by hand don't count, and no already-orphaned R-Host.exe processes were found).");
     return;
   }
-  let msg = `Found ${data.processes.length} batch PADB-R.exe process(es):\n\n` +
-    data.processes.map(p => `PID ${p.pid}: ${p.cmdline}`).join("\n");
-  if (data.has_running_job_here) {
-    msg += `\n\nWARNING: this browser session currently has a job marked as running. ` +
-      `If one of the PIDs above belongs to it, killing it will fail that job -- check the ` +
-      `status panel below before proceeding if you're not sure.`;
+  const padbR = data.processes.filter(p => p.kind === "padb_r");
+  const rHost = data.processes.filter(p => p.kind === "r_host");
+  let msg = "";
+  if (padbR.length) {
+    msg += `${padbR.length} batch PADB-R.exe process(es):\n` +
+      padbR.map(p => `PID ${p.pid}: ${p.cmdline}`).join("\n") + "\n\n";
   }
-  msg += `\n\nKill all of these now? This also kills each one's own R-Host.exe helper process.`;
+  if (rHost.length) {
+    // These have no living PADB-R.exe parent to cascade a kill from --
+    // taskkill /T on the PADB-R.exe entries above can't reach them, so
+    // they're discovered and killed directly here instead.
+    msg += `${rHost.length} already-orphaned R-Host.exe process(es) (parent already gone):\n` +
+      rHost.map(p => `PID ${p.pid}`).join("\n") + "\n\n";
+  }
+  if (data.has_running_job_here) {
+    msg += `WARNING: this browser session currently has a job marked as running. ` +
+      `If one of the PADB-R.exe PIDs above belongs to it, killing it will fail that job -- check the ` +
+      `status panel below before proceeding if you're not sure.\n\n`;
+  }
+  msg += `Kill all of these now?` +
+    (padbR.length ? ` (also kills each PADB-R.exe's own currently-attached R-Host.exe children)` : "");
   if (!confirm(msg)) return;
   const killRes = await fetch("/api/orphaned-padb/kill", {
     method: "POST",

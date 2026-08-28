@@ -117,6 +117,49 @@ def _running_batch_pids(exe_name: str) -> list[str]:
     return [pid for pid in pids if _is_batch_invocation(cmdlines.get(pid, ""))]
 
 
+def _orphaned_host_pids(host_exe_name: str = "R-Host.exe", batch_exe_name: str = "PADB-R.exe") -> list[str]:
+    """PIDs of host_exe_name processes (PADB-R.NET's own per-analytic helper)
+    whose parent is not a currently-running batch_exe_name process -- i.e.
+    permanently stranded, not just "the parent happens to be busy". Real
+    case (2026-08-28): 5 R-Host.exe processes left over from a PADB-R.exe
+    that was itself killed abruptly (webapp restart) -- the existing
+    "Clean up orphaned PADB-R" flow only ever discovers a *live* PADB-R.exe
+    and kills it plus its currently-attached children via `taskkill /T`, so
+    it has no way to find or clean up a host process whose parent is
+    already gone. This is the missing discovery half of that gap.
+
+    Checks parentage against currently-running batch_exe_name PIDs
+    specifically (not "any process with that PID", since Windows recycles
+    PIDs) -- a host process is only ever legitimately parented by the real
+    exe, so a parent PID that now belongs to something else, or nothing at
+    all, both correctly count as orphaned. Returns [] on any error (fail
+    safe -- report nothing rather than risk flagging a legitimately-parented
+    process due to a query failure)."""
+    try:
+        cp = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             f"$hosts = Get-CimInstance Win32_Process -Filter \"Name='{host_exe_name}'\" | "
+             "Select-Object ProcessId, ParentProcessId; "
+             f"$parents = @(Get-CimInstance Win32_Process -Filter \"Name='{batch_exe_name}'\" | "
+             "Select-Object -ExpandProperty ProcessId); "
+             "$hosts | ForEach-Object { "
+             "  $isOrphan = -not ($parents -contains $_.ParentProcessId); "
+             "  Write-Output ($_.ProcessId.ToString() + \"`t\" + $isOrphan.ToString()) "
+             "}"],
+            capture_output=True, text=True, timeout=15,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    orphans: list[str] = []
+    for line in cp.stdout.splitlines():
+        if not line.strip():
+            continue
+        pid, _, is_orphan = line.partition("\t")
+        if is_orphan.strip().lower() == "true":
+            orphans.append(pid.strip())
+    return orphans
+
+
 def wait_for_exclusive_padb_r(exe_path: StrPath, max_wait: float = 600.0, poll_interval: float = 5.0) -> None:
     """Block until no *batch-invoked* PADB-R.exe (matching exe_path's own
     filename) is running anywhere on this machine, or raise if none clears

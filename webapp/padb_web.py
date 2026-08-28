@@ -986,13 +986,23 @@ def orphaned_padb():
     specifically for the case documented in wait_for_exclusive_padb_r(): a
     Flask process that died mid-run leaves its child PADB-R.exe running,
     invisible to the fresh process that replaces it.
+
+    Also reports already-orphaned R-Host.exe processes (PADB-R.NET's own
+    per-analytic helper) whose PADB-R.exe parent is already gone -- real
+    case (2026-08-28): 5 of these left over from a PADB-R.exe that was
+    itself killed abruptly, with no live parent left for a `taskkill /T`
+    to cascade from. These are killed directly (no /T needed -- R-Host.exe
+    itself has no children), unlike the batch PADB-R.exe entries above.
     """
     exe_name = Path(DEFAULTS["padb_exe"]).name
     pids = padb_batch._running_batch_pids(exe_name)
     cmdlines = padb_batch._process_command_lines(exe_name) if pids else {}
     with _jobs_lock:
         any_running_here = any(j["status"] == "running" for j in _jobs.values())
-    processes = [{"pid": pid, "cmdline": cmdlines.get(pid, "")} for pid in pids]
+    processes = [{"pid": pid, "cmdline": cmdlines.get(pid, ""), "kind": "padb_r"} for pid in pids]
+    orphan_host_pids = padb_batch._orphaned_host_pids()
+    processes += [{"pid": pid, "cmdline": "R-Host.exe (orphaned -- parent already gone)", "kind": "r_host"}
+                  for pid in orphan_host_pids]
     return jsonify(processes=processes, has_running_job_here=any_running_here)
 
 
