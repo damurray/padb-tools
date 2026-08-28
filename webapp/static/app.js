@@ -210,46 +210,62 @@ document.getElementById("compareCheckBtn").addEventListener("click", async () =>
     alert("Pick a CSV for both Site A and Site B");
     return;
   }
-  const res = await fetch("/api/compare-preview", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ csv_a, csv_b }),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    alert("Compare check failed: " + data.error);
-    return;
+  // Real reported bug: "Check compatibility doesn't update review data" --
+  // the request itself was working, but reading two full CSVs server-side
+  // (some of this tool's real CSVs are 700k+ rows) can take long enough,
+  // with zero visual feedback, that it looks identical to "nothing
+  // happened" rather than "still working". Busy-state on the button is the
+  // fix -- it doesn't make the read faster, it just stops a slow response
+  // from looking indistinguishable from a broken one.
+  const btn = document.getElementById("compareCheckBtn");
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Checking...";
+  try {
+    const res = await fetch("/api/compare-preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ csv_a, csv_b }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Compare check failed: " + data.error);
+      return;
+    }
+    document.getElementById("compareResult").classList.remove("hidden");
+
+    const blockEl = document.getElementById("compareBlock");
+    if (data.blocked) {
+      blockEl.textContent = data.block_reason;
+      blockEl.classList.remove("hidden");
+      document.getElementById("compareOverrideWrap").classList.remove("hidden");
+      document.getElementById("compareOverrideChk").checked = false;
+    } else {
+      blockEl.classList.add("hidden");
+      document.getElementById("compareOverrideWrap").classList.add("hidden");
+    }
+
+    const warnEl = document.getElementById("compareWarnings");
+    if (data.warnings && data.warnings.length) {
+      warnEl.innerHTML = "<b>Coverage/compatibility warnings:</b><ul>" +
+        data.warnings.map(w => `<li>${w}</li>`).join("") + "</ul>";
+      warnEl.classList.remove("hidden");
+    } else {
+      warnEl.classList.add("hidden");
+    }
+
+    const statsTable = document.getElementById("compareStatsTable");
+    statsTable.querySelector("tbody").innerHTML =
+      `<tr><td>Units</td><td>${(data.units.a || []).join(", ") || "—"}</td><td>${(data.units.b || []).join(", ") || "—"}</td></tr>` +
+      `<tr><td>Summary</td><td>${fmtCompareStat(data.stats.a)}</td><td>${fmtCompareStat(data.stats.b)}</td></tr>`;
+    statsTable.classList.remove("hidden");
+
+    comparePreviewOk = true;
+    refreshCompareCreateEnabled();
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
   }
-  document.getElementById("compareResult").classList.remove("hidden");
-
-  const blockEl = document.getElementById("compareBlock");
-  if (data.blocked) {
-    blockEl.textContent = data.block_reason;
-    blockEl.classList.remove("hidden");
-    document.getElementById("compareOverrideWrap").classList.remove("hidden");
-    document.getElementById("compareOverrideChk").checked = false;
-  } else {
-    blockEl.classList.add("hidden");
-    document.getElementById("compareOverrideWrap").classList.add("hidden");
-  }
-
-  const warnEl = document.getElementById("compareWarnings");
-  if (data.warnings && data.warnings.length) {
-    warnEl.innerHTML = "<b>Coverage/compatibility warnings:</b><ul>" +
-      data.warnings.map(w => `<li>${w}</li>`).join("") + "</ul>";
-    warnEl.classList.remove("hidden");
-  } else {
-    warnEl.classList.add("hidden");
-  }
-
-  const statsTable = document.getElementById("compareStatsTable");
-  statsTable.querySelector("tbody").innerHTML =
-    `<tr><td>Units</td><td>${(data.units.a || []).join(", ") || "—"}</td><td>${(data.units.b || []).join(", ") || "—"}</td></tr>` +
-    `<tr><td>Summary</td><td>${fmtCompareStat(data.stats.a)}</td><td>${fmtCompareStat(data.stats.b)}</td></tr>`;
-  statsTable.classList.remove("hidden");
-
-  comparePreviewOk = true;
-  refreshCompareCreateEnabled();
 });
 
 document.getElementById("compareForm").addEventListener("submit", async e => {
@@ -267,31 +283,47 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
     description: document.getElementById("compareDescription").value.trim(),
     override: document.getElementById("compareOverrideChk")?.checked || false,
   };
-  const res = await fetch("/api/compare-create", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
-  const data = await res.json();
-  if (!res.ok) {
-    alert("Compare job creation failed: " + data.error);
-    return;
+  // Real reported bug: "Create and Run does not work if another compare job
+  // is already running" -- confirmed by direct testing that queuing itself
+  // works fine (the new job correctly sits in "queued" state). The actual
+  // gap is the same as Check compatibility's: compare-create re-runs the
+  // same potentially-slow compatibility check server-side before writing
+  // the job.json, with no visible sign the click did anything until it
+  // resolves -- indistinguishable from "doesn't work" when it's just slow.
+  const btn = document.getElementById("compareCreateRunBtn");
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = "Creating & queuing...";
+  try {
+    const res = await fetch("/api/compare-create", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Compare job creation failed: " + data.error);
+      return;
+    }
+    if (data.warnings && data.warnings.length) {
+      console.log("Compare job created with warnings:", data.warnings);
+    }
+    const execRes = await fetch("/api/execute-job", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths: [data.path], dry_run: false }),
+    });
+    const execData = await execRes.json();
+    if (!execRes.ok) {
+      alert("Compare job created but failed to queue: " + execData.error);
+      return;
+    }
+    for (const jobId of execData.job_ids) startPolling(jobId);
+    loadJobs();
+  } finally {
+    btn.textContent = origText;
+    refreshCompareCreateEnabled();
   }
-  if (data.warnings && data.warnings.length) {
-    console.log("Compare job created with warnings:", data.warnings);
-  }
-  const execRes = await fetch("/api/execute-job", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ paths: [data.path], dry_run: false }),
-  });
-  const execData = await execRes.json();
-  if (!execRes.ok) {
-    alert("Compare job created but failed to queue: " + execData.error);
-    return;
-  }
-  for (const jobId of execData.job_ids) startPolling(jobId);
-  loadJobs();
 });
 
 loadCompareCsvs();
@@ -652,7 +684,12 @@ async function poll(jobId) {
   const card = ensureStatusCard(jobId);
   card.querySelector("h4").textContent = data.name;
   const badge = card.querySelector(".badge");
-  badge.textContent = data.status;
+  // queue_position (only present while status is "queued") distinguishes
+  // "waiting behind N other job(s)" from what otherwise looks identical to
+  // a stuck job -- real compare jobs here can legitimately queue behind
+  // something that takes 40+ minutes, with nothing else changing on screen.
+  badge.textContent = (data.status === "queued" && data.queue_position)
+    ? `queued (${data.queue_position} ahead)` : data.status;
   badge.className = "badge " + data.status;
   card.querySelector(".elapsed").textContent = `  ${data.elapsed_s}s`;
   const resultsLink = card.querySelector(".results-link");

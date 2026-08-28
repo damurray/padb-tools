@@ -1031,11 +1031,30 @@ def job_status(job_id):
         if job["status"] == "running" and job["started"] is not None:
             elapsed = round(time.monotonic() - job["started"], 1)
         result_index = job.get("result_index")
+        # How many jobs are ahead of this one (the single worker thread
+        # processes _jobs in insertion order) -- reported only while queued,
+        # since it's meaningless once running/done. Added 2026-08-28: a
+        # queued job with no other context just shows "queued 0s" forever
+        # while something else runs, which is indistinguishable from stuck,
+        # especially given some real compare jobs here take 40+ minutes.
+        # Dict insertion order is stable in Python 3.7+, so a plain forward
+        # scan up to this job_id's own entry is enough -- no separate
+        # ordering field needed.
+        queue_position = None
+        if job["status"] == "queued":
+            ahead = 0
+            for jid, j in _jobs.items():
+                if jid == job_id:
+                    break
+                if j["status"] in ("queued", "running"):
+                    ahead += 1
+            queue_position = ahead
         return jsonify(
             status=job["status"], name=job["name"], elapsed_s=elapsed,
             log_tail="\n".join(job["log"][-200:]),
             result_index=result_index,
             result_index_url=_result_url(result_index),
+            queue_position=queue_position,
         )
 
 
