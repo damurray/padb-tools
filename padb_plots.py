@@ -11618,15 +11618,28 @@ function loadState(){
 (function init(){
   _loadBoxGlobalFilter();
   loadState();
-  var allConds=[];
-  BOX_DATA.forEach(function(cd){if(allConds.indexOf(cd.condition)<0) allConds.push(cd.condition);});
-  Plotly.newPlot('plot',buildBoxTraces(allConds,TEMPS_PRESENT,{mode:'all'},getAllBoxSerials()),buildLayout({mode:'all'}),{responsive:true,scrollZoom:true});
+  /* Real report (2026-08-28): "on refresh, filter data does not match plot
+     view" -- confirmed the cause directly: this init block used to build
+     the FIRST plot from unconditional allConds/TEMPS_PRESENT/every serial,
+     completely ignoring whatever loadState() had just restored into the
+     filter checkboxes. Every other view (scatter/stat_summary/env_coverage/
+     summary/distribution) calls its own "currently selected" equivalent
+     (applyFilters()/getSelectedConds()/etc.) for its first render -- this
+     was the one view that didn't, so a saved narrower selection showed
+     correctly in the checkboxes but the plot itself still rendered
+     everything until the user touched some other control and triggered a
+     real update(). Calling update() here (Plotly.react() on an
+     uninitialized div behaves like newPlot -- same pattern this view's own
+     window.addEventListener('storage',...) handler above already relies
+     on) makes the first render and the restored filter state agree by
+     construction, and folds in update()'s own _recomputeSpecSegments()
+     call too. */
+  update();
   /* update() uses Plotly.react() (in-place), not purge()+newPlot(), so this
      listener survives every subsequent update() call -- attaching once here
      is enough (unlike stat_summary, which purges and must re-attach). */
   document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
   _updateBoxGfStatus();
-  _recomputeSpecSegments();
 })();
 """
 
