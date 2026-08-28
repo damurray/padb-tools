@@ -1021,6 +1021,22 @@ def kill_orphaned_padb():
     return jsonify(results=results)
 
 
+@app.route("/api/active-jobs")
+def active_jobs():
+    """Job IDs currently queued/running, for the browser to re-subscribe to
+    on page load. Real report (2026-08-28): a page refresh (even just a
+    normal reload, not a webapp restart) loses the Running Jobs panel
+    entirely -- activePolls/status cards only ever exist in this browser
+    tab's own JS memory, built when THIS tab submitted a job, with nothing
+    to rediscover jobs that are still genuinely active server-side after a
+    reload wipes that JS state. The job itself was never actually affected
+    (_jobs lives in the Flask process, untouched by any browser action) --
+    only the tab's knowledge of which job_ids to poll was lost."""
+    with _jobs_lock:
+        ids = [jid for jid, j in _jobs.items() if j["status"] in ("queued", "running")]
+    return jsonify(job_ids=ids)
+
+
 @app.route("/api/job-status/<job_id>")
 def job_status(job_id):
     with _jobs_lock:

@@ -717,3 +717,15 @@ async function poll(jobId) {
 
 loadJobs();
 loadSites();
+
+// Real report (2026-08-28): a page refresh loses the Running Jobs panel
+// entirely, even though the job itself is still running server-side --
+// startPolling() was only ever called right after THIS tab's own
+// execute-job call, with nothing to rediscover jobs a previous page load
+// (or a different tab) already queued/started. Re-subscribing to whatever
+// the server reports as still active makes a refresh no longer look like
+// it silently dropped a running job.
+fetch("/api/active-jobs")
+  .then(res => res.json())
+  .then(data => (data.job_ids || []).forEach(startPolling))
+  .catch(() => {});
