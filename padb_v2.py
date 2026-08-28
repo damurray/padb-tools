@@ -51,8 +51,9 @@ Job JSON schema:
                                              # boxplot "Site Population Check" fence. Defaults
                                              # to the first key in compare_csv when omitted.
     "publish_to": ""                         # network path; omit key entirely to use the
-                                              # default padb-tools-results share, or set to
-                                              # "" / false / null to opt out of publishing
+                                              # default share (padb-tools-results, or
+                                              # PADB-Compare when "compare_csv" is set), or
+                                              # set to "" / false / null to opt out of publishing
 }
 """
 from __future__ import annotations
@@ -69,6 +70,16 @@ from typing import Any
 # Each job gets its own subfolder (named after its results_dir) so unrelated
 # jobs don't collide. Set "publish_to": "" / false / null explicitly to opt out.
 DEFAULT_PUBLISH_ROOT = r"\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\padb-tools-results"
+
+# Same idea, but for cross-site compare_csv jobs -- a third top-level share
+# tree alongside PADB-Simple (padb_make_job.py) and PADB-Interactive
+# (padb_make_v2_job.py), added 2026-08-28 at the user's request so compare
+# output doesn't keep landing in the generic padb-tools-results catch-all.
+# Only takes effect when a job has no explicit "publish_to" of its own --
+# every hand-authored compare job in this codebase's history so far sets
+# "publish_to": "" to opt out entirely (see the accidental-publish incident
+# in CLAUDE.md), so this only matters for a *new* compare job that omits it.
+COMPARE_PUBLISH_ROOT = r"\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\PADB-Compare"
 
 import numpy as np
 import pandas as pd
@@ -856,7 +867,8 @@ def generate_report(
             _publish(output_dir, Path(cfg["publish_to"]))
         # else: "publish_to" explicitly set to "" / false / null -> opt out, skip publishing
     else:
-        default_dest = Path(DEFAULT_PUBLISH_ROOT) / output_dir.name
+        publish_root = COMPARE_PUBLISH_ROOT if cfg.get("compare_csv") else DEFAULT_PUBLISH_ROOT
+        default_dest = Path(publish_root) / output_dir.name
         _publish(output_dir, default_dest)
 
     return generated
