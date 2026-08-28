@@ -1347,6 +1347,17 @@ def _build_help_panel_html(
     anywhere downstream of the pod. Empty string (the default) renders
     nothing, so every existing page's output is unchanged unless this is
     explicitly set.
+
+    Also always renders a general "Why might my statistics look off?"
+    section (added 2026-08-27) -- the same three pitfalls originally found
+    and fixed specifically for the boxplot Site Population Check's
+    _fenceQualityHint() (condition pooling, duplicate DUT measurements, a
+    single outlier dominating a spread statistic at otherwise-fine n), but
+    generalized here since the user pointed out these apply to any pooled
+    statistic in the tool (mean, spread, IQR, tolerance interval), not just
+    that one compare-mode feature. Unlike the inverted-row check above,
+    this is static guidance, not a per-dataset detection -- always shown,
+    on every view that wires in this shared Help panel.
     """
     n_total = len(df)
     inv_mask = pd.Series(False, index=df.index)
@@ -1400,6 +1411,31 @@ def _build_help_panel_html(
             'neither filtered nor grouped can still pool into these segments, '
             'producing extra or oddly narrow bands.</li>'
         )
+    pitfalls_html = (
+        '<b>Why might my statistics look off?</b>'
+        '<ul style="margin:4px 0 8px 18px;padding:0">'
+        '<li><b>Multiple conditions pooled together</b> &mdash; a dimension '
+        'that is filtered wide open, or a "Group by" that pools across it, '
+        'merges every one of its values into one population. A pooled '
+        'statistic (mean, spread, IQR, tolerance interval) describes ALL of '
+        'them at once, and can look far wider or more shifted than any one '
+        'condition alone. Narrow the filter dropdowns above, or Group by a '
+        'more specific dimension, to isolate one.</li>'
+        '<li><b>Repeat measurements of the same DUT</b> &mdash; a DUT '
+        'measured more than once at the same point contributes that many '
+        'extra rows, not just one, silently giving it more weight in the '
+        'statistic than every other DUT. (Boxplot: check the "Dup runs" '
+        'column, or try "Collapse dup runs".)</li>'
+        '<li><b>A single outlier can dominate a statistic even when n looks '
+        'fine</b> &mdash; a wide spread doesn\'t require many bad points, '
+        'just one far enough from the rest. If a spread/tolerance interval '
+        'looks unreasonably wide, check whether one specific DUT is the '
+        'actual explanation (e.g. via "Show points", or a per-DUT '
+        'breakdown/outlier list where this view has one) before excluding '
+        'it via the Global Filter or assuming the whole population is bad.'
+        '</li>'
+        '</ul>'
+    )
     pod_filter_html = ""
     if pod_filter_expression:
         pod_filter_html = (
@@ -1415,6 +1451,7 @@ def _build_help_panel_html(
         f'{pod_filter_html}'
         '<b>Controls on this page</b>'
         f'<ul style="margin:4px 0 8px 18px;padding:0">{"".join(bullets)}</ul>'
+        f'{pitfalls_html}'
         f'{inv_html}'
     )
     toggle_id = panel_id.removeprefix("panel_").removeprefix("dist_panel_")
