@@ -462,10 +462,36 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
     results_padb.mkdir(parents=True, exist_ok=True)
 
     def _matched_stem(stem: str) -> str | None:
-        return next((s for s in known_stems if stem == s or stem.startswith(s + "_")), None)
+        # Prefer the LONGEST matching known stem, not just the first one
+        # found -- when one analytic's stem is a literal prefix of another's
+        # (real case, 2026-08-27: "...EFC" is a prefix of "...EFC_at_Defined
+        # _Offsets"), a plain first-match next() could non-deterministically
+        # attribute a file to the shorter, wrong analytic (set iteration
+        # order is arbitrary), leaving the correct, more-specific analytic
+        # falsely reported as producing no output at all even though its own
+        # exact-name file exists on disk. An exact match (len(s)==len(stem))
+        # is always at least as long as any proper prefix match, so this
+        # also guarantees an exact match always wins over a prefix match.
+        candidates = [s for s in known_stems if stem == s or stem.startswith(s + "_")]
+        return max(candidates, key=len) if candidates else None
 
     present = [f for f in results_padb.iterdir() if f.is_file() and _matched_stem(f.stem)]
-    present_stems = {_matched_stem(f.stem) for f in present}
+    # A lone same-stem .txt is PADB's own error-dump convention (e.g.
+    # "Error in aoParsePADB(...): No data were selected by filtering /
+    # Analysis Failed"), written INSTEAD of the real CSV/PDF when an
+    # analytic's R computation fails -- not real output. Confirmed real
+    # case (2026-08-27): AM2_Accuracy_and_Distortion.txt matched this
+    # analytic's own AnalyticName-derived stem exactly and was silently
+    # accepted as "present", so a Filter_Expression leftover from a cloned
+    # SR pod (Test Step = "25.0 Deg C", never true for AMC2) that zeroed
+    # out every row for this one analytic went unreported -- the "N
+    # analytic(s) produced no output" warning below only ever caught the
+    # *other* fully-empty case (nothing at all matched, not even a .txt)
+    # by coincidence, not by design. present_stems (used only to decide
+    # whether an analytic counts as covered) excludes .txt-only matches;
+    # `present` itself still lists every matched file, .txt included, so
+    # the "Found N file(s)" listing stays a complete, honest inventory.
+    present_stems = {_matched_stem(f.stem) for f in present if f.suffix.lower() != ".txt"}
 
     # _analytic_stems() deliberately gives each analytic *two* candidate
     # stems (its AnalyticName and its OutputConfig_OutputFile, since PADB
