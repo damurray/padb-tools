@@ -10152,13 +10152,41 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
       });
     });
   } else {
+    /* Real mismatch found by the user (2026-08-28): this branch's Mean/Std/
+       Q1/Median/Q3/Outliers used to come straight from BOX_STATS' own
+       fs.mean/fs.s/fs.q1/fs.q2/fs.q3/fs.outlier_detail -- but BOX_STATS is
+       _aggregate_stat_data()'s output (built for stat_summary), whose own
+       per-DUT array is already averaged down to one value per DUT (see
+       that function's docstring) BEFORE those numbers are ever computed.
+       The plot itself, and the outlier-detail panel, both read raw,
+       unaveraged BOX_DATA -- so a DUT with a genuine repeat measurement
+       (flagged by this same row's own Dup runs column) silently disagreed:
+       the table's own outlier list didn't match the plot's, because one
+       DUT's two raw points had already been collapsed into one averaged
+       point for every OTHER column in the same row. Fixed by recomputing
+       Mean/Std/Q1/Median/Q3/Outliers from BOX_DATA's raw Room detail for
+       the same (condition, freq) -- the exact population the plot uses --
+       instead of trusting BOX_STATS' pre-averaged fields for anything but
+       Normality/NP-TI, which genuinely have no raw-data equivalent (both
+       are precomputed server-side specifically against the DUT-averaged
+       population, per stat_summary's own convention, and are left
+       unchanged here). */
+    var _rawRoomByCondFreq={};
+    BOX_DATA.forEach(function(cd){
+      if(cd.temp!=='Room') return;
+      (cd.freq_stats||[]).forEach(function(f){
+        _rawRoomByCondFreq[cd.condition+'|'+f.freq]=f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};});
+      });
+    });
     BOX_STATS.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
       (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(fs){
         if(fs.freq<fr.lo||fs.freq>fr.hi) return;
         var nc=fs.norm==='Normal'?'green':fs.norm==='Marginal'?'orange':'red';
         var nrmStr='<span style="color:'+nc+';font-weight:bold">'+fs.norm+'</span> W='+fs.W.toFixed(3)+' p='+fs.p.toFixed(3);
-        var outDet=fs.outlier_detail||[];
+        var raw=_rawRoomByCondFreq[cd.condition+'|'+fs.freq];
+        var rs=raw&&raw.length?computeBoxStats(raw.map(function(d){return d.v;}),getIqrK()):null;
+        var outDet=rs?raw.filter(function(d){return d.v<rs.lo_w||d.v>rs.hi_w;}):(fs.outlier_detail||[]);
         var outStr=outDet.length?
           '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
@@ -10169,18 +10197,24 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           else
             npCell='<td style="color:#aaa;font-size:11px">'+(fs.np_ti_lo==null?'n&nbsp;too&nbsp;small':'Normal&nbsp;(k·s)')+'</td>';
         }
-        var devCells=_maxDevCells(outDet,fs.q2);
-        /* dup_runs is precomputed server-side (Python) for this branch --
-           unlike the other branches, BOX_STATS' own per-DUT array is
-           already averaged down to one value per DUT (see
-           _aggregate_stat_data's docstring), so the raw repeat-run count
-           this column exists to show would otherwise be lost by the time
-           it reaches the client. */
-        var dupRuns=fs.dup_runs||0;
-        rows.push('<tr><td>'+cd.condition+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
+        var q2v=rs?rs.q2:fs.q2;
+        var devCells=_maxDevCells(outDet,q2v);
+        /* dup_runs is precomputed server-side (Python) as a fallback for
+           when raw detail isn't available; otherwise recomputed directly
+           from the same raw population everything else in this row now
+           uses, so it can never itself drift from what's actually shown. */
+        var dupRuns=raw?_dupRunCount(raw):(fs.dup_runs||0);
+        var nV=rs?rs.n:fs.n, meanV=rs?rs.mean:fs.mean, q1v=rs?rs.q1:fs.q1, q3v=rs?rs.q3:fs.q3;
+        var stdV=fs.s;
+        if(rs){
+          var _vv=raw.map(function(d){return d.v;});
+          var _variance=_vv.reduce(function(acc,v){return acc+(v-rs.mean)*(v-rs.mean);},0)/(_vv.length>1?_vv.length-1:1);
+          stdV=Math.sqrt(_variance);
+        }
+        rows.push('<tr><td>'+cd.condition+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+nV+'</td>'+
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
-          '<td>'+fs.mean.toFixed(4)+'</td><td>'+fs.s.toFixed(4)+'</td>'+
-          '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
+          '<td>'+meanV.toFixed(4)+'</td><td>'+stdV.toFixed(4)+'</td>'+
+          '<td>'+q1v.toFixed(4)+'</td><td>'+q2v.toFixed(4)+'</td><td>'+q3v.toFixed(4)+'</td>'+
           '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
     });
