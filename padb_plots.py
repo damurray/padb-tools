@@ -1483,6 +1483,84 @@ def _encode_f32_b64(series: "pd.Series") -> str:
     return base64.b64encode(arr.astype("<f4").tobytes()).decode("ascii")
 
 
+_VALS_DETAIL_NUMERIC_FIELDS = ("v", "upper_limit", "lower_limit", "spec_hi", "spec_lo", "unc_hi", "unc_lo")
+
+
+def _encode_vals_detail_bin(vals_detail: list[dict]) -> dict:
+    """Compact wire encoding for one freq_stats entry's vals_detail -- the
+    raw per-point array boxplot needs for "Show points", exact dup-run
+    detection, and the Site Population Check (none of which can tolerate
+    losing individual points the way scatter's own decimation does, so this
+    is a pure encoding change, not a data reduction). Added 2026-08-28:
+    binary_encode was already wired into scatter (flat Frequency_MHz/Value
+    arrays), but never extended to boxplot -- a real, large phase-noise
+    compare dataset (625k raw points, each an 9-key JSON object with
+    upper_limit/lower_limit/spec_hi/spec_lo/unc_hi/unc_lo mostly null)
+    produced a 765MB boxplot page. Two independent savings, both applied:
+    (1) columnar instead of array-of-objects -- every key name
+    ("upper_limit" etc) currently gets repeated once per point; storing
+    each field as one array under one key removes that entirely. (2) the
+    7 numeric fields are float32-base64-encoded exactly like
+    _encode_f32_b64 (same NaN/null round-trip convention), and (serial,
+    port) pairs -- almost always low-cardinality, repeated across every
+    frequency -- are deduplicated into a small lookup table with an
+    index-per-point array instead of the full strings repeated per point.
+    The JS-side counterpart (_decodeValsDetail in
+    _STAT_BOXPLOT_INTERACTIVE_JS) reconstructs the exact original
+    [{s,p,v,upper_limit,...}, ...] shape immediately on page load, so every
+    existing consumer of fs.vals_detail elsewhere in this view's JS (box
+    traces, stats table, GF matching, Site Population Check, CSV export)
+    needs no changes at all -- this only changes what travels over the
+    wire, never the runtime shape the rest of the page already expects."""
+    n = len(vals_detail)
+    if n == 0:
+        return {"n": 0}
+    sp_index: dict[tuple[str, str], int] = {}
+    sp_lookup: list[dict] = []
+    idx = np.empty(n, dtype=np.float32)
+    for i, d in enumerate(vals_detail):
+        key = (d.get("s", "unknown"), d.get("p", "") or "")
+        j = sp_index.get(key)
+        if j is None:
+            j = len(sp_lookup)
+            sp_index[key] = j
+            sp_lookup.append({"s": key[0], "p": key[1]})
+        idx[i] = j
+    out = {
+        "n": n,
+        "sp": sp_lookup,
+        "idx_b64": base64.b64encode(idx.astype("<f4").tobytes()).decode("ascii"),
+    }
+    # Real bug found while measuring this on actual data: encoding all 6
+    # possible spec fields unconditionally embedded 5 entirely-empty blobs
+    # per freq_stats entry for this phase-noise pod, which only ever has
+    # "upper_limit" -- the other 5 aren't keys in the dicts at all, not just
+    # null. That alone was eating most of the intended size reduction.
+    # Only encode fields that actually appear in at least one point here,
+    # and record which ones so the JS decoder knows -- it must not
+    # fabricate a null key for a field that was never part of this
+    # dataset's real shape (a non-binary-encoded run wouldn't have it
+    # either).
+    # Real bug found measuring this against actual data: checking just
+    # dict KEY presence (the first cut at this) was wrong -- a compare job's
+    # merged DataFrame can have Spec_Hi/Spec_Lo/Unc_Hi/Unc_Lo as real
+    # DataFrame columns (structurally always present once
+    # _load_scatter_for_stats' Group-text extraction runs) even when this
+    # specific pod's data never populates them, so every vals_detail dict
+    # had all 6 spec keys with value None -- key presence alone never
+    # actually filtered anything out. What actually matters is whether any
+    # point in THIS SPECIFIC list has a real (non-null) value for the
+    # field -- computed once per field per call, not per point.
+    present_fields = [
+        f for f in _VALS_DETAIL_NUMERIC_FIELDS
+        if any(d.get(f) is not None for d in vals_detail)
+    ]
+    out["fields"] = present_fields
+    for field in present_fields:
+        out[field + "_b64"] = _encode_f32_b64(pd.Series([d.get(field) for d in vals_detail]))
+    return out
+
+
 def _decimate_dense_series(
     df: pd.DataFrame,
     x_col: str,
@@ -9278,6 +9356,57 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
 # ---------------------------------------------------------------------------
 
 _STAT_BOXPLOT_INTERACTIVE_JS = r"""
+/* Binary-encoded vals_detail (opt-in "binary_encode" job.json key -- see
+   _encode_vals_detail_bin in padb_plots.py): decoded once, right after
+   BOX_DATA is parsed (the constants block calls this directly -- function
+   declarations are hoisted, so this is callable even though its own
+   definition appears later in the same <script> block). Reconstitutes the
+   exact same fs.vals_detail=[{s,p,v,upper_limit,...},...] shape the rest
+   of this file already expects, so every existing consumer (box traces,
+   stats table, GF matching, Site Population Check, CSV export) needs no
+   changes at all -- only the wire format changes, never the runtime shape.
+   NaN (float32's representation of a missing numeric field) is explicitly
+   converted back to a real `null`, matching every null-check elsewhere in
+   this view. A no-op when binary_encode is off (fs.vals_detail_bin is
+   simply absent, so every cd/fs pair is skipped instantly). */
+function _decodeF32B64(b64){
+  if(!b64) return null;
+  var bin=atob(b64), len=bin.length, bytes=new Uint8Array(len);
+  for(var i=0;i<len;i++) bytes[i]=bin.charCodeAt(i);
+  return new Float32Array(bytes.buffer);
+}
+function _decodeValsDetail(enc){
+  if(!enc||!enc.n) return [];
+  var idx=_decodeF32B64(enc.idx_b64);
+  // enc.fields is server-computed per this specific dataset -- only fields
+  // that genuinely exist in the original vals_detail dicts get a blob at
+  // all (see _encode_vals_detail_bin's docstring for the real bug this
+  // fixed: unconditionally decoding all 6 possible spec fields regardless
+  // of which ones this pod actually has would silently fabricate null
+  // keys a non-binary-encoded run of the same data would never produce).
+  var fields=enc.fields||['v'];
+  var arrs={};
+  fields.forEach(function(f){arrs[f]=_decodeF32B64(enc[f+'_b64']);});
+  var out=new Array(enc.n);
+  for(var i=0;i<enc.n;i++){
+    var sp=enc.sp[idx[i]];
+    var d={s:sp.s,p:sp.p};
+    fields.forEach(function(f){var v=arrs[f][i];d[f]=isNaN(v)?null:v;});
+    out[i]=d;
+  }
+  return out;
+}
+function _reconstituteBoxBinaryData(){
+  if(typeof BOX_DATA==='undefined') return;
+  BOX_DATA.forEach(function(cd){
+    (cd.freq_stats||[]).forEach(function(fs){
+      if(fs.vals_detail_bin){
+        fs.vals_detail=_decodeValsDetail(fs.vals_detail_bin);
+        delete fs.vals_detail_bin;
+      }
+    });
+  });
+}
 /* Zoom/pan persistence across filter changes -- see the scatter view's
    identical _liveAxisRange() for the full rationale. */
 function _liveAxisRange(axis){
@@ -11616,6 +11745,7 @@ function loadState(){
   var hs=_stGet('box_hide_spec');if(hs!==null){var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)hsEl.checked=(hs==='1');}
 }
 (function init(){
+  _reconstituteBoxBinaryData();
   _loadBoxGlobalFilter();
   loadState();
   /* Real report (2026-08-28): "on refresh, filter data does not match plot
@@ -11645,7 +11775,8 @@ function loadState(){
 
 
 def _aggregate_box_data_by_temp(
-    df: pd.DataFrame, x_unit: str = "MHz", freq_label_map: dict | None = None
+    df: pd.DataFrame, x_unit: str = "MHz", freq_label_map: dict | None = None,
+    binary_encode: bool = False,
 ) -> list:
     """Raw-measurement IQR box stats grouped by (condition, temperature, frequency)."""
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
@@ -11708,8 +11839,14 @@ def _aggregate_box_data_by_temp(
                 s = _box_stats(vals)
                 iq = s["q3"] - s["q1"]
                 lf, hf = s["q1"] - 1.5 * iq, s["q3"] + 1.5 * iq
+                # outlier_detail is always plain -- outliers are rare relative
+                # to n, so the wire-size win from binary-encoding this too
+                # would be negligible next to vals_detail's own.
                 s["outlier_detail"] = [d for d in vals_detail if d["v"] < lf or d["v"] > hf]
-                s["vals_detail"] = vals_detail
+                if binary_encode:
+                    s["vals_detail_bin"] = _encode_vals_detail_bin(vals_detail)
+                else:
+                    s["vals_detail"] = vals_detail
                 s["freq"] = float(freq)
                 s["freq_label"] = freq_label_map[freq]
                 s["vals"] = [round(v, 6) for v in vals]
@@ -12363,7 +12500,10 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     df["_freq_cat"] = df["Frequency_MHz"].map(freq_label_map)
     freq_cat_order = [freq_label_map[f] for f in sorted_freqs]
 
-    box_data = _aggregate_box_data_by_temp(df, x_unit=x_unit, freq_label_map=freq_label_map)
+    box_data = _aggregate_box_data_by_temp(
+        df, x_unit=x_unit, freq_label_map=freq_label_map,
+        binary_encode=bool(cfg.get("binary_encode", False)),
+    )
     if site_compare_enabled:
         for cd in box_data:
             m = _site_re_box.search(cd["condition"])
