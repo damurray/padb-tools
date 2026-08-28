@@ -10680,6 +10680,22 @@ function updateSitePanel(){
       return;
     }
     var towardFail=_siteTowardFailDir();
+    /* How many raw rows share THIS exact (site,serial,port,condition,temp,
+       freq) identity -- a genuine repeat test run on the checked point
+       itself, not the primary-site fence's own population (that's pvDup,
+       below). Real report (2026-08-28): the same (Serial, Freq) showing up
+       as two separate rows with two different real values looked like data
+       corruption ("two sets of information written over the same row")
+       until traced to the source CSV -- AMC2 genuinely ran every point in
+       this dataset twice, confirmed universally across every condition
+       checked. Nothing distinguished "repeat measurement" from "looks like
+       a duplicate" here, unlike the primary side's own "SR dup pts" column
+       -- this is the same signal for the point actually being tested. */
+    var otherDupCounts={};
+    otherPoints.forEach(function(p){
+      var key=p.site+'|'+p.serial+'|'+(p.port||'')+'|'+p.cond+'|'+p.temp+'|'+p.freq;
+      otherDupCounts[key]=(otherDupCounts[key]||0)+1;
+    });
     var rows=otherPoints.map(function(p){
       var pvItems=primaryBuckets[p.temp+'|'+p.freq]||[];
       var pv=pvItems.map(function(it){return it.v;});
@@ -10687,7 +10703,9 @@ function updateSitePanel(){
          DUT has 3 copies" when it actually meant "three separate DUTs
          each have 2 copies", indistinguishable from the total alone. */
       var pvDup=_dupBreakdown(pvItems,function(d){return d.s+'|'+d.cond+'|'+(d.p||'');},function(d){return d.s;});
-      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,pvDup:pvDup,fenceHint:''};
+      var otherKey=p.site+'|'+p.serial+'|'+(p.port||'')+'|'+p.cond+'|'+p.temp+'|'+p.freq;
+      var otherDup=Math.max(0,(otherDupCounts[otherKey]||1)-1);
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,pvDup:pvDup,fenceHint:'',otherDup:otherDup};
       var s=computeBoxStats(pv,k);
       var dir=null,dist=0;
       if(p.value>s.hi_w){dir='high';dist=p.value-s.hi_w;}
@@ -10700,7 +10718,7 @@ function updateSitePanel(){
          unconfigured spec) means this can't be determined -- treated as
          spec-relevant so a real risk is never silently hidden when unsure. */
       var specRelevant=(dir&&towardFail)?(dir===towardFail):null;
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:s.lo_w,hi:s.hi_w,n:pv.length,pvDup:pvDup,fenceHint:fenceHint,specRelevant:specRelevant};
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:s.lo_w,hi:s.hi_w,n:pv.length,pvDup:pvDup,fenceHint:fenceHint,specRelevant:specRelevant,otherDup:otherDup};
     });
 
     /* Per-frequency clusters: how many distinct DUTs are OUTSIDE at the
@@ -10842,7 +10860,9 @@ function updateSitePanel(){
 
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Temp</th><th>Freq</th>'+
-      '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th>'+
+      '<th>Value</th>'+
+      '<th title="Extra raw rows sharing this exact (site, serial, port, condition, temp, frequency) beyond one -- a genuine repeat test run on the point being checked itself, not the '+PRIMARY_SITE+' fence\'s population. A real, confirmed case: some datasets ran every point twice, universally -- the same (Serial, Freq) then legitimately appears as two separate rows with two different real values, which is not a data error.">Site&nbsp;dup&nbsp;pts</th>'+
+      '<th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th>'+
       '<th title="Which of the '+PRIMARY_SITE+' fence\'s own reference DUTs at this temp/frequency have more than one raw row (serial×count) -- a DUT not listed here contributed exactly one.">'+PRIMARY_SITE+' dup pts</th>'+
       '<th title="Flags when this fence\'s own population looks compromised -- multiple conditions pooled together, duplicate points from one DUT, or a single extreme point dominating the whole span -- and names the specific fix for whichever applies.">Fence check</th>'+
       '<th>Dir</th><th>Dist</th><th title="OUTSIDE (benign) means this point is outside the fence in the direction AWAY from a one-sided spec\'s fail side -- a real population difference, but not something that can fail spec.">Verdict</th></tr></thead><tbody>';
@@ -10855,11 +10875,19 @@ function updateSitePanel(){
           :'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>';
       html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td><td>'+(p.port||'')+'</td><td>'+p.temp+'</td>'+
         '<td>'+(p.freqLabel||p.freq)+'</td><td>'+p.value.toFixed(4)+'</td>'+
+        '<td>'+(r.otherDup?'<span class="out">'+r.otherDup+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
         '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
         '<td>'+(r.pvDup&&r.pvDup.length?'<span class="out">'+r.pvDup.join(', ')+'</span>':'<span style="color:#aaa">&mdash;</span>')+'</td>'+
-        '<td'+(r.fenceHint?' style="background:#fff8e1;color:#6b5a00;max-width:260px"':'')+'>'+
+        /* .stbl td sets white-space:nowrap globally -- without overriding
+           it here, max-width has no effect on a nowrap cell (there's
+           nothing to wrap), so this cell's long text just overflows its
+           own border and visually bleeds into the columns to its right.
+           Real report (2026-08-28): looked exactly like data from two
+           different rows overwriting each other, when the actual bug was
+           purely visual -- the underlying row data was always correct. */
+        '<td'+(r.fenceHint?' style="background:#fff8e1;color:#6b5a00;max-width:260px;white-space:normal;overflow-wrap:break-word"':'')+'>'+
         (r.fenceHint?r.fenceHint:'<span style="color:#aaa">&mdash;</span>')+'</td>'+
         '<td>'+(r.dir||'&mdash;')+'</td>'+
         '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
@@ -10885,7 +10913,7 @@ function saveSitePopulationCSV(outsideOnly){
     return;
   }
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
-  var hdrs=['Site','Serial','Port','Temp','Freq_'+X_UNIT,'Freq_Label','Value',
+  var hdrs=['Site','Serial','Port','Temp','Freq_'+X_UNIT,'Freq_Label','Value','Site_dup_pts',
     PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n',PRIMARY_SITE+'_dup_pts',
     'Fence_check','Dir','Dist','Verdict','Spec_relevant'];
   var out=[hdrs.join(',')];
@@ -10893,6 +10921,7 @@ function saveSitePopulationCSV(outsideOnly){
     var p=r.p;
     out.push([esc(p.site),esc(p.serial),esc(p.port||''),esc(p.temp),p.freq.toFixed(4),esc(p.freqLabel||p.freq),
       p.value.toFixed(6),
+      r.otherDup||0,
       r.lo!==undefined?r.lo.toFixed(6):'',
       r.hi!==undefined?r.hi.toFixed(6):'',
       r.n!==undefined?r.n:'',
