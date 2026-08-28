@@ -274,23 +274,83 @@ def _stream(cmd: list[str], job_id: str) -> int:
             log_path.unlink()
 
 
+def _v2_chain_state_path(job_path: Path, siblings: list[Path]) -> Path | None:
+    """Where per-sibling auto-chain progress is persisted for this run job --
+    the FIRST sibling's own results_dir, since "all plot jobs for one pod
+    share one results_dir" by design (padb_make_v2_job.py). None if there
+    are no siblings or the first one's config can't be read."""
+    if not siblings:
+        return None
+    try:
+        plot_cfg = json.loads(siblings[0].read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return None
+    results_dir = plot_cfg.get("results_dir")
+    if not results_dir:
+        return None
+    return job_path.parent / results_dir / ".v2_chain_state.json"
+
+
+def _load_v2_chain_state(state_path: Path | None) -> set[str]:
+    if state_path is None or not state_path.exists():
+        return set()
+    try:
+        return set(json.loads(state_path.read_text(encoding="utf-8")).get("done", []))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def _save_v2_chain_state(state_path: Path | None, done: set[str]) -> None:
+    if state_path is None:
+        return
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(json.dumps({"done": sorted(done)}), encoding="utf-8")
+    except OSError:
+        pass
+
+
 def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict) -> tuple[bool, str | None]:
     """After a V2 extraction job (*_run_job.json) succeeds, auto-run every
     sibling *_v2_job.json plot job -- completes the full V2 flow instead of
     leaving the plot-build step to be run by hand. Returns (ok, index_path)
-    where index_path is the merged V2 results gallery, if one was written."""
+    where index_path is the merged V2 results gallery, if one was written.
+
+    Real incident (2026-08-28): this loop runs directly in the webapp's own
+    process/thread -- unlike each individual sibling's own _stream() call,
+    which survives a webapp restart via the temp-file redirect fix, the LOOP
+    itself has no such protection. A webapp restart mid-chain (here, for
+    unrelated reasons -- picking up a code change) killed it after only the
+    first of 8 siblings per pod had been built, silently leaving the other 7
+    per pod never even attempted; nothing noticed or resumed this on its
+    own, and it looked indistinguishable from "the run job itself failed"
+    even though the extraction had genuinely succeeded. Fixed with a small
+    per-sibling progress file (results_dir/.v2_chain_state.json, updated
+    after each sibling succeeds, not just at the end) so: (1) skipping
+    already-done siblings makes this function itself safely re-callable
+    without redoing expensive work, and (2) _resume_incomplete_v2_chains()
+    (called once at webapp startup) can detect an interrupted chain and
+    finish it automatically, without a user having to notice and finish it
+    by hand as happened here."""
     siblings = _find_v2_siblings(job_path, run_cfg)
     if not siblings:
         _append_log(job_id, "(no sibling *_v2_job.json plot jobs found to auto-run)")
         return True, None
+    state_path = _v2_chain_state_path(job_path, siblings)
+    done_stems = _load_v2_chain_state(state_path)
     ok = True
     result_index = None
     for plot_job in siblings:
-        _append_log(job_id, f"\n--- Building plots: {plot_job.name} ---")
-        rc = _stream([sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(plot_job)], job_id)
-        if rc != 0:
-            ok = False
-            continue
+        if plot_job.stem in done_stems:
+            _append_log(job_id, f"\n--- Skipping (already built): {plot_job.name} ---")
+        else:
+            _append_log(job_id, f"\n--- Building plots: {plot_job.name} ---")
+            rc = _stream([sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(plot_job)], job_id)
+            if rc != 0:
+                ok = False
+                continue
+            done_stems.add(plot_job.stem)
+            _save_v2_chain_state(state_path, done_stems)
         try:
             plot_cfg = json.loads(plot_job.read_text(encoding="utf-8"))
             idx = _job_index_path(plot_job.parent, plot_cfg)
@@ -299,6 +359,82 @@ def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict) -> tuple[bool, 
         except (json.JSONDecodeError, OSError):
             pass
     return ok, result_index
+
+
+def _resume_incomplete_v2_chains() -> None:
+    """Called once at webapp startup: finds any *_run_job.json (mode
+    "interactive") whose extraction already succeeded but whose sibling
+    plot jobs weren't all built -- e.g. a previous webapp process was
+    restarted mid-chain (see _run_v2_siblings' own docstring for the real
+    incident this was built from) -- and finishes the chain automatically
+    instead of leaving it for a user to notice and complete by hand.
+
+    "Extraction already succeeded" is checked the same way the rest of this
+    file already does: the run job's own results_dir/index.html exists
+    (padb_run.py only ever writes it on success). Deliberately does NOT
+    re-run the extraction itself here -- only the (idempotent, individually
+    already-fast) plot-building step -- so this can't accidentally kick off
+    a real, possibly hours-long PADB-R.exe run just because the webapp
+    restarted."""
+    for job_path in sorted(DATA_DIR.glob("*_run_job.json")):
+        try:
+            cfg = json.loads(job_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        if cfg.get("mode") != "interactive":
+            continue
+        run_results_dir = cfg.get("results_dir")
+        if not run_results_dir or not (job_path.parent / run_results_dir / "index.html").exists():
+            continue  # extraction itself never completed -- nothing to resume
+        siblings = _find_v2_siblings(job_path, cfg)
+        if not siblings:
+            continue
+        state_path = _v2_chain_state_path(job_path, siblings)
+        done_stems = _load_v2_chain_state(state_path)
+        # Require POSITIVE evidence of an interrupted chain -- some but not
+        # all siblings marked done -- not just "no state file at all". A
+        # completely absent state file is the NORMAL case for every pod
+        # built before this tracking existed (an entire day's worth of
+        # rebuilds, real production pods, etc.) -- treating that as
+        # "incomplete" would resume-rebuild all of them on the very next
+        # webapp startup, a much worse regression than the narrow gap this
+        # leaves open (a chain killed before its very first sibling ever
+        # finished looks identical to "never started" and won't auto-resume
+        # -- acceptable, since that case is already obvious from an empty
+        # results_dir rather than silently looking like a real failure).
+        if not done_stems or len(done_stems) >= len(siblings):
+            continue
+        remaining = [s for s in siblings if s.stem not in done_stems]
+        job_id = _new_job_id()
+        with _jobs_lock:
+            _jobs[job_id] = {
+                "status": "queued", "path": str(job_path),
+                "name": f"{job_path.name} (resuming {len(remaining)} interrupted plot job(s))",
+                "log": [], "started": None, "elapsed_s": 0, "dry_run": False,
+                "result_index": None, "proc": None, "cancel_requested": False,
+            }
+        _append_log(job_id, f"Resuming interrupted V2 plot chain: {len(remaining)} of "
+                    f"{len(siblings)} sibling job(s) still needed.")
+
+        def _do_resume(job_path=job_path, job_id=job_id, cfg=cfg):
+            with _jobs_lock:
+                job = _jobs[job_id]
+                if job.get("cancel_requested"):
+                    job["status"] = "cancelled"
+                    return
+                job["status"] = "running"
+                job["started"] = time.monotonic()
+            ok, result_index = _run_v2_siblings(job_path, job_id, cfg)
+            if result_index is None:
+                idx = _job_result_index_path(job_path, cfg)
+                result_index = str(idx) if idx else None
+            with _jobs_lock:
+                job = _jobs[job_id]
+                job["status"] = "cancelled" if job.get("cancel_requested") else ("done" if ok else "failed")
+                job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
+                job["result_index"] = result_index
+
+        threading.Thread(target=_do_resume, daemon=True).start()
 
 
 def _worker() -> None:
@@ -348,6 +484,7 @@ def _worker() -> None:
 
 
 threading.Thread(target=_worker, daemon=True).start()
+_resume_incomplete_v2_chains()
 
 
 # ---------------------------------------------------------------------------
