@@ -9665,6 +9665,35 @@ function updateBoxFilterLabels(){
   }
   toggleRangeInputs();
 }
+/* "Passing only" has nothing to exclude when the relevant side(s) have
+   neither a real CSV spec nor a typed TLL override -- that's correct
+   behavior (there's nothing to fail against), but silently showing every
+   point unchanged looks identical to "the filter is broken" from the
+   viewer's side. Reported directly against a real no-spec pod
+   (MaxPowerTutorial2): confirmed via direct testing that toggling
+   Passing-only with the override fields blank left the box data
+   completely unchanged, while typing a TLL override immediately made it
+   filter -- the mechanism works, it just had no visible cue for why
+   nothing happened. */
+function _updatePassingWarn(yFlt){
+  var el=document.getElementById('box_passing_warn');
+  if(!el) return;
+  if(!yFlt||yFlt.mode!=='passing'){el.style.display='none';return;}
+  var dir=getTllDirection();
+  var showHi=dir==='hi'||dir==='both';
+  var showLo=dir==='lo'||dir==='both';
+  var effHi=(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined)?yFlt.tll_hi:HI_SPEC;
+  var effLo=(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined)?yFlt.tll_lo:LO_SPEC;
+  var missHi=showHi&&effHi===null;
+  var missLo=showLo&&effLo===null;
+  if(!missHi&&!missLo){el.style.display='none';return;}
+  var msg;
+  if(missHi&&missLo) msg='⚠ No spec or TLL override set -- Passing only will not filter anything.';
+  else if(missHi) msg='⚠ No spec or TLL↑ override set -- upper side of Passing only will not filter (lower side still applies).';
+  else msg='⚠ No spec or TLL↓ override set -- lower side of Passing only will not filter (upper side still applies).';
+  el.textContent=msg;
+  el.style.display='inline';
+}
 function percentileSorted(sorted,p){
   var idx=(p/100)*(sorted.length-1);
   var lo=Math.floor(idx),hi=Math.ceil(idx);
@@ -11733,6 +11762,7 @@ function _onPlotRelayout(ed){
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
+  _updatePassingWarn(yFlt);
   Plotly.react('plot',buildBoxTraces(selConds,selTemps,yFlt,selBoxSers),buildLayout());
   updateStatsTable(selConds,yFlt,selBoxSers,selTemps);
   updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
@@ -12127,6 +12157,8 @@ def _build_box_interactive_html(
         ' onchange="toggleRangeInputs();update()">&nbsp;All&nbsp;data</label>\n'
         '  <label><input type="radio" name="box_flt" value="passing"'
         ' onchange="toggleRangeInputs();update()">&nbsp;Passing&nbsp;only</label>\n'
+        '  <span id="box_passing_warn" style="display:none;background:#fff0e8;color:#c04000;'
+        'font-weight:bold;padding:1px 6px;border-radius:3px"></span>\n'
         '  <label id="box_flt_hi_wrap"><input type="radio" name="box_flt" value="range_hi"'
         ' onchange="toggleRangeInputs();update()">&nbsp;Upper&nbsp;limit</label>\n'
         '  <span id="box_flt_range_hi_inputs" style="display:none;align-items:center;gap:4px">\n'
