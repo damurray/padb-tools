@@ -5404,7 +5404,11 @@ function updateStatPanel(conds,params,force){
     if(_spsd==='hi'||_spsd==='both') _hasHi=true;
   }
   var ssuHdr=(_hasLo&&_hasHi)?'Spec Spt':(_hasLo?'Spec Spt&#8595;':(_hasHi?'Spec Spt&#8593;':'Spec Spt'));
-  var marginHdr=(_hasLo&&_hasHi)?'Margin&#8595;/&#8593;':(_hasLo?'Margin&#8595;':(_hasHi?'Margin&#8593;':'Margin'));
+  /* Neither side determined (SPEC_DIRECTION="none" -- no real CSV spec and
+     no config override, e.g. MaxPowerTutorial2) must render the same as
+     "both determined", not fall through to a third, silently-one-sided
+     default -- see the matching fix on ssuStr/marginStr below for why. */
+  var marginHdr=(_hasLo&&_hasHi)?'Margin&#8595;/&#8593;':(_hasLo?'Margin&#8595;':(_hasHi?'Margin&#8593;':'Margin&#8595;/&#8593;'));
   conds.forEach(function(cd){
     var sorted=(cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;});
     sorted.forEach(function(fs){
@@ -5438,19 +5442,29 @@ function updateStatPanel(conds,params,force){
         tllStr='Hi: '+_tllSpan(r.tll_up,_tllHiOv);
       else
         tllStr='—';
+      /* ssu_lo/ssu_up (spec-supportable-from-data) are always both computed
+         regardless of spec direction -- the plot's own ssuLo/ssuHi traces
+         are drawn unconditionally too (see buildTraces() above). hasLo/
+         hasHi only reflect whether a real or configured spec picked a
+         SIDE to judge pass/fail against -- when NEITHER is true (real
+         SPEC_DIRECTION="none": no CSV spec, no config override), that
+         means direction is undetermined, not "assume upper" -- show both,
+         matching the plot, exactly like the hasLo&&hasHi case already
+         does. Reported: MaxPowerTutorial2 (no spec at all) showed only
+         Spec Spt-up in the table while the plot showed both. */
       var ssuStr;
-      if(_hasLo&&_hasHi) ssuStr='&#8595;'+r.ssu_lo.toFixed(4)+'&nbsp;/&nbsp;&#8593;'+r.ssu_up.toFixed(4);
-      else if(_hasLo) ssuStr=r.ssu_lo.toFixed(4);
-      else ssuStr=r.ssu_up.toFixed(4);
+      if(_hasHi&&!_hasLo) ssuStr=r.ssu_up.toFixed(4);
+      else if(_hasLo&&!_hasHi) ssuStr=r.ssu_lo.toFixed(4);
+      else ssuStr='&#8595;'+r.ssu_lo.toFixed(4)+'&nbsp;/&nbsp;&#8593;'+r.ssu_up.toFixed(4);
       function _marginSpan(v){
         return v!==null?
           '<span style="color:'+(v>=0?'green':'red')+';font-weight:bold">'+
           (v>=0?'+':'')+v.toFixed(4)+'</span>':'—';
       }
       var marginStr;
-      if(_hasLo&&_hasHi) marginStr='&#8595;'+_marginSpan(r.margin_lo)+'&nbsp;/&nbsp;&#8593;'+_marginSpan(r.margin_up);
-      else if(_hasLo) marginStr=_marginSpan(r.margin_lo);
-      else marginStr=_marginSpan(r.margin_up);
+      if(_hasHi&&!_hasLo) marginStr=_marginSpan(r.margin_up);
+      else if(_hasLo&&!_hasHi) marginStr=_marginSpan(r.margin_lo);
+      else marginStr='&#8595;'+_marginSpan(r.margin_lo)+'&nbsp;/&nbsp;&#8593;'+_marginSpan(r.margin_up);
       var outDet=fs.outlier_detail||[];
       var outCells='';
       if(outDet.length){

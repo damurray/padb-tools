@@ -311,7 +311,7 @@ def _save_v2_chain_state(state_path: Path | None, done: set[str]) -> None:
         pass
 
 
-def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict) -> tuple[bool, str | None]:
+def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = True) -> tuple[bool, str | None]:
     """After a V2 extraction job (*_run_job.json) succeeds, auto-run every
     sibling *_v2_job.json plot job -- completes the full V2 flow instead of
     leaving the plot-build step to be run by hand. Returns (ok, index_path)
@@ -332,13 +332,25 @@ def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict) -> tuple[bool, 
     without redoing expensive work, and (2) _resume_incomplete_v2_chains()
     (called once at webapp startup) can detect an interrupted chain and
     finish it automatically, without a user having to notice and finish it
-    by hand as happened here."""
+    by hand as happened here.
+
+    Second real bug (2026-08-30): the state file above has no expiry, so
+    the very fix meant to make a webapp-restart-interrupted chain resumable
+    also made every *deliberate* re-run of the same run job (fresh
+    extraction, genuinely new CSVs) silently skip rebuilding every plot job
+    -- "Skipping (already built)" against data that's now stale, working
+    correctly only the first time a pod's chain ever completed. `fresh`
+    distinguishes the two callers: the normal worker path (a real, just-
+    succeeded extraction) always starts the chain over from scratch and
+    ignores/overwrites whatever a previous chain left behind; only
+    _resume_incomplete_v2_chains() (no new extraction, genuinely picking up
+    an interrupted chain) passes fresh=False to honor the persisted state."""
     siblings = _find_v2_siblings(job_path, run_cfg)
     if not siblings:
         _append_log(job_id, "(no sibling *_v2_job.json plot jobs found to auto-run)")
         return True, None
     state_path = _v2_chain_state_path(job_path, siblings)
-    done_stems = _load_v2_chain_state(state_path)
+    done_stems: set[str] = set() if fresh else _load_v2_chain_state(state_path)
     ok = True
     result_index = None
     for plot_job in siblings:
@@ -425,7 +437,7 @@ def _resume_incomplete_v2_chains() -> None:
                     return
                 job["status"] = "running"
                 job["started"] = time.monotonic()
-            ok, result_index = _run_v2_siblings(job_path, job_id, cfg)
+            ok, result_index = _run_v2_siblings(job_path, job_id, cfg, fresh=False)
             if result_index is None:
                 idx = _job_result_index_path(job_path, cfg)
                 result_index = str(idx) if idx else None
