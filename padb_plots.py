@@ -7787,6 +7787,38 @@ function freqKeyDown(e,which){
   else if(e.key==='ArrowUp'){e.preventDefault();freqStep(which,1);}
   else if(e.key==='ArrowDown'){e.preventDefault();freqStep(which,-1);}
 }
+/* Sync the ec_freq_lo/ec_freq_hi slider (and therefore the Statistics
+   Table, which is already correctly filtered by that slider via
+   computeStats()'s fr argument) to a drag-zoom/pan on the plot's x-axis --
+   same gap, same fix, as stat_summary's identically-named function
+   (_STAT_SUMMARY_JS). A Plotly zoom by itself only changes the viewport,
+   it never touches ec_freq_lo/ec_freq_hi, so before this the table kept
+   showing every row regardless of what the plot was zoomed to (reported:
+   "not limiting table data to the plot data" on a real MaxPowerTutorial2
+   env_coverage page). update()'s own Plotly.react() call is in-place (no
+   purge), so unlike stat_summary this listener only needs attaching once
+   at page init, not re-attached after every update(). */
+function _onPlotRelayout(ed){
+  if(!ed) return;
+  if(ed['xaxis.autorange']){
+    setFreqBand(EC_FREQ_MIN,EC_FREQ_MAX);
+    return;
+  }
+  var lo=ed['xaxis.range[0]'],hi=ed['xaxis.range[1]'];
+  if(Array.isArray(ed['xaxis.range'])){lo=ed['xaxis.range'][0];hi=ed['xaxis.range'][1];}
+  if(lo===undefined||hi===undefined) return;
+  var log=isLogX();
+  var loV=log?Math.pow(10,lo):lo,hiV=log?Math.pow(10,hi):hi;
+  setFreqBand(loV,hiV);
+}
+function setFreqBand(lo,hi){
+  var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
+  var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
+  s1.value=loV;s2.value=hiV;
+  document.getElementById('ec_freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('ec_freq_hi_txt').value=hiV.toFixed(3);
+  update();
+}
 function fmt(v,d){return v===null||v===undefined?'—':v.toFixed(d!==undefined?d:4);}
 function updateStatsTable(selConds,force){
   var el=document.getElementById('ec_stat_panel');
@@ -8140,6 +8172,7 @@ _loadEcGlobalFilter();
 loadState();
 var _ir=buildTraces(getSelectedConds(),[]);
 Plotly.newPlot('plot',_ir.traces,buildLayout(_ir.yRange),{responsive:true,scrollZoom:true});
+document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
 updateSummaryBar(getSelectedConds());
 _recomputeSpecSegments();
 """
