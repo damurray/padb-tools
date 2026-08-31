@@ -947,6 +947,17 @@ function segTab(dir){
   _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   _segFilterCondDims(seg);
+  /* Real bug reported by the user (2026-08-31): a Y range pinned by
+     Autoscale Y (or a manual drag-zoom) for the PREVIOUS segment's data
+     silently persisted onto the NEW segment after tabbing -- correct for
+     an unrelated filter change (that's the whole point of the zoom-
+     persistence mechanism), but a segment tab moves to a conceptually
+     different data window on purpose, so the old Y pin is almost never
+     still meaningful. Clearing autorange here (before update()'s
+     _liveAxisRange('yaxis') read) makes the new segment autoscale fresh,
+     same as Reset already does for exactly this reason -- Y_LIM, if
+     configured, still overrides regardless. */
+  Plotly.relayout('plot',{'yaxis.autorange':true});
   setFreqBand(seg.lo,seg.hi);
 }
 /* Recompute segments from the group/temp/GF-filtered data but ignoring the
@@ -3374,6 +3385,10 @@ function segTab(dir){
   document.getElementById('dist_freq_lo_txt').value=seg.lo.toFixed(3);
   document.getElementById('dist_freq_hi_txt').value=seg.hi.toFixed(3);
   _segFilterCondDims(seg);
+  /* See scatter/summary's identical segTab() fix -- a Y range pinned by
+     Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
+     silently persist onto a genuinely different new segment. */
+  Plotly.relayout('kde_plot',{'yaxis.autorange':true});
   update();
 }
 /* Narrow the SpurType filter to only the type(s) with a real raw point in
@@ -5821,10 +5836,8 @@ function updateSitePanel(){
     var freqWindowed=fLo>FREQ_MIN+1e-9||fHi<FREQ_MAX-1e-9;
     var allSers=getAllSerials(),selSers=getSelectedSerials();
     var serFlt=allSers.length>1&&selSers.length<allSers.length;
-    var effSers=serFlt?selSers:allSers;
     var allPorts=getSsPorts(),selPorts=getSelSsPorts();
     var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
-    var effPorts=portFlt?selPorts:allPorts;
     var hasGf=_gfCoarseExcluded&&_gfCoarseExcluded.size>0;
     var primaryBuckets={},otherPoints=[];
     active.forEach(function(cd){
@@ -5832,8 +5845,16 @@ function updateSitePanel(){
       (cd.freq_stats||[]).forEach(function(fs){
         if(fs.freq<fLo||fs.freq>fHi) return;
         (fs.dut_vals||[]).forEach(function(d){
-          if(effSers.indexOf(d.s)<0) return;
-          if(effPorts.length&&effPorts.indexOf(d.p||'')<0) return;
+          /* Real bug fixed in boxplot's own copy (2026-08-31): the old
+             effSers=serFlt?selSers:allSers pattern still excludes every
+             point whenever allSers itself is empty (no serial panel
+             rendered for this pod at all, even though real per-DUT d.s
+             values exist in the data) -- gate on serFlt directly instead,
+             matching every other filtering function's serActive pattern,
+             so "no serial panel" correctly means "no serial filtering",
+             not "filter to nothing". */
+          if(serFlt&&selSers.indexOf(d.s)<0) return;
+          if(portFlt&&selPorts.indexOf(d.p||'')<0) return;
           if(hasGf){
             var _excl=_isStatGfExcl(d.s,cd.condition,fs.freq);
             if(_statGfFocusMode?!_excl:_excl) return;
@@ -6203,6 +6224,12 @@ function segTab(dir){
   document.getElementById('freq_lo_txt').value=seg.lo.toFixed(3);
   document.getElementById('freq_hi_txt').value=seg.hi.toFixed(3);
   _segFilterCondDims(seg);
+  /* See scatter/summary's identical segTab() fix -- a Y range pinned by
+     Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
+     silently persist onto a genuinely different new segment. update()
+     reads this back via _liveAxisRange('yaxis') before its own
+     Plotly.purge() call, same as every other live-zoom read in this view. */
+  Plotly.relayout('plot',{'yaxis.autorange':true});
   update();
 }
 /* Narrow every condition-dim dropdown to only the value(s) actually
@@ -8315,7 +8342,11 @@ function segTab(dir){
   document.getElementById('ec_freq_hi_txt').value=seg.hi.toFixed(3);
   _segFilterCondDims(seg);
   var log=isLogX();
-  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(seg.lo,1e-9)),Math.log10(Math.max(seg.hi,1e-9))]:[seg.lo,seg.hi]});
+  /* 'yaxis.autorange':true clears any Y range pinned by Autoscale Y or a
+     manual drag-zoom for the PREVIOUS segment -- see scatter/summary's
+     identical segTab() fix; shouldn't silently persist onto a genuinely
+     different new segment. */
+  Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(seg.lo,1e-9)),Math.log10(Math.max(seg.hi,1e-9))]:[seg.lo,seg.hi],'yaxis.autorange':true});
   update();
 }
 /* Narrow every condition-dim dropdown to only the value(s) actually present
@@ -11431,6 +11462,18 @@ function updateSitePanel(){
     if(!PRIMARY_SITE){el.innerHTML='<i style="color:#888">No comparison site configured for this page.</i>';return;}
     var selConds=getSelectedConds(),selSerials=getSelectedBoxSerials(),selTemps=getSelectedTemps();
     var selCondSet={};selConds.forEach(function(c){selCondSet[c]=true;});
+    /* Real bug reported by the user (2026-08-31): this filtered every point
+       by selSerials.indexOf(d.s)<0 unconditionally -- correct when a real
+       serial panel exists and something's actually deselected, but on a
+       pod with NO serial checkboxes at all (getAllBoxSerials() empty --
+       confirmed on a real cross-site compare page), selSerials is also
+       always [], so indexOf() returns -1 for every single point and the
+       whole panel silently excluded all data ("No non-<site> data") even
+       though real data existed. Every other filtering function in this
+       file already gates this on serActive (allSers.length>1 && narrowed)
+       -- this was the one place missing it. */
+    var allSersSt=getAllBoxSerials();
+    var serActiveSt=allSersSt.length>1&&selSerials.length<allSersSt.length;
     var k=getIqrK();
     // Scope to the plot's current frequency window -- box_freq_lo/box_freq_hi
     // is the same range a drag-zoom already syncs to (see _onPlotRelayout),
@@ -11448,7 +11491,7 @@ function updateSitePanel(){
       (cd.freq_stats||[]).forEach(function(fs){
         if(fs.freq<fr.lo||fs.freq>fr.hi) return;
         (fs.vals_detail||[]).forEach(function(d){
-          if(selSerials.indexOf(d.s)<0) return;
+          if(serActiveSt&&selSerials.indexOf(d.s)<0) return;
           if(gfActive){
             var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);
             if(boxGfFocus?!_ig:_ig) return;
@@ -12366,6 +12409,10 @@ function segTab(dir){
   document.getElementById('box_freq_lo').value=seg.lo.toFixed(3);
   document.getElementById('box_freq_hi').value=seg.hi.toFixed(3);
   _segFilterCondDims(seg);
+  /* See scatter/summary's identical segTab() fix -- a Y range pinned by
+     Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
+     silently persist onto a genuinely different new segment. */
+  Plotly.relayout('plot',{'yaxis.autorange':true});
   update();
 }
 /* Recompute segments from the condition/temp/serial/port/GF-filtered
@@ -14287,7 +14334,6 @@ function updateSitePanel(){
     var freqWindowed=fr.lo>FREQ_MIN+1e-9||fr.hi<FREQ_MAX-1e-9;
     var allSers=getSumAllSerials(),selSers=getSumSelectedSerials();
     var serFlt=allSers.length>1&&selSers.length<allSers.length;
-    var effSers=serFlt?selSers:allSers;
     var gfEl=document.getElementById('sum_gf_chk');
     var gfOn=!gfEl||gfEl.checked;
     var hasGf=gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size>0;
@@ -14302,7 +14348,13 @@ function updateSitePanel(){
         if(freq<fr.lo||freq>fr.hi) return;
         var row=cd.dut_vals[fi]||[];
         cd.dut_info.forEach(function(di,di_idx){
-          if(effSers.indexOf(di.s)<0) return;
+          /* Real bug fixed in boxplot's own copy (2026-08-31): the old
+             effSers=serFlt?selSers:allSers pattern still excludes every
+             point whenever allSers itself is empty (no serial panel
+             rendered for this pod at all, even though real per-DUT data
+             exists) -- gate on serFlt directly instead, matching every
+             other filtering function's serActive pattern. */
+          if(serFlt&&selSers.indexOf(di.s)<0) return;
           if(coarseKey!==null){
             var inGf=_sumGfCoarseExcluded.has(di.s+'||'+coarseKey);
             if(gfMode==='focus'?!inGf:inGf) return;
@@ -14823,6 +14875,17 @@ function segTab(dir){
   _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
   _segFilterCondDims(seg);
+  /* Real bug reported by the user (2026-08-31): a Y range pinned by
+     Autoscale Y (or a manual drag-zoom) for the PREVIOUS segment's data
+     silently persisted onto the NEW segment after tabbing -- correct for
+     an unrelated filter change (that's the whole point of the zoom-
+     persistence mechanism), but a segment tab moves to a conceptually
+     different data window on purpose, so the old Y pin is almost never
+     still meaningful. Clearing autorange here (before update()'s
+     _liveAxisRange('yaxis') read) makes the new segment autoscale fresh,
+     same as Reset already does for exactly this reason -- Y_LIM, if
+     configured, still overrides regardless. */
+  Plotly.relayout('plot',{'yaxis.autorange':true});
   setFreqBand(seg.lo,seg.hi);
 }
 /* Narrow every condition-dim dropdown to only the value(s) actually
