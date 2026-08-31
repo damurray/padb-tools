@@ -5,5 +5,5 @@ __pycache__/
 *.html
 !webapp/templates/*.html
 *.pdf
-!archive/Training_Setup_1Pager.pdf
+!Training_Setup_1Pager.pdf
 tutorial/
