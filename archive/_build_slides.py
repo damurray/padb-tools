@@ -999,6 +999,20 @@ add_bullets(s, [
 ], top=5.55, height=0.7, size=15)
 
 # ---------------------------------------------------------------------------
+# 30e. Recent updates
+# ---------------------------------------------------------------------------
+s = content_slide("Wrap-Up", "Recent Updates", 42)
+add_bullets(s, [
+    "Stat Summary & Boxplot: spec/margin columns now show both sides when direction is undetermined (was silently upper-only)",
+    "Boxplot: \"Passing only\" now warns when there's nothing to compare against, instead of quietly doing nothing",
+    "Env Coverage: drag-zoom now narrows the Statistics Table too — same behavior Stat Summary and Boxplot already had",
+    "Large datasets: opt-in decimation + binary encoding cut file size dramatically (one real case: 400MB → 99MB)",
+    "Compare Mode: x-axis units auto-detected and cross-checked between sites; new default PADB-Compare publish location",
+    "Data integrity: results_padb is now the only trusted CSV source — no more silent R-Plots fallback substitution",
+    "Web app: survives a restart mid-run, cleans up orphaned R-Host.exe processes, and the Running Jobs panel survives a browser refresh",
+], top=1.8, height=5.0, size=18)
+
+# ---------------------------------------------------------------------------
 # 31. Thank you
 # ---------------------------------------------------------------------------
 s = add_slide()
@@ -1037,7 +1051,7 @@ p.font.color.rgb = ACCENT
 # ---------------------------------------------------------------------------
 # 33. Appendix — getting the code
 # ---------------------------------------------------------------------------
-s = content_slide("Appendix", "Getting the Code", 43)
+s = content_slide("Appendix", "Getting the Code", 44)
 add_bullets(s, [
     "This repo isn't on a company-wide share by default — copy it from:",
 ], top=1.85, height=0.4, size=19)
@@ -1058,7 +1072,7 @@ add_bullets(s, [
 # ---------------------------------------------------------------------------
 # 34. Appendix — first commands to verify
 # ---------------------------------------------------------------------------
-s = content_slide("Appendix", "First Commands to Verify Your Setup", 44)
+s = content_slide("Appendix", "First Commands to Verify Your Setup", 45)
 add_bullets(s, ["From inside the tools folder, confirm everything imports cleanly:"],
             top=1.85, height=0.4, size=18)
 add_code(s, ['py -c "import padb_run, padb_v2, padb_config"'], top=2.3, height=0.55, size=14.5)
