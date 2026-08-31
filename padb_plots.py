@@ -205,6 +205,29 @@ function toggleLogX(){
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
 }
 
+/* Separate from the built-in "Reset axes" / this app's own "Reset" button
+   (which restore BOTH axes to their full default range) -- this only
+   re-fits Y, leaving whatever X range/zoom is currently active untouched.
+   Plotly.js's own autorange, when the other axis already has an explicit
+   (non-autorange) range, computes the fit from only the data actually
+   visible within that range -- exactly "autoscale Y for the currently
+   selected X window," not a full-dataset autoscale. The result is read
+   back and re-pinned as an explicit range (autorange:false) rather than
+   left as a live autorange:true, so it survives the next unrelated
+   filter change via _liveAxisRange() -- same convention as a manual
+   drag-zoom already uses. If Y_LIM is configured (a deliberate job.json
+   override), buildLayout() always prefers it over any live zoom on the
+   very next update() -- same existing precedent as a manual Y zoom, not
+   a new exception carved out for this button. */
+function autoscaleY(){
+  var gd=document.getElementById('plot');
+  if(!gd) return;
+  Plotly.relayout('plot',{'yaxis.autorange':true}).then(function(){
+    var yr=gd.layout&&gd.layout.yaxis&&gd.layout.yaxis.range;
+    if(Array.isArray(yr)) Plotly.relayout('plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false});
+  });
+}
+
 /* ---------- frequency sliders + text entry ---------- */
 function syncFreq(){
   var lo=document.getElementById('freq_lo');
@@ -1980,6 +2003,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  {help_panel_html}\n'
         '  <div class="sep"></div>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
+        ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         f'  {_csv_btn("saveCSV")}\n'
         '  <label id="gf_label" style="display:none;white-space:nowrap">'
         '<input type="checkbox" id="gf_chk" checked onchange="_updateGfIndicator();update()">'
@@ -3795,6 +3820,18 @@ function resetView(){
   Plotly.relayout('kde_plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
 }
+/* See scatter's identical function for the full rationale -- only re-fits
+   Y (density) to whatever's visible in the current X window, leaving any
+   active X zoom untouched; this view's plot div is 'kde_plot', not the
+   'plot' id every other view uses. */
+function autoscaleY(){
+  var gd=document.getElementById('kde_plot');
+  if(!gd) return;
+  Plotly.relayout('kde_plot',{'yaxis.autorange':true}).then(function(){
+    var yr=gd.layout&&gd.layout.yaxis&&gd.layout.yaxis.range;
+    if(Array.isArray(yr)) Plotly.relayout('kde_plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false});
+  });
+}
 
 window.addEventListener('DOMContentLoaded',function(){loadState();update();});
 """
@@ -3818,6 +3855,8 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         + (port_panel_html + "\n" if port_panel_html else "")
         + help_panel_html + "\n"
         + '<button class="sel-btn" style="margin-left:6px" onclick="resetView()">Reset</button>\n'
+        + '<button class="sel-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
+          ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         + "</div>\n"
         + '<div class="ctrl-bar">\n'
         '  <span>View:</span>\n'
@@ -5218,6 +5257,17 @@ function toggleLogX(){
   }
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
   update();
+}
+/* See scatter's identical function for the full rationale -- only re-fits
+   Y to whatever's visible in the current X window, leaving any active X
+   zoom untouched. */
+function autoscaleY(){
+  var gd=document.getElementById('plot');
+  if(!gd) return;
+  Plotly.relayout('plot',{'yaxis.autorange':true}).then(function(){
+    var yr=gd.layout&&gd.layout.yaxis&&gd.layout.yaxis.range;
+    if(Array.isArray(yr)) Plotly.relayout('plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false});
+  });
 }
 function isNpTI(){var c=document.getElementById('np_ti_chk');return c?c.checked:false;}
 /* ---- serial filter ---- */
@@ -6943,6 +6993,8 @@ def _build_stat_summary_html(
         'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000"></span>'
         '</label>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
+        ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         f'  {_csv_btn("saveCSV")}\n'
         '</div>\n'
     )
@@ -7395,6 +7447,20 @@ function toggleLogX(){
   }
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
   update();
+}
+/* See scatter's identical function for the full rationale -- only re-fits
+   Y to whatever's visible in the current X window, leaving any active X
+   zoom untouched. Y_LIM has no equivalent hard override in this view (its
+   own yRange is a computed best-fit suggestion, not a config value), so
+   there's no precedent to preserve here the way scatter/stat_summary
+   have. */
+function autoscaleY(){
+  var gd=document.getElementById('plot');
+  if(!gd) return;
+  Plotly.relayout('plot',{'yaxis.autorange':true}).then(function(){
+    var yr=gd.layout&&gd.layout.yaxis&&gd.layout.yaxis.range;
+    if(Array.isArray(yr)) Plotly.relayout('plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false});
+  });
 }
 function getSelectedConds(){
   return ENV_DATA.filter(function(cd){
@@ -8797,6 +8863,8 @@ def _build_env_coverage_html(
         + ' this click instead"'
         + ' onclick="updateStatsTable(getGroupedConditions(),true)">Refresh&nbsp;table</button>\n'
         + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        + '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
+          ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         + f'  <button class="gf-toggle-btn" id="ec_gf_toggle_btn" onclick="toggleEcGf()">GF:&nbsp;ON</button>\n'
         + f'  {gf_badge_html}\n'
         + '</div>\n'
@@ -11362,6 +11430,19 @@ function toggleBoxLfPanel(){
 }
 
 /* ---- Clear everything ---- */
+/* See scatter's identical function for the full rationale -- only re-fits
+   Y to whatever boxes are visible within the current (frequency) X range,
+   leaving any active zoom untouched. The X axis here is categorical, but
+   Plotly's own autorange still restricts the Y fit to the categories
+   currently in view, same mechanism as a continuous axis. */
+function autoscaleY(){
+  var gd=document.getElementById('plot');
+  if(!gd) return;
+  Plotly.relayout('plot',{'yaxis.autorange':true}).then(function(){
+    var yr=gd.layout&&gd.layout.yaxis&&gd.layout.yaxis.range;
+    if(Array.isArray(yr)) Plotly.relayout('plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false});
+  });
+}
 function clearEverything(){
   _stClear();
   /* Longform harmonic + checkboxes */
@@ -12609,6 +12690,8 @@ def _build_box_interactive_html(
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
         ' onclick="clearEverything()">Clear everything</button>\n'
+        + '  <button class="toggle-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
+          ' boxes are currently visible, without changing any X (frequency) zoom">Autoscale&nbsp;Y</button>\n'
         + '  <button class="toggle-btn" id="box_gf_mode_btn"'
         ' style="background:#f0f4ff;border-color:#6688cc;color:#0044aa"'
         ' title="Toggle GF mode: Exclude hides flagged data; Inspect shows only flagged data"'
@@ -13044,6 +13127,17 @@ function toggleLogX(){
     range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
   }
   Plotly.relayout('plot',{'xaxis.type':log?'log':'linear','xaxis.range':range});
+}
+/* See scatter's identical function for the full rationale -- only re-fits
+   Y to whatever's visible in the current X window, leaving any active X
+   zoom untouched. */
+function autoscaleY(){
+  var gd=document.getElementById('plot');
+  if(!gd) return;
+  Plotly.relayout('plot',{'yaxis.autorange':true}).then(function(){
+    var yr=gd.layout&&gd.layout.yaxis&&gd.layout.yaxis.range;
+    if(Array.isArray(yr)) Plotly.relayout('plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false});
+  });
 }
 
 /* ---- freq sliders + text entry ---- */
@@ -14856,6 +14950,8 @@ def _build_summary_html(
         + f'  {sep}\n'
         + f'  {help_panel_html}\n'
         + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        + '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
+          ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         + '  <span id="n_groups"></span>\n'
         + "</div>\n"
         + (
