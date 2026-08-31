@@ -13,8 +13,8 @@ py C:\apps\padb\tools\webapp\padb_web.py
 ```
 - Open **"3. Compare two datasets"** — collapsed by default, click the header to expand.
 - Pick a CSV for **Site A** and **Site B** (auto-discovered from every already-extracted CSV on disk), give each a short name (e.g. `SR` / `AMC2`), and pick the **Primary site** — the reference population for the Site Population Check.
-- Click **Check compatibility** first. It always warns (never blocks) on soft gaps — missing temperatures/ports, non-overlapping frequency ranges. It **blocks** only on a genuine measurement-unit mismatch (e.g. dBc vs. dBm) — check **Override and proceed anyway** if you're sure that's what you actually want.
-- Click **Create & Run**. Builds the job.json and queues it — no hand-written file needed. New jobs default to **local-only** (no publish) on purpose.
+- Click **Check compatibility** first (shows "Checking..." while it runs). It always warns (never blocks) on soft gaps — missing temperatures/ports, non-overlapping frequency ranges. It **blocks** on a genuine measurement-unit mismatch (e.g. dBc vs. dBm) *or* an x-axis unit/column mismatch (e.g. one site's CSV is carrier frequency in MHz, the other is offset frequency in Hz) — check **Override and proceed anyway** if you're sure that's what you actually want.
+- Click **Create & Run** (shows "Creating & queuing..." while it runs). Builds the job.json and queues it — no hand-written file needed. If Site A's real x-axis isn't the tool's own MHz-carrier-frequency default, `x_col`/`x_label`/`x_unit` are set automatically in the generated job.json so the axis isn't mislabeled. If another compare job is already running, this one queues behind it — the status card shows `queued (N ahead)`, not just a bare "queued". New jobs default to **local-only** (no publish) on purpose.
 
 ## 3. Or write the job.json by hand
 
@@ -34,7 +34,8 @@ py C:\apps\padb\tools\webapp\padb_web.py
 - `compare_csv` replaces `csv_path` entirely — 2+ site names required. Every backslash doubled, same as any other job.json.
 - `primary_site` defaults to the first key if omitted. It only matters for the Site Population Check (below, on boxplot/`stat_summary`/`summary`) — no effect on any other view.
 - Omit `"views"` for the normal auto-detection (Room-only → `scatter`+`boxplot`; multi-temp → all six) — same rule as any other V2 job.
-- Set `publish_to` explicitly (even to a real path) — an ad-hoc comparison shouldn't silently inherit the default publish location.
+- Set `publish_to` explicitly (even to a real path) — an ad-hoc comparison shouldn't silently inherit the default publish location. A compare job with no `publish_to` at all now defaults to a `PADB-Compare` share tree (added 2026-08-24), same pattern as `PADB-Simple`/`PADB-Interactive` for other job types — `"publish_to": ""` opts out.
+- If the two sites' x-axis isn't the default MHz carrier frequency, set `x_col`/`x_label`/`x_unit` by hand to match your sibling non-compare job.json (e.g. `"x_col": "Frequency Offset (Hz)"`) — the webapp's Create & Run does this automatically, but a hand-written job.json needs it set explicitly.
 
 ## 4. Run it
 
@@ -50,7 +51,7 @@ Open `results_dir\index.html` → the boxplot, `stat_summary`, or `summary` view
 - **"Site Population Check" button** — tests each non-primary-site DUT's value at each frequency/temperature against the k×IQR fence built from the primary site's own population there (same fence/k×IQR control the page's own outlier detection already uses). Three tables, in order:
   1. **Per-DUT summary** — checked/outside counts, high/low split, and a **suggested triage tag**: station/systemic issue (shared with other DUTs) beats bad DUT (isolated, toward-failing) beats isolated-worth-a-look beats below-population/benign beats ambiguous. A suggestion, not a verdict. **Boxplot only** (added 2026-08-24): also **Dup runs** / **Genuinely repeated freqs** columns — a DUT's "Checked" count can be inflated either by genuinely broader condition coverage or by real repeat measurements, and these columns tell the two apart instead of leaving it ambiguous.
   2. **Frequency clusters** — every point where 2+ distinct DUTs are simultaneously outside. Several independent DUTs failing at the identical spot points at the station/fixture, not any one DUT.
-  3. **Per-point detail** — every checked point, for drill-down. **Boxplot only**: an **"SR dup pts"** column lists which primary-site reference DUTs at that point have more than one raw row (e.g. `US65080419×2`), so you can tell if the fence's own `n` is inflated by a repeated unit.
+  3. **Per-point detail** — every checked point, for drill-down, tagged high/low and (for a one-sided spec) **"OUTSIDE (benign)"** when the deviation is on the side that can't fail spec — a real population difference, not a compliance concern. **Boxplot only**: **"SR dup pts"** / **"Site dup pts"** columns (both sides, added 2026-08-24) list which DUTs at that point have more than one raw row (e.g. `US65080419×2`), so you can tell if the fence's own `n` is inflated by a repeated unit.
 - Narrowing the frequency range (drag-zoom or the number inputs) scopes all three tables to that window — a note in the summary line says so.
 - **Export CSV (All)** / **Export CSV (Outside only)** (added 2026-08-24, all three views) download the per-point detail table as-is, with a metadata header (timestamp, primary site, frequency window).
 

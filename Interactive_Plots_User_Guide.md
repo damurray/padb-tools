@@ -67,7 +67,7 @@ None of these controls change the underlying result file — you're only changin
 - **Temperature filter** — show/hide specific temperature conditions.
 - **Group by (Condition / Temperature Step / Port / Serial Number / any condition dimension)** — defaults to Condition for most pods, but auto-switches to Serial Number once a pod has over 150 raw conditions (the legend would otherwise be bigger than the plot). Condition-dimension filters (the checkboxes above) still work correctly no matter which Group by mode is active — unchecking every value always shows nothing, in every mode.
 - **TLL display (Both / Upper only / Lower only)** — only appears when the data has no built-in spec limit; lets you pick which side of the tolerance band to display.
-- **Data filter (All data / Passing only / Upper limit / Lower limit)** — trims which raw points feed into the box statistics.
+- **Data filter (All data / Passing only / Upper limit / Lower limit)** — trims which raw points feed into the box statistics. If "Passing only" has nothing to compare against for this data (no spec at all, and no TLL override typed in), an orange note now appears next to the radio saying so — see the FAQ below.
 - **Show points** — overlays every individual measurement as a small dot on top of its box, so you can see the raw data behind the summary.
 - **Collapse dup runs** — off by default. If a unit was genuinely measured more than once at the exact same point (same condition, port, and temperature), this averages those repeats into one point before the box statistics are computed, so that unit doesn't quietly count twice. See **"Why does the Statistics Table show a DUT count larger than the number of units I tested?"** below.
 - **Global Filter buttons** — this is the page where you actually *set* the Global Filter: "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" (these add to, not replace, whatever's already set), plus "Clear global filter", "Export GF CSV" / "Import GF CSV" (save/reload your exclusion list as a file), and "Copy PADB Filter" (builds a real PADB filter expression matching whatever this page is currently narrowed to — condition, Serial, Port, Frequency, Temperature — ready to paste into PADB's own filter box). Note "Set outliers as GF" checks each *currently-selected Temperature checkbox* independently — with every temperature checked (the default), it isn't Room-only; narrow to just Room first if that's what you want. "Set delta outliers as GF" is the genuinely different, always-non-Room metric (temperature sensitivity relative to each DUT's own Room baseline).
@@ -114,6 +114,8 @@ None of these controls change the underlying result file — you're only changin
 - **M.U. input** — a measurement-uncertainty value that gets subtracted from the spec to show the true remaining margin.
 - **Spec hi / Spec lo override** — lets you type in spec values by hand if the underlying data doesn't already have them.
 - **Temperature filter** — include/exclude specific non-room temperatures.
+
+Zooming in on the plot (drag a box, or scroll) now also narrows the Statistics Table to match — the same behavior Stat Summary and Boxplot already had. Double-click the plot (or use the "Reset axes" button) to go back to the full range.
 
 ---
 
@@ -165,6 +167,12 @@ It's counting raw measurement rows, not distinct units — if a unit was genuine
 
 **Why do some pages show an amber "Statistical note" banner about noisy data?**
 Env Coverage, Distribution, Stat Summary, and Summary all compute a tolerance-interval-style bound (or, for Distribution, a density curve) that assumes a reasonably well-behaved, low-noise set of measurements. That's always true of the method, not something specific to your data, so the note is shown on every page for these views as a standing reminder — with few units, high measurement noise, or a visibly scattered spread, treat the bound shown as a guide, not a guarantee, and cross-check against the Scatter or Boxplot view for that same data.
+
+**I set Boxplot's Data filter to "Passing only" and nothing changed.**
+Check whether an orange note appeared next to the radio button. "Passing only" filters against the spec — if this measurement has no spec limit in the data *and* you haven't typed a value into the TLL override field, there's genuinely nothing to compare against, so it correctly leaves the data unchanged and tells you why. Type a value into the TLL override field (or use "Upper limit"/"Lower limit" instead, which take a typed value directly) if you want it to actually filter.
+
+**Why does Stat Summary's table sometimes only show one spec value ("Spec Spt") instead of both?**
+It shows one side (↓ or ↑) when the measurement is genuinely one-sided (e.g. a guaranteed-minimum-power spec), and shows both when the direction is unclear either way — meaning both sides are genuinely relevant, matching what the plot itself already shows. If you were seeing only the upper side even though the plot clearly shows both, that's a bug that's since been fixed — reload the page.
 
 **Why doesn't this view have a "serial number" filter?**
 A few views (Summary, and always for Env Coverage's room/delta baseline) pre-combine every unit's data before drawing, so there's no per-unit toggle to expose. If you need to exclude a specific unit from those views, set the Global Filter on the Boxplot page instead — it applies everywhere automatically.

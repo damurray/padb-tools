@@ -67,6 +67,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] Click "Statistics Table" → table expands below plot
 - [ ] Per-condition, per-frequency: n, mean, σ, NP TI bounds, outliers visible
 - [ ] Click "Statistics Table" again → table collapses
+- [ ] (fixed 2026-08-30) On a pod with no spec at all and `spec_direction` unset/auto: "Spec Spt" and "Margin" columns show BOTH `↓lo / ↑hi` values, matching what the plot itself already shows — not silently defaulting to the upper value only
 
 ### CSV export
 - [ ] Click CSV button → file downloads
@@ -94,6 +95,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] Box plots render for each harmonic × port condition
 - [ ] Each temperature shown in a different colour/group
 - [ ] Outlier points visible where applicable
+- [ ] (fixed 2026-08-30) Narrow the condition filter, reload the page fresh (not just re-run `update()`) → the *initial* render already reflects the narrowed selection, not the full unfiltered set
 
 ### Temperature filter
 - [ ] Uncheck a temperature → those boxes disappear
@@ -128,6 +130,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] "Lower limit" radio (shown only when TLL display is Lower/Both) → same, removes samples below the entered value
 - [ ] "All data" → returns to full range
 - [ ] TLL display selector (Both/Upper only/Lower only) present only when the CSV has no `Upper_Limit`/`Lower_Limit` at all — switching it hides/shows the Upper limit / Lower limit radios accordingly, and falls back to "All data" if the currently-selected radio becomes hidden
+- [ ] (added 2026-08-30) On a pod with no spec at all and no TLL override typed: select "Passing only" → an orange note appears next to the radio saying there's nothing to compare against, and the data is genuinely unchanged. Type a value into either TLL override field → note disappears (or narrows to name only the still-missing side), and the filter now actually trims data.
 
 ### Statistics table and CSV
 - [ ] Statistics table toggles (same as stat_summary)
@@ -212,6 +215,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] Serial filter (if >1 DUT): uncheck a serial → UDE/LDE bands recompute
 - [ ] Temperature filter: uncheck a temp → that condition's contribution removed from ΔEnv stats
 - [ ] Frequency sliders narrow the X range
+- [ ] (fixed 2026-08-30) Drag-zoom on the plot → frequency slider/textboxes update to match, and the Statistics Table (if open) narrows to the zoomed range too, not just the plot viewport. Double-click / "Reset axes" → slider returns to the full range.
 
 ### Statistics table
 - [ ] Click Statistics button → table appears below plot with UDE, LDE, TTU, TTL, Room μ, n columns

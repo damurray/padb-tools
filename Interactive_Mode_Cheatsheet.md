@@ -63,6 +63,7 @@ Different schema — this one drives `padb_v2.py`, not `padb_run.py`:
 - `x_label`/`x_unit` — override if the x-axis isn't carrier frequency in MHz (e.g. phase-noise offset in Hz).
 - `publish_to` — omit for the default `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>`; set `""` to opt out, or a path to publish elsewhere.
 - Comparing two sites instead of a single extraction? Use `"compare_csv": {"SiteA": "path...", "SiteB": "path..."}` + `"primary_site"` instead of a single CSV — see `PADB_Tools_Guide.md` → **Cross-Site Comparison**. The webapp's collapsed-by-default "Compare two datasets" panel can build and run this job for you without hand-writing it.
+- CSV huge / a dense continuous sweep (thousands of raw points per DUT/condition)? Add `"scatter_decimate": "auto"` (default anyway — reduces each series above 2000 points while always keeping the true min/max/first/last so a real spike is never dropped) and/or `"binary_encode": true` (float32-encodes the numeric columns instead of JSON text; byte-for-byte identical output when omitted) — see `PADB_Tools_Guide.md` → **Performance: Decimation and Binary Encoding**.
 
 ## 4. Build the interactive views
 ```
