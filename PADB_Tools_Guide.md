@@ -13,8 +13,10 @@
 Python 3.10 or later. Install packages once:
 
 ```
-py -m pip install pandas numpy matplotlib scipy plotly
+py -m pip install pandas numpy matplotlib scipy plotly flask
 ```
+
+`flask` is only needed for the web app (`webapp/padb_web.py`, see **Web App** below) — every other script in this guide works without it.
 
 ### PADB-R.exe
 

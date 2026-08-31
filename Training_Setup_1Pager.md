@@ -39,7 +39,7 @@ The 3 tutorial pods (+ their `.sao` companions) ship inside `tools\tutorial\` â€
 ## 4. Launch the web app once, to confirm it all works
 
 ```
-py C:\temp\tools\webapp\padb_web.py
+py C:\temp\tools\webapp\padb_web.py (there is also a batch file, Start_web.bat that starts up the browser app)
 ```
 
 This opens `http://127.0.0.1:5000` in your browser. Confirm:

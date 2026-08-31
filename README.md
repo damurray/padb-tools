@@ -57,8 +57,10 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 ### Prerequisites
 
 ```
-py -m pip install pandas numpy matplotlib scipy plotly
+py -m pip install pandas numpy matplotlib scipy plotly flask
 ```
+
+`flask` is only needed for the web app (`webapp/padb_web.py`) — every other script works without it.
 
 PADB-R.NET must be installed at `C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe`.
 

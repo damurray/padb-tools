@@ -9,8 +9,10 @@ Everything needed to go from a `.pod` file to published interactive HTML results
 ## 1  One-time setup
 
 ```
-py -m pip install pandas numpy matplotlib scipy plotly
+py -m pip install pandas numpy matplotlib scipy plotly flask
 ```
+
+`flask` is only needed if you'll use the web app (`webapp/padb_web.py`) — this walkthrough is CLI-only, so it's optional here, but worth installing up front if you'll want the browser UI later.
 
 PADB-R.NET must be installed at `C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe`.
 

@@ -36,8 +36,10 @@ Read in this order for a first pod: **this doc → `Quick_Start.md` → `PADB_An
 ## Prerequisites
 
 ```
-py -m pip install pandas numpy matplotlib scipy plotly
+py -m pip install pandas numpy matplotlib scipy plotly flask
 ```
+
+`flask` is only needed for the web app (`webapp/padb_web.py`) — skip it if you're only ever using the CLI scripts directly.
 
 PADB-R.NET installed at `C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe` (override with `padb_exe` in job.json if yours differs). **PADB-R.exe is a WinForms app** — it needs an actual Windows desktop session; it will not run over SSH or as a service.
 
