@@ -813,11 +813,57 @@ function _segLabelText(seg,i,n){
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
   return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
+/* Narrow every condition-dim dropdown (SpurType, Upper/Lower Limit/Spec/
+   Uncertainty, etc.) to only the value(s) actually present among rows
+   within a segment's own frequency window -- otherwise a different
+   SpurType/condition with a DIFFERENT (looser) limit/spec/uncertainty
+   that happens to overlap the same frequency band stays fully checked,
+   pooling into the same view and throwing off anything computed from it.
+   Reported by the user against boxplot's identical control; ported here
+   with the same design after boxplot's own first two attempts (matching
+   per-field values independently, which can produce zero overlap even
+   when real data exists) turned out wrong -- this narrows from the real
+   ROW set directly, no per-field recombination to get wrong. */
+function _segFilterCondDims(seg){
+  var selTemps=getSelectedTemps();
+  var gfChk=document.getElementById('gf_chk');
+  var applyGf=gfChk&&gfChk.checked&&_gfParsed&&_gfParsed.size>0;
+  var gfFocus=document.getElementById('gf_focus_chk')&&document.getElementById('gf_focus_chk').checked;
+  var rowsInSeg=DATA.filter(function(r){
+    if(r.Frequency_MHz<seg.lo||r.Frequency_MHz>seg.hi) return false;
+    if(selTemps){
+      var t=String(r.Test_Step===null||r.Test_Step===undefined?'':r.Test_Step);
+      if(selTemps.indexOf(t)<0) return false;
+    }
+    if(applyGf){var _inGf=_isInGfFull(r);if(gfFocus?!_inGf:_inGf) return false;}
+    return true;
+  });
+  if(!rowsInSeg.length) return;
+  GROUP_COLS.forEach(function(pair){
+    var col=pair[0];
+    var boxes=document.querySelectorAll('.fchk[data-col="'+col+'"]');
+    if(!boxes.length) return;
+    var allowed={};
+    rowsInSeg.forEach(function(r){
+      var v=r[col];
+      if(v!=null&&v!=='') allowed[String(v)]=true;
+    });
+    if(!Object.keys(allowed).length) return;
+    boxes.forEach(function(c){c.checked=!!allowed[c.value];});
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){
+      var n=Array.from(boxes).filter(function(c){return c.checked;}).length;
+      allChk.checked=(n===boxes.length);allChk.indeterminate=(n>0&&n<boxes.length);
+    }
+    if(typeof updateBadge==='function') updateBadge(col);
+  });
+}
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
   _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
+  _segFilterCondDims(seg);
   setFreqBand(seg.lo,seg.hi);
 }
 /* Recompute segments from the group/temp/GF-filtered data but ignoring the
@@ -3242,7 +3288,40 @@ function segTab(dir){
      the scatter/distribution-histogram views. */
   document.getElementById('dist_freq_lo_txt').value=seg.lo.toFixed(3);
   document.getElementById('dist_freq_hi_txt').value=seg.hi.toFixed(3);
+  _segFilterCondDims(seg);
   update();
+}
+/* Narrow the SpurType filter to only the type(s) with a real raw point in
+   a segment's own frequency window -- otherwise a different SpurType with
+   a DIFFERENT (looser) limit/spec/uncertainty that happens to overlap the
+   same frequency band stays fully checked, pooling into the KDE curves
+   and delta summary table for what's supposed to be one coherent spec
+   band. Reported by the user against boxplot's identical control; ported
+   here with the same design. Serial/port aren't condition-like dims (no
+   spec of their own), so only SpurType is narrowed, matching this view's
+   own comment on _recomputeSpecSegments about which filters are relevant
+   here. */
+function _segFilterCondDims(seg){
+  var chks=document.querySelectorAll('.dist_spur_chk');
+  if(!chks.length) return;
+  var selSer=getSelSerials(),selPor=getSelPorts();
+  var allowed={};
+  SPUR_TYPES.forEach(function(name,si){
+    var hit=(RAW_ABS[si]||[]).some(function(raw){
+      if(!raw) return false;
+      for(var i=0;i<raw.f.length;i++){
+        var ser=raw.s?raw.s[i]:'',port=raw.p?raw.p[i]:'';
+        if(!selSer.has(ser)) continue;
+        if(PORTS.length&&!selPor.has(port)) continue;
+        if(raw.f[i]>=seg.lo&&raw.f[i]<=seg.hi) return true;
+      }
+      return false;
+    });
+    if(hit) allowed[name]=true;
+  });
+  if(!Object.keys(allowed).length) return;
+  chks.forEach(function(c){c.checked=!!allowed[c.value];});
+  _distUpdateBadge('spur');
 }
 /* Recompute segments from the SpurType/serial/port-filtered raw points across
    every (SpurType, Temperature) bucket in RAW_ABS, ignoring dist_freq_lo/
@@ -5972,7 +6051,59 @@ function segTab(dir){
      the scatter/distribution views. */
   document.getElementById('freq_lo_txt').value=seg.lo.toFixed(3);
   document.getElementById('freq_hi_txt').value=seg.hi.toFixed(3);
+  _segFilterCondDims(seg);
   update();
+}
+/* Narrow every condition-dim dropdown to only the value(s) actually
+   present among dut_vals within a segment's own frequency window --
+   otherwise a different SpurType/condition with a DIFFERENT (looser)
+   limit/spec/uncertainty that happens to overlap the same frequency band
+   stays fully checked, pooling into the Statistics Table and throwing
+   off mean/std/TI/pass-fail for what's supposed to be one coherent spec
+   band. Reported by the user against boxplot's identical control; ported
+   here with the same design (narrow from the real qualifying-condition
+   set directly, not per-field value matching -- see boxplot's own
+   comment for why the per-field approach doesn't work). */
+function _segFilterCondDims(seg){
+  var selSers=getSelectedSerials(),allSers=getAllSerials();
+  if(selSers.length===0&&allSers.length>0) selSers=allSers.slice();
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var gfToggle=document.getElementById('stat_gf_chk');
+  var gfEnabled=gfToggle?gfToggle.checked:true;
+  var hasGf=gfEnabled&&_gfExcluded&&_gfExcluded.size>0;
+  var condsInSeg={};
+  STAT_DATA.forEach(function(cd){
+    (cd.freq_stats||[]).forEach(function(fs){
+      if(fs.freq<seg.lo||fs.freq>seg.hi) return;
+      (fs.dut_vals||[]).forEach(function(d){
+        if(serFlt&&selSers.indexOf(d.s)<0) return;
+        if(hasGf){var _excl=_isStatGfExcl(d.s,cd.condition,fs.freq);if(_statGfFocusMode?!_excl:_excl) return;}
+        condsInSeg[cd.condition]=true;
+      });
+    });
+  });
+  if(!Object.keys(condsInSeg).length) return;
+  if(!COND_DIMS||!COND_DIMS.length) return;
+  COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    var boxes=document.querySelectorAll('.fchk[data-col="'+col+'"]');
+    if(!boxes.length) return;
+    var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+    var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+    var allowed={};
+    Object.keys(condsInSeg).forEach(function(cond){
+      var m=cond.match(re);
+      if(m) allowed[m[1].trim()]=true;
+    });
+    if(!Object.keys(allowed).length) return;
+    boxes.forEach(function(c){c.checked=!!allowed[c.value];});
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){
+      var n=Array.from(boxes).filter(function(c){return c.checked;}).length;
+      allChk.checked=(n===boxes.length);allChk.indeterminate=(n>0&&n<boxes.length);
+    }
+    if(typeof updateBadge==='function') updateBadge(col);
+  });
 }
 /* Recompute segments from the condition/serial/GF-filtered dut_vals points,
    ignoring freq_lo/freq_hi themselves (that's what segTab moves) -- see the
@@ -7985,9 +8116,55 @@ function segTab(dir){
      the scatter/distribution views. */
   document.getElementById('ec_freq_lo_txt').value=seg.lo.toFixed(3);
   document.getElementById('ec_freq_hi_txt').value=seg.hi.toFixed(3);
+  _segFilterCondDims(seg);
   var log=isLogX();
   Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(seg.lo,1e-9)),Math.log10(Math.max(seg.hi,1e-9))]:[seg.lo,seg.hi]});
   update();
+}
+/* Narrow every condition-dim dropdown to only the value(s) actually present
+   among conditions with real Room/ΔEnv data within a segment's own
+   frequency window -- otherwise a different SpurType/condition with a
+   DIFFERENT (looser) limit/spec/uncertainty that happens to overlap the
+   same frequency band stays fully checked, pooling into the Statistics
+   Table and throwing off UDE/LDE/TTU/TTL for what's supposed to be one
+   coherent spec band. Reported by the user against boxplot's identical
+   control; ported here with the same design (narrow from the real
+   qualifying-condition set directly, not per-field value matching -- see
+   boxplot's own comment for why the per-field approach doesn't work). */
+function _segFilterCondDims(seg){
+  var selTemps=getSelectedTemps();
+  var condsInSeg={};
+  ENV_DATA.forEach(function(cd){
+    var freqs=cd.freqs||[];
+    var idxs=[];
+    freqs.forEach(function(f,j){if(f>=seg.lo&&f<=seg.hi) idxs.push(j);});
+    if(!idxs.length) return;
+    var has=getDeltaDuts(cd).some(function(pair){
+      var dut=pair[1];
+      return idxs.some(function(j){
+        if(dut.room&&dut.room[j]!=null) return true;
+        if(dut.deltas) return selTemps.some(function(t){return dut.deltas[t]&&dut.deltas[t][j]!=null;});
+        return false;
+      });
+    });
+    if(has) condsInSeg[cd.condition]=true;
+  });
+  if(!Object.keys(condsInSeg).length) return;
+  if(!COND_DIMS||!COND_DIMS.length) return;
+  COND_DIMS.forEach(function(dim){
+    var boxes=document.querySelectorAll('.'+dim.col_id);
+    if(!boxes.length) return;
+    var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+    var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+    var allowed={};
+    Object.keys(condsInSeg).forEach(function(cond){
+      var m=cond.match(re);
+      if(m) allowed[m[1].trim()]=true;
+    });
+    if(!Object.keys(allowed).length) return;
+    boxes.forEach(function(c){c.checked=!!allowed[c.value];});
+    if(typeof updateBadge==='function') updateBadge(dim.col_id);
+  });
 }
 /* Recompute segments from the condition/serial/port/GF-filtered per-DUT spec
    values, ignoring ec_freq_lo/ec_freq_hi themselves (that's what segTab
@@ -11635,6 +11812,80 @@ function _segLabelText(seg,i,n){
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
   return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
 }
+/* Narrow the condition filter (longform checkboxes, or the per-dimension
+   Upper/Lower Limit/Spec/Uncertainty dropdowns when longform isn't
+   present) to only the conditions that actually have data within a
+   segment's own frequency window -- otherwise a different SpurType/
+   condition with a DIFFERENT (looser) limit/spec/uncertainty that happens
+   to overlap the same frequency band stays fully checked, and the
+   Statistics Table pools its data in with the segment's own population,
+   throwing off mean/std/TI/pass-fail (and n) for what's supposed to be
+   one coherent spec band. Reported directly by the user against a real
+   ClockSpurs boxplot page, who also correctly predicted the symptom this
+   causes: an artificially small n that should equal the real DUT count
+   once configured correctly.
+
+   Deliberately does NOT try to independently narrow Upper Limit/Spec/
+   Uncertainty as three separate value-sets and rely on _syncLfFromAllDims'
+   AND-across-every-dim check to recombine them -- a first attempt at that
+   produced zero matching conditions in practice, because a DUT's own
+   three values don't necessarily all pass a per-field "is this exact
+   rounded number in the found set" test independently (rounding/parsing
+   differences between the checkbox's raw Group-text value and vals_detail's
+   separately-derived numeric field), even though the DUT's own actual
+   condition clearly does have real data in this segment. Working from the
+   condition string directly sidesteps that: a condition either has a
+   point in [seg.lo, seg.hi] or it doesn't, no per-field recombination to
+   get wrong. */
+function _segFilterCondDims(seg){
+  var selTemps=getSelectedTemps();
+  var allSers=getAllBoxSerials(),selBoxSers=getSelectedBoxSerials();
+  var serActive=allSers.length>1&&selBoxSers.length<allSers.length;
+  var allPorts=getAllBoxPorts(),selPorts=getSelectedBoxPorts();
+  var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
+  var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
+  var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var condsInSeg={};
+  BOX_DATA.forEach(function(cd){
+    if(selTemps.indexOf(cd.temp)<0) return;
+    (cd.freq_stats||[]).forEach(function(f){
+      if(f.freq<seg.lo||f.freq>seg.hi) return;
+      (f.vals_detail||[]).forEach(function(d){
+        if(serActive&&selBoxSers.indexOf(d.s)<0) return;
+        if(portActive&&selPorts.indexOf(d.p||'')<0) return;
+        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return;}
+        condsInSeg[cd.condition]=true;
+      });
+    });
+  });
+  if(!Object.keys(condsInSeg).length) return;
+  var lfChks=document.querySelectorAll('.box_cond_lf_chk');
+  if(lfChks.length){
+    lfChks.forEach(function(c){c.checked=!!condsInSeg[c.value];});
+    return;
+  }
+  if(typeof COND_DIMS==='undefined'||!COND_DIMS.length) return;
+  COND_DIMS.forEach(function(dim){
+    var col='box_cond_'+dim.col_id;
+    var boxes=document.querySelectorAll('.'+col);
+    if(!boxes.length) return;
+    var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+    var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+    var allowed={};
+    Object.keys(condsInSeg).forEach(function(cond){
+      var m=cond.match(re);
+      if(m) allowed[m[1].trim()]=true;
+    });
+    if(!Object.keys(allowed).length) return;
+    boxes.forEach(function(c){c.checked=!!allowed[c.value];});
+    var allEl=document.getElementById('all_'+col);
+    if(allEl){
+      var n=Array.from(boxes).filter(function(c){return c.checked;}).length;
+      allEl.checked=(n===boxes.length);allEl.indeterminate=(n>0&&n<boxes.length);
+    }
+    if(typeof updateBadge==='function') updateBadge(col);
+  });
+}
 function segTab(dir){
   if(!_specSegments.length) return;
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
@@ -11642,6 +11893,7 @@ function segTab(dir){
   var seg=_specSegments[_segIdx];
   document.getElementById('box_freq_lo').value=seg.lo.toFixed(3);
   document.getElementById('box_freq_hi').value=seg.hi.toFixed(3);
+  _segFilterCondDims(seg);
   update();
 }
 /* Recompute segments from the condition/temp/serial/port/GF-filtered
@@ -14074,7 +14326,57 @@ function segTab(dir){
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
   _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
+  _segFilterCondDims(seg);
   setFreqBand(seg.lo,seg.hi);
+}
+/* Narrow every condition-dim dropdown to only the value(s) actually
+   present among records with a real dut_vals point within a segment's
+   own frequency window -- otherwise a different SpurType/condition with
+   a DIFFERENT (looser) limit/spec/uncertainty that happens to overlap the
+   same frequency band stays fully checked, pooling into whatever's
+   computed from it. Reported by the user against boxplot's identical
+   control; ported here with the same design (narrow from the real
+   qualifying-record set directly, not per-field value matching -- see
+   boxplot's own comment for why the per-field approach doesn't work).
+   Uses cd.cond_keys directly (already-parsed per record) rather than
+   regex-matching a raw condition string, since this view's DATA records
+   carry that structured field already. Depends on _sumInclDutIdxs, which
+   is defined below this point in the file but already hoisted (function
+   declaration, not an expression) by the time segTab can actually run. */
+function _segFilterCondDims(seg){
+  var condsInSeg=[];
+  DATA.forEach(function(cd){
+    if(!cd.dut_vals||!cd.freqs) return;
+    var incl=_sumInclDutIdxs(cd);
+    if(!incl.length) return;
+    var hit=false;
+    cd.freqs.forEach(function(freq,fi){
+      if(hit||freq<seg.lo||freq>seg.hi) return;
+      var row=cd.dut_vals[fi];
+      if(row&&incl.some(function(di){return row[di]!=null;})) hit=true;
+    });
+    if(hit) condsInSeg.push(cd);
+  });
+  if(!condsInSeg.length) return;
+  if(!COND_DIMS||!COND_DIMS.length) return;
+  COND_DIMS.forEach(function(dim){
+    var col='cond_'+dim.col_id;
+    var boxes=document.querySelectorAll('.fchk[data-col="'+col+'"]');
+    if(!boxes.length) return;
+    var allowed={};
+    condsInSeg.forEach(function(cd){
+      var v=cd.cond_keys&&cd.cond_keys[dim.col]!==undefined?String(cd.cond_keys[dim.col]):null;
+      if(v!=null) allowed[v]=true;
+    });
+    if(!Object.keys(allowed).length) return;
+    boxes.forEach(function(c){c.checked=!!allowed[c.value];});
+    var allChk=document.getElementById('all_'+col);
+    if(allChk){
+      var n=Array.from(boxes).filter(function(c){return c.checked;}).length;
+      allChk.checked=(n===boxes.length);allChk.indeterminate=(n>0&&n<boxes.length);
+    }
+    if(typeof updateBadge==='function') updateBadge(col);
+  });
 }
 /* Per-DUT inclusion for one condition, mirroring getSumCondData's identical
    serial-filter + GF logic (kept separate rather than refactored into a
