@@ -123,6 +123,26 @@ function _liveAxisRange(axis){
      Array.isArray(gd.layout[axis].range)) return gd.layout[axis].range.slice();
   return null;
 }
+/* Cached by the last real buildTraces()/buildLayout() call -- lets
+   toggleHideSpec() flip visibility instantly via a lightweight
+   Plotly.restyle()/relayout() instead of the full update() pipeline
+   (re-filter DATA + rebuild every trace), which is what made "Hide spec
+   lines" noticeably slower than "Log X" on a large dataset (Log X was
+   already special-cased this way; this checkbox wasn't). */
+var _lastMaskTraces=[],_lastSpecShapes=[],_lastSpecAnnotations=[];
+function toggleHideSpec(){
+  var hideSpec=document.getElementById('hide_spec_chk').checked;
+  _stSet('hide_spec',hideSpec?'1':'0');
+  var gd=document.getElementById('plot');
+  if(gd&&_lastMaskTraces.length){
+    var n=gd.data.length,m=_lastMaskTraces.length,idxs=[];
+    for(var i=n-m;i<n;i++) idxs.push(i);
+    Plotly.restyle('plot',{visible:!hideSpec},idxs);
+  }
+  if(_lastSpecShapes.length||_lastSpecAnnotations.length){
+    Plotly.relayout('plot',{shapes:hideSpec?[]:_lastSpecShapes,annotations:hideSpec?[]:_lastSpecAnnotations});
+  }
+}
 function median(arr){
   var s=[].concat(arr).sort(function(a,b){return a-b;});
   var m=Math.floor(s.length/2);
@@ -489,21 +509,31 @@ function buildTraces(filtered){
       hovertemplate:tmpl
     };
   });
+  /* Mask traces are always built and appended (regardless of hide_spec_chk),
+     tagged with the current visible state instead -- toggleHideSpec() below
+     restyles just these trailing trace(s) directly, without re-filtering
+     DATA or rebuilding every other trace the way a full update() would.
+     _lastMaskTraces is cached so that fast path knows how many trailing
+     traces are its own (they're always appended last, never elsewhere). */
   var _hideSpec=document.getElementById('hide_spec_chk').checked;
   var _mask=getSpecMask(filtered);
-  if(_mask.isMask&&!_hideSpec){
-    if(_mask.hi.length) traces.push({
+  var _maskTraces=[];
+  if(_mask.isMask){
+    if(_mask.hi.length) _maskTraces.push({
       type:'scatter',mode:(_mask.hi.length<2?'markers':'lines'),
       x:_mask.hi.map(function(p){return p.x;}),y:_mask.hi.map(function(p){return p.y;}),
       line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Hi)',
+      visible:!_hideSpec,
       hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
-    if(_mask.lo.length) traces.push({
+    if(_mask.lo.length) _maskTraces.push({
       type:'scatter',mode:(_mask.lo.length<2?'markers':'lines'),
       x:_mask.lo.map(function(p){return p.x;}),y:_mask.lo.map(function(p){return p.y;}),
       line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Lo)',
+      visible:!_hideSpec,
       hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
   }
-  return traces;
+  _lastMaskTraces=_maskTraces;
+  return traces.concat(_maskTraces);
 }
 
 function buildLayout(filtered){
@@ -512,9 +542,14 @@ function buildLayout(filtered){
   /* Use integer-rounded keys to deduplicate nominal vs MU-adjusted spec values that differ by <1 dBc.
      Keep the most stringent value per 1-dBc bin (min for upper limits, max for lower limits).
      Skipped entirely when the spec is a genuine frequency-varying mask -- that's drawn as a
-     proper per-frequency step-line trace in buildTraces() instead. */
+     proper per-frequency step-line trace in buildTraces() instead.
+     Computed unconditionally (not gated on hide_spec_chk) and cached into
+     _lastSpecShapes/_lastSpecAnnotations -- toggleHideSpec() below swaps
+     between this cached array and [] directly via Plotly.relayout(), without
+     re-filtering DATA (this loop is itself the expensive part on a large
+     dataset, so skipping it entirely on every other toggle is the point). */
   var _hideSpec=document.getElementById('hide_spec_chk').checked;
-  if(!_hideSpec&&!getSpecMask(filtered||DATA).isMask){
+  if(!getSpecMask(filtered||DATA).isMask){
   (filtered||DATA).forEach(function(r){
     if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit))){
       var k=Math.round(Number(r.Upper_Limit)),v=Number(r.Upper_Limit);
@@ -536,6 +571,7 @@ function buildLayout(filtered){
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec '+v.toFixed(2),showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
   }
+  _lastSpecShapes=shapes;_lastSpecAnnotations=annotations;
   var curX=_liveAxisRange('xaxis');
   var curY=Y_LIM||_liveAxisRange('yaxis');
   return {
@@ -544,7 +580,7 @@ function buildLayout(filtered){
     xaxis:Object.assign({title:X_LABEL,type:isLogX()?'log':'linear'},
                          curX?{range:curX,autorange:false}:{}),
     yaxis:Object.assign({title:Y_LABEL},curY?{range:curY,autorange:false}:{}),
-    shapes:shapes,annotations:annotations,height:520,
+    shapes:_hideSpec?[]:shapes,annotations:_hideSpec?[]:annotations,height:520,
     legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:60,b:60}
   };
@@ -852,6 +888,25 @@ function _segFilterCondDims(seg){
   var gfChk=document.getElementById('gf_chk');
   var applyGf=gfChk&&gfChk.checked&&_gfParsed&&_gfParsed.size>0;
   var gfFocus=document.getElementById('gf_focus_chk')&&document.getElementById('gf_focus_chk').checked;
+  /* Real bug reported by the user (2026-08-31): with a dim (e.g. SpurType)
+     already narrowed to one value, tabbing segments used to reset it back
+     to "every value with data in the new segment window" -- and every
+     OTHER dim then narrowed against that wrong, too-broad population
+     instead of the one value actually in view. Snapshot each dim's
+     CURRENTLY checked values first and require rows to match all of them
+     (in addition to the segment/temp/GF filters below), so an
+     already-narrowed dim stays held fixed instead of being silently
+     widened back to "all" by the tab itself. A dim still at its default
+     "everything checked" state imposes no real constraint, so the
+     original from-scratch-narrowing behavior is unchanged in that
+     (previously-verified) case. */
+  var curColSel={};
+  GROUP_COLS.forEach(function(pair){
+    var col=pair[0];
+    var boxes=document.querySelectorAll('.fchk[data-col="'+col+'"]');
+    if(!boxes.length) return;
+    curColSel[col]=new Set(Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;}));
+  });
   var rowsInSeg=DATA.filter(function(r){
     if(r.Frequency_MHz<seg.lo||r.Frequency_MHz>seg.hi) return false;
     if(selTemps){
@@ -859,6 +914,11 @@ function _segFilterCondDims(seg){
       if(selTemps.indexOf(t)<0) return false;
     }
     if(applyGf){var _inGf=_isInGfFull(r);if(gfFocus?!_inGf:_inGf) return false;}
+    for(var col in curColSel){
+      var v=r[col];
+      if(v==null||v==='') continue;
+      if(!curColSel[col].has(String(v))) return false;
+    }
     return true;
   });
   if(!rowsInSeg.length) return;
@@ -1994,7 +2054,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  <label><input type="checkbox" id="log_x_chk"'
         + (' checked' if log_x else '')
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
-        '  <label><input type="checkbox" id="hide_spec_chk" onchange="update()">'
+        '  <label><input type="checkbox" id="hide_spec_chk" onchange="toggleHideSpec()">'
         ' Hide&nbsp;spec&nbsp;lines</label>\n'
         f'{band_section_html}'
         f'{_segment_by_html(has_segments)}'
@@ -3330,8 +3390,19 @@ function _segFilterCondDims(seg){
   var chks=document.querySelectorAll('.dist_spur_chk');
   if(!chks.length) return;
   var selSer=getSelSerials(),selPor=getSelPorts();
+  /* Real bug reported by the user (2026-08-31): tabbing segments used to
+     recompute "allowed" from every SpurType with ANY data in the new
+     segment window, regardless of which ones were currently checked --
+     silently re-enabling a SpurType the user had deliberately deselected.
+     Restrict to the currently-checked set first (a dim still at its
+     default "everything checked" state imposes no real constraint, so the
+     original from-scratch-narrowing behavior is unchanged in that,
+     previously-verified, case) -- see boxplot's identical fix for the
+     full rationale. */
+  var curChecked=new Set(Array.from(chks).filter(function(c){return c.checked;}).map(function(c){return c.value;}));
   var allowed={};
   SPUR_TYPES.forEach(function(name,si){
+    if(!curChecked.has(name)) return;
     var hit=(RAW_ABS[si]||[]).some(function(raw){
       if(!raw) return false;
       for(var i=0;i<raw.f.length;i++){
@@ -3492,14 +3563,17 @@ function update(){
     if(warn) warn.style.display='none';
   }
 
-  /* Spec limit lines */
+  /* Spec limit lines. Built unconditionally (not gated on hideSpec) and
+     cached into _lastDistSpecShapes -- toggleDistHideSpec() below swaps
+     between this cached array and [] via a lightweight Plotly.relayout(),
+     without re-running this whole update() (KDE recompute included). */
   var shapes=[];
   var hideSpecEl=document.getElementById('dist_hide_spec_chk');
   var hideSpec=hideSpecEl?hideSpecEl.checked:false;
   if(!isAbs){
-    if(!hideSpec) shapes.push({type:'line',xref:'x',yref:'paper',x0:0,x1:0,y0:0,y1:1,
+    shapes.push({type:'line',xref:'x',yref:'paper',x0:0,x1:0,y0:0,y1:1,
       line:{color:'#888',width:1,dash:'dot'}});
-  } else if(!hideSpec) {
+  } else {
     var curHi=HI_SPEC,curLo=LO_SPEC;
     if(freqFlt&&RAW_ABS){
       var hiSet=[],loSet=[];
@@ -3524,6 +3598,7 @@ function update(){
       x0:curLo,x1:curLo,y0:0,y1:1,line:{color:'#2196F3',width:1.5,dash:'dash'}});
   }
 
+  _lastDistSpecShapes=shapes;
   var layout={
     title:{text:TITLE+(freqFlt?' ['+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+' MHz]':''),font:{size:14}},
     xaxis:{title:{text:isAbs?Y_LABEL:('ΔTemp ('+Y_LABEL+')')},zeroline:false},
@@ -3531,7 +3606,7 @@ function update(){
     legend:{orientation:'v',x:1.01,y:1,xanchor:'left',font:{size:11}},
     margin:{l:60,r:200,t:50,b:50},
     hovermode:'closest',
-    shapes:shapes,
+    shapes:hideSpec?[]:shapes,
     height:450,
   };
   var curX=_distModeChanged?null:_liveAxisRange('xaxis');
@@ -3799,6 +3874,18 @@ function updateTiTable(){
 }
 
 /* ---- reset ---- */
+/* See scatter's identical toggleHideSpec()/_lastMaskTraces for the full
+   rationale -- swaps between the cached shapes array and [] via a
+   lightweight relayout, instead of re-running the whole update() (KDE
+   recompute included) just to toggle these reference lines. Distribution
+   has no separate mask-trace case (spec is always drawn as a shape here),
+   so there's no restyle-by-index branch to port. */
+var _lastDistSpecShapes=[];
+function toggleDistHideSpec(){
+  var hideSpec=document.getElementById('dist_hide_spec_chk').checked;
+  _stSet('dist_hide_spec',hideSpec?'1':'0');
+  Plotly.relayout('kde_plot',{shapes:hideSpec?[]:_lastDistSpecShapes});
+}
 function resetView(){
   document.querySelectorAll('.env_chk').forEach(function(c){c.checked=true;});
   var dm=document.querySelector('input[name="view_mode"][value="delta"]');
@@ -3904,7 +3991,7 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         '<input type="number" id="dist_n" min="0" max="200" value="0" oninput="update()"></label>\n'
         '  <label title="Compute TI bounds in linear power domain: each per-DUT mean is converted via 10^(Δ/10) before computing k·σ, then UDE/LDE are converted back to dB. Reduces asymmetry for small Δ values.">'
         '<input type="checkbox" id="dist_linear_ti" onchange="update()"> Lin.&nbsp;TI</label>\n'
-        '  <label><input type="checkbox" id="dist_hide_spec_chk" onchange="update()">'
+        '  <label><input type="checkbox" id="dist_hide_spec_chk" onchange="toggleDistHideSpec()">'
         ' Hide&nbsp;spec&nbsp;lines</label>\n'
         '  <div class="sep"></div>\n'
         '  <span id="n_pts"></span>\n'
@@ -5397,6 +5484,18 @@ function recomputeFreqStat(fs,selSers,cond,freq,applyGf,selPorts){
     outlier_detail:outDet,outliers:outDet.map(function(d){return d.v;}),
     np_ti_lo:null,np_ti_up:null});
 }
+/* See scatter's identical toggleHideSpec() for the full rationale --
+   swaps between the cached shapes/annotations and [] via a lightweight
+   Plotly.relayout(), instead of the full update() (which purges and
+   rebuilds the whole plot in this view) just to toggle these reference
+   lines. No mask-trace case here -- stat_summary always draws spec as
+   layout shapes, never as extra plotted traces. */
+var _lastStatSpecShapes=[],_lastStatSpecAnnotations=[];
+function toggleStatHideSpec(){
+  var hideSpec=document.getElementById('stat_hide_spec_chk').checked;
+  _stSet('stat_hide_spec',hideSpec?'1':'0');
+  Plotly.relayout('plot',{shapes:hideSpec?[]:_lastStatSpecShapes,annotations:hideSpec?[]:_lastStatSpecAnnotations});
+}
 function buildLayout(conds,params,fLo,fHi,curX,curY){
   if(fLo===undefined){var _sl=document.getElementById('freq_lo');fLo=_sl?parseFloat(_sl.value):null;}
   if(fHi===undefined){var _sh=document.getElementById('freq_hi');fHi=_sh?parseFloat(_sh.value):null;}
@@ -5416,8 +5515,10 @@ function buildLayout(conds,params,fLo,fHi,curX,curY){
   if(params&&params.spec_lo_override!==null&&params.spec_lo_override!==undefined){
     loSpecs={};loSpecs[Math.round(params.spec_lo_override*100)/100]=true;
   }
+  /* Built unconditionally (not gated on hideSpec) and cached -- see
+     scatter's identical toggleHideSpec() for the full rationale. */
   var hideSpecEl=document.getElementById('stat_hide_spec_chk');
-  if(!hideSpecEl||!hideSpecEl.checked){
+  var hideSpec=hideSpecEl?hideSpecEl.checked:false;
   Object.keys(hiSpecs).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
     annotations.push({xref:'paper',yref:'y',x:0.99,y:v,text:'Spec Hi '+v,showarrow:false,xanchor:'right',yanchor:'bottom',font:{color:'red',size:11}});
@@ -5426,7 +5527,7 @@ function buildLayout(conds,params,fLo,fHi,curX,curY){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec Lo '+v,showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
-  }
+  _lastStatSpecShapes=shapes;_lastStatSpecAnnotations=annotations;
   var xRange=curX?curX:((isFinite(fLo)&&isFinite(fHi))?
     (isLogX()?[Math.log10(fLo),Math.log10(fHi)]:[fLo,fHi]):null);
   return {
@@ -5437,7 +5538,7 @@ function buildLayout(conds,params,fLo,fHi,curX,curY){
     height:450,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:55,b:60},
-    shapes:shapes,annotations:annotations
+    shapes:hideSpec?[]:shapes,annotations:hideSpec?[]:annotations
   };
 }
 
@@ -6121,8 +6222,38 @@ function _segFilterCondDims(seg){
   var gfToggle=document.getElementById('stat_gf_chk');
   var gfEnabled=gfToggle?gfToggle.checked:true;
   var hasGf=gfEnabled&&_gfExcluded&&_gfExcluded.size>0;
+  /* Real bug reported by the user (2026-08-31): with a dim (e.g. SpurType)
+     already narrowed to one value, tabbing segments used to reset it back
+     to "everything with data in the new segment window" -- and every
+     OTHER dim then narrowed against that wrong, too-broad population
+     instead of the one value actually in view. Snapshot each dim's
+     CURRENTLY checked values first and use them as a real constraint on
+     condsInSeg, so an already-narrowed dim stays held fixed for every
+     other dim's recompute instead of being silently widened back to "all"
+     by the tab itself -- see boxplot's identical fix for the full
+     rationale. A dim still at its default "everything checked" state
+     imposes no constraint, so the original from-scratch-narrowing
+     behavior is unchanged for that (previously-verified) case. */
+  var curDimSel={};
+  if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+    var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
+    if(!boxes.length) return;
+    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+  });
+  function matchesCurSel(cond){
+    for(var colId in curDimSel){
+      var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
+      if(!dim) continue;
+      var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+      var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+      var m=cond.match(re);
+      if(m&&curDimSel[colId].indexOf(m[1].trim())<0) return false;
+    }
+    return true;
+  }
   var condsInSeg={};
   STAT_DATA.forEach(function(cd){
+    if(!matchesCurSel(cd.condition)) return;
     (cd.freq_stats||[]).forEach(function(fs){
       if(fs.freq<seg.lo||fs.freq>seg.hi) return;
       (fs.dut_vals||[]).forEach(function(d){
@@ -6984,7 +7115,7 @@ def _build_stat_summary_html(
         '  <label title="Overlay individual measurement points on the plot">'
         '<input type="checkbox" id="show_pts_chk" onchange="update()">'
         '&nbsp;Show&nbsp;points</label>\n'
-        '  <label><input type="checkbox" id="stat_hide_spec_chk" onchange="update()">'
+        '  <label><input type="checkbox" id="stat_hide_spec_chk" onchange="toggleStatHideSpec()">'
         '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
         '  <label id="stat_gf_label" style="display:none;white-space:nowrap;margin-left:4px">'
         '<input type="checkbox" id="stat_gf_chk" checked '
@@ -8199,8 +8330,38 @@ function segTab(dir){
    boxplot's own comment for why the per-field approach doesn't work). */
 function _segFilterCondDims(seg){
   var selTemps=getSelectedTemps();
+  /* Real bug reported by the user (2026-08-31): with a dim (e.g. SpurType)
+     already narrowed to one value, tabbing segments used to reset it back
+     to "everything with data in the new segment window" -- and every
+     OTHER dim then narrowed against that wrong, too-broad population
+     instead of the one value actually in view. Snapshot each dim's
+     CURRENTLY checked values first and use them as a real constraint on
+     condsInSeg, so an already-narrowed dim stays held fixed for every
+     other dim's recompute instead of being silently widened back to "all"
+     by the tab itself -- see boxplot's identical fix for the full
+     rationale. A dim still at its default "everything checked" state
+     imposes no constraint, so the original from-scratch-narrowing
+     behavior is unchanged for that (previously-verified) case. */
+  var curDimSel={};
+  if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+    var boxes=document.querySelectorAll('.'+dim.col_id);
+    if(!boxes.length) return;
+    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+  });
+  function matchesCurSel(cond){
+    for(var colId in curDimSel){
+      var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
+      if(!dim) continue;
+      var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+      var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+      var m=cond.match(re);
+      if(m&&curDimSel[colId].indexOf(m[1].trim())<0) return false;
+    }
+    return true;
+  }
   var condsInSeg={};
   ENV_DATA.forEach(function(cd){
+    if(!matchesCurSel(cd.condition)) return;
     var freqs=cd.freqs||[];
     var idxs=[];
     freqs.forEach(function(f,j){if(f>=seg.lo&&f<=seg.hi) idxs.push(j);});
@@ -9747,6 +9908,68 @@ function _syncLfFromAllDims(){
     });
     row.querySelector('.box_cond_lf_chk').checked=ok;
   });
+  /* Real bug reported by the user (2026-08-31): this direction (dims ->
+     longform) is already called from loadState() on every page load, but
+     never touched box_harm_sel -- the actual <select> dropdown next to the
+     manual filter list -- so a narrowed selection restored from a previous
+     session's localStorage showed correctly in the checkbox panel and
+     longform (both driven by this function) while the dropdown itself
+     stayed stuck at "All spur types". Mirrors chkChanged's own existing
+     single-value-vs-all logic for the primary dim exactly. */
+  var primaryColElSt=document.getElementById('box_lf_primary_col');
+  var primaryColSt=primaryColElSt?primaryColElSt.value:'HarmonicNumber';
+  var hsSt=document.getElementById('box_harm_sel');
+  if(hsSt){
+    var selSt=getSelected('box_cond_'+primaryColSt);
+    var allBoxesSt=document.querySelectorAll('.box_cond_'+primaryColSt);
+    if(allBoxesSt.length) hsSt.value=(selSt.length===1)?selSt[0]:'all';
+  }
+}
+/* The reverse of _syncLfFromAllDims() above: refresh every per-dimension
+   SpurType/Upper Limit/Spec/Uncertainty panel's checked state (and its
+   "all" checkbox + badge) from whatever's CURRENTLY checked in the
+   longform list -- needed wherever longform gets changed by something
+   other than a per-dim checkbox click (segTab's _segFilterCondDims, or a
+   direct click on a longform row itself), so the two panels can't drift
+   out of sync with each other the way _syncLfFromAllDims() alone allowed. */
+function _syncDimsFromLf(){
+  if(!COND_DIMS||!COND_DIMS.length) return;
+  var checkedConds=Array.from(document.querySelectorAll('.box_cond_lf_chk:checked')).map(function(c){return c.value;});
+  COND_DIMS.forEach(function(dim){
+    var col='box_cond_'+dim.col_id;
+    var boxes=document.querySelectorAll('.'+col);
+    if(!boxes.length) return;
+    var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+    var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+    var allowed={};
+    checkedConds.forEach(function(cond){
+      var m=cond.match(re);
+      if(m) allowed[m[1].trim()]=true;
+    });
+    boxes.forEach(function(c){c.checked=!!allowed[c.value];});
+    var allEl=document.getElementById('all_'+col);
+    var checkedVals=Array.from(boxes).filter(function(c){return c.checked;});
+    if(allEl){
+      allEl.checked=(checkedVals.length===boxes.length);allEl.indeterminate=(checkedVals.length>0&&checkedVals.length<boxes.length);
+    }
+    if(typeof updateBadge==='function') updateBadge(col);
+    /* Real bug reported by the user (2026-08-31): box_harm_sel (the actual
+       Spur Type/Harmonic <select> dropdown next to the manual filter list)
+       is a THIRD representation of this same selection, alongside the
+       checkbox panel above and the longform list itself -- but nothing
+       ever pushed a longform-driven change back into it, so it could keep
+       showing "All spur types" (or a stale single value) even once the
+       checkbox panel and longform had already re-synced with each other.
+       Only update it for the actual primary dim (Harmonic or SpurType,
+       whichever this pod uses) -- mirrors chkChanged's own existing
+       single-value-vs-all logic exactly. */
+    var primaryColElSt=document.getElementById('box_lf_primary_col');
+    var primaryColSt=primaryColElSt?'box_cond_'+primaryColElSt.value:'box_cond_HarmonicNumber';
+    if(col===primaryColSt){
+      var hsSt=document.getElementById('box_harm_sel');
+      if(hsSt) hsSt.value=(checkedVals.length===1)?checkedVals[0].value:'all';
+    }
+  });
 }
 function toggleAll(col){
   var allChk=document.getElementById('all_'+col);
@@ -10081,8 +10304,63 @@ function _specFromStats(selConds,freqToLabel){
    plot's DUT/port-pooled box, since a pooled box spans every real condition
    that DUT/port was tested under. Returns {gk: fs_arr} -- gk is the serial
    or port value, fs_arr is a freq-ordered array of per-group box stats. */
+/* Averages each distinct DUT's own repeat measurements within one (group,
+   freq) population into a single point -- "one DUT, one vote" -- mirroring
+   stat_summary's own DUT-averaging convention. Needed specifically for the
+   arbitrary-COND_DIM Group-by case below: pooling by e.g. SpurType also
+   pools across every OTHER dimension (Serial, Port, Test Station Label,
+   per-unit-noisy Upper Uncertainty...), so without this step a DUT tested
+   at 5 stations would silently outweigh one tested at 1 -- reported by the
+   user (2026-08-31) as wanting n to "tend toward the serial number sample
+   size" instead of raw row count. Confirmed with the user this should
+   always apply here (not gated behind the separate, narrower "Collapse dup
+   runs" checkbox, which only collapses exact same-condition repeats in the
+   ungrouped/serial-grouped paths). */
+function _dutAverage(items){
+  var bySer={},order=[];
+  items.forEach(function(d){
+    var key=d.s||'unknown';
+    if(!bySer[key]){bySer[key]={sum:0,n:0,ports:{},conds:{}};order.push(key);}
+    bySer[key].sum+=d.v;bySer[key].n++;
+    if(d.p) bySer[key].ports[d.p]=true;
+    if(d._cond) bySer[key].conds[d._cond]=true;
+  });
+  return order.map(function(key){
+    var b=bySer[key],ports=Object.keys(b.ports);
+    return {s:key,v:b.sum/b.n,p:ports.length===1?ports[0]:'',
+      _cond:Object.keys(b.conds).join('; '),_dutN:b.n};
+  });
+}
+/* Which Group-by selections actually pool data (vs. just recoloring each
+   already-fragmented raw condition's own box, the pre-existing behavior
+   for a plain COND_DIM -- see getGroupKey()). __temp__ deliberately stays
+   color-only: boxplot's x-axis/box-per-temp structure already varies by
+   temperature, so pooling across it the way SpurType now can doesn't apply. */
+function _isPoolableGroupBy(colId){
+  if(colId==='__port__'||colId==='__serial__') return true;
+  if(!colId||colId==='__temp__'||!COND_DIMS) return false;
+  return COND_DIMS.some(function(d){return d.col_id===colId;});
+}
+function _boxDimLabel(colId){
+  if(colId==='__port__') return 'Port';
+  if(colId==='__serial__') return 'Serial';
+  if(!COND_DIMS) return colId;
+  var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
+  return dim?dim.label:colId;
+}
 function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
+  /* Real bug reported by the user (2026-08-31): Group by only ever pooled
+     data for Serial Number/Port -- picking an arbitrary condition dim
+     (e.g. SpurType) just recolored each already-fragmented raw condition's
+     own box (see getGroupKey()'s use elsewhere), doing nothing about the
+     underlying fragmentation from per-unit-noisy dims like Test Station
+     Label or Upper Uncertainty that a viewer would actually want pooled
+     away. Generalized this function to pool by ANY condition dim, not just
+     __port__/__serial__ -- the group key is then the dim's own value
+     (extracted from cd.condition, same as getGroupKey()) rather than a
+     per-item field. */
+  var isArbDim=colId!=='__port__'&&colId!=='__serial__';
   var freqVals={},freqSet={},freqLabels={};
   BOX_DATA.forEach(function(cd){
     /* Real bug found 2026-08-21: this never checked selConds at all, so
@@ -10092,6 +10370,7 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
        ACROSS every condition regardless of which ones are checked. */
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
+    var gkForCond=isArbDim?getGroupKey(cd):null;
     (cd.freq_stats||[]).forEach(function(f){
       if(f.freq<fr.lo||f.freq>fr.hi) return;
       freqSet[f.freq]=true;
@@ -10103,7 +10382,7 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
         if(d.v<rlo) return;
         if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
         if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return;}
-        var gk=colId==='__port__'?(d.p||''):d.s;
+        var gk=isArbDim?gkForCond:(colId==='__port__'?(d.p||''):d.s);
         if(!freqVals[gk]) freqVals[gk]={};
         if(!freqVals[gk][f.freq]) freqVals[gk][f.freq]=[];
         /* Tag with the original condition/temp (a fresh shallow copy --
@@ -10122,14 +10401,19 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
     var fs_arr=sortedFreqs.map(function(freq){
       var items=freqVals[gk][freq]||[];
       if(!items.length) return null;
-      /* This branch already pools across every selected condition at this
-         frequency (that's the point of Group by), so a genuine duplicate
-         here means the SAME original (condition,temp,port-or-serial) --
-         not just "another item in this array" -- otherwise two points from
-         different SpurTypes would get incorrectly averaged together. */
-      if(isCollapseDup()) items=_collapseDupRuns(items,function(d){
-        return d._cond+'|'+d._temp+'|'+(colId==='__port__'?d.s:(d.p||''));
-      });
+      if(isArbDim){
+        items=_dutAverage(items);
+      } else if(isCollapseDup()){
+        /* This branch already pools across every selected condition at this
+           frequency (that's the point of Group by), so a genuine duplicate
+           here means the SAME original (condition,temp,port-or-serial) --
+           not just "another item in this array" -- otherwise two points
+           from different SpurTypes would get incorrectly averaged
+           together. */
+        items=_collapseDupRuns(items,function(d){
+          return d._cond+'|'+d._temp+'|'+(colId==='__port__'?d.s:(d.p||''));
+        });
+      }
       var vals=items.map(function(d){return d.v;});
       var bs=computeBoxStats(vals,k); if(!bs) return null;
       var outDet=items.filter(function(d){return d.v<bs.lo_w||d.v>bs.hi_w;});
@@ -10206,7 +10490,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var fr=getBoxFreqRange();
   var _bxGrpEl=document.getElementById('box_group_by');
   var _bxGrpId=_bxGrpEl?_bxGrpEl.value:'';
-  if(_bxGrpId==='__port__'||_bxGrpId==='__serial__'){
+  if(_isPoolableGroupBy(_bxGrpId)){
     return buildPortSerialTraces(_bxGrpId,selConds,selBoxSers,selTemps,yFlt,fr,k,
       serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
   }
@@ -10346,13 +10630,16 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
     if(hv!==undefined){hiX.push(fl);hiY.push(hv);}
     if(lv!==undefined){loX.push(fl);loY.push(lv);}
   });
+  /* Built unconditionally (not gated on hideSpec) with a visible flag,
+     and named so toggleBoxHideSpec() can find + restyle them by name
+     without a full rebuild -- see scatter's identical toggleHideSpec(). */
   var _boxHideSpecEl=document.getElementById('box_hide_spec_chk');
   var _boxHideSpec=_boxHideSpecEl?_boxHideSpecEl.checked:false;
-  if(!_boxHideSpec&&loX.length) traces.push({type:'scatter',mode:(loX.length<2?'markers':'lines'),x:loX,y:loY,
-    line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
+  if(loX.length) traces.push({type:'scatter',mode:(loX.length<2?'markers':'lines'),x:loX,y:loY,
+    visible:!_boxHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
     hovertemplate:'Spec Lo: %{y:.4f}<extra></extra>'});
-  if(!_boxHideSpec&&hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
-    line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
+  if(hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
+    visible:!_boxHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
   /* Manual TLL override line(s) -- upper and lower are independent overrides,
      each drawn only when set, same as Spec Hi/Lo above. */
@@ -10502,7 +10789,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
      calls) guarantees this can't drift out of sync again. */
   var _bxGrpElSt=document.getElementById('box_group_by');
   var _bxGrpIdSt=_bxGrpElSt?_bxGrpElSt.value:'';
-  if(_bxGrpIdSt==='__port__'||_bxGrpIdSt==='__serial__'){
+  if(_isPoolableGroupBy(_bxGrpIdSt)){
     var allPortsSt=getAllBoxPorts(),selPortsSt=getSelectedBoxPorts();
     var portActiveSt=allPortsSt.length>1&&selPortsSt.length<allPortsSt.length;
     var rhiSt=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
@@ -10519,7 +10806,8 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
         var devCells=_maxDevCells(outDet,fs.q2);
-        var gkLabel=(_bxGrpIdSt==='__port__'?'Port: ':'Serial: ')+gk;
+        var gkLabel=_boxDimLabel(_bxGrpIdSt)+': '+gk;
+        var isArbDimSt=_bxGrpIdSt!=='__port__'&&_bxGrpIdSt!=='__serial__';
         /* Pooled across conditions by construction (every item here shares
            the same serial/port), so a repeat-serial key would always count
            everything past the first item as "duplicate" -- key on the
@@ -10530,15 +10818,36 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
            grouped by serial) entirely, so a DUT's genuinely distinct RF1
            and RF2 rows at the same condition/temp got miscounted as a
            duplicate of each other. Mirrors the exact conditional
-           _collapseDupRuns() already uses for this same branch. */
-        var dupRuns=_dupRunCount(fs.vals_detail||[],function(d){
+           _collapseDupRuns() already uses for this same branch.
+           For an arbitrary condition dim (e.g. SpurType), _dutAverage()
+           has already collapsed every DUT down to exactly one point, so
+           there's nothing left to count here by construction -- showing 0
+           directly is simpler and more honest than reusing a keyFn built
+           for the port/serial case, which doesn't apply to this shape of
+           pooled item at all. */
+        var dupRuns=isArbDimSt?0:_dupRunCount(fs.vals_detail||[],function(d){
           return (d._cond||'')+'|'+(d._temp||'')+'|'+(_bxGrpIdSt==='__port__'?d.s:(d.p||''));
         });
+        /* Real bug found by the user (2026-08-31): this cell used to say
+           "pooled across conditions, no normality test" unconditionally
+           whenever Group by was Serial/Port -- even when the active
+           condition-dimension filter had already narrowed selConds down to
+           a single real condition, in which case this group's own
+           vals_detail is NOT actually pooled from more than one condition
+           at all, and the "pooled across" framing is simply wrong for that
+           row. Shapiro is never computed client-side either way (it's a
+           scipy-only, server-side calc -- see the module-level comment near
+           computeFreqResult), so there's still no normality result to show,
+           but the *reason* given now matches what's actually happening. */
+        var nCondsHere=new Set((fs.vals_detail||[]).map(function(d){return d._cond;})).size;
+        var noNormMsg=(isArbDimSt||nCondsHere>1)?
+          '&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)':
+          '&#8212;&nbsp;(Group&nbsp;by&nbsp;Serial/Port,&nbsp;no&nbsp;normality&nbsp;test)';
         rows.push('<tr><td>'+gkLabel+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
-          '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)</td>'+
+          '<td style="color:#aaa;font-size:11px">'+noNormMsg+'</td>'+
           (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
           '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
@@ -10557,6 +10866,27 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
                  (exclRoomSt||exclDEnvSt)?'Outliers excluded':
                  isCollapseDup()?'Dup runs collapsed':
                  'Filtered';
+    /* Real bug found by the user (2026-08-31): narrowing the Temperature
+       checkboxes to Room-only used to fall into this branch just like any
+       other filter and blank out the Normality/NP-TI cells with the generic
+       fltLabel placeholder -- but BOX_STATS' Shapiro result for a Room row
+       is precomputed server-side from Room data alone (_aggregate_stat_data
+       never looks at non-Room temps for it at all, see the "else" branch's
+       own comment below), so which temps happen to be checked in the UI
+       cannot change what that test was run against. When temp-narrowing is
+       the ONLY reason we're in this branch, Room rows can -- and should --
+       still show the real BOX_STATS normality/NP-TI instead of discarding
+       it. A genuine serial/Y-range/passing/GF/outlier-exclusion filter,
+       by contrast, really does change the population BOX_STATS was
+       computed from, so the placeholder stays correct for every other
+       filter combination and for non-Room rows (no normality test exists
+       for those at all, filtered or not). */
+    var tempOnlyFilter=tempActive&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive&&
+      !gfFocusActive&&!exclRoomSt&&!exclDEnvSt&&!isCollapseDup();
+    var _boxStatsByCondFreqSt={};
+    if(tempOnlyFilter) BOX_STATS.forEach(function(cd){
+      (cd.freq_stats||[]).forEach(function(fs){_boxStatsByCondFreqSt[cd.condition+'|'+fs.freq]=fs;});
+    });
     BOX_DATA.forEach(function(cd){
       if(selConds.indexOf(cd.condition)<0) return;
       if(selTemps&&selTemps.indexOf(cd.temp)<0) return;
@@ -10592,12 +10922,26 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<span style="color:#aaa">&#8212;</span>';
         var devCells=_maxDevCells(outDet,bs.q2);
         var dupRuns=_dupRunCount(boxDet);
+        var bsFsSt=tempOnlyFilter&&cd.temp==='Room'?_boxStatsByCondFreqSt[cd.condition+'|'+f.freq]:null;
+        var normCell,npCellSt;
+        if(bsFsSt){
+          var ncSt=bsFsSt.norm==='Normal'?'green':bsFsSt.norm==='Marginal'?'orange':'red';
+          normCell='<td><span style="color:'+ncSt+';font-weight:bold">'+bsFsSt.norm+'</span> W='+bsFsSt.W.toFixed(3)+' p='+bsFsSt.p.toFixed(3)+'</td>';
+          if(showNp){
+            if((bsFsSt.norm==='Non-normal'||bsFsSt.norm==='Marginal')&&bsFsSt.np_ti_lo!=null&&bsFsSt.np_ti_up!=null)
+              npCellSt='<td style="color:#a06000;font-weight:bold">['+bsFsSt.np_ti_lo.toFixed(4)+', '+bsFsSt.np_ti_up.toFixed(4)+']</td>';
+            else
+              npCellSt='<td style="color:#aaa;font-size:11px">'+(bsFsSt.np_ti_lo==null?'n&nbsp;too&nbsp;small':'Normal&nbsp;(k·s)')+'</td>';
+          } else npCellSt='';
+        } else {
+          normCell='<td><em style="color:#888">'+fltLabel+'</em></td>';
+          npCellSt=showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'';
+        }
         rows.push('<tr><td>'+cd.condition+' / '+cd.temp+'</td><td>'+f.freq.toFixed(4)+'</td><td>'+bs.n+'</td>'+
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+bs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+bs.q1.toFixed(4)+'</td><td>'+bs.q2.toFixed(4)+'</td><td>'+bs.q3.toFixed(4)+'</td>'+
-          '<td><em style="color:#888">'+fltLabel+'</em></td>'+
-          (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
+          normCell+npCellSt+
           '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
     });
@@ -11418,6 +11762,7 @@ function updateBoxHarmonic(){
 }
 function selAllBoxLf(on){
   document.querySelectorAll('.box_cond_lf_chk').forEach(function(c){c.checked=on;});
+  _syncDimsFromLf();
   update();
 }
 function toggleBoxLfPanel(){
@@ -11926,8 +12271,44 @@ function _segFilterCondDims(seg){
   var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
   var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  /* Real bug reported by the user (2026-08-31): with SpurType (or any other
+     condition-dim) already narrowed to a single value, tabbing segments
+     used to reset it right back to "everything with data in the new
+     segment window" -- and because SpurType wasn't held fixed, Upper
+     Limit/Spec/Uncertainty then narrowed against that wrong, too-broad
+     population instead of the one SpurType actually in view (visible as
+     "not clamping to the segment range" and n DUTs collapsing to 1 once
+     the dim panels' own checked-state stopped agreeing with each other).
+     Fix: snapshot each dim's CURRENTLY checked values first and use them
+     as a real constraint on condsInSeg, so an already-narrowed dim acts as
+     a held-fixed filter for every other dim's recompute instead of being
+     silently widened back to "all" by the tab itself. A dim that's still
+     at its default "everything checked" state imposes no constraint at
+     all, so the original from-scratch-narrowing behavior is unchanged for
+     that (the common, previously-verified) case. */
+  var lfChks=document.querySelectorAll('.box_cond_lf_chk');
+  var curLfSel=lfChks.length?new Set(Array.from(lfChks).filter(function(c){return c.checked;}).map(function(c){return c.value;})):null;
+  var curDimSel={};
+  if(!curLfSel&&typeof COND_DIMS!=='undefined'&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+    var boxes=document.querySelectorAll('.box_cond_'+dim.col_id);
+    if(!boxes.length) return;
+    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+  });
+  function matchesCurSel(cond){
+    if(curLfSel) return curLfSel.has(cond);
+    for(var colId in curDimSel){
+      var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
+      if(!dim) continue;
+      var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+      var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+      var m=cond.match(re);
+      if(m&&curDimSel[colId].indexOf(m[1].trim())<0) return false;
+    }
+    return true;
+  }
   var condsInSeg={};
   BOX_DATA.forEach(function(cd){
+    if(!matchesCurSel(cd.condition)) return;
     if(selTemps.indexOf(cd.temp)<0) return;
     (cd.freq_stats||[]).forEach(function(f){
       if(f.freq<seg.lo||f.freq>seg.hi) return;
@@ -11940,9 +12321,19 @@ function _segFilterCondDims(seg){
     });
   });
   if(!Object.keys(condsInSeg).length) return;
-  var lfChks=document.querySelectorAll('.box_cond_lf_chk');
   if(lfChks.length){
     lfChks.forEach(function(c){c.checked=!!condsInSeg[c.value];});
+    /* Real bug reported by the user (2026-08-31): longform checkboxes are
+       the ones that actually drive getSelectedConds() (they always exist
+       in the DOM, shown/hidden by the "manual filter list" toggle, and take
+       precedence whenever present -- see getSelectedConds()'s own comment).
+       Updating them here without also refreshing the per-dimension
+       SpurType/Upper Limit/Spec/Uncertainty panels left those panels
+       showing stale state until the user happened to manually toggle one
+       (which forces a resync the other direction, via chkChanged's own
+       _syncLfFromAllDims() call) -- reported as "manual filter list did
+       not match spurtype dropdown" until that manual nudge. */
+    _syncDimsFromLf();
     return;
   }
   if(typeof COND_DIMS==='undefined'||!COND_DIMS.length) return;
@@ -12091,6 +12482,15 @@ function _onPlotRelayout(ed){
   document.getElementById('box_freq_lo').value=loF;
   document.getElementById('box_freq_hi').value=hiF;
   update();
+}
+function toggleBoxHideSpec(){
+  var hideSpec=document.getElementById('box_hide_spec_chk').checked;
+  _stSet('box_hide_spec',hideSpec?'1':'0');
+  var gd=document.getElementById('plot');
+  if(!gd||!gd.data) return;
+  var idxs=[];
+  gd.data.forEach(function(t,i){if(t.name==='Spec Lo'||t.name==='Spec Hi') idxs.push(i);});
+  if(idxs.length) Plotly.restyle('plot',{visible:!hideSpec},idxs);
 }
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
@@ -12469,7 +12869,7 @@ def _build_box_interactive_html(
                 f'<div class="box_cond_lf_row" data-harm="{primary_val}">'
                 f'<label style="white-space:nowrap;font-size:12px">'
                 f'<input type="checkbox" class="box_cond_lf_chk" value="{cond}" checked'
-                f' onchange="update()">&nbsp;{cond}</label></div>\n'
+                f' onchange="_syncDimsFromLf();update()">&nbsp;{cond}</label></div>\n'
             )
 
     env_bar = ""
@@ -12523,7 +12923,7 @@ def _build_box_interactive_html(
         '  <label title="Overlay individual DUT measurement points on each box">'
         '<input type="checkbox" id="box_show_pts_chk" onchange="update()">'
         '&nbsp;Show&nbsp;points</label>\n'
-        '  <label><input type="checkbox" id="box_hide_spec_chk" onchange="update()">'
+        '  <label><input type="checkbox" id="box_hide_spec_chk" onchange="toggleBoxHideSpec()">'
         '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
         '  <span class="sep"></span>\n'
         '  <label title="IQR fence multiplier: points beyond Q1 - k×IQR or Q3 + k×IQR are flagged as outliers">'
@@ -13488,24 +13888,26 @@ function buildTraces(active,excl){
       ranges[Math.round(fallback*100)/100]={fMin:fLo,fMax:fHi};
     return ranges;
   }
+  /* Built unconditionally (not gated on hideSpec) with a visible flag,
+     and named with a stable "Spec Hi "/"Spec Lo " prefix so
+     toggleSumHideSpec() can find + restyle them by name without a full
+     rebuild -- see scatter's identical toggleHideSpec(). */
   var _sumHideSpecEl=document.getElementById('sum_hide_spec_chk');
   var _sumHideSpec=_sumHideSpecEl?_sumHideSpecEl.checked:false;
-  if(!_sumHideSpec){
   var hiRanges=buildSpecRanges('spec_hi_list',HI_SPEC);
   var loRanges=buildSpecRanges('spec_lo_list',LO_SPEC);
   Object.keys(hiRanges).map(Number).sort(function(a,b){return a-b;}).forEach(function(v){
     var r=hiRanges[v];
     traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:(r.fMin===r.fMax?'markers':'lines'),
-      line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi '+v,
+      visible:!_sumHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi '+v,
       hovertemplate:'Spec Hi: '+v.toFixed(4)+'<extra></extra>'});
   });
   Object.keys(loRanges).map(Number).sort(function(a,b){return b-a;}).forEach(function(v){
     var r=loRanges[v];
     traces.push({type:'scatter',x:[r.fMin,r.fMax],y:[v,v],mode:(r.fMin===r.fMax?'markers':'lines'),
-      line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
+      visible:!_sumHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
       hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
   });
-  }
   /* Manual TLL override line(s) -- upper and lower are independent overrides */
   var _sumPar=getSumParams();
   if(_sumPar.tll_hi_override!==null&&isFinite(fLo)&&isFinite(fHi))
@@ -14438,9 +14840,37 @@ function segTab(dir){
    is defined below this point in the file but already hoisted (function
    declaration, not an expression) by the time segTab can actually run. */
 function _segFilterCondDims(seg){
+  /* Real bug reported by the user (2026-08-31): with a dim (e.g. SpurType)
+     already narrowed to one value, tabbing segments used to reset it back
+     to "everything with data in the new segment window" -- and every
+     OTHER dim then narrowed against that wrong, too-broad population
+     instead of the one value actually in view. Snapshot each dim's
+     CURRENTLY checked values first and use them as a real constraint on
+     condsInSeg, so an already-narrowed dim stays held fixed for every
+     other dim's recompute instead of being silently widened back to "all"
+     by the tab itself -- see boxplot's identical fix for the full
+     rationale. A dim still at its default "everything checked" state
+     imposes no constraint, so the original from-scratch-narrowing
+     behavior is unchanged for that (previously-verified) case. */
+  var curDimSel={};
+  if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+    var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
+    if(!boxes.length) return;
+    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+  });
+  function matchesCurSel(cd){
+    for(var colId in curDimSel){
+      var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
+      if(!dim) continue;
+      var v=cd.cond_keys&&cd.cond_keys[dim.col]!==undefined?String(cd.cond_keys[dim.col]):null;
+      if(v!==null&&curDimSel[colId].indexOf(v)<0) return false;
+    }
+    return true;
+  }
   var condsInSeg=[];
   DATA.forEach(function(cd){
     if(!cd.dut_vals||!cd.freqs) return;
+    if(!matchesCurSel(cd)) return;
     var incl=_sumInclDutIdxs(cd);
     if(!incl.length) return;
     var hit=false;
@@ -14554,6 +14984,15 @@ function _recomputeSpecSegments(){
   document.getElementById('segTabLabel').textContent=_segLabelText(seg,_segIdx,_specSegments.length);
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
   document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
+}
+function toggleSumHideSpec(){
+  var hideSpec=document.getElementById('sum_hide_spec_chk').checked;
+  _stSet('sum_hide_spec',hideSpec?'1':'0');
+  var gd=document.getElementById('plot');
+  if(!gd||!gd.data) return;
+  var idxs=[];
+  gd.data.forEach(function(t,i){if(t.name&&(t.name.indexOf('Spec Hi ')===0||t.name.indexOf('Spec Lo ')===0)) idxs.push(i);});
+  if(idxs.length) Plotly.restyle('plot',{visible:!hideSpec},idxs);
 }
 /* ---- main update ---- */
 function update(){
@@ -14996,7 +15435,7 @@ def _build_summary_html(
         + '  <label title="Show non-selected conditions as dim gray bands">'
         + '<input type="checkbox" id="sum_show_excl_chk" onchange="update()">'
         + '&nbsp;Show&nbsp;excluded</label>\n'
-        + '  <label><input type="checkbox" id="sum_hide_spec_chk" onchange="update()">'
+        + '  <label><input type="checkbox" id="sum_hide_spec_chk" onchange="toggleSumHideSpec()">'
         + '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
         + '  <label title="Apply global exclusion filter from boxplot (excludes whole DUTs)">'
         + '<input type="checkbox" id="sum_gf_chk" checked onchange="update()">'
