@@ -12038,89 +12038,146 @@ function csvTempToTestStep(t){
    Number/Test Step as prefix-free the way the old implementation did. */
 function copyPadbFilter(){
   try{
-    var fp=typeof PADB_FIELD_PREFIX!=='undefined'?PADB_FIELD_PREFIX:'';
-    var ff=typeof PADB_FREQ_FIELD!=='undefined'?PADB_FREQ_FIELD:'';
-    var clauses=[];
-    /* PADB's own field labels sometimes carry a "(<=)"/"(>=)" comparison-
-       direction hint (e.g. "Upper Spec (<=)") -- that's a display
-       convention from the Group string, not part of the real field name
-       PADB's own filter syntax expects. */
-    function fieldName(col){return col.replace(/\s*\([<>]=\)\s*$/,'');}
-    /* PADB values sit inside "..."; escape any embedded " or \ so a value
-       that happens to contain one can't break the whole expression. Assumes
-       backslash escaping; it's a no-op for the normal values here (serials,
-       spur types, ports, numeric specs), so ordinary output is unchanged. */
-    function escVal(v){return String(v).replace(/([\\"])/g,'\\$1');}
-    function q(v){return '"'+escVal(v)+'"';}
-    /* Omit the clause entirely when nothing is excluded (all/none selected
-       is not a meaningful filter); "!=" only when excluding exactly one
-       value is cheaper to state than listing everything that remains. */
-    function clauseFor(fieldRef,allVals,selVals){
-      if(!allVals||!allVals.length) return null;
-      if(!selVals||selVals.length===0||selVals.length===allVals.length) return null;
-      var excluded=allVals.filter(function(v){return selVals.indexOf(v)<0;});
-      if(selVals.length===1) return "'"+fieldRef+"' = "+q(selVals[0]);
-      if(excluded.length===1) return "'"+fieldRef+"' != "+q(excluded[0]);
-      /* List whichever side is shorter: PADB's own idiom excludes a few
-         values via NOT IN {...} rather than enumerating all the kept ones
-         (see 'Serial Number' NOT IN {...} in real pod filters). Logically
-         equivalent to IN {selected}, just shorter and more readable. */
-      if(excluded.length < selVals.length) return "'"+fieldRef+"' NOT IN {"+excluded.map(q).join(',')+"}";
-      return "'"+fieldRef+"' IN {"+selVals.map(q).join(',')+"}";
-    }
-    (COND_DIMS||[]).forEach(function(dim){
-      var c=clauseFor(fp+':'+fieldName(dim.col),dim.vals||[],getSelected('box_cond_'+dim.col_id));
-      if(c) clauses.push(c);
-    });
-    /* Frequency range -- only emitted when narrowed from the full extent
-       BOX_FREQ_MIN/BOX_FREQ_MAX (reads the text/number box, not the raw
-       slider -- see the freq-range rounding notes elsewhere in this file
-       for why the box is the authoritative value). */
-    var fr=getBoxFreqRange();
-    var freqLo=isFinite(fr.lo)?fr.lo:BOX_FREQ_MIN,freqHi=isFinite(fr.hi)?fr.hi:BOX_FREQ_MAX;
-    var loNarrowed=freqLo>BOX_FREQ_MIN+1e-6,hiNarrowed=freqHi<BOX_FREQ_MAX-1e-6;
-    /* Round outward (floor lo / ceil hi) so the band's own edge points are
-       included rather than clipped by to-nearest rounding -- same
-       rounding-direction lesson as the freq sliders. Kept at 2 decimals to
-       match PADB's own filter-expression formatting. */
-    var loStr=(Math.floor(freqLo*100)/100).toFixed(2),hiStr=(Math.ceil(freqHi*100)/100).toFixed(2);
-    if(ff&&loNarrowed&&hiNarrowed){
-      clauses.push("( '"+ff+"' >= "+q(loStr)+" AND '"+ff+"' <= "+q(hiStr)+" )");
-    } else if(ff&&loNarrowed){
-      clauses.push("'"+ff+"' >= "+q(loStr));
-    } else if(ff&&hiNarrowed){
-      clauses.push("'"+ff+"' <= "+q(hiStr));
-    }
-    /* Serial Number is a GLOBAL PADB field -- NOT prefixed with the analytic
-       path, unlike every other field. Confirmed by real pod filters, which
-       consistently use a bare 'Serial Number' NOT IN {...} (e.g. the DCFM and
-       Wide BW PM2 Flatness analytics). Port stays prefixed like the rest. */
-    var serC=clauseFor('Serial Number',getAllBoxSerials(),getSelectedBoxSerials());
-    if(serC) clauses.push(serC);
-    if(ALL_BOX_PORTS&&ALL_BOX_PORTS.length){
-      var portC=clauseFor(fp+':Port',getAllBoxPorts(),getSelectedBoxPorts());
-      if(portC) clauses.push(portC);
-    }
-    /* Temperature -- PADB calls this "Test Step"; convert CSV labels
-       ("30°C") to PADB's own format ("30.0 Deg C") first. */
-    var tempC=clauseFor(fp+':Test Step',
-      (TEMPS_PRESENT||[]).map(csvTempToTestStep),
-      getSelectedTemps().map(csvTempToTestStep));
-    if(tempC) clauses.push(tempC);
-
+    var clauses=_buildViewFilterClauses();
     if(!clauses.length){alert('Nothing is currently narrowed in this view -- no filter to copy (it would select all data).');return;}
-    var expr=clauses.join('\r\nAND ');
-    if(navigator.clipboard){
-      navigator.clipboard.writeText(expr).then(function(){
-        var btn=document.getElementById('box_padb_flt_btn');
-        if(btn){var orig=btn.textContent;btn.textContent='Copied!';setTimeout(function(){btn.textContent=orig;},1500);}
-      });
+    _copyFilterText(clauses.join('\r\nAND '),'box_padb_flt_btn','Copied!');
+  }catch(e){alert('Copy failed: '+e);}
+}
+/* PADB values sit inside "..."; escape any embedded " or \ so a value that
+   happens to contain one can't break the expression. No-op for the normal
+   values here (serials, spur types, ports, numeric specs). */
+function _padbEsc(v){return String(v).replace(/([\\"])/g,'\\$1');}
+function _padbQ(v){return '"'+_padbEsc(v)+'"';}
+/* Copy expr to the clipboard and briefly flash the given button. */
+function _copyFilterText(expr,btnId,msg){
+  function flash(){var b=document.getElementById(btnId);if(b){var o=b.textContent;b.textContent=msg||'Copied!';setTimeout(function(){b.textContent=o;},1600);}}
+  if(navigator.clipboard){navigator.clipboard.writeText(expr).then(flash);}
+  else{var ta=document.createElement('textarea');ta.value=expr;document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);flash();}
+}
+/* Build the clause array reproducing exactly what THIS view's own filters
+   (condition-dim checkboxes incl. harmonic/spur-type, Frequency range, Serial,
+   Port, Temperature) currently narrow the plot to. Shared by both the plot
+   filter button and the GF filter button (which appends its own DUT-exclusion
+   clause on top), so the two can never disagree about the view context. */
+function _buildViewFilterClauses(includeSerial){
+  if(includeSerial===undefined) includeSerial=true;
+  var fp=typeof PADB_FIELD_PREFIX!=='undefined'?PADB_FIELD_PREFIX:'';
+  var ff=typeof PADB_FREQ_FIELD!=='undefined'?PADB_FREQ_FIELD:'';
+  var clauses=[];
+  /* PADB field labels sometimes carry a "(<=)"/"(>=)" direction hint (e.g.
+     "Upper Spec (<=)") -- a Group-string display convention, not part of the
+     real field name PADB's filter syntax expects. */
+  function fieldName(col){return col.replace(/\s*\([<>]=\)\s*$/,'');}
+  /* Omit the clause when nothing is excluded (all/none selected); "=" for a
+     single selection, "!=" for a single exclusion, and whichever of
+     NOT IN {excluded} / IN {selected} is the shorter list. */
+  function clauseFor(fieldRef,allVals,selVals){
+    if(!allVals||!allVals.length) return null;
+    if(!selVals||selVals.length===0||selVals.length===allVals.length) return null;
+    var excluded=allVals.filter(function(v){return selVals.indexOf(v)<0;});
+    if(selVals.length===1) return "'"+fieldRef+"' = "+_padbQ(selVals[0]);
+    if(excluded.length===1) return "'"+fieldRef+"' != "+_padbQ(excluded[0]);
+    if(excluded.length < selVals.length) return "'"+fieldRef+"' NOT IN {"+excluded.map(_padbQ).join(',')+"}";
+    return "'"+fieldRef+"' IN {"+selVals.map(_padbQ).join(',')+"}";
+  }
+  /* Derive each condition dim's selected values from the conditions actually
+     shown (getSelectedConds -- the SAME source the plot filters on), not the
+     per-dimension dropdown checkboxes. The two can diverge: getSelectedConds
+     reads the longform checkboxes when present, so narrowing via longform (or
+     any path that doesn't also sync the per-dim dropdown) would otherwise make
+     the copied filter disagree with the plotted data. Uses the identical
+     per-dim value regex getSelectedConds itself uses. */
+  var _selConds=getSelectedConds();
+  (COND_DIMS||[]).forEach(function(dim){
+    var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+    var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+    var seen={};
+    _selConds.forEach(function(cond){var m=String(cond).match(re);if(m) seen[m[1].trim()]=1;});
+    var c=clauseFor(fp+':'+fieldName(dim.col),dim.vals||[],Object.keys(seen));
+    if(c) clauses.push(c);
+  });
+  /* Frequency range -- only when narrowed from the full extent (reads the
+     text/number box, not the raw slider); rounded outward (floor lo / ceil hi)
+     so the band's own edge points aren't clipped by to-nearest rounding. */
+  var fr=getBoxFreqRange();
+  var freqLo=isFinite(fr.lo)?fr.lo:BOX_FREQ_MIN,freqHi=isFinite(fr.hi)?fr.hi:BOX_FREQ_MAX;
+  var loNarrowed=freqLo>BOX_FREQ_MIN+1e-6,hiNarrowed=freqHi<BOX_FREQ_MAX-1e-6;
+  var loStr=(Math.floor(freqLo*100)/100).toFixed(2),hiStr=(Math.ceil(freqHi*100)/100).toFixed(2);
+  if(ff&&loNarrowed&&hiNarrowed){
+    clauses.push("( '"+ff+"' >= "+_padbQ(loStr)+" AND '"+ff+"' <= "+_padbQ(hiStr)+" )");
+  } else if(ff&&loNarrowed){
+    clauses.push("'"+ff+"' >= "+_padbQ(loStr));
+  } else if(ff&&hiNarrowed){
+    clauses.push("'"+ff+"' <= "+_padbQ(hiStr));
+  }
+  /* Serial Number is a GLOBAL PADB field -- unprefixed, unlike every other
+     field (confirmed by real pod filters: bare 'Serial Number' NOT IN {...}).
+     Skipped when the caller supplies its own serial constraint (the GF button
+     substitutes the Global Filter's DUT list).
+     Box "serials" are port-qualified ("US65080401_RF1"); PADB's Serial Number
+     is the bare DUT ("US65080401"), with Port a separate field carried by the
+     Port clause below. Use distinct BASE serials here. For the normal
+     filtering patterns (whole DUTs via the serial list, ports via the Port
+     checkboxes) {base serials} x {selected ports} equals the exact selection;
+     only a port-specific pick made in the serial list itself would broaden. */
+  if(includeSerial){
+    var _uniq=function(a){var s={},o=[];a.forEach(function(v){if(!s[v]){s[v]=1;o.push(v);}});return o;};
+    var serC=clauseFor('Serial Number',
+      _uniq(getAllBoxSerials().map(_boxBaseSerial)),
+      _uniq(getSelectedBoxSerials().map(_boxBaseSerial)));
+    if(serC) clauses.push(serC);
+  }
+  if(ALL_BOX_PORTS&&ALL_BOX_PORTS.length){
+    var portC=clauseFor(fp+':Port',getAllBoxPorts(),getSelectedBoxPorts());
+    if(portC) clauses.push(portC);
+  }
+  /* Temperature -- PADB calls this "Test Step"; convert CSV labels first. */
+  var tempC=clauseFor(fp+':Test Step',
+    (TEMPS_PRESENT||[]).map(csvTempToTestStep),
+    getSelectedTemps().map(csvTempToTestStep));
+  if(tempC) clauses.push(tempC);
+  return clauses;
+}
+/* GF filter button -- EXCLUDE semantics (the user's chosen behaviour): build a
+   PADB filter that DROPS the DUTs in the Global Filter, scoped to the current
+   view's own condition/harmonic + frequency + port + temperature.
+
+   - With no view scoping active, it degrades to the simple, PADB-confirmed
+     'Serial Number' NOT IN {...} (whole-DUT exclusion).
+   - With view scoping active, it wraps the view clauses + the GF DUT list in
+     NOT ( ... AND 'Serial Number' IN {...} ) -- i.e. "exclude exactly this
+     DUT / harmonic / frequency combination."
+
+   The current view supplies the harmonic/frequency context (which is what the
+   user narrowed before setting the GF, and which naturally omits the noisy
+   per-unit Limit dims the user didn't touch); the GF supplies the DUT list.
+   NOTE: the leading NOT ( ... ) form is a logical negation of an AND group --
+   verify it against the real pod, since this codebase has confirmed PADB's
+   'NOT IN' but not yet a standalone 'NOT ( ... )'. */
+function copyPadbFilterFromGf(){
+  try{
+    var raw=localStorage.getItem('padb_v2_excluded');
+    var keys=raw?(JSON.parse(raw).excluded||[]):[];
+    if(!keys.length){alert('The Global Filter is empty -- set a GF (e.g. "Set filter as GF" or an outlier button) first.');return;}
+    var serSet={};
+    keys.forEach(function(k){var s=(String(k).split('||')[0]||'').trim();if(s) serSet[s]=1;});
+    var gfSerials=Object.keys(serSet).sort();
+    if(!gfSerials.length){alert('No serial numbers found in the Global Filter entries.');return;}
+    /* condition/harmonic + freq + port + temp, WITHOUT the view's own serial
+       clause (the GF's DUT list is the serial constraint here). */
+    var scope=_buildViewFilterClauses(false);
+    var expr;
+    if(scope.length){
+      var serIn=gfSerials.length===1
+        ? "'Serial Number' = "+_padbQ(gfSerials[0])
+        : "'Serial Number' IN {"+gfSerials.map(_padbQ).join(',')+"}";
+      expr="NOT (\r\n"+scope.concat([serIn]).join("\r\nAND ")+"\r\n)";
     } else {
-      var ta=document.createElement('textarea');ta.value=expr;
-      document.body.appendChild(ta);ta.select();document.execCommand('copy');document.body.removeChild(ta);
-      var btn=document.getElementById('box_padb_flt_btn');
-      if(btn){var orig=btn.textContent;btn.textContent='Copied!';setTimeout(function(){btn.textContent=orig;},1500);}
+      expr=gfSerials.length===1
+        ? "'Serial Number' != "+_padbQ(gfSerials[0])
+        : "'Serial Number' NOT IN {"+gfSerials.map(_padbQ).join(',')+"}";
     }
+    _copyFilterText(expr,'box_padb_gf_flt_btn','Copied ('+gfSerials.length+' DUT excl)!');
   }catch(e){alert('Copy failed: '+e);}
 }
 function exportGfCsv(){
@@ -12647,6 +12704,11 @@ function loadState(){
      is enough (unlike stat_summary, which purges and must re-attach). */
   document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
   _updateBoxGfStatus();
+  /* Show the multichannel (per-port serial) filter caveat only when this pod
+     actually has ports -- keeps single-channel pods uncluttered. */
+  if(typeof ALL_BOX_PORTS!=='undefined'&&ALL_BOX_PORTS&&ALL_BOX_PORTS.length){
+    var _mc=document.getElementById('box_padb_mc_note');if(_mc)_mc.style.display='';
+  }
 })();
 """
 
@@ -13154,6 +13216,15 @@ def _build_box_interactive_html(
         ' style="background:#f0fff4;border-color:#080;color:#060"'
         ' title="Copies a PADB filter expression selecting exactly what this view\'s own filters (condition/Serial/Port/Frequency/Temperature) currently narrow the plot to"'
         ' onclick="copyPadbFilter()">Copy PADB Filter</button>\n'
+        + '  <button class="toggle-btn" id="box_padb_gf_flt_btn"'
+        ' style="background:#eef6ff;border-color:#068;color:#046"'
+        ' title="Copies a PADB filter that EXCLUDES the Global Filter\'s DUTs, scoped to the current view: NOT ( condition/harmonic AND frequency range AND \'Serial Number\' IN {GF DUTs} ). With no view scoping it becomes a plain \'Serial Number\' NOT IN {...}. Verify the NOT(...) form against your pod."'
+        ' onclick="copyPadbFilterFromGf()">Copy PADB Filter (GF)</button>\n'
+        + '  <span id="box_padb_mc_note" style="display:none;font-size:12px;color:#a60;max-width:560px">'
+        '&#9888; Multichannel pod (per-port serials): scope ports with the <b>Port</b> checkboxes, '
+        'not by deselecting individual <code>_RFn</code> serials &mdash; the copied PADB filter uses the '
+        'base <code>Serial Number</code> plus a separate <code>Port</code> clause, so a per-port serial '
+        'pick can make the filter broader than the plot.</span>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
         ' onclick="clearEverything()">Clear everything</button>\n'

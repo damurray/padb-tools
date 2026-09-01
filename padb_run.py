@@ -1047,7 +1047,10 @@ def main() -> None:
     plots_dir = results_dir / "plots"
 
     results_padb.mkdir(parents=True, exist_ok=True)
-    plots_dir.mkdir(parents=True, exist_ok=True)
+    # plots_dir is created lazily by run_secondary_plots() only when a legacy
+    # job actually has secondary_plots to write there -- creating it here
+    # unconditionally left an empty "plots/" folder in every Simple-mode and
+    # Interactive-run result set (which never write to it).
 
     # Tee stdout to a timestamped log file so scheduled/unattended runs are captured.
     log_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
