@@ -64,6 +64,10 @@
       <p class="hint">Pairs two already-extracted CSVs (e.g. Santa Rosa vs. a second site) into one job that tags each row by site and reuses the normal pipeline &mdash; see boxplot's "Site Population Check" and the coverage-gap banner once it's run. Mainly useful when first standing up a new site &mdash; collapsed by default since it's a corner case otherwise.</p>
       <form id="compareForm">
         <div class="toolbar">
+          <button type="button" id="compareRefreshBtn" title="Reload the list of available CSVs from disk (every *_results/padb/*.csv), same as reopening this panel -- picks up a CSV produced by a run that finished after the panel was opened.">Refresh CSVs</button>
+          <label title="Case-insensitive filter on the CSV label shown in both the Site A and Site B lists below.">Name <input type="text" id="compareCsvNameFilter" placeholder="filter by name…"></label>
+        </div>
+        <div class="toolbar">
           <label title="Short label for this dataset in the merged output -- becomes a real 'Site' condition dimension on every generated view (filterable/groupable, e.g. boxplot's Group-by or condition checkboxes), so keep it short and distinct from Site B.">Site A name <input type="text" id="compareSiteAName" placeholder="e.g. SR" required></label>
           <label title="Pick from CSVs already produced by a previous run job -- auto-discovered from every *_results/padb/*.csv already on disk, same layout every job in this tool writes to.">Site A CSV <select id="compareCsvA"></select></label>
         </div>
@@ -78,6 +82,7 @@
         <div class="toolbar">
           <button type="button" id="compareCheckBtn" title="Loads both CSVs and checks compatibility: blocks on a genuine measurement-unit mismatch (e.g. dBc vs dBm), and warns (without blocking) on softer gaps like missing temperatures/ports or non-overlapping frequency ranges. Run this before Create &amp; Run -- it's required once per selection.">Check compatibility</button>
           <button type="submit" id="compareCreateRunBtn" disabled title="Builds a compare_csv job.json (local-only by default -- publish_to is left empty) and queues it immediately, same as Run Selected below. Disabled until Check compatibility has run against the current selection.">Create &amp; Run</button>
+          <span id="compareCreateHint" class="hint">&#8592; Run &ldquo;Check compatibility&rdquo; first to enable Create &amp; Run.</span>
         </div>
       </form>
       <div id="compareResult" class="panel hidden">

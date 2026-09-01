@@ -23,14 +23,26 @@ This script never re-implements the pipeline's own column-detection logic
 padb_plots._load_scatter_for_stats() directly, the same function
 padb_v2.py itself uses, and inspects what it actually picked.
 
+A second, independent pre-flight also lives here: a publish-target check on a
+job.json (--job). It resolves exactly where a job will publish (mirroring
+padb_v2.py's own decision) and classifies it against the standard roots.
+Policy for cross-site compare_csv jobs: their plot outputs belong under the
+dedicated PADB-Compare share (COMPARE_PUBLISH_ROOT). The check confirms a
+compare job resolves there, and WARNs when one is opted out (publish_to:"",
+so it won't publish at all -- correct only for a purely-local QA run) or
+points somewhere other than PADB-Compare.
+
 Usage:
     python padb_csv_check.py <csv_path> [--x-col "Exact Column Name"]
+    python padb_csv_check.py --job <job.json>
+    python padb_csv_check.py <csv_path> --job <job.json>   # both
 
 Exit codes: 0 = no WARN/FAIL, 1 = at least one WARN or FAIL.
 """
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -231,17 +243,102 @@ def check_csv(csv_path: Path, x_col: str | None = None) -> None:
         )
 
 
+def check_job(job_path: Path) -> None:
+    """Pre-flight the publish target of a job.json.
+
+    Mirrors padb_v2.py's own publish decision (generate_report(), the
+    `if "publish_to" in cfg: if cfg["publish_to"]: ...` block) exactly, so a
+    "will this publish, and where" answer here can't disagree with what the
+    real run does. The two share roots are imported from padb_v2, not
+    re-hardcoded, so the paths can never drift out of sync.
+    """
+    print(f"Checking job: {job_path}\n")
+
+    try:
+        cfg = json.loads(job_path.read_text(encoding="utf-8"))
+    except Exception as e:  # malformed JSON, encoding, etc.
+        fail(f"could not parse job JSON ({e}) -- fix the file before running it")
+        return
+    if not isinstance(cfg, dict):
+        fail("job JSON is not an object -- not a valid job file")
+        return
+
+    # Import lazily so the pure-CSV path never pays for it and existing
+    # usage is unaffected if padb_v2 ever grows an import-time cost.
+    import padb_v2 as pv  # noqa: E402
+
+    is_compare = bool(cfg.get("compare_csv"))
+    print(f"  job kind: {'cross-site compare (compare_csv)' if is_compare else 'standard'}\n")
+
+    # Resolve the effective publish destination exactly as padb_v2.py does
+    # (generate_report()): an explicit truthy "publish_to" is copied to
+    # verbatim (no subfolder appended by _publish); an explicit falsy value
+    # opts out; an absent key routes to the default root for the job kind,
+    # with the results_dir name appended as a per-job subfolder.
+    if "publish_to" in cfg:
+        pt = cfg["publish_to"]
+        if pt:
+            dest, mode = str(pt), "explicit"
+        else:
+            dest, mode = None, "optout"
+    else:
+        root = pv.COMPARE_PUBLISH_ROOT if is_compare else pv.DEFAULT_PUBLISH_ROOT
+        sub = Path(cfg.get("results_dir") or "<results_dir>").name
+        dest, mode = str(Path(root) / sub), "default"
+
+    def _under(path: str, root: str) -> bool:
+        return path.casefold().startswith(root.casefold())
+
+    if is_compare:
+        if mode == "optout":
+            warn(
+                'compare_csv job opts out of publishing (publish_to:"") -- its '
+                "output will NOT reach the PADB-Compare share. Correct only for "
+                "a purely-local QA run; set publish_to to a PADB-Compare path "
+                "(or remove the key to use the compare default) to publish."
+            )
+        elif _under(dest, pv.COMPARE_PUBLISH_ROOT):
+            note = " (via the implicit compare default -- consider setting publish_to explicitly)" if mode == "default" else ""
+            ok(f"publishes to the PADB-Compare share: {dest}{note}")
+        else:
+            warn(
+                f"compare_csv job publishes to {dest} -- NOT under the standard "
+                f"compare share ({pv.COMPARE_PUBLISH_ROOT}). Intended?"
+            )
+    else:
+        if mode == "optout":
+            ok('publish_to is empty/false/null -- output stays local (no publish)')
+        elif mode == "default":
+            ok(f"publishes to the default share: {dest}")
+        else:
+            ok(f"publishes to: {dest}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("csv_path", type=Path)
+    ap.add_argument("csv_path", type=Path, nargs="?", default=None,
+                    help="Type=80 Scatter CSV to sanity-check (optional if --job is given)")
     ap.add_argument("--x-col", default=None, help='Exact x-axis column name to test, overriding auto-detection')
+    ap.add_argument("--job", type=Path, default=None,
+                    help="Job JSON to pre-flight for publish_to safety (independent of the CSV check)")
     args = ap.parse_args()
 
-    if not args.csv_path.exists():
-        print(f"[ERROR] not found: {args.csv_path}")
-        sys.exit(1)
+    if args.csv_path is None and args.job is None:
+        ap.error("provide a CSV path, --job <job.json>, or both")
 
-    check_csv(args.csv_path, x_col=args.x_col)
+    if args.csv_path is not None:
+        if not args.csv_path.exists():
+            print(f"[ERROR] not found: {args.csv_path}")
+            sys.exit(1)
+        check_csv(args.csv_path, x_col=args.x_col)
+
+    if args.job is not None:
+        if not args.job.exists():
+            print(f"[ERROR] not found: {args.job}")
+            sys.exit(1)
+        if args.csv_path is not None:
+            print()  # spacer between the two reports
+        check_job(args.job)
 
     print(f"\n{'='*55}")
     print(f"  OK: {len(_PASS)}    WARN: {len(_WARN)}    FAIL: {len(_FAIL)}")

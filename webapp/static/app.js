@@ -142,23 +142,44 @@ document.getElementById("generateForm").addEventListener("submit", async e => {
 // ---------------------------------------------------------------------------
 
 let comparePreviewOk = false; // true once a preview call has run against the current selection
+let allCompareCsvs = []; // cached /api/compare-csvs list, re-filtered client-side by name
 
 async function loadCompareCsvs() {
   const res = await fetch("/api/compare-csvs");
   const data = await res.json();
+  allCompareCsvs = data.csvs || [];
+  renderCompareCsvOptions();
+}
+
+// Rebuild both site dropdowns from the cached list, honoring the name filter.
+// Mirrors the Jobs table's name filter (case-insensitive substring on the
+// visible label), just applied to <option>s instead of table rows.
+function renderCompareCsvOptions() {
+  const filter = document.getElementById("compareCsvNameFilter").value.trim().toLowerCase();
+  const visible = filter
+    ? allCompareCsvs.filter(c => c.label.toLowerCase().includes(filter))
+    : allCompareCsvs;
+  let selectionChanged = false;
   for (const id of ["compareCsvA", "compareCsvB"]) {
     const sel = document.getElementById(id);
-    const prevValue = sel.value; // preserve selection across a refresh, if it still exists
+    const prevValue = sel.value; // preserve selection across a refresh/filter, if it still exists
     sel.innerHTML = "";
-    for (const c of data.csvs) {
+    for (const c of visible) {
       const opt = document.createElement("option");
       opt.value = c.path;
       opt.textContent = c.label;
       sel.appendChild(opt);
     }
     if (prevValue && [...sel.options].some(o => o.value === prevValue)) sel.value = prevValue;
+    else if (prevValue) selectionChanged = true; // the previously-picked CSV got filtered/refreshed away
   }
+  // Rebuilding options programmatically doesn't fire "change", so a selection
+  // that silently shifted (its CSV filtered out or removed on refresh) would
+  // otherwise leave a stale "Check compatibility" result marked valid.
+  if (selectionChanged) invalidateComparePreview();
 }
+document.getElementById("compareCsvNameFilter").addEventListener("input", renderCompareCsvOptions);
+document.getElementById("compareRefreshBtn").addEventListener("click", loadCompareCsvs);
 
 function updateComparePrimarySiteOptions() {
   const nameA = document.getElementById("compareSiteAName").value.trim();
@@ -182,6 +203,7 @@ function updateComparePrimarySiteOptions() {
 function invalidateComparePreview() {
   comparePreviewOk = false;
   document.getElementById("compareCreateRunBtn").disabled = true;
+  updateCompareCreateHint();
 }
 ["compareCsvA", "compareCsvB", "compareSiteAName", "compareSiteBName"].forEach(id =>
   document.getElementById(id).addEventListener("change", invalidateComparePreview)
@@ -193,6 +215,22 @@ function refreshCompareCreateEnabled() {
   const blocked = !document.getElementById("compareBlock").classList.contains("hidden");
   const overrideChk = document.getElementById("compareOverrideChk");
   btn.disabled = !comparePreviewOk || (blocked && !(overrideChk && overrideChk.checked));
+  updateCompareCreateHint();
+}
+
+// Spell out WHY Create & Run is disabled, since a greyed button alone doesn't
+// say what to do about it. Shown only while disabled; the message depends on
+// whether the gate is "no compatibility check yet" vs. "a hard block is
+// active" (the block banner above already explains the latter in detail).
+function updateCompareCreateHint() {
+  const hint = document.getElementById("compareCreateHint");
+  if (!hint) return;
+  const btn = document.getElementById("compareCreateRunBtn");
+  if (!btn.disabled) { hint.classList.add("hidden"); return; }
+  hint.classList.remove("hidden");
+  hint.textContent = comparePreviewOk
+    ? "Resolve the block above (or check Override) to enable Create & Run."
+    : "← Run “Check compatibility” first to enable Create & Run.";
 }
 
 function fmtCompareStat(s) {
@@ -319,6 +357,7 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
       return;
     }
     for (const jobId of execData.job_ids) startPolling(jobId);
+    if (execData.job_ids.length) scrollJobStatusIntoView(execData.job_ids[0]);
     loadJobs();
   } finally {
     btn.textContent = origText;
@@ -423,6 +462,7 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
       return;
     }
     for (const jobId of data.job_ids) startPolling(jobId);
+    if (data.job_ids.length) scrollJobStatusIntoView(data.job_ids[0]);
   } finally {
     btn.disabled = false;
   }
@@ -628,6 +668,17 @@ function startPolling(jobId) {
   activePolls.add(jobId);
   ensureStatusCard(jobId);
   poll(jobId);
+}
+
+// The Running Jobs panel (section 5) sits well below both the compare
+// "Create & Run" button (section 3) and, less dramatically, "Run Selected"
+// (section 4) -- so a freshly-queued job's status card is created off-screen
+// and the queue/run looks like it did nothing. Scroll the new card into view
+// so the feedback is visible from wherever the triggering button was clicked.
+function scrollJobStatusIntoView(jobId) {
+  const target = document.getElementById("status-" + jobId)
+    || document.getElementById("status-section");
+  if (target) target.scrollIntoView({ behavior: "smooth", block: "center" });
 }
 
 async function abortJob(jobId) {

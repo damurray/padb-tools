@@ -196,6 +196,17 @@ button {
   font-size: 0.9rem;
 }
 button:hover { background: #2563eb; }
+/* A disabled button previously kept the full-blue "clickable" look, so e.g.
+   compare's "Create & Run" (disabled until Check compatibility runs) looked
+   identical to an active button -- you'd click it and nothing happened. Grey
+   it out so "not yet actionable" reads at a glance. */
+button:disabled,
+button:disabled:hover {
+  background: #cbd5e1;
+  border-color: #cbd5e1;
+  color: #f1f5f9;
+  cursor: not-allowed;
+}
 button.secondary {
   background: #fff;
   color: #3b82f6;
@@ -233,6 +244,16 @@ pre {
   display: inline;
   margin: 0;
 }
+
+/* Compare panel: CSV file paths and descriptions can be very long, and the
+   default 400px form-field cap truncates them mid-name. Give these controls
+   much more room. max-width:100% keeps them from overflowing a narrow window;
+   the toolbar rows already wrap, so a wide control just drops onto its own
+   line rather than pushing the layout out. (A native <select> popup already
+   auto-sizes to its longest option; this widens the *collapsed* box so the
+   currently-selected file is readable without opening it.) */
+#compareCsvA, #compareCsvB { width: 760px; max-width: 100%; }
+#compareDescription { width: 760px; max-width: 100%; }
 
 .hint { color: #666; font-size: 0.85rem; }
 

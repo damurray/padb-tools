@@ -705,8 +705,41 @@ def _detect_x_axis_col(csv_path: Path) -> str | None:
     return None
 
 
-def _compare_side_stats(csv_path: Path) -> dict:
-    df = _pp._load_scatter_for_stats(csv_path)
+def _x_axis_cfg_for_csv(csv_path: Path) -> dict | None:
+    """A selected CSV's real x-axis often isn't frequency (e.g. an AM flatness
+    analytic swept over "Rate (kHz)"). The sibling plot job.json that
+    padb_make_v2_job.py generated for that same CSV already records the right
+    x_col/x_label/x_unit (auto-detected from the pod's own XData label). Reuse
+    it so Compare loads the CSV exactly the way the individual plot does,
+    instead of falling back to frequency-only header detection and dropping
+    every row. Returns None if no plot job references this CSV, or none set
+    x_col (i.e. a normal frequency axis needs no override)."""
+    try:
+        target = os.path.normcase(str(csv_path.resolve()))
+    except OSError:
+        target = os.path.normcase(str(csv_path))
+    for jp in DATA_DIR.glob("*_v2_job.json"):
+        try:
+            cfg = json.loads(jp.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        cp = cfg.get("csv_path")
+        if not cp or not cfg.get("x_col"):
+            continue
+        try:
+            if os.path.normcase(str(Path(cp).resolve())) == target:
+                return {
+                    "x_col": cfg["x_col"],
+                    "x_label": cfg.get("x_label", cfg["x_col"]),
+                    "x_unit": cfg.get("x_unit", "MHz"),
+                }
+        except OSError:
+            continue
+    return None
+
+
+def _compare_side_stats(csv_path: Path, x_col: str | None = None) -> dict:
+    df = _pp._load_scatter_for_stats(csv_path, x_col=x_col)
     if not len(df):
         return {"rows": 0, "freq_min": None, "freq_max": None, "temps": [], "n_dut": None}
     # A dedicated CSV "Serial" column is rare in this codebase's real pods --
@@ -762,7 +795,14 @@ def _compare_check(csv_a: Path, csv_b: Path) -> dict:
     # scales (e.g. Hz vs kHz) with no conversion applied at all -- this
     # blocks on that combination specifically, since _build_compare_csv()
     # just concatenates raw values with no unit-aware scaling.
-    x_col_a, x_col_b = _detect_x_axis_col(csv_a), _detect_x_axis_col(csv_b)
+    # Prefer the x-axis the sibling plot job.json already records
+    # (authoritative for a non-frequency axis like "Rate (kHz)", which the
+    # header-only frequency/x-value rule can't recognize); fall back to that
+    # rule when no plot job references this CSV. Without this, a non-frequency
+    # analytic loads 0 usable rows here even though its own plot builds fine.
+    sib_a, sib_b = _x_axis_cfg_for_csv(csv_a), _x_axis_cfg_for_csv(csv_b)
+    x_col_a = sib_a["x_col"] if sib_a else _detect_x_axis_col(csv_a)
+    x_col_b = sib_b["x_col"] if sib_b else _detect_x_axis_col(csv_b)
     if x_col_a and x_col_b and x_col_a.lower() != x_col_b.lower():
         blocked = True
         block_reason = (
@@ -772,13 +812,18 @@ def _compare_check(csv_a: Path, csv_b: Path) -> dict:
             f"compare non-equivalent values."
         )
 
-    stats_a, stats_b = _compare_side_stats(csv_a), _compare_side_stats(csv_b)
+    stats_a = _compare_side_stats(csv_a, x_col_a)
+    stats_b = _compare_side_stats(csv_b, x_col_b)
     # (x_col, x_label, x_unit) to bake into the created job.json, or None if
     # Site A's x-axis is the tool's own default (carrier frequency in MHz,
-    # no override needed) -- reused below for the warning text's unit
-    # suffix too, so both the compatibility check and the generated job.json
-    # can never disagree about what unit this data is actually in.
-    x_override = padb_make_v2_job._x_col_override(x_col_a) if x_col_a else None
+    # no override needed) -- reused below for the warning text's unit suffix
+    # too, so the compatibility check and the generated job.json can never
+    # disagree about what unit this data is actually in. The sibling job's
+    # own recorded values win when present (pod-derived, authoritative).
+    if sib_a:
+        x_override = (sib_a["x_col"], sib_a["x_label"], sib_a["x_unit"])
+    else:
+        x_override = padb_make_v2_job._x_col_override(x_col_a) if x_col_a else None
     x_unit = x_override[2] if x_override else "MHz"
 
     if stats_a["rows"] == 0 or stats_b["rows"] == 0:
