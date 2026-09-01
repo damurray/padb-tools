@@ -12016,8 +12016,10 @@ function clearGlobalFilter(){
   _loadBoxGlobalFilter();_updateBoxGfStatus();update();
 }
 function csvTempToTestStep(t){
-  /* Convert CSV temp string (e.g. "30°C") to PADB Test Step label (e.g. "30.0 Deg C") */
-  var m=t.match(/^(\d+(?:\.\d+)?)\s*[°º]?C$/);
+  /* Convert CSV temp string (e.g. "30°C", "-40°C") to PADB Test Step label
+     (e.g. "30.0 Deg C", "-40.0 Deg C"). Leading minus supported -- an
+     environmental sweep can include sub-zero steps. */
+  var m=t.match(/^(-?\d+(?:\.\d+)?)\s*[°º]?C$/);
   return m?parseFloat(m[1]).toFixed(1)+' Deg C':t;
 }
 /* Builds a PADB-native filter expression that selects exactly the rows the
@@ -12044,16 +12046,27 @@ function copyPadbFilter(){
        convention from the Group string, not part of the real field name
        PADB's own filter syntax expects. */
     function fieldName(col){return col.replace(/\s*\([<>]=\)\s*$/,'');}
+    /* PADB values sit inside "..."; escape any embedded " or \ so a value
+       that happens to contain one can't break the whole expression. Assumes
+       backslash escaping; it's a no-op for the normal values here (serials,
+       spur types, ports, numeric specs), so ordinary output is unchanged. */
+    function escVal(v){return String(v).replace(/([\\"])/g,'\\$1');}
+    function q(v){return '"'+escVal(v)+'"';}
     /* Omit the clause entirely when nothing is excluded (all/none selected
        is not a meaningful filter); "!=" only when excluding exactly one
        value is cheaper to state than listing everything that remains. */
     function clauseFor(fieldRef,allVals,selVals){
       if(!allVals||!allVals.length) return null;
       if(!selVals||selVals.length===0||selVals.length===allVals.length) return null;
-      if(selVals.length===1) return "'"+fieldRef+"' = \""+selVals[0]+"\"";
       var excluded=allVals.filter(function(v){return selVals.indexOf(v)<0;});
-      if(excluded.length===1) return "'"+fieldRef+"' != \""+excluded[0]+"\"";
-      return "'"+fieldRef+"' IN {"+selVals.map(function(v){return '"'+v+'"';}).join(',')+"}";
+      if(selVals.length===1) return "'"+fieldRef+"' = "+q(selVals[0]);
+      if(excluded.length===1) return "'"+fieldRef+"' != "+q(excluded[0]);
+      /* List whichever side is shorter: PADB's own idiom excludes a few
+         values via NOT IN {...} rather than enumerating all the kept ones
+         (see 'Serial Number' NOT IN {...} in real pod filters). Logically
+         equivalent to IN {selected}, just shorter and more readable. */
+      if(excluded.length < selVals.length) return "'"+fieldRef+"' NOT IN {"+excluded.map(q).join(',')+"}";
+      return "'"+fieldRef+"' IN {"+selVals.map(q).join(',')+"}";
     }
     (COND_DIMS||[]).forEach(function(dim){
       var c=clauseFor(fp+':'+fieldName(dim.col),dim.vals||[],getSelected('box_cond_'+dim.col_id));
@@ -12066,16 +12079,23 @@ function copyPadbFilter(){
     var fr=getBoxFreqRange();
     var freqLo=isFinite(fr.lo)?fr.lo:BOX_FREQ_MIN,freqHi=isFinite(fr.hi)?fr.hi:BOX_FREQ_MAX;
     var loNarrowed=freqLo>BOX_FREQ_MIN+1e-6,hiNarrowed=freqHi<BOX_FREQ_MAX-1e-6;
+    /* Round outward (floor lo / ceil hi) so the band's own edge points are
+       included rather than clipped by to-nearest rounding -- same
+       rounding-direction lesson as the freq sliders. Kept at 2 decimals to
+       match PADB's own filter-expression formatting. */
+    var loStr=(Math.floor(freqLo*100)/100).toFixed(2),hiStr=(Math.ceil(freqHi*100)/100).toFixed(2);
     if(ff&&loNarrowed&&hiNarrowed){
-      clauses.push("( '"+ff+"' >= \""+freqLo.toFixed(2)+"\" AND '"+ff+"' <= \""+freqHi.toFixed(2)+"\" )");
+      clauses.push("( '"+ff+"' >= "+q(loStr)+" AND '"+ff+"' <= "+q(hiStr)+" )");
     } else if(ff&&loNarrowed){
-      clauses.push("'"+ff+"' >= \""+freqLo.toFixed(2)+"\"");
+      clauses.push("'"+ff+"' >= "+q(loStr));
     } else if(ff&&hiNarrowed){
-      clauses.push("'"+ff+"' <= \""+freqHi.toFixed(2)+"\"");
+      clauses.push("'"+ff+"' <= "+q(hiStr));
     }
-    /* Serial Number and Port -- same prefix as every other field per the
-       user's template (the old code's no-prefix special case was wrong). */
-    var serC=clauseFor(fp+':Serial Number',getAllBoxSerials(),getSelectedBoxSerials());
+    /* Serial Number is a GLOBAL PADB field -- NOT prefixed with the analytic
+       path, unlike every other field. Confirmed by real pod filters, which
+       consistently use a bare 'Serial Number' NOT IN {...} (e.g. the DCFM and
+       Wide BW PM2 Flatness analytics). Port stays prefixed like the rest. */
+    var serC=clauseFor('Serial Number',getAllBoxSerials(),getSelectedBoxSerials());
     if(serC) clauses.push(serC);
     if(ALL_BOX_PORTS&&ALL_BOX_PORTS.length){
       var portC=clauseFor(fp+':Port',getAllBoxPorts(),getSelectedBoxPorts());
@@ -13163,12 +13183,25 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     x_unit = cfg.get("x_unit", "MHz")
     x_label = cfg.get("x_label", "Frequency (MHz)")
     padb_field_prefix = df["_val_col_name"].iloc[0] if len(df) else ""
-    # Expand short CSV column name to full PADB path: "Name (units)" → "Name-->Name (units)"
+    # Expand the value-column name to PADB's full field path, which repeats the
+    # FULL analytic name around "-->": "AM1 Flatness (dB)" becomes
+    # "AM1 Flatness-->AM1 Flatness (dB)". Confirmed against real pod filters
+    # (e.g. 'Calibrate ... IF LBL-->Calibrate ... IF LBL (dBm):Type',
+    # 'Bulleit ... Loop-->Bulleit ... Loop (dBc/Hz):ALC'). The old code split at
+    # the FIRST space, yielding "AM1-->AM1 Flatness (dB)" -- a malformed prefix
+    # on any multi-word analytic name.
     if padb_field_prefix and "-->" not in padb_field_prefix:
-        _sp = padb_field_prefix.find(" ")
-        if _sp > 0:
-            padb_field_prefix = f"{padb_field_prefix[:_sp]}-->{padb_field_prefix}"
-    padb_freq_field = (padb_field_prefix + ":Frequency") if padb_field_prefix else ""
+        _m = re.match(r"^(.*?)\s*(\([^()]*\))\s*$", padb_field_prefix)
+        if _m:
+            _name = _m.group(1).strip()
+            padb_field_prefix = f"{_name}-->{_name} {_m.group(2)}"
+    # PADB filter field name for the swept x-axis: strip the trailing "(unit)"
+    # from x_label ("Frequency (MHz)" -> "Frequency", "Rate (kHz)" -> "Rate").
+    # Was hardcoded to "Frequency", which named the wrong field -- and compared
+    # against the wrong values -- on a non-frequency-axis pod (e.g. AM Flatness
+    # swept over Rate (kHz)), where the range clause is meaningless.
+    _x_axis_field = re.sub(r"\s*\([^()]*\)\s*$", "", x_label).strip() or "Frequency"
+    padb_freq_field = (padb_field_prefix + ":" + _x_axis_field) if padb_field_prefix else ""
     y_lim = cfg.get("y_lim")
     lo_spec, hi_spec = _get_spec(df, cfg)
     has_segments = _has_segmentable_spec(df)
