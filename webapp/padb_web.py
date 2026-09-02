@@ -328,12 +328,31 @@ def _load_v2_chain_state(state_path: Path | None) -> set[str]:
         return set()
 
 
-def _save_v2_chain_state(state_path: Path | None, done: set[str]) -> None:
+def _load_v2_chain_failed(state_path: Path | None) -> set[str]:
+    """Sibling plot-job stems that FAILED to build on a prior attempt. Used
+    to stop auto-resume from re-attempting a permanently-broken sibling (a bad
+    x_col, a missing/never-produced CSV, etc.) on every single webapp startup
+    -- the real "resume job stuck in limbo" report. A sibling in here is
+    retried only by an explicit run or a fresh extraction, never by
+    auto-resume."""
+    if state_path is None or not state_path.exists():
+        return set()
+    try:
+        return set(json.loads(state_path.read_text(encoding="utf-8")).get("failed", []))
+    except (json.JSONDecodeError, OSError):
+        return set()
+
+
+def _save_v2_chain_state(state_path: Path | None, done: set[str],
+                         failed: set[str] | None = None) -> None:
     if state_path is None:
         return
     try:
         state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(json.dumps({"done": sorted(done)}), encoding="utf-8")
+        payload: dict = {"done": sorted(done)}
+        if failed:
+            payload["failed"] = sorted(failed)
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
     except OSError:
         pass
 
@@ -378,7 +397,12 @@ def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = T
         _append_log(job_id, "(no sibling *_v2_job.json plot jobs found to auto-run)")
         return True, None
     state_path = _v2_chain_state_path(job_path, siblings)
+    # `failed` (like `done`) starts empty on a fresh extraction -- new data,
+    # retry everything -- and is loaded from disk only on a resume, so a
+    # permanently-broken sibling recorded on a prior attempt isn't re-tried
+    # forever (see _load_v2_chain_failed / _resume_incomplete_v2_chains).
     done_stems: set[str] = set() if fresh else _load_v2_chain_state(state_path)
+    failed_stems: set[str] = set() if fresh else _load_v2_chain_failed(state_path)
     ok = True
     result_index = None
     for plot_job in siblings:
@@ -392,9 +416,12 @@ def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = T
             rc = _stream(sib_cmd, job_id)
             if rc != 0:
                 ok = False
+                failed_stems.add(plot_job.stem)
+                _save_v2_chain_state(state_path, done_stems, failed_stems)
                 continue
             done_stems.add(plot_job.stem)
-            _save_v2_chain_state(state_path, done_stems)
+            failed_stems.discard(plot_job.stem)  # a retry that finally succeeded
+            _save_v2_chain_state(state_path, done_stems, failed_stems)
         try:
             plot_cfg = json.loads(plot_job.read_text(encoding="utf-8"))
             idx = _job_index_path(plot_job.parent, plot_cfg)
@@ -435,6 +462,7 @@ def _resume_incomplete_v2_chains() -> None:
             continue
         state_path = _v2_chain_state_path(job_path, siblings)
         done_stems = _load_v2_chain_state(state_path)
+        failed_stems = _load_v2_chain_failed(state_path)
         # Require POSITIVE evidence of an interrupted chain -- some but not
         # all siblings marked done -- not just "no state file at all". A
         # completely absent state file is the NORMAL case for every pod
@@ -446,9 +474,17 @@ def _resume_incomplete_v2_chains() -> None:
         # finished looks identical to "never started" and won't auto-resume
         # -- acceptable, since that case is already obvious from an empty
         # results_dir rather than silently looking like a real failure).
-        if not done_stems or len(done_stems) >= len(siblings):
+        #
+        # A sibling that FAILED on a prior attempt (failed_stems) counts as
+        # "attempted" -- so a permanently-broken sibling (bad x_col, a CSV the
+        # extraction never produced, etc.) is retried by auto-resume at most
+        # once and then left alone, instead of re-spawning a doomed resume job
+        # on every single startup (the "resume job stuck in limbo" report).
+        # Fix it (or re-run it explicitly) to clear it from failed.
+        attempted = done_stems | failed_stems
+        if not done_stems or len(attempted) >= len(siblings):
             continue
-        remaining = [s for s in siblings if s.stem not in done_stems]
+        remaining = [s for s in siblings if s.stem not in attempted]
         job_id = _new_job_id()
         with _jobs_lock:
             _jobs[job_id] = {
