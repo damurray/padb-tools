@@ -13536,15 +13536,23 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     palette = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
                "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"]
 
-    all_box_serials = sorted({d["s"]
-                              for cd in box_data
-                              for fs in cd.get("freq_stats", [])
-                              for d in fs.get("vals_detail", [])})
-    all_box_ports = sorted({d["p"]
-                            for cd in box_data
-                            for fs in cd.get("freq_stats", [])
-                            for d in fs.get("vals_detail", [])
-                            if d.get("p")})
+    # These drive the Serial/Port filter panels. Compute them from the
+    # DataFrame directly rather than from box_data's vals_detail: under
+    # binary_encode the per-point detail is stored as vals_detail_bin (decoded
+    # client-side), so a vals_detail-based union came out EMPTY and the Serial/
+    # Port panels weren't built at all -- the reported case being an encoded
+    # cross-site compare boxplot that had no Serial filter even though the data
+    # clearly had serials.
+    all_box_serials = (
+        sorted({str(s) for s in df["_serial_id"].dropna().astype(str)
+                if s not in ("", "nan")})
+        if "_serial_id" in df.columns else []
+    )
+    all_box_ports = (
+        sorted({str(p) for p in df["_port"].dropna().astype(str)
+                if p not in ("", "nan")})
+        if "_port" in df.columns else []
+    )
 
     all_box_freqs = sorted({fs["freq"] for cd in box_data for fs in cd.get("freq_stats", [])})
     box_freq_min = all_box_freqs[0] if all_box_freqs else 0.0
