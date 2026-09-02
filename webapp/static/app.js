@@ -729,7 +729,9 @@ document.getElementById("cleanupPadbBtn").addEventListener("click", async () => 
       `status panel below before proceeding if you're not sure.\n\n`;
   }
   msg += `Kill all of these now?` +
-    (padbR.length ? ` (also kills each PADB-R.exe's own currently-attached R-Host.exe children)` : "");
+    (padbR.length ? ` (also kills each PADB-R.exe's own currently-attached R-Host.exe children)` : "") +
+    `\n\nNote: if any process can't be killed at normal privilege (common for ` +
+    `already-orphaned R-Host.exe), Windows may show one permission (UAC) prompt to elevate the kill.`;
   if (!confirm(msg)) return;
   const killRes = await fetch("/api/orphaned-padb/kill", {
     method: "POST",

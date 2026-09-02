@@ -1295,6 +1295,62 @@ def orphaned_padb():
     return jsonify(processes=processes, has_running_job_here=any_running_here)
 
 
+def _pid_running(pid):
+    """True if a process with this PID is currently in the OS process table.
+    Used to judge whether an elevated kill actually worked, rather than
+    trusting taskkill's aggregate exit code across multiple PIDs. Fails safe
+    to True (assume still alive -- never claim a kill we can't confirm)."""
+    try:
+        cp = subprocess.run(
+            ["tasklist", "/FI", "PID eq {}".format(pid), "/FO", "CSV", "/NH"],
+            capture_output=True, text=True,
+        )
+    except Exception:
+        return True
+    # tasklist prints a CSV row (with the PID quoted) when found, or an
+    # "INFO: No tasks..." line when not.
+    return '"{}"'.format(pid) in cp.stdout
+
+
+def _elevated_taskkill(pids):
+    """Retry taskkill for these PIDs *with elevation*, in a single batch so
+    the user sees at most one UAC prompt (Start-Process -Verb RunAs). Returns
+    (attempted, declined, err): attempted=False if the elevated helper
+    couldn't even be launched; declined=True if the user dismissed the UAC
+    prompt. Per-PID success is determined by the caller re-checking
+    _pid_running afterward -- taskkill's exit code across multiple PIDs isn't
+    reliably per-PID."""
+    args = []
+    for pid in pids:
+        args += ["/PID", str(pid)]
+    args += ["/T", "/F"]
+    arg_list = ",".join("'{}'".format(a) for a in args)
+    # Built with plain concatenation (not .format()/f-string) so the literal
+    # PowerShell braces don't need escaping. Start-Process -Verb RunAs raises
+    # ERROR_CANCELLED (1223) when the user declines the UAC prompt; catch that
+    # so we can report it cleanly.
+    ps_cmd = (
+        "$ErrorActionPreference='Stop'; "
+        "try { $p = Start-Process -FilePath taskkill -Verb RunAs "
+        "-ArgumentList " + arg_list + " -Wait -PassThru -WindowStyle Hidden; "
+        "if ($null -ne $p.ExitCode) { exit $p.ExitCode } else { exit 0 } } "
+        "catch { Write-Error $_.Exception.Message; exit 1223 }"
+    )
+    try:
+        cp = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", ps_cmd],
+            capture_output=True, text=True,
+        )
+    except Exception as e:
+        return (False, False, str(e))
+    err = (cp.stdout + cp.stderr).strip()
+    low = err.lower()
+    declined = (cp.returncode == 1223
+                or "canceled by the user" in low
+                or "cancelled by the user" in low)
+    return (True, declined, err)
+
+
 @app.route("/api/orphaned-padb/kill", methods=["POST"])
 def kill_orphaned_padb():
     """Kill specific PADB-R.exe PIDs by number, as selected in the confirm
@@ -1303,7 +1359,13 @@ def kill_orphaned_padb():
     but this endpoint takes raw PIDs and could in principle be called with
     anything) can't be taken out by a stale/replayed request. /T also takes
     down PADB-R.exe's own R-Host.exe child processes, the other half of the
-    cleanup this button exists for."""
+    cleanup this button exists for.
+
+    On-demand elevation: any PID a normal (non-elevated) taskkill can't
+    terminate -- typically an orphaned R-Host.exe whose termination needs
+    SeDebugPrivilege, which this webapp process doesn't have unless launched
+    elevated -- is retried once in a single elevated batch (one UAC prompt),
+    so the button works without running the whole server as administrator."""
     body = request.get_json(force=True) or {}
     pids = [str(p) for p in (body.get("pids") or [])]
     results = []
@@ -1317,6 +1379,22 @@ def kill_orphaned_padb():
             "ok": cp.returncode == 0,
             "output": (cp.stdout + cp.stderr).strip(),
         })
+
+    failed = [r for r in results if not r["ok"]]
+    if failed:
+        attempted, declined, err = _elevated_taskkill([r["pid"] for r in failed])
+        for r in failed:
+            if declined:
+                r["output"] = ("elevation declined at the Windows permission "
+                               "(UAC) prompt -- not killed")
+            elif not attempted:
+                r["output"] = "could not launch elevated helper: " + err
+            elif not _pid_running(r["pid"]):
+                r["ok"] = True
+                r["output"] = "terminated (elevated)"
+            else:
+                r["output"] = ("still running after elevated kill attempt"
+                               + ((": " + err) if err else ""))
     return jsonify(results=results)
 
 
