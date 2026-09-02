@@ -6224,12 +6224,21 @@ function segTab(dir){
   document.getElementById('freq_lo_txt').value=seg.lo.toFixed(3);
   document.getElementById('freq_hi_txt').value=seg.hi.toFixed(3);
   _segFilterCondDims(seg);
-  /* See scatter/summary's identical segTab() fix -- a Y range pinned by
-     Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
-     silently persist onto a genuinely different new segment. update()
-     reads this back via _liveAxisRange('yaxis') before its own
-     Plotly.purge() call, same as every other live-zoom read in this view. */
-  Plotly.relayout('plot',{'yaxis.autorange':true});
+  /* Pin BOTH axes for the new segment before update(). update() reads
+     _liveAxisRange('xaxis')/('yaxis') BEFORE its own Plotly.purge(), and
+     buildLayout() prefers that live range over the new freq band
+     (xRange=curX?curX:[fLo,fHi], line ~5546). So without relaying the x-axis
+     to the new band here first, a range pinned by an earlier segment/zoom
+     silently wins and the frequency axis never moves even though the spec
+     shapes (driven by the freq textboxes) do -- reported by the user
+     (2026-09-02). yaxis.autorange:true clears any Y range pinned by
+     Autoscale Y or a prior drag-zoom so the new segment re-fits vertically.
+     Mirrors env_coverage's segTab(), which already did this. */
+  var _lx=isLogX();
+  Plotly.relayout('plot',{
+    'xaxis.range':_lx?[Math.log10(Math.max(seg.lo,1e-9)),Math.log10(Math.max(seg.hi,1e-9))]:[seg.lo,seg.hi],
+    'yaxis.autorange':true
+  });
   update();
 }
 /* Narrow every condition-dim dropdown to only the value(s) actually
