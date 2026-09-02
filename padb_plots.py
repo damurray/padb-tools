@@ -12053,15 +12053,9 @@ function copyPadbFilterMode(mode){
       clauses=_buildViewFilterClauses(true);
     }
     if(mode==='gf'||mode==='both'){
-      var raw=localStorage.getItem('padb_v2_excluded');
-      var keys=raw?(JSON.parse(raw).excluded||[]):[];
-      var serSet={};
-      keys.forEach(function(k){var s=(String(k).split('||')[0]||'').trim();if(s) serSet[s]=1;});
-      var gfSerials=Object.keys(serSet).sort();
-      if(gfSerials.length){
-        clauses.push(gfSerials.length===1
-          ? "'Serial Number' != "+_padbQ(gfSerials[0])
-          : "'Serial Number' NOT IN {"+gfSerials.map(_padbQ).join(',')+"}");
+      var gfClause=_buildGfExclusionClause();
+      if(gfClause){
+        clauses.push(gfClause);
       } else if(mode==='gf'){
         alert('The Global Filter is empty -- nothing to exclude. Use "Set filter as GF", an outlier button, or Import GF CSV first.');
         return;
@@ -12075,6 +12069,71 @@ function copyPadbFilterMode(mode){
     }
     _copyFilterText(clauses.join('\r\nAND '),'box_padb_flt_btn','Copied!');
   }catch(e){alert('Copy failed: '+e);}
+}
+/* Build a FAITHFUL PADB exclusion from what the Global Filter actually
+   captured -- not just the serials. Each GF key is
+   serial || condKey || temp || freq, where condKey is the full grouping
+   ("AlcState=TRUE|HarmonicNumber=2|Port=RF1"). This factors the captured
+   values per dimension into a single negated AND-group, e.g.:
+     NOT ( 'Serial Number' IN {...} AND '<pfx>:HarmonicNumber' = "2"
+           AND '<pfx>:Port' = "RF1" AND '<pfx>:Test Step' IN {...}
+           AND ( '<pfx>:Frequency' >= lo AND '<pfx>:Frequency' <= hi ) )
+   - Only Port and real COND_DIMS dimensions are emitted; other condKey parts
+     (e.g. per-unit Limit/Spec/Uncertainty noise not exposed as a filter) are
+     dropped, so the exclusion keys on the meaningful selection, not the noise.
+   - A dimension whose captured values cover ALL of that dimension's values is
+     dropped (it isn't a real constraint).
+   - Frequency is included only if the GF was set with a temp/freq narrow (the
+     GF stores '0' for the frequency otherwise).
+   Returns null when the GF is empty. NOTE: this is the bounding box of the
+   captured selection -- exact for a rectangular selection (the usual
+   "harmonic 2, this freq band, these DUTs"), slightly broad for a GF
+   assembled from several disjoint selections. */
+function _buildGfExclusionClause(){
+  var raw=localStorage.getItem('padb_v2_excluded');
+  var keys=raw?(JSON.parse(raw).excluded||[]):[];
+  if(!keys.length) return null;
+  var fp=typeof PADB_FIELD_PREFIX!=='undefined'?PADB_FIELD_PREFIX:'';
+  var ff=typeof PADB_FREQ_FIELD!=='undefined'?PADB_FREQ_FIELD:'';
+  function fieldName(col){return col.replace(/\s*\([<>]=\)\s*$/,'');}
+  var serSet={}, dimVals={}, tempSet={}, freqs=[];
+  keys.forEach(function(k){
+    var p=String(k).split('||');
+    var ser=(p[0]||'').trim(), condKey=p[1]||'', temp=p[2]||'', freq=parseFloat(p[3]);
+    if(ser) serSet[ser]=1;
+    condKey.split('|').forEach(function(part){
+      var eq=part.indexOf('='); if(eq<0) return;
+      var key=part.slice(0,eq); if(!key) return;
+      (dimVals[key]=dimVals[key]||{})[part.slice(eq+1)]=1;
+    });
+    if(temp && temp!=='manual') tempSet[temp]=1;
+    if(!isNaN(freq) && freq>0) freqs.push(freq);
+  });
+  function inClause(ref, valsObj){
+    var vals=Object.keys(valsObj).sort();
+    return vals.length===1 ? "'"+ref+"' = "+_padbQ(vals[0])
+                           : "'"+ref+"' IN {"+vals.map(_padbQ).join(',')+"}";
+  }
+  var condFull={}; (COND_DIMS||[]).forEach(function(d){condFull[d.col]=(d.vals||[]).length;});
+  var clauses=[];
+  if(Object.keys(serSet).length) clauses.push(inClause('Serial Number', serSet));
+  Object.keys(dimVals).sort().forEach(function(key){
+    var isPort=(key==='Port');
+    if(!isPort && !(key in condFull)) return;              // drop non-filter dims (e.g. Limit noise)
+    if((key in condFull) && condFull[key] && Object.keys(dimVals[key]).length>=condFull[key]) return; // covers all -> not a constraint
+    clauses.push(inClause(fp+':'+fieldName(key), dimVals[key]));
+  });
+  if(Object.keys(tempSet).length){
+    var tconv={}; Object.keys(tempSet).forEach(function(t){tconv[csvTempToTestStep(t)]=1;});
+    clauses.push(inClause(fp+':Test Step', tconv));
+  }
+  if(ff && freqs.length){
+    var lo=Math.floor(Math.min.apply(null,freqs)*100)/100,
+        hi=Math.ceil(Math.max.apply(null,freqs)*100)/100;
+    clauses.push("( '"+ff+"' >= "+_padbQ(lo.toFixed(2))+" AND '"+ff+"' <= "+_padbQ(hi.toFixed(2))+" )");
+  }
+  if(!clauses.length) return null;
+  return "NOT (\r\n"+clauses.join("\r\nAND ")+"\r\n)";
 }
 /* PADB values sit inside "..."; escape any embedded " or \ so a value that
    happens to contain one can't break the expression. No-op for the normal
