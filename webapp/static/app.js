@@ -458,12 +458,14 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
   // button re-enables -- e.g. an impatient re-click while the job is still
   // running -- wouldn't be caught by this alone).
   const btn = document.getElementById("runSelectedBtn");
+  const publishEl = document.getElementById("publishCheckbox");
+  const doPublish = publishEl ? publishEl.checked : false;
   btn.disabled = true;
   try {
     const res = await fetch("/api/execute-job", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths, dry_run: false }),
+      body: JSON.stringify({ paths, dry_run: false, publish: doPublish }),
     });
     const data = await res.json();
     if (!res.ok) {

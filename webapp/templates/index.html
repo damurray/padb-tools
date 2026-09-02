@@ -45,7 +45,7 @@
           <option value="interactive">interactive</option>
         </select>
       </label>
-      <label title="Subfolder name under the publish share (e.g. MiniMoab). Leave blank to pass --no-publish and keep results local-only -- there's no way to guess the right subfolder safely, so this is required to actually publish.">Module <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = --no-publish)"></label>
+      <label title="Subfolder name under the publish share (e.g. MiniMoab). Sets the job's publish_to destination folder; leave blank to generate a local-only job (--no-publish). Whether a run actually publishes is a separate per-run choice (the 'Publish to share after run' checkbox by Run Selected).">Folder name <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = local-only job)"></label>
       <label title="Relative or absolute date sentinel resolved at run time (e.g. &quot;8 weeks ago&quot;, &quot;today&quot;, or a literal YYYY-MM-DD). Leave blank to use the pod's own baked-in date range unchanged.">Min date <input type="text" id="minDateInput" placeholder='e.g. "8 weeks ago" (optional)'></label>
       <label title="Same sentinel rules as Min date.">Max date <input type="text" id="maxDateInput" placeholder='e.g. "today" (optional)'></label>
       <label title="Allow overwriting an already-generated job.json of the same name -- off by default so a hand-tuned job.json is never silently clobbered."><input type="checkbox" id="forceCheckbox"> Overwrite existing job file(s)</label>
@@ -120,6 +120,7 @@
       <button id="selectAllRunnableBtn" class="secondary" title="Checks every currently-visible Run job and unchecks everything else -- the safe way to bulk-select for Run Selected without also grabbing Plot jobs, which would just fail.">Select All Runnable</button>
       <button id="selectFilteredBtn" class="secondary" title="Checks every job matching the current Mode/Kind/Name filters (all rows shown in the table), Run and Plot alike, and unchecks everything else.">Select Filtered</button>
       <button id="runSelectedBtn" title="Queues every checked job. PADB-R.exe runs are strictly serialized (one at a time, others wait as queued); Run jobs are always queued ahead of Plot jobs regardless of selection order, since a Plot job may read a CSV its own Run job just produced.">Run Selected</button>
+      <label title="Off by default: builds locally only (--no-publish). Check to also publish results to each job's own configured publish_to on the network share. Never rewrites the job file -- it's a per-run choice."><input type="checkbox" id="publishCheckbox"> Publish to share after run</label>
     </div>
     <div class="toolbar">
       <label title="Weekly runs on the checked days below; Daily runs every day.">Schedule

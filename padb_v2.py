@@ -1125,6 +1125,12 @@ def main(argv: list[str] | None = None) -> None:
         metavar="DIR",
         help="Output directory (overrides job results_dir)",
     )
+    parser.add_argument(
+        "--no-publish",
+        action="store_true",
+        help="Build locally only; do not publish, regardless of the job's "
+             "publish_to (leaves the job file itself untouched)",
+    )
     args = parser.parse_args(argv)
 
     job_path = Path(args.job).resolve()
@@ -1133,6 +1139,11 @@ def main(argv: list[str] | None = None) -> None:
 
     with job_path.open(encoding="utf-8") as f:
         cfg = json.load(f)
+
+    # --no-publish is a runtime override only -- force the opt-out path in
+    # generate_report() without rewriting the job file on disk.
+    if args.no_publish:
+        cfg["publish_to"] = ""
 
     job_dir = job_path.parent
 

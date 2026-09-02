@@ -338,7 +338,8 @@ def _save_v2_chain_state(state_path: Path | None, done: set[str]) -> None:
         pass
 
 
-def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = True) -> tuple[bool, str | None]:
+def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = True,
+                     publish: bool = False) -> tuple[bool, str | None]:
     """After a V2 extraction job (*_run_job.json) succeeds, auto-run every
     sibling *_v2_job.json plot job -- completes the full V2 flow instead of
     leaving the plot-build step to be run by hand. Returns (ok, index_path)
@@ -385,7 +386,10 @@ def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = T
             _append_log(job_id, f"\n--- Skipping (already built): {plot_job.name} ---")
         else:
             _append_log(job_id, f"\n--- Building plots: {plot_job.name} ---")
-            rc = _stream([sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(plot_job)], job_id)
+            sib_cmd = [sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(plot_job)]
+            if not publish:
+                sib_cmd.append("--no-publish")
+            rc = _stream(sib_cmd, job_id)
             if rc != 0:
                 ok = False
                 continue
@@ -498,19 +502,29 @@ def _worker() -> None:
         cfg = {}
         try:
             cfg = json.loads(job_path.read_text(encoding="utf-8"))
+            # Publishing is opt-in per run (default off) -- a runtime override
+            # only, so the job file's own publish_to is left untouched on disk
+            # ("let existing objects keep their settings"). When off, we force
+            # --no-publish; when on, the job's own publish_to is honored.
+            publish = bool(job.get("publish"))
             if "pod" in cfg:
                 cmd = [sys.executable, str(TOOLS_DIR / "padb_run.py"), str(job_path)]
                 if job.get("dry_run"):
                     cmd.append("--dry-run")
+                if not publish:
+                    cmd.append("--no-publish")
                 rc = _stream(cmd, job_id)
                 ok = rc == 0
                 if ok and cfg.get("mode") == "interactive" and not job.get("dry_run"):
-                    ok, result_index = _run_v2_siblings(job_path, job_id, cfg)
+                    ok, result_index = _run_v2_siblings(job_path, job_id, cfg, publish=publish)
             else:
                 # V2 plot job (csv_path/analytic key, no pod) -- rebuilds HTML from an
                 # already-extracted CSV via padb_v2.py directly. No PADB-R.exe involved,
                 # so --dry-run has no equivalent here and is simply ignored.
-                rc = _stream([sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(job_path)], job_id)
+                plot_cmd = [sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(job_path)]
+                if not publish:
+                    plot_cmd.append("--no-publish")
+                rc = _stream(plot_cmd, job_id)
                 ok = rc == 0
             if result_index is None:
                 idx = _job_result_index_path(job_path, cfg)
@@ -1162,6 +1176,9 @@ def execute_job():
     body = request.get_json(force=True) or {}
     paths = body.get("paths") or []
     dry_run = bool(body.get("dry_run"))
+    # Publishing is opt-in per run and defaults off -- see the worker for why
+    # (runtime-only override, job files are never rewritten).
+    publish = bool(body.get("publish"))
     if not paths:
         return jsonify(error="paths must be a non-empty list"), 400
 
@@ -1209,6 +1226,7 @@ def execute_job():
             _jobs[job_id] = {
                 "status": "queued", "path": str(job_path), "name": job_path.name,
                 "log": [], "started": None, "elapsed_s": 0, "dry_run": dry_run,
+                "publish": publish,
                 "result_index": None, "proc": None, "cancel_requested": False,
             }
         _job_queue.put(job_id)
