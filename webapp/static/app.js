@@ -436,13 +436,22 @@ document.getElementById("selectAllRunnableBtn").addEventListener("click", () => 
   for (const cb of boxes) cb.checked = cb.dataset.kind === "run";
 });
 
+// Select every job matching the current Mode/Kind/Name filters. renderJobsTable
+// only appends rows that pass all three filters, so the rendered checkboxes ARE
+// exactly the filtered set (including any scrolled out of the 320px view box) --
+// checking them all is robust by construction, no re-derivation of the filters
+// needed here.
+document.getElementById("selectFilteredBtn").addEventListener("click", () => {
+  const boxes = document.querySelectorAll("#jobsTable tbody input[type=checkbox]");
+  for (const cb of boxes) cb.checked = true;
+});
+
 document.getElementById("runSelectedBtn").addEventListener("click", async () => {
   const paths = selectedJobPaths();
   if (!paths.length) {
     alert("Select at least one job to run");
     return;
   }
-  const dryRun = document.getElementById("dryRunCheckbox").checked;
   // Disabled for the round trip only -- this guards against a rapid
   // double-click queuing the same job twice (the server also dedups by path
   // against anything already queued/running, since a click well after this
@@ -454,7 +463,7 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
     const res = await fetch("/api/execute-job", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths, dry_run: dryRun }),
+      body: JSON.stringify({ paths, dry_run: false }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -654,7 +663,8 @@ function ensureStatusCard(jobId) {
     card.className = "status-card";
     card.id = "status-" + jobId;
     card.innerHTML = `<h4></h4><span class="badge"></span><span class="elapsed"></span>` +
-      `<span class="results-link"></span><button class="abort-btn" title="Kills the running process immediately -- a PADB-R.exe extraction in progress is killed too, not gracefully stopped.">Abort</button>` +
+      `<span class="results-link"></span><span class="log-link"></span>` +
+      `<button class="abort-btn" title="Kills the running process immediately -- a PADB-R.exe extraction in progress is killed too, not gracefully stopped.">Abort</button>` +
       `<pre class="logtail" title="Tail of this job's own console output, updated every ~2s while queued/running."></pre>`;
     card.querySelector(".abort-btn").addEventListener("click", () => abortJob(jobId));
     document.getElementById("statusPanels").prepend(card);
@@ -759,6 +769,14 @@ async function poll(jobId) {
   const resultsLink = card.querySelector(".results-link");
   resultsLink.innerHTML = data.result_index_url
     ? `  <a href="${data.result_index_url}" target="_blank" title="${data.result_index}">Open results</a>`
+    : "";
+  // Link to the full captured console (extraction + any chained plot jobs),
+  // persisted to the results folder. Emphasized on failure -- e.g. a run job
+  // marked "failed" because a chained plot job errored, where the actual
+  // reason isn't in padb_run_*.log or the truncated live tail.
+  const logLink = card.querySelector(".log-link");
+  logLink.innerHTML = data.log_url
+    ? `  <a href="${data.log_url}" target="_blank"${data.status === "failed" ? ' style="color:#c00;font-weight:600"' : ''}>View log</a>`
     : "";
   const abortBtn = card.querySelector(".abort-btn");
   const active = data.status === "queued" || data.status === "running";

@@ -117,9 +117,8 @@
         </select>
       </label>
       <label title="Case-insensitive filter on job filename.">Name <input type="text" id="nameFilter" placeholder="filter by name…"></label>
-      <label class="inline" title="Passes --dry-run to padb_run.py for Run jobs, skipping the actual PADB-R.exe call -- still runs the publish step if results already exist on disk. No effect on Plot jobs (padb_v2.py has no dry-run equivalent).">
-        <input type="checkbox" id="dryRunCheckbox"> Dry run (skip PADB-R.exe)</label>
       <button id="selectAllRunnableBtn" class="secondary" title="Checks every currently-visible Run job and unchecks everything else -- the safe way to bulk-select for Run Selected without also grabbing Plot jobs, which would just fail.">Select All Runnable</button>
+      <button id="selectFilteredBtn" class="secondary" title="Checks every job matching the current Mode/Kind/Name filters (all rows shown in the table), Run and Plot alike, and unchecks everything else.">Select Filtered</button>
       <button id="runSelectedBtn" title="Queues every checked job. PADB-R.exe runs are strictly serialized (one at a time, others wait as queued); Run jobs are always queued ahead of Plot jobs regardless of selection order, since a Plot job may read a CSV its own Run job just produced.">Run Selected</button>
     </div>
     <div class="toolbar">

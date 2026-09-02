@@ -111,6 +111,33 @@ def _append_log(job_id: str, line: str) -> None:
         _jobs[job_id]["log"].append(line)
 
 
+def _persist_console_log(job_id: str, job_path: Path, cfg: dict) -> None:
+    """Write the job's full captured console (the extraction step AND any
+    chained V2 plot jobs) into its results_dir as webapp_console.log, and
+    record the path on the job so job_status can hand back a link. Motivation:
+    the in-memory tail is truncated (200 lines) and lost on page reload, and
+    padb_run_*.log only covers the extraction -- so a run job marked "failed"
+    because a *chained plot job* errored (extraction itself succeeded and wrote
+    data) had its actual failure reason nowhere linkable. Best-effort; never
+    fails a job over a logging problem."""
+    try:
+        rel = (cfg or {}).get("results_dir")
+        if not rel:
+            return
+        rdir = Path(rel) if Path(rel).is_absolute() else (job_path.parent / rel)
+        if not rdir.exists():
+            return
+        with _jobs_lock:
+            lines = list(_jobs.get(job_id, {}).get("log", []))
+        log_file = rdir / "webapp_console.log"
+        log_file.write_text("\n".join(lines) + "\n", encoding="utf-8", errors="replace")
+        with _jobs_lock:
+            if job_id in _jobs:
+                _jobs[job_id]["log_file"] = str(log_file)
+    except Exception:
+        pass
+
+
 def _job_index_path(job_dir: Path, cfg: dict) -> Path | None:
     """Path to that job's results_dir/index.html, if it exists on disk."""
     results_dir = cfg.get("results_dir")
@@ -446,6 +473,7 @@ def _resume_incomplete_v2_chains() -> None:
                 job["status"] = "cancelled" if job.get("cancel_requested") else ("done" if ok else "failed")
                 job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
                 job["result_index"] = result_index
+            _persist_console_log(job_id, job_path, cfg)
 
         threading.Thread(target=_do_resume, daemon=True).start()
 
@@ -467,6 +495,7 @@ def _worker() -> None:
         job_path = Path(job["path"])
         ok = False
         result_index = None
+        cfg = {}
         try:
             cfg = json.loads(job_path.read_text(encoding="utf-8"))
             if "pod" in cfg:
@@ -493,6 +522,7 @@ def _worker() -> None:
             job["status"] = "cancelled" if job.get("cancel_requested") else ("done" if ok else "failed")
             job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
             job["result_index"] = result_index
+        _persist_console_log(job_id, job_path, cfg)
         _job_queue.task_done()
 
 
@@ -1334,11 +1364,13 @@ def job_status(job_id):
                 if j["status"] in ("queued", "running"):
                     ahead += 1
             queue_position = ahead
+        log_file = job.get("log_file")
         return jsonify(
             status=job["status"], name=job["name"], elapsed_s=elapsed,
             log_tail="\n".join(job["log"][-200:]),
             result_index=result_index,
             result_index_url=_result_url(result_index),
+            log_url=_result_url(log_file) if log_file else None,
             queue_position=queue_position,
         )
 
