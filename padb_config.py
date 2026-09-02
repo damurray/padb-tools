@@ -52,6 +52,26 @@ def load_defaults() -> dict:
     return cfg
 
 
+def save_config(updates: dict) -> Path:
+    """Merge `updates` into padb_config.json (creating the file and its parent
+    directory if needed) and return the path written. Only the keys in
+    `updates` are changed; any other keys already present in the file are
+    preserved, so this never clobbers a hand-set padb_exe/data_dir/etc."""
+    cfg = {}
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, encoding="utf-8") as f:
+                cfg = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            cfg = {}
+    cfg.update(updates)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=4, ensure_ascii=False)
+        f.write("\n")
+    return CONFIG_PATH
+
+
 # Windows' MAX_PATH is 260 characters. Warn with margin rather than at the
 # exact limit -- a real case (a CW Closed Loop pod nested in its own
 # padbResults tree, with a single analytic whose name nearly repeated the

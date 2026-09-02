@@ -702,6 +702,56 @@ def generate_job():
     return jsonify(stdout=proc.stdout, stderr=proc.stderr, returncode=proc.returncode, jobs=jobs)
 
 
+def _derive_interactive_root(root: str) -> str:
+    """The Interactive-tier root is the Simple root with the tier segment
+    swapped -- the same derivation padb_make_v2_job.py uses. Kept here only
+    so the UI can *show* the derived path; the generators still compute it
+    themselves from padb_config at run time."""
+    return root.replace("PADB-Simple", "PADB-Interactive")
+
+
+@app.route("/api/config")
+def get_config():
+    """Current per-user publish default (padb_config.json's publish_root),
+    plus the derived Interactive-tier root and the config file path, so the
+    Generate Job UI can show what a blank Share-path override will resolve to."""
+    d = padb_config.load_defaults()
+    root = d.get("publish_root", "")
+    return jsonify(
+        publish_root=root,
+        publish_root_interactive=_derive_interactive_root(root),
+        config_path=str(padb_config.CONFIG_PATH),
+    )
+
+
+@app.route("/api/config", methods=["POST"])
+def set_config():
+    """Persist a new default publish_root to padb_config.json. Per-user (the
+    file lives under this user's home), so 'other users on other products'
+    each set their own root once. The generators read it fresh on their next
+    run, so no restart is needed."""
+    body = request.get_json(force=True) or {}
+    root = (body.get("publish_root") or "").strip().rstrip("\\")
+    if not root:
+        return jsonify(error="publish_root must be non-empty"), 400
+    # Convention (chosen 2026-09-02): the root ends in 'PADB-Simple'; the
+    # Interactive tier is derived by swapping in 'PADB-Interactive'. If it
+    # doesn't, Simple and Interactive jobs would share one tree -- warn, but
+    # still save (the user may have a deliberate reason).
+    warning = None
+    if not root.endswith("PADB-Simple"):
+        warning = ("By convention the root ends in 'PADB-Simple' (Interactive is "
+                   "derived by swapping in 'PADB-Interactive'). This one doesn't, so "
+                   "Simple and Interactive jobs will publish to the same tree. Saved anyway.")
+    try:
+        path = padb_config.save_config({"publish_root": root})
+    except OSError as exc:
+        return jsonify(error=f"could not write config: {exc}"), 500
+    return jsonify(ok=True, publish_root=root,
+                   publish_root_interactive=_derive_interactive_root(root),
+                   config_path=str(path), warning=warning)
+
+
 # ---------------------------------------------------------------------------
 # Compare mode -- pair two already-extracted CSVs (e.g. two sites' own runs
 # of conceptually the same test) into a compare_csv V2 job (see padb_v2.py /

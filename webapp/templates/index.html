@@ -38,6 +38,12 @@
 
   <section id="generate-section" class="hidden">
     <h2>2. Generate a job.json</h2>
+    <div id="publishRootRow" title="Your saved default publish root (padb_config.json's publish_root, per user). Blank 'Folder name' below publishes to &lt;this root&gt;\&lt;folder name&gt;\&lt;pod name&gt;. By convention it ends in 'PADB-Simple'; the Interactive tier is derived by swapping in 'PADB-Interactive'. Change it once here for a different product/share tree -- the generators pick it up on the next Generate.">
+      <strong>Default share root:</strong>
+      <input type="text" id="publishRootInput" size="58" placeholder="loading…">
+      <button type="button" id="saveRootBtn">Save default</button>
+      <span id="rootHint" class="hint"></span>
+    </div>
     <form id="generateForm">
       <label title="simple = native PADB PNG/PDF gallery, closest to the old PADB::Simple tool. interactive = full interactive HTML with live filtering -- the default for a new pod.">Mode
         <select id="modeSelect">
@@ -45,7 +51,7 @@
           <option value="interactive">interactive</option>
         </select>
       </label>
-      <label title="How to use: enter a subfolder name for the network share. The job publishes to  &lt;root&gt;\&lt;folder name&gt;\&lt;pod name&gt;  -- the pod name is appended automatically, so each pod gets its own subfolder.&#10;Root is fixed by mode: PADB-Simple (Simple/Legacy) or PADB-Interactive (Interactive).&#10;Example: 'Tutorial1' -&gt; ...\PADB-Simple\Tutorial1\MaxPowerTutorial1.&#10;Leave this AND Share path blank to make a local-only job (no publishing).&#10;Note: this does NOT rename the local results folder, and nothing is copied to the share unless 'Publish to share after run' (by Run Selected) is ticked.">Folder name <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = local-only job)"></label>
+      <label title="How to use: enter a subfolder name for the network share. The job publishes to  &lt;root&gt;\&lt;folder name&gt;\&lt;pod name&gt;  -- the pod name is appended automatically, so each pod gets its own subfolder.&#10;Root = your saved Default share root (set above); for Interactive mode 'PADB-Simple' is swapped to 'PADB-Interactive'.&#10;Example: 'Tutorial1' -&gt; ...\PADB-Simple\Tutorial1\MaxPowerTutorial1.&#10;Leave this AND Share path blank to make a local-only job (no publishing).&#10;Note: this does NOT rename the local results folder, and nothing is copied to the share unless 'Publish to share after run' (by Run Selected) is ticked.">Folder name <input type="text" id="moduleInput" placeholder="e.g. MiniMoab (blank = local-only job)"></label>
       <label title="How to use: optional. Sets the publish destination to this EXACT path, used verbatim -- the pod name is NOT appended and the standard root + Folder name are ignored. Use only to publish somewhere off the standard share tree.&#10;Example: '\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\PADB-Custom\MyDest' publishes straight into that folder.&#10;Leave blank to use the standard root + Folder name.&#10;If both are filled, this override wins.&#10;Publishing still only happens if 'Publish to share after run' is ticked.">Share path (override) <input type="text" id="sharePathInput" placeholder="blank = standard root\folder name" size="40"></label>
       <label title="Relative or absolute date sentinel resolved at run time (e.g. &quot;8 weeks ago&quot;, &quot;today&quot;, or a literal YYYY-MM-DD). Leave blank to use the pod's own baked-in date range unchanged.">Min date <input type="text" id="minDateInput" placeholder='e.g. "8 weeks ago" (optional)'></label>
       <label title="Same sentinel rules as Min date.">Max date <input type="text" id="maxDateInput" placeholder='e.g. "today" (optional)'></label>

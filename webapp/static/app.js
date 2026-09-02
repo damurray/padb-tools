@@ -802,8 +802,48 @@ async function poll(jobId) {
 // Init
 // ---------------------------------------------------------------------------
 
+function setRootHint(interactiveRoot, msg) {
+  const hint = document.getElementById("rootHint");
+  if (!hint) return;
+  if (msg) { hint.textContent = msg; return; }
+  hint.textContent = interactiveRoot ? ("Interactive tier → " + interactiveRoot) : "";
+}
+
+async function loadPublishConfig() {
+  try {
+    const res = await fetch("/api/config");
+    const d = await res.json();
+    if (!res.ok) return;
+    const inp = document.getElementById("publishRootInput");
+    if (inp) inp.value = d.publish_root || "";
+    setRootHint(d.publish_root_interactive, null);
+  } catch (e) { /* leave the placeholder text */ }
+}
+
+document.getElementById("saveRootBtn").addEventListener("click", async () => {
+  const inp = document.getElementById("publishRootInput");
+  const root = (inp.value || "").trim();
+  if (!root) { alert("Enter a default share root first."); return; }
+  const btn = document.getElementById("saveRootBtn");
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ publish_root: root }),
+    });
+    const d = await res.json();
+    if (!res.ok) { alert("Save failed: " + (d.error || res.status)); return; }
+    inp.value = d.publish_root;
+    setRootHint(d.publish_root_interactive, null);
+    alert((d.warning ? ("Saved, with a note:\n\n" + d.warning) : "Saved default share root.") +
+          "\n\nWritten to: " + d.config_path);
+  } finally { btn.disabled = false; }
+});
+
 loadJobs();
 loadSites();
+loadPublishConfig();
 
 // Real report (2026-08-28): a page refresh loses the Running Jobs panel
 // entirely, even though the job itself is still running server-side --
