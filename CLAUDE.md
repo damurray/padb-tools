@@ -1445,3 +1445,13 @@ Prompted by the above — a plot build that can't proceed used to dump a raw tra
 - **Compare jobs**: `_build_compare_csv` now flags (via `_log_note`, a non-fatal NOTE in `build_failures.log`) any site whose own CSV has no Frequency/X-value column — the "one good reference CSV makes it easy to say which site has no matching test data" case the user pointed out. The merged build still succeeds on the real site's rows.
 
 Verified: the SR Overshoot placeholder CSV now produces a clear "no matching test data / placeholder export" message and a `build_failures.log` (both the bad-`x_col` and the valid-column-but-no-numeric-x paths); a real Frequency CSV still loads with no false positive; a missing CSV logs the "analytic wrote no output" reason. `qa_padb.py` baseline unchanged (37/4).
+
+---
+
+## `padb_v2.py`: oversized-view size guard (added 2026-09-03)
+
+Real report: a phase-noise DCFM boxplot "does not generate any plot data." Root cause was pure data volume, not a bug — the SR DCFM CSV is **8.5M rows across 7,662 distinct Frequency-Offset points × 14 conditions**. A boxplot's x-axis is categorical (one box per frequency), so that's ~107K potential boxes plus every raw point embedded for "Show points" → a **517 MB** self-contained HTML. A browser (single-threaded JSON parse, ~2–4 GB per-tab ceiling) can't load it, so the page opens but never paints — indistinguishable from "no data." (Same dir: EFC boxplot 178 MB, DCFM scatter 95 MB; the small "at Defined Offsets" variants render fine.) The job used neither `binary_encode` nor `scatter_decimate`.
+
+This is inherent to the self-contained-HTML design (no server, opens off the share — everything embeds in one file the browser must fully load), unlike a server-rendered tool (Streamlit etc.) that keeps the data server-side and sends the browser only a decimated/rendered slice.
+
+`_warn_if_view_too_large(out_html, view, cfg, output_dir)` (called after each successful render in `generate_report`) logs a NOTE to `build_failures.log` + console when a view file is ≥ `VIEW_SIZE_WARN_MB` (80 MB), with concrete options: `binary_encode`, `scatter_decimate`, narrowing the extraction, and — for `boxplot`/`stat_summary`/`summary`, whose x-axis is per-frequency — that a categorical view over thousands of distinct offsets isn't meaningful and the scatter is the right view. Verified against the real 517 MB boxplot (warns, boxplot-specific tip included) and a small file (no warning). `qa_padb.py` baseline unchanged (37/4).

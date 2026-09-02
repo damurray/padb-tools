@@ -169,6 +169,45 @@ def _log_build_failure(output_dir: Path, cfg: dict, csv_path: Path, reason: str)
         pass
 
 
+# A self-contained view HTML embeds all its data plus Plotly inline. Past
+# roughly this size a browser gets sluggish, and well past it (a few hundred
+# MB) the page may not open at all -- it looks like "the plot produced no
+# data" even though the data is all there. Warn with margin so it's diagnosed,
+# not silently unrenderable. Real case (2026-09-03): an 8.5M-row / 7,662-
+# offset phase-noise DCFM boxplot produced a 517MB HTML that wouldn't render.
+VIEW_SIZE_WARN_MB = 80
+
+
+def _warn_if_view_too_large(out_html: Path, view: str, cfg: dict, output_dir: Path) -> None:
+    """Flag a generated view whose file is large enough that a browser may
+    struggle to (or can't) render it -- logged to build_failures.log and the
+    console, with concrete size-reduction options, so an unrenderable page is
+    diagnosed rather than mistaken for 'no plot data'."""
+    try:
+        mb = out_html.stat().st_size / (1024 * 1024)
+    except OSError:
+        return
+    if mb < VIEW_SIZE_WARN_MB:
+        return
+    already = bool(cfg.get("binary_encode")) or cfg.get("scatter_decimate") not in (None, False)
+    tips = []
+    if not cfg.get("binary_encode"):
+        tips.append('"binary_encode": true (float32-packs the numeric arrays)')
+    if cfg.get("scatter_decimate") in (None, False):
+        tips.append('"scatter_decimate": "auto" (thins dense series, keeps min/max/spikes)')
+    tips.append("narrow the extraction (fewer frequency points / conditions / DUTs)")
+    if view in ("boxplot", "stat_summary", "summary"):
+        tips.append(f"note the {view} x-axis is per-frequency -- over thousands of distinct "
+                    f"frequencies (e.g. a wide phase-noise offset sweep) it isn't a meaningful "
+                    f"view and the scatter is the one to use")
+    _log_note(output_dir,
+              f"{out_html.name} is {mb:.0f} MB -- a self-contained page this large can be very "
+              f"slow to open, and past ~a few hundred MB a browser may not render it at all "
+              f"(it can look like 'no plot data' even though the data is present)."
+              + ("" if already else " This job used no size optimizations.")
+              + " Options: " + "; ".join(tips) + ".")
+
+
 def _log_note(output_dir: Path, text: str) -> None:
     """Append a non-fatal NOTE to build_failures.log (and print it). Used for
     'a build still succeeded, but here's something worth flagging' -- e.g. one
@@ -939,6 +978,7 @@ def generate_report(
         try:
             fn(use_df, view_cfg, out_html)
             generated.append(out_html)
+            _warn_if_view_too_large(out_html, view, cfg, output_dir)
         except Exception as exc:
             print(f"    [ERROR] {exc}", flush=True)
             _write_placeholder(out_html, view_cfg["title"], f"Error: {exc}")
