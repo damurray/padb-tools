@@ -654,6 +654,7 @@ def generate_job():
     module = (body.get("module") or "").strip()
     min_date = (body.get("min_date") or "").strip()
     max_date = (body.get("max_date") or "").strip()
+    publish_to = (body.get("publish_to") or "").strip()
     force = bool(body.get("force"))
 
     if not pod_path or not Path(pod_path).exists():
@@ -665,7 +666,15 @@ def generate_job():
     cmd = [sys.executable, str(TOOLS_DIR / script), pod_path]
     if mode != "interactive":
         cmd += ["--mode", mode]
-    if module:
+    # Publish destination precedence: an explicit Share-path override wins;
+    # else the Folder name subfolder under the standard share root; else a
+    # local-only job (--no-publish). The Folder name is still passed alongside
+    # an override (harmless -- the generator's --publish-to takes precedence).
+    if publish_to:
+        cmd += ["--publish-to", publish_to]
+        if module:
+            cmd += ["--module", module]
+    elif module:
         cmd += ["--module", module]
     else:
         cmd += ["--no-publish"]

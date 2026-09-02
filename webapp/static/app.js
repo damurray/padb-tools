@@ -105,6 +105,7 @@ document.getElementById("generateForm").addEventListener("submit", async e => {
     pod_path: currentPodPath,
     mode: document.getElementById("modeSelect").value,
     module: document.getElementById("moduleInput").value,
+    publish_to: document.getElementById("sharePathInput").value,
     min_date: document.getElementById("minDateInput").value,
     max_date: document.getElementById("maxDateInput").value,
     force: document.getElementById("forceCheckbox").checked,

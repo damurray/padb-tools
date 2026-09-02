@@ -39,6 +39,7 @@ def make_job_cfg(
     pod_path: Path, mode: str, module: str | None,
     min_date: str | None, max_date: str | None,
     padb_exe: str, output_dir: str, logs_dir: str, publish_root: str | None,
+    publish_to: str | None = None,
 ) -> dict:
     stem = pod_path.stem
     # Device_Device names the actual instrument family this pod's data came from
@@ -70,7 +71,11 @@ def make_job_cfg(
     cfg["padb_output_dir"] = output_dir
     cfg["padb_logs_dir"] = logs_dir
 
-    if publish_root and module:
+    if publish_to:
+        # Verbatim override -- used exactly as given (no root/module/stem
+        # composition), for publishing somewhere off the standard share tree.
+        cfg["publish"] = {"destination": publish_to}
+    elif publish_root and module:
         cfg["publish"] = {"destination": f"{publish_root}\\{module}\\{stem}"}
 
     return cfg
@@ -90,15 +95,19 @@ def main() -> None:
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--logs-dir", default=DEFAULT_LOGS_DIR)
     parser.add_argument("--publish-root", default=DEFAULT_PUBLISH_ROOT)
+    parser.add_argument("--publish-to", help="Exact publish destination, used verbatim "
+                                             "(bypasses --publish-root/--module composition). "
+                                             "Takes precedence over --module.")
     parser.add_argument("--no-publish", action="store_true", help="Skip the publish key entirely")
     parser.add_argument("--force", action="store_true", help="Overwrite an existing job.json")
     args = parser.parse_args()
 
-    if not args.module and not args.no_publish:
-        parser.error("--module is required unless --no-publish is given "
+    if not args.module and not args.no_publish and not args.publish_to:
+        parser.error("--module is required unless --no-publish or --publish-to is given "
                       "(avoids silently guessing the wrong publish subfolder)")
 
     publish_root = None if args.no_publish else args.publish_root
+    publish_to = None if args.no_publish else args.publish_to
 
     for pod_str in args.pods:
         pod_path = Path(pod_str).resolve()
@@ -112,7 +121,8 @@ def main() -> None:
             continue
 
         cfg = make_job_cfg(pod_path, args.mode, args.module, args.min_date, args.max_date,
-                            args.padb_exe, args.output_dir, args.logs_dir, publish_root)
+                            args.padb_exe, args.output_dir, args.logs_dir, publish_root,
+                            publish_to=publish_to)
 
         job_path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         print(f"Wrote {job_path.name}")

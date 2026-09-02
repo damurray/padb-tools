@@ -183,12 +183,16 @@ def main() -> None:
     parser.add_argument("--publish-root", default=None,
                          help="Default: this user's padb_config publish_root + '\\Interactive' "
                               "(kept separate from the Simple-mode PADB-Simple tree).")
+    parser.add_argument("--publish-to", help="Exact publish destination, used verbatim "
+                                             "(bypasses --publish-root/--module composition). "
+                                             "Takes precedence over --module; shared by every "
+                                             "plot job for this pod.")
     parser.add_argument("--no-publish", action="store_true")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
-    if not args.module and not args.no_publish:
-        parser.error("--module is required unless --no-publish is given")
+    if not args.module and not args.no_publish and not args.publish_to:
+        parser.error("--module is required unless --no-publish or --publish-to is given")
 
     defaults = padb_config.load_defaults()
     padb_exe = args.padb_exe or defaults["padb_exe"]
@@ -196,6 +200,7 @@ def main() -> None:
     logs_dir = args.logs_dir or defaults["padb_logs_dir"]
     interactive_root = defaults["publish_root"].replace("PADB-Simple", "PADB-Interactive")
     publish_root = None if args.no_publish else (args.publish_root or interactive_root)
+    publish_to = None if args.no_publish else args.publish_to
 
     pod_path = Path(args.pod).resolve()
     if not pod_path.exists():
@@ -298,7 +303,11 @@ def main() -> None:
                   f"\"pod_filter_expression\" on this plot job so the generated page's Help "
                   f"panel can tell viewers this analytic's extraction was already pre-scoped, "
                   f"since padb-tools has no way to show that otherwise.")
-        if publish_root and args.module:
+        if publish_to:
+            # Verbatim override -- every plot job for this pod shares one
+            # results gallery, so they all get the same exact destination.
+            plot_job["publish_to"] = publish_to
+        elif publish_root and args.module:
             plot_job["publish_to"] = f"{publish_root}\\{args.module}\\{stem}"
 
         # Only append the analytic name when there's more than one Type=80
