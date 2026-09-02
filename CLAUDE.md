@@ -1388,3 +1388,30 @@ Supersedes the 2026-08-19 "reflect the current view" rewrite above. Two commits 
 - **"Select Filtered" button** (`94719e2`) — checks every job row matching the current Mode/Kind/Name filters, alongside the existing "Select All Runnable".
 - **"Dry run" checkbox removed** from the webapp UI (`94719e2`); the request always sends `dry_run:false`. Backend and `padb_run.py --dry-run` CLI flag unchanged.
 - **`Start_web.bat`** (`f693294`, 2026-08-31) — double-click launcher for the web app, for users who'd rather not use a terminal.
+
+---
+
+## Webapp: on-demand elevation for "Clean up orphaned PADB-R" (2026-09-02)
+
+The cleanup button ran `taskkill /PID <pid> /T /F` from the non-elevated webapp process, which lacks `SeDebugPrivilege` — so orphaned `R-Host.exe` processes (parent PADB-R.exe already gone) failed with taskkill's misleading "There is no running instance of the task", even though Task Manager (which auto-enables `SeDebugPrivilege` for admin users) could kill them. Now any PID a normal `taskkill` can't terminate is retried once, in a **single elevated batch** via `Start-Process -Verb RunAs` (one UAC prompt for the whole cleanup), so the button works without running the whole server as administrator. Per-PID success is judged from the live process table (`_pid_running` via `tasklist`), not taskkill's aggregate exit code; a declined UAC prompt (ERROR_CANCELLED / 1223) is reported cleanly. The confirm dialog notes a permission prompt may appear. Verified `_pid_running` and the elevated-command construction via a stubbed `subprocess.run` (no real UAC fired in the test).
+
+---
+
+## Stat Summary: Segment-by step didn't move the frequency axis (fixed 2026-09-02)
+
+Reported by the user: on `stat_summary`, tabbing "Segment by" updated the spec shapes but left the frequency (x) axis where it was.
+
+**Root cause:** `stat_summary`'s `update()` reads `_liveAxisRange('xaxis')` BEFORE its `Plotly.purge()`, and `buildLayout()` prefers that pinned live range over the new freq band (`xRange = curX ? curX : [fLo,fHi]`, ~line 5546). `segTab()` set the freq textboxes (so the spec shapes, driven by those, moved) but — unlike `env_coverage`'s `segTab()` — never relayouted the x-axis to the new band, so a range pinned by an earlier segment/zoom kept winning via `_liveAxisRange()` and the axis never moved. This was the only view with that exact `curX?curX:...` fallback; `env_coverage` already relayouted x in its `segTab()`, `distribution`'s x-axis isn't frequency, and `boxplot`'s is categorical — so none of those had it.
+
+**Fix:** `segTab()` now relayouts `xaxis.range` to the new segment band (log/linear-aware) alongside the existing `yaxis.autorange` reset, before `update()`, so `_liveAxisRange()` picks up the new band. Verified headlessly on the real Harmonics page: with the x-axis pre-pinned to the full range, stepping to a band moves the axis to exactly that band's frequencies; a negative control (the old sequence — textboxes + `update()`, no x relayout) left it stuck, confirming the test has teeth. `qa_padb.py` baseline unchanged (37/4).
+
+---
+
+## Webapp: selectable publish (default no-publish); "Module" → "Folder name" (2026-09-02)
+
+Publishing to the network share is now an opt-in per-run choice in the webapp, defaulting OFF — worked out over several user messages ("make publish_to selectable... Default is --no-publish", "Let existing objects keep their settings", "Let module still add a folder name", "rename Module to folder name").
+
+- **"Publish to share after run" checkbox** by Run Selected (default unchecked). Off → the worker appends `--no-publish` to `padb_run.py` (run jobs) and `padb_v2.py` (plot jobs + the interactive sibling chain, threaded via `_run_v2_siblings(..., publish=...)`). On → each job's own `publish_to` is honored.
+- **Runtime override only** — job.json files are never rewritten (`_worker` reads `job["publish"]`, defaulting False; `execute_job` reads `publish` from the request body). Existing jobs keep their `publish_to` on disk. Auto-resume of an interrupted chain stays no-publish (matches the default; avoids a surprise publish on auto-resume).
+- **`padb_v2.py --no-publish`** (new) forces `cfg["publish_to"] = ""` (the opt-out path in `generate_report`) without touching the job file — mirrors `padb_run.py`'s existing flag.
+- **Generate Job still builds `publish_to` from the folder name** (`--module` unchanged: `<publish_root>\<module>\<pod_stem>`), so a generated job carries its intended destination for when publish is enabled. Renamed the field's visible label "Module" → **"Folder name"** (element id `moduleInput` unchanged, so app.js is unaffected). The webapp exposes only the subfolder name, not a full share-path box — the share root is fixed in `padb_config` (`…\SG6311A\PADB-Simple`, auto-swapped to `PADB-Interactive` for V2); a custom full path still means hand-editing the job's `publish_to`.

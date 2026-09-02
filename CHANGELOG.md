@@ -29,6 +29,7 @@ Pulled directly from git history. Split into bug fixes and feature improvements.
 - **Sep 1** — Cross-site compare boxplot was missing its Serial/Port filter panels entirely (data stored as `vals_detail_bin` under binary_encode, so the panels computed from the wrong source)
 - **Sep 1** — "Copy PADB Filter" Global-Filter output was a bare `'Serial Number' NOT IN {...}`; now reproduces the GF's full captured scope (harmonic/condition, frequency range, serials)
 - **Sep 1** — Global Filter could get stuck in "Inspect" mode across unrelated result pages (browser-global setting); now resets to Exclude on every page load, with an amber "⚠ INSPECT MODE" banner while active
+- **Sep 2** — Stat Summary: stepping "Segment by" updated the spec lines but left the frequency axis where it was — the axis stayed pinned to an earlier segment/zoom range instead of moving to the stepped band
 
 ## Feature Improvements
 

@@ -141,6 +141,7 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 
 ### Segment by
 - [ ] "Segment by: Spec / Limit / Uncertainty" selector present **only if the dataset actually has a frequency-varying Spec/Limit/Uncertainty** (as of 2026-08-21, the whole control is omitted, not just Prev/Next, for a flat/constant-spec dataset — check both a staircase-spec pod and a flat-spec one if available); when present, Prev/Next jumps the frequency range to each contiguous spec band
+- [ ] Stepping Prev/Next actually moves the **frequency (x) axis** to the new band, not just the spec lines — including after a manual zoom (fixed 2026-09-02, was stat_summary-specific)
 
 ### Global Filter (GF) buttons
 - [ ] "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" each **add** to the existing GF rather than replacing it (set GF twice from different selections, confirm both sets of exclusions remain)
