@@ -63,6 +63,9 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] Toggle log X → X axis switches to log scale
 - [ ] Toggle back → returns to linear
 
+### Autoscale Y
+- [ ] After zooming/filtering the X axis, "Autoscale Y" rescales the Y axis to fit the visible data without changing the frequency zoom
+
 ### Statistics table
 - [ ] Click "Statistics Table" → table expands below plot
 - [ ] Per-condition, per-frequency: n, mean, σ, NP TI bounds, outliers visible
@@ -145,7 +148,11 @@ python "C:\apps\padb\tools\padb_csv_check.py" path\to\Scatter.csv
 - [ ] "Clear global filter" empties it
 - [ ] "Export GF CSV" downloads a CSV with `Serial,Condition,Temperature,Start_Freq,Stop_Freq,N_Points` columns
 - [ ] "Import GF CSV" on a previously-exported file re-merges (adds to) the current GF without erroring
-- [ ] "Copy PADB Filter" copies a `NOT IN {...}`-style expression to the clipboard (hover text notes this is under development)
+- [ ] "Copy PADB Filter" is a **three-mode dropdown** (Plot view / Global Filter only / Plot + GF); each copies a real PADB-syntax expression to the clipboard (`'Field' = "value"` / `!=` / `IN {...}` / `NOT ( ... )`, `'Serial Number'` unprefixed and all other fields prefixed)
+- [ ] "Global Filter only" reproduces the GF's **full captured scope** (harmonic/condition + frequency range + serials), not just a bare `'Serial Number' NOT IN {...}`
+
+### Global Filter (GF) display mode
+- [ ] On page load the GF is always in **Exclude** mode (not stuck in "Inspect"/Focus from a prior page); toggling to Inspect shows only the excluded points and displays an amber "⚠ INSPECT MODE" banner above the plot
 
 ### Help panel
 - [ ] ⓘ Help button opens a panel explaining Filter/Segment by/GF

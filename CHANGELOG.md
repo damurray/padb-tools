@@ -1,6 +1,6 @@
-# Changelog — 2026-08-17 to 2026-08-25
+# Changelog — 2026-08-17 to 2026-09-02
 
-Pulled directly from git history (41 commits). Split into bug fixes and feature improvements.
+Pulled directly from git history. Split into bug fixes and feature improvements.
 
 ## Bug Fixes
 
@@ -24,6 +24,11 @@ Pulled directly from git history (41 commits). Split into bug fixes and feature 
 - **Aug 21** — Webapp restart was killing an in-progress job's own subprocess (stdout pipe closed on parent death — lost a real ~13-minute build)
 - **Aug 25** — Boxplot Dup-runs count was missing Port from its duplicate-detection identity (a DUT's RF1/RF2 rows were miscounted as duplicates of each other)
 - **Aug 25** — `stat_summary`'s Statistics Table pushed the plot out of view when opened (DOM ordering bug, unique to that view)
+- **Aug 31** — Boxplot Group-by/segment-tab filter desyncs; segment-tab left a stale Autoscale-Y pin
+- **Aug 31** — Site Population Check excluded all data on a page with no serial filter panel
+- **Sep 1** — Cross-site compare boxplot was missing its Serial/Port filter panels entirely (data stored as `vals_detail_bin` under binary_encode, so the panels computed from the wrong source)
+- **Sep 1** — "Copy PADB Filter" Global-Filter output was a bare `'Serial Number' NOT IN {...}`; now reproduces the GF's full captured scope (harmonic/condition, frequency range, serials)
+- **Sep 1** — Global Filter could get stuck in "Inspect" mode across unrelated result pages (browser-global setting); now resets to Exclude on every page load, with an amber "⚠ INSPECT MODE" banner while active
 
 ## Feature Improvements
 
@@ -34,3 +39,6 @@ Pulled directly from git history (41 commits). Split into bug fixes and feature 
 - **Aug 21** — Adaptive Group-by defaults for boxplot (Serial Number above 150 conditions); Segment-by control now hides itself when there's nothing to segment; "Legacy" mode retired from the webapp; orphaned PADB-R.exe cleanup button added
 - **Aug 24** — Boxplot "Dup runs"/"Genuinely repeated freqs" columns (Statistics Table + Site Population Check); Site Population Check CSV export (boxplot, then stat_summary/summary); pod `Filter_Expression` now shown in the Help panel; opt-in "Collapse dup runs" toggle for boxplot; "SR dup pts" changed from a summed total to a per-DUT breakdown list
 - **Aug 25** — Noise-sensitivity disclaimers added to env_coverage, distribution, stat_summary, and summary
+- **Aug 31** — "Autoscale Y" button added to all six interactive views (rescales the Y axis without disturbing the frequency zoom); Segment-by tab-through now narrows the condition filters to match each segment, not just the frequency window; `Start_web.bat` convenience launcher for the web app; `_build_help_pdfs.py` to regenerate the local PDF copies of the help docs; fast-path "Hide spec lines" toggle
+- **Sep 1** — "Copy PADB Filter" rewritten to match real PADB filter syntax and expanded into a three-mode dropdown (Plot view / Global Filter only / Plot + GF); Compare webapp panel gained a CSV name filter + Refresh, wider dropdowns/Description, and x-axis unit inheritance; `padb_csv_check.py` gained a `publish_to` pre-flight gate; compare jobs default-publish to a `PADB-Compare` share tree
+- **Sep 2** — Webapp: "View log" link on job failure (full console written to `<results_dir>/webapp_console.log`); "Select Filtered" button (checks every job matching the current Mode/Kind/Name filters); the "Dry run" checkbox was removed from the UI (CLI `--dry-run` unchanged)

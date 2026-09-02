@@ -1352,3 +1352,39 @@ Wording is tailored per view, not copy-pasted boilerplate: `env_coverage` names 
 Real gap found by the user: `stat_summary` was the one view where the Statistics Table's container (`#stat_panel`) sat **before** the plot's `<div>` in the page, instead of after it. Boxplot and `env_coverage` both put the plot first and the table below, so opening their tables just adds content below an already-visible, fixed-position plot. In `stat_summary`, opening the table inserted a block above the plot instead, pushing it further down the page — with enough rows, far enough to scroll out of view, giving the impression the plot and table couldn't be shown together at all.
 
 **Fix**: reordered to match boxplot/`env_coverage`: `coverage_gap_html` → plot → toggle-buttons row → `stat_panel` → `stat_site_panel`. Verified headlessly: the plot's on-screen position (`getBoundingClientRect().top`) is identical before and after opening the table, and the table still populates correctly.
+
+---
+
+## Interactive controls: "Autoscale Y" button + Segment-by now narrows condition filters (added 2026-08-31)
+
+- **"Autoscale Y"** added to all six V2 views (`scatter`, `boxplot`, `stat_summary`, `summary`, `env_coverage`, `distribution`) — rescales only the Y axis to fit the currently-visible data, without touching the frequency (X) zoom. Distinct from Plotly's built-in "Reset axes" (which clears *both* axes back to autorange); this exists because the zoom-persistence machinery pins an explicit X range, so a user who has narrowed frequency and wants the vertical scale to re-fit had no one-click way to do just that.
+- **Segment-by tab-through now narrows the condition filters to match each segment**, not just the frequency window. Tabbing to a band shows only the conditions belonging to it; tabbing back out / reaching the ends restores the prior selection. A companion fix cleared a stale Autoscale-Y pin left behind on `segTab()`. Also fixed several boxplot Group-by/segment-tab filter desyncs and added a fast-path for the "Hide spec lines" toggle in the same pass.
+
+---
+
+## "Copy PADB Filter" rewritten to real PADB syntax + three-mode dropdown; faithful GF scope (2026-09-01)
+
+Supersedes the 2026-08-19 "reflect the current view" rewrite above. Two commits (`84b6c46` real-syntax, `c33e3c0` three-mode + inspect banner, `6273de4` faithful GF scope):
+
+- **Real PADB syntax.** The generated expression was verified against hand-provided real pod filter expressions and rewritten to match: `'Field' = "value"` / `!=` / `IN {...}` / `NOT ( ... )`, joined with `AND`. **`'Serial Number'` is a global, *unprefixed* field**; every other field carries the `PADB_FIELD_PREFIX` (`Name-->Name (unit)`). A port-qualified serial (`US65080401_RF1`) is emitted as the base serial plus a separate Port clause, not a compound token (user confirmed this "amounts to the same thing"). No longer flagged "under development".
+- **Three-mode dropdown** replacing the single button: **Plot view** (`_buildViewFilterClauses`, the current view's own active condition/Serial/Port/Frequency/Temperature filters), **Global Filter only** (`_buildGfExclusionClause`), and **Plot + GF** (both `AND`-joined).
+- **"Global Filter only" reproduces the GF's full captured scope**, not a bare `'Serial Number' NOT IN {...}`. Per the user's design call: at creation it's equivalent to Plot + GF, but afterward it stays fixed to what the GF captured — decoded from each GF key into `NOT ( 'Serial Number' IN {...} AND '<pfx>:HarmonicNumber' = "2" AND ... AND '<pfx>:Test Step' IN {...} AND ( '<pfx>:Frequency' >= lo AND <= hi ) )`. Only emits Port + real `COND_DIMS` dims (Limit-noise dims dropped), drops full-coverage dims, and includes frequency only when the GF actually captured a range. Changing other plot controls afterward doesn't alter it (they'd be incremental to the GF, not part of it).
+
+---
+
+## GF Inspect-mode reset-on-load + banner; compare-plot Serial/Port panels under binary_encode (2026-09-01)
+
+- **GF Inspect (Focus) mode is browser-global** (`padb_v2_gf_mode` in `localStorage`, not scoped per results folder) — so toggling it on one page left it stuck on when opening an unrelated results page next, showing only GF-matched points (usually almost nothing, since the GF was built against a different dataset). Now **reset to `'exclude'` on every page load**, and while active a prominent amber `#box_inspect_banner` ("⚠ INSPECT MODE ...") is shown above the plot via `_updateBoxGfStatus()`. This was the real cause of several "buttons don't work / serial filter does nothing / axis won't reset" reports — all were a stuck Inspect mode, not the individual controls. (See also the later 2026-08-21 Reset-clears-Inspect fix, which handles the same class of trap from the Reset button.)
+- **Cross-site compare boxplot was missing its Serial/Port filter panels entirely** (`de664f3`). `all_box_serials`/`all_box_ports` were computed from `vals_detail`, which is empty under `binary_encode` (per-point data is stored as base64 `vals_detail_bin` instead). Fixed by computing them from `df["_serial_id"]`/`df["_port"]` directly, so the panels appear regardless of encoding. Also dropped the empty `plots/` directory that `run_secondary_plots` no longer needs.
+
+---
+
+## Compare tool + csv-check publish gate + webapp batch (2026-09-01 / 2026-09-02)
+
+- **`padb_csv_check.py --job`** (`6ff265c`) — `check_job()` now pre-flights a job.json's `publish_to`/`compare_csv` publish targets (FAIL/WARN), lazily importing `padb_v2` for the `COMPARE_PUBLISH_ROOT`/`DEFAULT_PUBLISH_ROOT` constants so the check can't drift from the real publish logic.
+- **Compare webapp panel** (`6ff265c`) — CSV **name filter** + **Refresh CSVs** button (mirrors the Jobs Name filter), wider Site A/B dropdowns and Description field, x-axis unit inheritance into the generated job.json, and Create&Run/Run-Selected now auto-scroll to the new status card.
+- **Compare jobs publish to a `PADB-Compare` share tree** by default (`\\srsnas01...\SG6311A\PADB-Compare`) when `publish_to` is absent; `"publish_to": ""` opts out. Backup/archive copies left as-is.
+- **Webapp job-failure "View log" link** (`94719e2`) — `_persist_console_log()` writes the full captured console to `<results_dir>/webapp_console.log` after every job (worker + resume paths); `job_status()` returns a servable `log_url` and the status card renders a red "View log" link on failure. Motivated by `Pulse_Mod_Quality_Latest_run_job.json` "failed but produced data" (extraction rc 0 / 9 CSVs, a chained plot sibling failed → whole run-job marked failed).
+- **"Select Filtered" button** (`94719e2`) — checks every job row matching the current Mode/Kind/Name filters, alongside the existing "Select All Runnable".
+- **"Dry run" checkbox removed** from the webapp UI (`94719e2`); the request always sends `dry_run:false`. Backend and `padb_run.py --dry-run` CLI flag unchanged.
+- **`Start_web.bat`** (`f693294`, 2026-08-31) — double-click launcher for the web app, for users who'd rather not use a terminal.
