@@ -1417,3 +1417,31 @@ Publishing to the network share is now an opt-in per-run choice in the webapp, d
 - **Generate Job still builds `publish_to` from the folder name** (`--module` unchanged: `<publish_root>\<module>\<pod_stem>`), so a generated job carries its intended destination for when publish is enabled. Renamed the field's visible label "Module" → **"Folder name"** (element id `moduleInput` unchanged, so app.js is unaffected). The webapp originally exposed only the subfolder name — the share root is fixed in `padb_config` (`…\SG6311A\PADB-Simple`, auto-swapped to `PADB-Interactive` for V2).
 
 **Share-path override (added 2026-09-02, same day, on the user's follow-up "add the Share path override field").** A separate **"Share path (override)"** field in Generate Job sets `publish_to` *verbatim* to an exact path, for publishing off the standard share tree. Implemented as a new `--publish-to` flag on both generators (`padb_make_job.py`'s `make_job_cfg(..., publish_to=...)` sets `cfg["publish"]={"destination": publish_to}`; `padb_make_v2_job.py` sets `plot_job["publish_to"]=publish_to` for every plot job, so a V2 pod's whole shared gallery gets one destination). `--publish-to` takes precedence over `--module`, and either one (or `--no-publish`) now satisfies the "must specify a publish intent" validation. The webapp's `generate_job` route passes `--publish-to` when the field is filled (Folder name still passed alongside, harmlessly — the generator prefers the override). Verified both generators end-to-end: `--publish-to` produces the exact path verbatim; `--module` still composes `<root>\<module>\<stem>` when no override is given.
+
+---
+
+## Webapp: settable default share root (2026-09-02)
+
+The publish root was only changeable by hand-editing `padb_config.json`. Added a **"Default share root"** field at the top of Generate Job, backed by new `GET`/`POST /api/config` routes and a new `padb_config.save_config(updates)` (merges into `padb_config.json`, preserving other keys). The generators already read `publish_root` fresh from `padb_config` each run, so a new default takes effect with no restart. Kept the one-root + `PADB-Simple`→`PADB-Interactive` string-swap convention (chosen with the user via AskUserQuestion); a root not ending in `PADB-Simple` saves with a warning. Per-user (config lives under `Path.home()`), so "other users on other products" each set their own root once, no code edits. The UI shows the derived Interactive root for transparency.
+
+---
+
+## Webapp: auto-resume no longer loops forever on a permanently-failing sibling (fixed 2026-09-03)
+
+Reported: after reopening the webapp, two run jobs sat in limbo as "(resuming 1 interrupted plot job(s))" with no way to complete or delete them. Root cause: a sibling plot job that can *never* succeed (a bad auto-detected `x_col`, or a CSV the extraction never produced) is never added to the chain's `done` set, so `_resume_incomplete_v2_chains()` re-detected "N-1 of N done" and re-spawned a doomed resume job on *every* startup.
+
+**Fix:** the chain-state file (`.v2_chain_state.json`) now also carries a `failed` set (`_load_v2_chain_failed`, `_save_v2_chain_state(done, failed)`). `_run_v2_siblings` records a sibling's build failure there; `_resume_incomplete_v2_chains` treats `done | failed` as "attempted" and only auto-resumes siblings in neither — so a broken sibling is retried at most once, then left alone. `failed` resets on a fresh extraction (`fresh=True`, new data → retry everything) and a sibling clears from it if a later run finally succeeds. The two stuck chains were remediated in place (their permanently-failing sibling stems written into `failed`) so the next reopen came up clean.
+
+The concrete broken siblings that exposed this: `Pulse_Mod_Quality_Latest`'s Overshoot-Open-Loop (SR DB had no result rows for that analytic, so PADB wrote a default `Model Number`/`PROCEDURE TIME` placeholder export with no numeric x-axis — unplottable; the SR plot job was deleted) and `Absolute_Phase_Noise_EP6_Spec_Setting-AMC2`'s DCFM-at-Defined-Offsets (predicted CSV never produced by the extraction).
+
+---
+
+## `padb_v2.py`: clear "no matching test data" failure logging (added 2026-09-03)
+
+Prompted by the above — a plot build that can't proceed used to dump a raw traceback (`x_col not found`, or silently render nothing on 0 rows). Now:
+
+- **`NoPlottableData`** exception + `_diagnose_no_data(csv_path, cfg, detail)` — `load_scatter` raises it (instead of a bare `ValueError` or returning an empty df) when the loader can't find the configured `x_col`, or when the load yields 0 usable rows. The diagnosis reads the CSV's own column names and, using what a real scatter looks like as the reference, reports the likely cause: a missing/wrong `x_col`, no Frequency/X-value column at all, and/or the PADB **default placeholder export** signature (`Model Number`/`PROCEDURE TIME` columns, no numeric x) that PADB writes when an analytic returns **no matching test results** for that database/site.
+- **`_log_build_failure(output_dir, cfg, csv_path, reason)`** — prints the reason and appends it to `build_failures.log` in the results dir. `main()` calls it for both a missing CSV and a `NoPlottableData` from `generate_report`, then exits non-zero (so the webapp still marks the job failed, and its "View log" shows the clear reason via `webapp_console.log`).
+- **Compare jobs**: `_build_compare_csv` now flags (via `_log_note`, a non-fatal NOTE in `build_failures.log`) any site whose own CSV has no Frequency/X-value column — the "one good reference CSV makes it easy to say which site has no matching test data" case the user pointed out. The merged build still succeeds on the real site's rows.
+
+Verified: the SR Overshoot placeholder CSV now produces a clear "no matching test data / placeholder export" message and a `build_failures.log` (both the bad-`x_col` and the valid-column-but-no-numeric-x paths); a real Frequency CSV still loads with no false positive; a missing CSV logs the "analytic wrote no output" reason. `qa_padb.py` baseline unchanged (37/4).

@@ -59,6 +59,7 @@ Job JSON schema:
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
 import shutil
@@ -110,6 +111,79 @@ __all__ = [
 # 1.  Load & normalise
 # ===========================================================================
 
+class NoPlottableData(Exception):
+    """A CSV has no usable measurement data to plot -- e.g. the analytic
+    returned no matching test results for this database/site, so PADB wrote a
+    default placeholder export (Model Number / PROCEDURE TIME columns, no
+    numeric x-axis) instead of the real scatter. Carries a human-readable
+    reason so the caller can log 'no matching test data' rather than a raw
+    traceback. Real case: an SR-cloned Pulse pod whose Overshoot analytic had
+    no result rows in the SR DB (2026-09-03)."""
+
+
+def _diagnose_no_data(csv_path: Path, cfg: dict | None, detail: str = "") -> str:
+    """Best-effort human reason for why a CSV yielded nothing to plot, from
+    its own column names -- the 'good reference' being what a real scatter
+    CSV looks like (a Frequency / X-value column plus a numeric measurement)."""
+    try:
+        cols = list(pd.read_csv(csv_path, nrows=0).columns)
+    except Exception:
+        cols = []
+    has_x = any(("frequency" in c.lower() or "x value" in c.lower()) for c in cols)
+    is_placeholder = any("procedure time" in c.lower() for c in cols) or bool(cols and not has_x)
+    x_col = cfg.get("x_col") if cfg else None
+    parts = []
+    if x_col and cols and x_col not in cols:
+        parts.append(f"the configured x_col {x_col!r} is not one of the CSV's columns")
+    if not has_x:
+        parts.append("there is no Frequency / X-value column to plot against")
+    if is_placeholder:
+        parts.append("the columns look like PADB's default placeholder export "
+                     "(e.g. Model Number / PROCEDURE TIME) -- what PADB writes when the "
+                     "analytic returns NO MATCHING TEST results for this database/site")
+    reason = "no plottable measurement data"
+    if parts:
+        reason += " -- " + "; ".join(parts)
+    reason += f". CSV columns: {cols}."
+    if detail:
+        reason += f" (loader detail: {detail})"
+    return reason
+
+
+def _log_build_failure(output_dir: Path, cfg: dict, csv_path: Path, reason: str) -> None:
+    """Print a clear failure reason AND append it to build_failures.log in the
+    results dir, so a plot build that can't proceed says *why* (e.g. 'no
+    matching test data') instead of just a stack trace. Printed too, so the web
+    app's per-job console log (webapp_console.log / 'View log') captures it."""
+    prefix = (cfg.get("title_prefix") or cfg.get("description") or csv_path.stem) if cfg else csv_path.stem
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    block = (f"[{stamp}] BUILD FAILED: {prefix}\n"
+             f"  CSV   : {csv_path}\n"
+             f"  Reason: {reason}\n")
+    print("\n" + block, flush=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with open(output_dir / "build_failures.log", "a", encoding="utf-8") as fh:
+            fh.write(block + "\n")
+    except OSError:
+        pass
+
+
+def _log_note(output_dir: Path, text: str) -> None:
+    """Append a non-fatal NOTE to build_failures.log (and print it). Used for
+    'a build still succeeded, but here's something worth flagging' -- e.g. one
+    site in a compare contributed no plottable rows."""
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    line = f"[{stamp}] NOTE: {text}\n"
+    print(line, flush=True)
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        with open(output_dir / "build_failures.log", "a", encoding="utf-8") as fh:
+            fh.write(line)
+    except OSError:
+        pass
+
+
 def load_scatter(csv_path: Path, cfg: dict | None = None) -> pd.DataFrame:
     """
     Load a PADB Scatter (Type=80) CSV that encodes all conditions and
@@ -129,7 +203,16 @@ def load_scatter(csv_path: Path, cfg: dict | None = None) -> pd.DataFrame:
     if not _HAS_V1:
         raise RuntimeError("padb_plots is required for load_scatter")
 
-    df = _pp._load_scatter_for_stats(csv_path, x_col=(cfg.get("x_col") if cfg else None))
+    try:
+        df = _pp._load_scatter_for_stats(csv_path, x_col=(cfg.get("x_col") if cfg else None))
+    except ValueError as exc:
+        # e.g. "x_col=... not found in CSV columns" -- turn the raw error into a
+        # diagnosed 'no matching test data'-style reason for the failure log.
+        raise NoPlottableData(_diagnose_no_data(csv_path, cfg, str(exc))) from exc
+    if df is None or len(df) == 0:
+        # Loaded, but every row dropped (no numeric x-axis, all-NA values, a
+        # placeholder export, etc.) -- nothing to plot.
+        raise NoPlottableData(_diagnose_no_data(csv_path, cfg, "0 usable rows after load"))
     df = _pp._parse_group_fields(df)
 
     # If Serial column came back empty (serial lives in Group string, not a standalone CSV column),
@@ -1083,6 +1166,18 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> Pa
         else:
             df[group_col] = df[group_col].fillna("").astype(str).str.rstrip() + f"  Site: {site_name}"
         print(f"  compare_csv: site {site_name!r} -- {len(df):,} rows from {p.name}", flush=True)
+        # With the other site(s) as the 'good reference', flag any site whose
+        # own CSV has no Frequency/X-value column at all -- a placeholder export
+        # (no matching test data for this analytic at that site). The merged
+        # build can still succeed on the real site's rows, so this is a NOTE,
+        # not a failure -- but it's exactly the "this site has no matching
+        # test" signal that's easy to state when one reference CSV is good.
+        if not any(("frequency" in c.lower() or "x value" in c.lower()) for c in df.columns):
+            _log_note(output_dir,
+                      f"compare_csv: site {site_name!r} has no Frequency/X-value column in "
+                      f"{p.name} -- looks like a placeholder export (no matching test data for "
+                      f"this analytic at this site); its rows won't appear in the plot. "
+                      f"Columns: {list(df.columns)}")
         dfs.append(df)
     merged = pd.concat(dfs, ignore_index=True, sort=False)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1185,12 +1280,20 @@ def main(argv: list[str] | None = None) -> None:
                 sys.exit(1)
 
     if not csv_path.exists():
+        _log_build_failure(output_dir, cfg, csv_path,
+                           "the extraction produced no CSV at this path -- the analytic wrote "
+                           "no output at all (no matching test results in the database, or CSV "
+                           "output is disabled for it in the pod)")
         sys.exit(f"Scatter CSV not found: {csv_path}")
 
     print(f"  CSV  : {csv_path}")
     print()
 
-    generated = generate_report(csv_path, cfg, output_dir)
+    try:
+        generated = generate_report(csv_path, cfg, output_dir)
+    except NoPlottableData as exc:
+        _log_build_failure(output_dir, cfg, csv_path, str(exc))
+        sys.exit(f"Build failed -- {exc}")
 
     print()
     print(f"Done. {len(generated)} plot(s) in {output_dir}")
