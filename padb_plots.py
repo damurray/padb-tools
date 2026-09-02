@@ -11934,6 +11934,11 @@ function _updateBoxGfStatus(){
   var btn=document.getElementById('box_gf_mode_btn');
   var mode=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
   if(btn) btn.textContent='GF Mode: '+(mode==='focus'?'Inspect ◆':'Exclude ◇');
+  /* Prominent banner while in Inspect mode -- Inspect shows ONLY the
+     GF-flagged data, so ordinary filters look like they "do nothing"; the
+     GF Mode button says "Inspect" but is easy to miss. */
+  var banner=document.getElementById('box_inspect_banner');
+  if(banner) banner.style.display=(mode==='focus')?'':'none';
   if(!s) return;
   try{
     var raw=localStorage.getItem('padb_v2_excluded');
@@ -12022,24 +12027,52 @@ function csvTempToTestStep(t){
   var m=t.match(/^(-?\d+(?:\.\d+)?)\s*[°º]?C$/);
   return m?parseFloat(m[1]).toFixed(1)+' Deg C':t;
 }
-/* Builds a PADB-native filter expression that selects exactly the rows the
-   current view's own filters (condition-dim checkboxes, Serial, Port,
-   Frequency range, Temperature) currently narrow the plot to -- rewritten
-   from a GF-exclusion-list-based expression (which only ever covered a
-   manually-built Serial Number NOT IN {...} list) after the user provided a
-   real, working PADB filter expression as a template:
-     'Analytic-->Analytic (unit):Field' = "val"
-     'Analytic-->Analytic (unit):Field' != "val"     -- one value excluded
-     'Analytic-->Analytic (unit):Field' IN {"a","b"} -- several selected
-     ( 'Analytic-->Analytic (unit):Field' >= "lo" AND ... <= "hi" )
-   Every field -- including Serial Number, Port, Test Step, and Frequency --
-   is qualified with the same PADB_FIELD_PREFIX in that template, which is
-   why this version prefixes uniformly rather than special-casing Serial
-   Number/Test Step as prefix-free the way the old implementation did. */
-function copyPadbFilter(){
+/* Copy a PADB-native filter expression for the current box view. The mode
+   picks which combination (chosen from the "Copy PADB Filter" dropdown):
+     'plot' -- the current view's OWN filters only (condition/harmonic, Serial,
+               Port, Frequency range, Temperature) as a SELECT expression, in
+               the PADB syntax confirmed against real pods:
+                 'Analytic-->Analytic (unit):Field' = "val"
+                 '...:Field' != "val"   /  '...:Field' IN {"a","b"}
+                 ( '...:Frequency' >= "lo" AND '...:Frequency' <= "hi" )
+               (Serial Number is a global, UNprefixed field; everything else
+               is prefixed with PADB_FIELD_PREFIX.)
+     'gf'   -- the Global Filter's DUT exclusion only: 'Serial Number' NOT IN
+               {...}. The GF is inherently an exclude (a NOT), so this is just
+               that NOT on its own.
+     'both' -- the plot filters AND the GF exclusion: select what you're
+               looking at, with the globally-filtered DUTs dropped. The plot
+               clauses supply the harmonic/frequency scope; the GF supplies the
+               DUT list.
+   Degrades naturally: 'both' with no GF is just the plot filter; with no plot
+   narrowing it is just the GF NOT IN. */
+function copyPadbFilterMode(mode){
   try{
-    var clauses=_buildViewFilterClauses();
-    if(!clauses.length){alert('Nothing is currently narrowed in this view -- no filter to copy (it would select all data).');return;}
+    var clauses=[];
+    if(mode==='plot'||mode==='both'){
+      clauses=_buildViewFilterClauses(true);
+    }
+    if(mode==='gf'||mode==='both'){
+      var raw=localStorage.getItem('padb_v2_excluded');
+      var keys=raw?(JSON.parse(raw).excluded||[]):[];
+      var serSet={};
+      keys.forEach(function(k){var s=(String(k).split('||')[0]||'').trim();if(s) serSet[s]=1;});
+      var gfSerials=Object.keys(serSet).sort();
+      if(gfSerials.length){
+        clauses.push(gfSerials.length===1
+          ? "'Serial Number' != "+_padbQ(gfSerials[0])
+          : "'Serial Number' NOT IN {"+gfSerials.map(_padbQ).join(',')+"}");
+      } else if(mode==='gf'){
+        alert('The Global Filter is empty -- nothing to exclude. Use "Set filter as GF", an outlier button, or Import GF CSV first.');
+        return;
+      }
+    }
+    if(!clauses.length){
+      alert(mode==='plot'
+        ? 'Nothing is narrowed in this view -- no plot filter to copy (it would select all data).'
+        : 'Nothing to copy -- no plot filters are narrowed and the Global Filter is empty.');
+      return;
+    }
     _copyFilterText(clauses.join('\r\nAND '),'box_padb_flt_btn','Copied!');
   }catch(e){alert('Copy failed: '+e);}
 }
@@ -12137,48 +12170,6 @@ function _buildViewFilterClauses(includeSerial){
     getSelectedTemps().map(csvTempToTestStep));
   if(tempC) clauses.push(tempC);
   return clauses;
-}
-/* GF filter button -- EXCLUDE semantics (the user's chosen behaviour): build a
-   PADB filter that DROPS the DUTs in the Global Filter, scoped to the current
-   view's own condition/harmonic + frequency + port + temperature.
-
-   - With no view scoping active, it degrades to the simple, PADB-confirmed
-     'Serial Number' NOT IN {...} (whole-DUT exclusion).
-   - With view scoping active, it wraps the view clauses + the GF DUT list in
-     NOT ( ... AND 'Serial Number' IN {...} ) -- i.e. "exclude exactly this
-     DUT / harmonic / frequency combination."
-
-   The current view supplies the harmonic/frequency context (which is what the
-   user narrowed before setting the GF, and which naturally omits the noisy
-   per-unit Limit dims the user didn't touch); the GF supplies the DUT list.
-   NOTE: the leading NOT ( ... ) form is a logical negation of an AND group --
-   verify it against the real pod, since this codebase has confirmed PADB's
-   'NOT IN' but not yet a standalone 'NOT ( ... )'. */
-function copyPadbFilterFromGf(){
-  try{
-    var raw=localStorage.getItem('padb_v2_excluded');
-    var keys=raw?(JSON.parse(raw).excluded||[]):[];
-    if(!keys.length){alert('The Global Filter is empty -- set a GF (e.g. "Set filter as GF" or an outlier button) first.');return;}
-    var serSet={};
-    keys.forEach(function(k){var s=(String(k).split('||')[0]||'').trim();if(s) serSet[s]=1;});
-    var gfSerials=Object.keys(serSet).sort();
-    if(!gfSerials.length){alert('No serial numbers found in the Global Filter entries.');return;}
-    /* condition/harmonic + freq + port + temp, WITHOUT the view's own serial
-       clause (the GF's DUT list is the serial constraint here). */
-    var scope=_buildViewFilterClauses(false);
-    var expr;
-    if(scope.length){
-      var serIn=gfSerials.length===1
-        ? "'Serial Number' = "+_padbQ(gfSerials[0])
-        : "'Serial Number' IN {"+gfSerials.map(_padbQ).join(',')+"}";
-      expr="NOT (\r\n"+scope.concat([serIn]).join("\r\nAND ")+"\r\n)";
-    } else {
-      expr=gfSerials.length===1
-        ? "'Serial Number' != "+_padbQ(gfSerials[0])
-        : "'Serial Number' NOT IN {"+gfSerials.map(_padbQ).join(',')+"}";
-    }
-    _copyFilterText(expr,'box_padb_gf_flt_btn','Copied ('+gfSerials.length+' DUT excl)!');
-  }catch(e){alert('Copy failed: '+e);}
 }
 function exportGfCsv(){
   try{
@@ -12680,6 +12671,16 @@ function loadState(){
 }
 (function init(){
   _reconstituteBoxBinaryData();
+  /* Always start a freshly-loaded plot in GF "Exclude" mode. padb_v2_gf_mode
+     is a browser-GLOBAL localStorage key (not scoped per dataset), so a stray
+     "Inspect" toggle on any plot used to silently carry over to every plot
+     opened afterwards -- Inspect shows ONLY the GF-flagged data, so ordinary
+     filters barely changed the display and only "Clear everything" (which
+     resets the mode) recovered it. Reported as "buttons don't work when a GF
+     is applied"; the real cause was a persisted Inspect mode. Resetting here
+     makes each fresh page load start in the expected Exclude mode, while
+     Inspect stays a deliberate in-session toggle. */
+  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
   _loadBoxGlobalFilter();
   loadState();
   /* Real report (2026-08-28): "on refresh, filter data does not match plot
@@ -13168,6 +13169,13 @@ def _build_box_interactive_html(
         )
         + ctrl_bar + env_bar + filter_bar
         + coverage_gap_html
+        + ('<div id="box_inspect_banner" style="display:none;background:#fff3cd;'
+           'border:1px solid #e0a800;border-radius:4px;padding:6px 10px;margin:6px 0;'
+           'color:#7a5c00;font-size:13px;font-weight:600">'
+           '&#9888; INSPECT MODE &mdash; the plot is showing ONLY the '
+           'Global-Filter-flagged data, so most filters below will appear to do '
+           'nothing. Click the <b>GF Mode</b> button to return to Exclude, or '
+           '<b>Clear everything</b> to reset.</div>\n')
         + '<div id="plot"></div>\n'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
         + '  <button class="toggle-btn" id="box_stat_toggle_btn"'
@@ -13212,14 +13220,19 @@ def _build_box_interactive_html(
         ' style="background:#f5f5f5;border-color:#888;color:#333"'
         ' title="Copy this results folder\'s full path -- paste it into the save/open dialog\'s address bar so the exported/imported GF CSV is guaranteed to live alongside the data it matches"'
         ' onclick="copyResultsPath()">Copy results path</button>\n'
-        + '  <button class="toggle-btn" id="box_padb_flt_btn"'
-        ' style="background:#f0fff4;border-color:#080;color:#060"'
-        ' title="Copies a PADB filter expression selecting exactly what this view\'s own filters (condition/Serial/Port/Frequency/Temperature) currently narrow the plot to"'
-        ' onclick="copyPadbFilter()">Copy PADB Filter</button>\n'
-        + '  <button class="toggle-btn" id="box_padb_gf_flt_btn"'
-        ' style="background:#eef6ff;border-color:#068;color:#046"'
-        ' title="Copies a PADB filter that EXCLUDES the Global Filter\'s DUTs, scoped to the current view: NOT ( condition/harmonic AND frequency range AND \'Serial Number\' IN {GF DUTs} ). With no view scoping it becomes a plain \'Serial Number\' NOT IN {...}. Verify the NOT(...) form against your pod."'
-        ' onclick="copyPadbFilterFromGf()">Copy PADB Filter (GF)</button>\n'
+        + '  <div class="csv-wrap">'
+        '<button class="toggle-btn" id="box_padb_flt_btn"'
+        ' style="background:#f0fff4;border-color:#080;color:#060" onclick="return false"'
+        ' title="Copy a PADB filter expression -- hover to pick which combination (Plot filters / Global Filter / both).">'
+        'Copy PADB Filter&thinsp;&#9662;</button>'
+        '<div class="csv-menu">'
+        '<button onclick="copyPadbFilterMode(\'plot\')"'
+        ' title="Select exactly what this view\'s own filters (condition/harmonic, Serial, Port, Frequency, Temperature) currently show.">Plot filters only</button>'
+        '<button onclick="copyPadbFilterMode(\'gf\')"'
+        ' title="Exclude just the Global Filter\'s DUTs: \'Serial Number\' NOT IN {...} (the GF is an exclude filter).">Global Filter only</button>'
+        '<button onclick="copyPadbFilterMode(\'both\')"'
+        ' title="Plot filters AND the Global Filter exclusion -- select what you\'re looking at, with the globally-filtered DUTs dropped.">Plot + Global Filter</button>'
+        '</div></div>\n'
         + '  <span id="box_padb_mc_note" style="display:none;font-size:12px;color:#a60;max-width:560px">'
         '&#9888; Multichannel pod (per-port serials): scope ports with the <b>Port</b> checkboxes, '
         'not by deselecting individual <code>_RFn</code> serials &mdash; the copied PADB filter uses the '
