@@ -1,6 +1,44 @@
-# Changelog — 2026-08-17 to 2026-09-02
+# Changelog — 2026-08-17 to 2026-09-03
 
-Pulled directly from git history. Split into bug fixes and feature improvements.
+Pulled directly from git history. A consolidated **week-of-Aug-27 summary** is first; the full day-by-day log follows.
+
+---
+
+## Week of 2026-08-27 → 2026-09-03 (53 commits)
+
+### Interactive plots — features
+- **Multi-select "Group by"** in every view — pool/split by any *combination* of parameters (boxplot first, then scatter, stat_summary, summary, env_coverage). None selected = Condition; a subset pools across the parameters you didn't pick; legend/tables reflect the combination.
+- **Distribution: condition-dimension filters** (AlcState, Mode, …) added for filter-parity with the other views — previously it only filtered by Spur Type / serial / port / temperature / frequency. Filtering recomputes the KDE curves live in both Absolute and ΔTemp modes.
+- **"Autoscale Y"** button on all six views (rescales Y to the visible data without disturbing the frequency zoom).
+- **Segment-by** tab-through now narrows the condition filters to each band, not just the frequency window.
+- **"Copy PADB Filter"** rewritten to real PADB syntax and expanded into a **three-mode dropdown** (Plot view / Global Filter only / Plot + GF), with "Global Filter only" reproducing the GF's full captured scope.
+- **GF Inspect-mode** now resets to Exclude on every page load, with a prominent "⚠ INSPECT MODE" banner while active.
+- **Boxplot normality on grouped conditions** — grouping by the natural test conditions now shows the real Shapiro / NP-TI (matching "Group by: Condition"), including when Temperature is one of the group dimensions; honest, specific fallback wording otherwise.
+- **`binary_encode`** extended to boxplot per-point data; Help-panel guidance on why pooled statistics can look off.
+
+### Interactive plots — fixes
+- Segment-by **collapsed the list and hid the Prev/Next bar** mid-tab on single-point bands — fixed in all six views.
+- **Global Filter was browser-global** — a GF built on one dataset leaked onto unrelated pages (and kept its checkbox highlighted); now **scoped per-analytic**.
+- Stat Summary Segment-by didn't move the frequency axis; boxplot Group-by/segment-tab desyncs; boxplot initial render ignored restored filter state; stats-table default row could disagree with the plot on a duplicate.
+- env_coverage Stats Table now syncs to a plot drag-zoom; stat_summary spec-direction display fix.
+- Serial/Port panels were missing on `binary_encode` (compare) plots; boxplot GF Exclude semantics + serial/port + multichannel fixes.
+- Site Population Check: excluded-all-data with no serial panel, fence-cell column bleed, quality-hint bugs, benign-direction verdicts (+ Site dup-pts column).
+- Boxplot "Passing only" now warns when there's nothing to compare against.
+
+### Web app
+- **Publishing is opt-in per run** (default off / `--no-publish`); job files never rewritten. **"Module" → "Folder name"**, plus a **"Share path (override)"** field and a **settable default share root** (persists to `padb_config.json`), with how-to tooltips.
+- **"View log"** link on job failure; **"Select Filtered"** button; the "Dry run" checkbox removed.
+- Auto-resume no longer **loops forever** on a permanently-failing sibling; restart-mid-loop hardening; re-subscribe to active jobs on browser refresh.
+- **"Clean up orphaned PADB-R"** now elevates on demand (one UAC prompt) and also finds parentless `R-Host.exe`.
+- Compare panel: busy-state feedback + queue position; CSV name filter + Refresh; x-axis unit inheritance/cross-check; `PADB-Compare` default publish root; `padb_csv_check.py` publish pre-flight gate.
+- **`Start_web.bat`** convenience launcher.
+
+### Pipeline & tooling
+- `padb_v2.py`: clear **"no matching test data"** failure logging (`build_failures.log`) instead of a raw traceback; **oversized-view size guard** (warns when a self-contained HTML is too big for a browser).
+- `results_padb` is now the only trusted output source (no stale R-Plots fallback), plus collection false-negative fixes.
+- `_build_help_pdfs.py`; documentation brought fully current.
+
+---
 
 ## Bug Fixes
 
