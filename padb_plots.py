@@ -2021,6 +2021,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     ) if show_env_bar else ""
 
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
@@ -2276,6 +2277,7 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
     ])
 
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
@@ -3093,6 +3095,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     # 7.  CSS
     # -------------------------------------------------------------------------
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
         ".env-bar{display:flex;flex-wrap:wrap;gap:12px;align-items:center;"
         "padding:6px 14px;background:#edf7ee;border-radius:6px;margin-bottom:4px;"
@@ -7000,6 +7003,7 @@ def _build_stat_summary_html(
     ])
 
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
@@ -8993,6 +8997,7 @@ def _build_env_coverage_html(
     has_segments: bool = True,
 ) -> str:
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
@@ -9430,6 +9435,7 @@ def _build_env_summary_html(
     c_env=None,
 ) -> str:
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
@@ -9852,6 +9858,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
     # Build custom HTML with embedded stats table
     plot_div = fig.to_html(full_html=False, include_plotlyjs=False)
     box_css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
         ".toggle-btn{font-size:13px;padding:4px 14px;border:1px solid #bbb;border-radius:4px;"
         "cursor:pointer;background:#f0f2f5;margin:8px 4px 4px;}"
@@ -13124,6 +13131,7 @@ def _build_box_interactive_html(
     has_segments: bool = True,
 ) -> str:
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;background:#fafafa;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
@@ -15768,6 +15776,7 @@ def _build_summary_html(
     ])
 
     css = (
+        "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
         "body{font-family:Arial,sans-serif;margin:0;padding:8px;}"
         ".ctrl-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:8px;font-size:13px;}"
