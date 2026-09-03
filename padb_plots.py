@@ -11030,9 +11030,16 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
             else npTdG='<td style="color:#aaa;font-size:11px">'+(_stSrv.np_ti_lo==null?'n&nbsp;too&nbsp;small':'Normal&nbsp;(k·s)')+'</td>';
           } else npTdG='';
         } else {
-          var noNormMsg=(!_hasUnitDimSt||nCondsHere>1)?
-            '&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)':
-            '&#8212;&nbsp;(Group&nbsp;by&nbsp;Serial/Port,&nbsp;no&nbsp;normality&nbsp;test)';
+          /* Accurate reason. A single-condition COND_DIM group isn't "pooled
+             across conditions" -- it just isn't the Room population the
+             server-side Shapiro was computed on (multiple temps selected, or a
+             serial/value/GF/excl filter is active). Say so, so it doesn't look
+             like a different/missing normality when it's really the same
+             condition that "Group by: Condition" shows normality for. */
+          var noNormMsg;
+          if(_hasUnitDimSt) noNormMsg='&#8212;&nbsp;(Group&nbsp;by&nbsp;Serial/Port,&nbsp;no&nbsp;normality&nbsp;test)';
+          else if(nCondsHere>1) noNormMsg='&#8212;&nbsp;(pooled&nbsp;across&nbsp;'+nCondsHere+'&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)';
+          else noNormMsg='&#8212;&nbsp;(Shapiro&nbsp;is&nbsp;Room-only;&nbsp;select&nbsp;Room&nbsp;with&nbsp;no&nbsp;other&nbsp;filters&nbsp;to&nbsp;show)';
           normTd='<td style="color:#aaa;font-size:11px">'+noNormMsg+'</td>';
           npTdG=showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'';
         }
