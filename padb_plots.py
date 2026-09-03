@@ -7383,6 +7383,10 @@ def _build_stat_summary_html(
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
+        + '<div style="padding:6px 8px 3px;font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px">'
+        + '<b>Statistical Summary</b> &middot; <b>Room temperature only</b> &mdash; '
+        + 'population mean, tolerance interval (TI) and pass/fail vs. limit, per frequency. '
+        + 'For all-temperature worst-case, use the <b>Summary</b> view.</div>\n'
         + ctrl_bar
         + noise_disclaimer_html
         + stat_bar
@@ -15968,6 +15972,10 @@ def _build_summary_html(
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
+        '<div style="padding:6px 8px 3px;font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px">'
+        '<b>Summary</b> &middot; <b>All temperatures combined</b> &mdash; '
+        'worst-case min/max/mean and TTL (Total Tolerance Limit) band per condition, across every temperature. '
+        'For the Room-only statistical view, use the <b>Statistical Summary</b> view.</div>\n'
         '<div class="ctrl-bar">\n'
         + (f'  {panels_html}\n  {sep}\n' if panels_html else "")
         + (f'  {group_by_html}\n  {sep}\n' if group_by_html else "")
