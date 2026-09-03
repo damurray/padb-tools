@@ -10957,6 +10957,25 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
     var rloSt=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var grouped=_computeBoxGroupedByColId(_bxGrpColsSt,selConds,selBoxSers,selTemps,yFlt,fr,getIqrK(),
       serActive,portActiveSt,selPortsSt,_gfActiveSt,_gfFocusSt,passActive,stPassLo,stPassHi,rhiSt,rloSt);
+    /* A COND_DIM grouping where a group is a SINGLE real condition
+       (nCondsHere===1) and Room-only, with no filter that changes that Room
+       population, is exactly the population BOX_STATS' server-side Shapiro was
+       computed on -- so reuse it (matching what "Condition" mode shows for the
+       same data) instead of saying "no normality test". Reported by the user:
+       grouping by the natural test conditions (AlcState/Mode/HarmonicNumber,
+       "how it was tested") should show normality like Condition does.
+       Genuinely pooled or non-Room groups still can't -- Shapiro is a
+       scipy-only, server-side (Room-only) calc. */
+    /* Room-only is decided from the temp SELECTION, not per-point: a COND_DIM
+       grouping pools across every selected temp (temp isn't in the group key),
+       and _dutAverage() strips the per-point _temp anyway. So the group's
+       population is the condition's Room population exactly when Room is the
+       only selected temp. */
+    var _stRoomOnly=(selTemps||[]).length>0&&(selTemps||[]).every(function(t){return t==='Room';});
+    var _stReuse=_stRoomOnly&&!_hasUnitDimSt&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive
+      &&!gfFocusActive&&!isExclRoom()&&!isExclDEnv()&&!isCollapseDup()&&!portActiveSt;
+    var _stStatsMap={};
+    if(_stReuse) BOX_STATS.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){_stStatsMap[cd.condition+'|'+f.freq]=f;});});
     Object.keys(grouped).sort().forEach(function(gk){
       grouped[gk].forEach(function(fs){
         var fv=(fs.vals_detail||[]).map(function(d){return d.v;});
@@ -11000,15 +11019,28 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
            computeFreqResult), so there's still no normality result to show,
            but the *reason* given now matches what's actually happening. */
         var nCondsHere=new Set((fs.vals_detail||[]).map(function(d){return d._cond;})).size;
-        var noNormMsg=(!_hasUnitDimSt||nCondsHere>1)?
-          '&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)':
-          '&#8212;&nbsp;(Group&nbsp;by&nbsp;Serial/Port,&nbsp;no&nbsp;normality&nbsp;test)';
+        var _stSrv=(_stReuse&&nCondsHere===1)?_stStatsMap[fs.vals_detail[0]._cond+'|'+fs.freq]:null;
+        var normTd,npTdG;
+        if(_stSrv&&_stSrv.norm){
+          var _stNc=_stSrv.norm==='Normal'?'green':_stSrv.norm==='Marginal'?'orange':'red';
+          normTd='<td><span style="color:'+_stNc+';font-weight:bold">'+_stSrv.norm+'</span> W='+_stSrv.W.toFixed(3)+' p='+_stSrv.p.toFixed(3)+'</td>';
+          if(showNp){
+            if((_stSrv.norm==='Non-normal'||_stSrv.norm==='Marginal')&&_stSrv.np_ti_lo!=null&&_stSrv.np_ti_up!=null)
+              npTdG='<td style="color:#a06000;font-weight:bold">['+_stSrv.np_ti_lo.toFixed(4)+', '+_stSrv.np_ti_up.toFixed(4)+']</td>';
+            else npTdG='<td style="color:#aaa;font-size:11px">'+(_stSrv.np_ti_lo==null?'n&nbsp;too&nbsp;small':'Normal&nbsp;(k·s)')+'</td>';
+          } else npTdG='';
+        } else {
+          var noNormMsg=(!_hasUnitDimSt||nCondsHere>1)?
+            '&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)':
+            '&#8212;&nbsp;(Group&nbsp;by&nbsp;Serial/Port,&nbsp;no&nbsp;normality&nbsp;test)';
+          normTd='<td style="color:#aaa;font-size:11px">'+noNormMsg+'</td>';
+          npTdG=showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'';
+        }
         rows.push('<tr><td>'+gkLabel+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
-          '<td style="color:#aaa;font-size:11px">'+noNormMsg+'</td>'+
-          (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
+          normTd+npTdG+
           '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
     });
