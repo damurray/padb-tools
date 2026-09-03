@@ -10564,6 +10564,7 @@ function _isPoolableGroupBy(colId){
 function _boxDimLabel(colId){
   if(colId==='__port__') return 'Port';
   if(colId==='__serial__') return 'Serial';
+  if(colId==='__temp__') return 'Temperature';
   if(!COND_DIMS) return colId;
   var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
   return dim?dim.label:colId;
@@ -11030,11 +11031,21 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
        and _dutAverage() strips the per-point _temp anyway. So the group's
        population is the condition's Room population exactly when Room is the
        only selected temp. */
-    var _stRoomOnly=(selTemps||[]).length>0&&(selTemps||[]).every(function(t){return t==='Room';});
-    var _stReuse=_stRoomOnly&&!_hasUnitDimSt&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive
+    /* Reuse BOX_STATS' server Shapiro when a group's population IS the Room
+       population of a single condition -- exactly what "Group by: Condition"
+       shows. Two ways a group can be Room-only:
+        - Temperature is one of the selected group dims -> each group is a
+          single temp; reuse when THAT group's temp is Room, regardless of what
+          other temps are also selected (they form other rows, same as
+          Condition mode). Its temp is read back from the group key.
+        - Temperature is NOT a group dim -> the group pools every selected
+          temp, so it's Room-only only when Room is the sole selected temp. */
+    var _stReuseBase=!_hasUnitDimSt&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive
       &&!gfFocusActive&&!isExclRoom()&&!isExclDEnv()&&!isCollapseDup()&&!portActiveSt;
+    var _stTempColIdx=_bxGrpColsSt.indexOf('__temp__');
+    var _stRoomOnlySel=(selTemps||[]).length>0&&(selTemps||[]).every(function(t){return t==='Room';});
     var _stStatsMap={};
-    if(_stReuse) BOX_STATS.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){_stStatsMap[cd.condition+'|'+f.freq]=f;});});
+    if(_stReuseBase) BOX_STATS.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){_stStatsMap[cd.condition+'|'+f.freq]=f;});});
     Object.keys(grouped).sort().forEach(function(gk){
       grouped[gk].forEach(function(fs){
         var fv=(fs.vals_detail||[]).map(function(d){return d.v;});
@@ -11078,7 +11089,9 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
            computeFreqResult), so there's still no normality result to show,
            but the *reason* given now matches what's actually happening. */
         var nCondsHere=new Set((fs.vals_detail||[]).map(function(d){return d._cond;})).size;
-        var _stSrv=(_stReuse&&nCondsHere===1)?_stStatsMap[fs.vals_detail[0]._cond+'|'+fs.freq]:null;
+        var _stGroupTemp=_stTempColIdx>=0?(gk.split('  |  ')[_stTempColIdx]):null;
+        var _stRoomHere=_stTempColIdx>=0?(_stGroupTemp==='Room'):_stRoomOnlySel;
+        var _stSrv=(_stReuseBase&&_stRoomHere&&nCondsHere===1)?_stStatsMap[fs.vals_detail[0]._cond+'|'+fs.freq]:null;
         var normTd,npTdG;
         if(_stSrv&&_stSrv.norm){
           var _stNc=_stSrv.norm==='Normal'?'green':_stSrv.norm==='Marginal'?'orange':'red';
@@ -11098,6 +11111,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           var noNormMsg;
           if(_hasUnitDimSt) noNormMsg='&#8212;&nbsp;(Group&nbsp;by&nbsp;Serial/Port,&nbsp;no&nbsp;normality&nbsp;test)';
           else if(nCondsHere>1) noNormMsg='&#8212;&nbsp;(pooled&nbsp;across&nbsp;'+nCondsHere+'&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)';
+          else if(_stTempColIdx>=0&&_stGroupTemp!=='Room') noNormMsg='&#8212;&nbsp;(non-Room&nbsp;temp,&nbsp;no&nbsp;normality&nbsp;test)';
           else noNormMsg='&#8212;&nbsp;(Shapiro&nbsp;is&nbsp;Room-only;&nbsp;select&nbsp;Room&nbsp;with&nbsp;no&nbsp;other&nbsp;filters&nbsp;to&nbsp;show)';
           normTd='<td style="color:#aaa;font-size:11px">'+noNormMsg+'</td>';
           npTdG=showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'';
