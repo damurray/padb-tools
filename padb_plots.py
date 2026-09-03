@@ -979,6 +979,16 @@ function _recomputeSpecSegments(){
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
+  /* Don't REBUILD the segment list during a segment tab (_segIdxPinned).
+     segTab() calls _segFilterCondDims() first, narrowing the condition-dim
+     checkboxes to the tabbed-to segment -- and rebuilding the list from those
+     now-narrowed conditions collapses it to length 1 (e.g. a single-point
+     band like [7.99,7.99]), which then hides the whole Prev/Next bar and
+     strands the user on one segment with no way back. The "ignore the freq
+     range" note below never covered this, because the collapse comes in
+     through the CONDITION filter, not frequency. A genuine filter change
+     (not pinned) still rebuilds. Reported on the Harmonics scatter 2026-09-03. */
+  if(!_segIdxPinned){
   var selTemps=getSelectedTemps();
   var gfChk=document.getElementById('gf_chk');
   var applyGf=gfChk&&gfChk.checked&&_gfParsed&&_gfParsed.size>0;
@@ -1000,6 +1010,7 @@ function _recomputeSpecSegments(){
   });
   var mask=getSpecMaskByKey(groupFiltered,_segKey);
   _specSegments=getSpecSegments(mask.hi,mask.lo);
+  }
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -3483,7 +3494,11 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  _specSegments=getSpecSegments(hiPoints,loPoints);
+  /* Don't rebuild the segment list mid-tab (_segIdxPinned): segTab's
+     _segFilterCondDims() narrows conditions to the tabbed-to segment, and
+     rebuilding from those would collapse the list to 1 and hide the Prev/Next
+     bar. Genuine filter changes still rebuild. See scatter's fuller note. */
+  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -6386,7 +6401,11 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  _specSegments=getSpecSegments(hiPoints,loPoints);
+  /* Don't rebuild the segment list mid-tab (_segIdxPinned): segTab's
+     _segFilterCondDims() narrows conditions to the tabbed-to segment, and
+     rebuilding from those would collapse the list to 1 and hide the Prev/Next
+     bar. Genuine filter changes still rebuild. See scatter's fuller note. */
+  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -8511,7 +8530,11 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  _specSegments=getSpecSegments(hiPoints,loPoints);
+  /* Don't rebuild the segment list mid-tab (_segIdxPinned): segTab's
+     _segFilterCondDims() narrows conditions to the tabbed-to segment, and
+     rebuilding from those would collapse the list to 1 and hide the Prev/Next
+     bar. Genuine filter changes still rebuild. See scatter's fuller note. */
+  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -12686,7 +12709,11 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  _specSegments=getSpecSegments(hiPoints,loPoints);
+  /* Don't rebuild the segment list mid-tab (_segIdxPinned): segTab's
+     _segFilterCondDims() narrows conditions to the tabbed-to segment, and
+     rebuilding from those would collapse the list to 1 and hide the Prev/Next
+     bar. Genuine filter changes still rebuild. See scatter's fuller note. */
+  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -15332,7 +15359,11 @@ function _recomputeSpecSegments(){
   var loFreqs=Object.keys(loPts).map(Number).sort(function(a,b){return a-b;});
   var hiPoints=hiFreqs.map(function(f){return {x:f,y:hiPts[f]};});
   var loPoints=loFreqs.map(function(f){return {x:f,y:loPts[f]};});
-  _specSegments=getSpecSegments(hiPoints,loPoints);
+  /* Don't rebuild the segment list mid-tab (_segIdxPinned): segTab's
+     _segFilterCondDims() narrows conditions to the tabbed-to segment, and
+     rebuilding from those would collapse the list to 1 and hide the Prev/Next
+     bar. Genuine filter changes still rebuild. See scatter's fuller note. */
+  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
