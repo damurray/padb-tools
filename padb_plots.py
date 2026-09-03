@@ -10413,7 +10413,10 @@ function toggleRangeInputs(){
   if(hiEl) hiEl.style.display=hiChecked?'inline-flex':'none';
   if(loEl) loEl.style.display=loChecked?'inline-flex':'none';
 }
-/* ---- TLL display direction (upper/lower/both) ---- */
+/* ---- Limit display direction (upper/lower/both) ---- */
+/* NOTE: the radio's name attr is still "box_tll_dir" and the override ids are
+   still box_tll_hi/box_tll_lo for compatibility, but this control selects which
+   *Spec* side to show/filter -- boxplot draws no computed TTL/TLL band at all. */
 function getTllDirection(){
   var r=document.querySelector('input[name="box_tll_dir"]:checked');
   return r?r.value:SPEC_DIRECTION;
@@ -10460,9 +10463,9 @@ function _updatePassingWarn(yFlt){
   var missLo=showLo&&effLo===null;
   if(!missHi&&!missLo){el.style.display='none';return;}
   var msg;
-  if(missHi&&missLo) msg='⚠ No spec or TLL override set -- Passing only will not filter anything.';
-  else if(missHi) msg='⚠ No spec or TLL↑ override set -- upper side of Passing only will not filter (lower side still applies).';
-  else msg='⚠ No spec or TLL↓ override set -- lower side of Passing only will not filter (upper side still applies).';
+  if(missHi&&missLo) msg='⚠ No spec limit or manual Spec override set -- Passing only will not filter anything.';
+  else if(missHi) msg='⚠ No spec limit or Spec↑ override set -- upper side of Passing only will not filter (lower side still applies).';
+  else msg='⚠ No spec limit or Spec↓ override set -- lower side of Passing only will not filter (upper side still applies).';
   el.textContent=msg;
   el.style.display='inline';
 }
@@ -10946,19 +10949,19 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   if(hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
     visible:!_boxHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
     hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
-  /* Manual TLL override line(s) -- upper and lower are independent overrides,
+  /* Manual Spec override line(s) -- upper and lower are independent overrides,
      each drawn only when set, same as Spec Hi/Lo above. */
   if(yFlt&&yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined&&_specOrder.length){
     var tllX=[_specOrder[0],_specOrder[_specOrder.length-1]];
     traces.push({type:'scatter',mode:(_specOrder.length<2?'markers':'lines'),x:tllX,y:[yFlt.tll_hi,yFlt.tll_hi],
-      line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
-      hovertemplate:'TLL↑ (manual): '+yFlt.tll_hi.toFixed(4)+'<extra></extra>'});
+      line:{color:'darkred',dash:'dot',width:2},name:'Spec↑ (manual)',
+      hovertemplate:'Spec↑ (manual): '+yFlt.tll_hi.toFixed(4)+'<extra></extra>'});
   }
   if(yFlt&&yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined&&_specOrder.length){
     var tllLoX=[_specOrder[0],_specOrder[_specOrder.length-1]];
     traces.push({type:'scatter',mode:(_specOrder.length<2?'markers':'lines'),x:tllLoX,y:[yFlt.tll_lo,yFlt.tll_lo],
-      line:{color:'darkred',dash:'dot',width:2},name:'TLL↓ (manual)',
-      hovertemplate:'TLL↓ (manual): '+yFlt.tll_lo.toFixed(4)+'<extra></extra>'});
+      line:{color:'darkred',dash:'dot',width:2},name:'Spec↓ (manual)',
+      hovertemplate:'Spec↓ (manual): '+yFlt.tll_lo.toFixed(4)+'<extra></extra>'});
   }
   return traces;
 }
@@ -13436,11 +13439,11 @@ def _build_box_interactive_html(
         '  </span>\n'
         '  <span class="sep"></span>\n'
         + tll_selector_html +
-        '  <label id="box_tll_hi_wrap" title="Override TLL↑ for Passing only filter and draw TLL line (bypasses Spec Hi)">'
-        'TLL&#8593;&nbsp;override:<input type="number" id="box_tll_hi" step="0.001" placeholder="auto"'
+        '  <label id="box_tll_hi_wrap" title="Override Spec&#8593; for the Passing-only filter and draw a manual limit line (id kept as box_tll_hi for compatibility)">'
+        'Spec&#8593;&nbsp;override:<input type="number" id="box_tll_hi" step="0.001" placeholder="auto"'
         ' style="width:74px" oninput="update()"></label>\n'
-        '  <label id="box_tll_lo_wrap" title="Override TLL↓ for Passing only filter and draw TLL line (bypasses Spec Lo)">'
-        'TLL&#8595;&nbsp;override:<input type="number" id="box_tll_lo" step="0.001" placeholder="auto"'
+        '  <label id="box_tll_lo_wrap" title="Override Spec&#8595; for the Passing-only filter and draw a manual limit line (id kept as box_tll_lo for compatibility)">'
+        'Spec&#8595;&nbsp;override:<input type="number" id="box_tll_lo" step="0.001" placeholder="auto"'
         ' style="width:74px" oninput="update()"></label>\n'
         '  <span class="sep"></span>\n'
         '  <label title="Show non-parametric (order-statistic) TI bounds in the Statistics Table'
@@ -13710,10 +13713,10 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     box_tll_selector_html = ""
     if show_box_tll_selector:
         box_tll_selector_html = (
-            '  <b>TLL&nbsp;display:</b>\n'
+            '  <b>Limit&nbsp;display:</b>\n'
             + ''.join(
-                f'  <label title="No spec limit is configured in this pod -- pick which side of '
-                f'the statistical tolerance band (TTL) matters for this measurement">'
+                f'  <label title="No spec limit is configured in this pod -- pick which limit '
+                f'side (upper/lower) to display and use for the Passing-only filter">'
                 f'<input type="radio" name="box_tll_dir" value="{val}"'
                 + (' checked' if box_spec_dir_js == val else '')
                 + f' onchange="updateBoxFilterLabels();update()"> {label}</label>\n'
@@ -14480,16 +14483,18 @@ function buildTraces(active,excl){
       visible:!_sumHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo '+v,
       hovertemplate:'Spec Lo: '+v.toFixed(4)+'<extra></extra>'});
   });
-  /* Manual TLL override line(s) -- upper and lower are independent overrides */
+  /* Manual Spec override line(s) -- upper and lower are independent overrides.
+     NOTE: param keys are still tll_hi_override/tll_lo_override for compatibility,
+     but they override *Spec* (substitute for spec_hi/spec_lo), not a TTL/TLL band. */
   var _sumPar=getSumParams();
   if(_sumPar.tll_hi_override!==null&&isFinite(fLo)&&isFinite(fHi))
     traces.push({type:'scatter',x:[fLo,fHi],y:[_sumPar.tll_hi_override,_sumPar.tll_hi_override],
-      mode:(fLo===fHi?'markers':'lines'),line:{color:'darkred',dash:'dot',width:2},name:'TLL↑ (manual)',
-      hovertemplate:'TLL↑ (manual): '+_sumPar.tll_hi_override.toFixed(4)+'<extra></extra>'});
+      mode:(fLo===fHi?'markers':'lines'),line:{color:'darkred',dash:'dot',width:2},name:'Spec↑ (manual)',
+      hovertemplate:'Spec↑ (manual): '+_sumPar.tll_hi_override.toFixed(4)+'<extra></extra>'});
   if(_sumPar.tll_lo_override!==null&&isFinite(fLo)&&isFinite(fHi))
     traces.push({type:'scatter',x:[fLo,fHi],y:[_sumPar.tll_lo_override,_sumPar.tll_lo_override],
-      mode:(fLo===fHi?'markers':'lines'),line:{color:'darkred',dash:'dot',width:2},name:'TLL↓ (manual)',
-      hovertemplate:'TLL↓ (manual): '+_sumPar.tll_lo_override.toFixed(4)+'<extra></extra>'});
+      mode:(fLo===fHi?'markers':'lines'),line:{color:'darkred',dash:'dot',width:2},name:'Spec↓ (manual)',
+      hovertemplate:'Spec↓ (manual): '+_sumPar.tll_lo_override.toFixed(4)+'<extra></extra>'});
   return traces;
 }
 
@@ -14574,7 +14579,9 @@ function getDataFilter(){
   var ylo=parseFloat(document.getElementById('sum_ylo').value);
   return {mode:mode,yhi:isNaN(yhi)?Infinity:yhi,ylo:isNaN(ylo)?-Infinity:ylo};
 }
-/* ---- TLL display direction (upper/lower/both) ---- */
+/* ---- Limit display direction (upper/lower/both) ---- */
+/* NOTE: name attr / ids retain "sum_tll_dir"/"sum_tll_hi"/"sum_tll_lo" for
+   compatibility; this selects which Spec/TTL limit side to display and filter. */
 function getTllDirection(){
   var r=document.querySelector('input[name="sum_tll_dir"]:checked');
   return r?r.value:SPEC_DIRECTION;
@@ -15748,10 +15755,10 @@ def _build_summary_html(
     tll_selector_html = ""
     if show_tll_selector:
         tll_selector_html = (
-            '  <b>TLL&nbsp;display:</b>\n'
+            '  <b>Limit&nbsp;display:</b>\n'
             + ''.join(
-                f'  <label title="No spec limit is configured in this pod -- pick which side of '
-                f'the statistical tolerance band (TTL) matters for this measurement">'
+                f'  <label title="Pick which limit side (upper/lower) to display '
+                f'and use for the Passing-only filter and margin columns">'
                 f'<input type="radio" name="sum_tll_dir" value="{val}"'
                 + (' checked' if spec_dir_js == val else '')
                 + f' onchange="updateSumFilterLabels();update()"> {label}</label>\n'
@@ -16035,11 +16042,11 @@ def _build_summary_html(
         + '  </span>\n'
         + '  <span class="sep"></span>\n'
         + tll_selector_html
-        + '  <label id="sum_tll_hi_wrap" title="Override TLL&#8593; for Passing only filter and draw TLL line">'
-        + 'TLL&#8593;&nbsp;override:<input type="number" id="sum_tll_hi" step="0.001" placeholder="auto"'
+        + '  <label id="sum_tll_hi_wrap" title="Override Spec&#8593; for the Passing-only filter and draw a manual limit line (id kept as sum_tll_hi for compatibility)">'
+        + 'Spec&#8593;&nbsp;override:<input type="number" id="sum_tll_hi" step="0.001" placeholder="auto"'
         + ' style="width:74px" oninput="update()"></label>\n'
-        + '  <label id="sum_tll_lo_wrap" title="Override TLL&#8595; for Passing only filter and draw TLL line">'
-        + 'TLL&#8595;&nbsp;override:<input type="number" id="sum_tll_lo" step="0.001" placeholder="auto"'
+        + '  <label id="sum_tll_lo_wrap" title="Override Spec&#8595; for the Passing-only filter and draw a manual limit line (id kept as sum_tll_lo for compatibility)">'
+        + 'Spec&#8595;&nbsp;override:<input type="number" id="sum_tll_lo" step="0.001" placeholder="auto"'
         + ' style="width:74px" oninput="update()"></label>\n'
         + '  <span class="sep"></span>\n'
         + '  <label title="Show non-selected conditions as dim gray bands">'
