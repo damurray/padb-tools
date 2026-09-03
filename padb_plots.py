@@ -4851,10 +4851,21 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
              if "station" not in c.lower() and any(kw in c.lower() for kw in _serial_key_kws)),
             None,
         )
+        _serial_applied = False
         if _serial_col:
             valid = df[_serial_col].astype(str).str.strip().str.match(r'^([A-Z]{2,3}\d{5,}|\d{5,})$')
             if valid.any():
                 df["_serial_id"] = df[_serial_col].astype(str).str.strip().where(valid, df["_serial_id"])
+                _serial_applied = True
+        if not _serial_applied:
+            # No serial key in Group AND no usable serial column -> no genuine per-DUT
+            # serial. The _serial_id fallback above is the whole Group string (= the
+            # condition), which would fabricate bogus "serials" (really conditions) in
+            # the Serial filter panel -- the Close-In pod case (Group is AlcState/Mode/
+            # SpurType, no serial anywhere; the scatter correctly shows no serials).
+            # Collapse to one "unknown" so the len>1 serial-panel guard hides it, and
+            # n reflects "one pooled population" rather than a fake per-condition split.
+            df["_serial_id"] = "unknown"
 
     results = []
 
@@ -13894,10 +13905,22 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
                  if "station" not in c.lower() and any(kw in c.lower() for kw in _serial_kws)),
                 None,
             )
+            _serial_applied = False
             if _serial_col:
                 valid = df[_serial_col].astype(str).str.strip().str.match(r'^([A-Z]{2,3}\d{5,}|\d{5,})$')
                 if valid.any():
                     df["_serial_id"] = df[_serial_col].astype(str).str.strip().where(valid, df["_serial_id"])
+                    _serial_applied = True
+            if not _serial_applied:
+                # No serial key in the Group string AND no usable serial column: this
+                # pod has no genuine per-DUT serial. _make_serial's fallback set
+                # _serial_id to the whole Group string (= the condition), which would
+                # fabricate bogus "serials" (really conditions) in the Serial filter
+                # panel and the "Group by: Serial Number" option -- reported on the
+                # Close-In pod, whose Group is pure condition info (AlcState/Mode/
+                # SpurType) with no serial anywhere. Collapse to one "unknown" so every
+                # len>1 guard correctly hides those serial controls.
+                df["_serial_id"] = "unknown"
     else:
         df["_cond"] = "All"
         df["_serial_id"] = "unknown"
