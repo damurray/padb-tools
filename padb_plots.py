@@ -615,7 +615,7 @@ function resetFilters(){
      in Inspect from a different, unrelated dataset silently hides almost
      everything here (its GF list matches nothing in this data). Reset always
      puts Mode back to Exclude; the GF exclusion list itself is untouched. */
-  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  try{localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
   _updateGfIndicator();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
@@ -732,7 +732,7 @@ function _isInGfFull(r){
 }
 function _loadGlobalFilter(){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;}
     else{
       var obj=JSON.parse(raw);
@@ -773,7 +773,7 @@ function _updateGfIndicator(){
   if(focusLbl) focusLbl.style.display=(hasGf&&active)?'':'none';
   var dutSers=new Set();
   if(_gfExcluded) _gfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
-  var mode=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
+  var mode=(localStorage.getItem(GF_MODE_KEY)||'exclude');
   var isFocus=active&&mode==='focus';
   /* Keep Focus checkbox in sync with padb_v2_gf_mode (set by any plot) */
   var focusChk=document.getElementById('gf_focus_chk');
@@ -785,8 +785,8 @@ function _updateGfIndicator(){
   badge.style.borderColor=active?(isFocus?'#6688cc':'#c88'):'#ccc';
 }
 window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'){_loadGlobalFilter();update();}
-  else if(e.key==='padb_v2_gf_mode'){_updateGfIndicator();update();}
+  if(e.key===GF_KEY){_loadGlobalFilter();update();}
+  else if(e.key===GF_MODE_KEY){_updateGfIndicator();update();}
 });
 
 function update(){
@@ -1999,6 +1999,12 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
         f"var TEMPS={json.dumps(temps_present)};",
         f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        # GF is scoped PER-ANALYTIC (the title prefix, shared across this
+        # analytic's views but distinct per analytic/test), not browser-global
+        # -- so a Global Filter built on one dataset never bleeds onto an
+        # unrelated one. See "Global Filter scope" note.
+        f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
     ])
 
     env_chks_html = "\n  ".join(
@@ -5448,7 +5454,7 @@ var _statGfFocusMode=false;
 var _plotRev=0;
 function _loadStatGlobalFilter(){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;}
     else{
       var obj=JSON.parse(raw);
@@ -5467,7 +5473,7 @@ function _loadStatGlobalFilter(){
       });
     }
   }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;}
-  _statGfFocusMode=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  _statGfFocusMode=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
   _updateStatGfBadge();
 }
 function _updateStatGfBadge(){
@@ -5492,7 +5498,7 @@ function _updateStatGfBadge(){
   }
 }
 window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadStatGlobalFilter();update();}
+  if(e.key===GF_KEY||e.key===GF_MODE_KEY){_loadStatGlobalFilter();update();}
 });
 /* Build a condition key without serial parts (matches boxplot key format) */
 function _condKeyForStat(cond){
@@ -6533,7 +6539,7 @@ function update(){
 }
 
 /* Resets this view's own filter/config controls to their defaults. Does NOT
-   touch the Global Filter (localStorage 'padb_v2_excluded', shared across
+   touch the Global Filter (localStorage GF_KEY, shared across
    scatter/stat_summary/boxplot/env_coverage/summary) -- that's a deliberately
    additive, cross-view exclusion list a user can spend real effort building
    up, so wiping it here would be surprising; use "Clear global filter"
@@ -6586,7 +6592,7 @@ function resetFilters(){
      in Inspect from a different, unrelated dataset silently hides almost
      everything here (its GF list matches nothing in this data). Reset always
      puts Mode back to Exclude; the GF exclusion list itself is untouched. */
-  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  try{localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
   _loadStatGlobalFilter();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
@@ -6929,6 +6935,8 @@ def _build_stat_summary_html(
         f"var SS_ALL_PORTS={json.dumps(all_ports_ss)};",
         f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site if site_compare_enabled else None)};",
     ])
 
@@ -7864,7 +7872,7 @@ var _ecGfEnabled=true;
 function toggleEcGf(){_ecGfEnabled=!_ecGfEnabled;_updateEcGfBadge();update();}
 function _loadEcGlobalFilter(){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;}
     else{
       var obj=JSON.parse(raw);
@@ -7876,7 +7884,7 @@ function _loadEcGlobalFilter(){
       });
     }
   }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;}
-  _gfFocusMode=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  _gfFocusMode=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
   _updateEcGfBadge();
 }
 function _updateEcGfBadge(){
@@ -7902,7 +7910,7 @@ function _updateEcGfBadge(){
   }
 }
 window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadEcGlobalFilter();update();}
+  if(e.key===GF_KEY||e.key===GF_MODE_KEY){_loadEcGlobalFilter();update();}
 });
 function _isEcGfExcl(serial,gfKey){
   if(!_gfCoarseExcluded||!_gfCoarseExcluded.size) return false;
@@ -8571,7 +8579,7 @@ function update(){
 }
 
 /* Resets this view's own filter/config controls to their defaults. Does NOT
-   touch the Global Filter (localStorage 'padb_v2_excluded', shared across
+   touch the Global Filter (localStorage GF_KEY, shared across
    scatter/stat_summary/boxplot/env_coverage/summary) -- that's a deliberately
    additive, cross-view exclusion list a user can spend real effort building
    up, so wiping it here would be surprising; use the dedicated GF controls
@@ -8615,7 +8623,7 @@ function resetFilters(){
      in Inspect from a different, unrelated dataset silently hides almost
      everything here (its GF list matches nothing in this data). Reset always
      puts Mode back to Exclude; the GF exclusion list itself is untouched. */
-  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  try{localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
   _loadEcGlobalFilter();
   _updateEcGfBadge();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
@@ -9262,6 +9270,8 @@ def _build_env_coverage_html(
         f"var EC_ALL_SERIALS={json.dumps(all_serials or [])};",
         f"var EC_ALL_PORTS={json.dumps(all_ports or [])};",
         f"var STATE_KEY='padb_{results_dir}';",
+        f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
     ])
 
     return (
@@ -10634,7 +10644,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var yActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
   var kChanged=Math.abs(k-1.5)>0.001;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
-  var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var boxGfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
   var passHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
   var passLo=passActive?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
@@ -10926,7 +10936,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var rows=[];
   var tempActive=selTemps&&selTemps.length<TEMPS_PRESENT.length;
   var _gfActiveSt=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
-  var _gfFocusSt=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var _gfFocusSt=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
   var gfFocusActive=_gfActiveSt&&_gfFocusSt;
   /* Real gap fixed 2026-08-19: this table used to always iterate BOX_DATA by
      raw, ungrouped condition regardless of "Group by" -- but with Group by
@@ -11256,7 +11266,7 @@ function saveBoxCSV(withExcluded){
   var allBoxSers=getAllBoxSerials();var selBoxSers=getSelectedBoxSerials();
   var serFlt=allBoxSers.length>1&&selBoxSers.length<allBoxSers.length;
   var gfKeys=[];
-  try{var gfRaw=localStorage.getItem('padb_v2_excluded');if(gfRaw) gfKeys=JSON.parse(gfRaw).excluded||[];}catch(e){}
+  try{var gfRaw=localStorage.getItem(GF_KEY);if(gfRaw) gfKeys=JSON.parse(gfRaw).excluded||[];}catch(e){}
   var gfSers=[];
   gfKeys.forEach(function(k){var s=k.split('||')[0];if(gfSers.indexOf(s)<0) gfSers.push(s);});
   var meta=['# PADB Export','# Plot: '+BOX_TITLE,'# Generated: '+ts,
@@ -11601,7 +11611,7 @@ function updateSitePanel(){
     var fr=getBoxFreqRange();
     var freqWindowed=fr.lo>BOX_FREQ_MIN+1e-9||fr.hi<BOX_FREQ_MAX-1e-9;
     var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
-    var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+    var boxGfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
     var primaryBuckets={},otherPoints=[];
     BOX_DATA.forEach(function(cd){
       if(!cd.site) return;
@@ -12010,7 +12020,7 @@ function clearEverything(){
      page matches nothing here, and Inspect mode only shows GF-matched points.
      That's exactly the "no data" trap Reset exists to escape, so -- unlike
      the exclusion list itself -- Reset always puts Mode back to Exclude. */
-  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  try{localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
   _updateBoxGfStatus();
   /* Clear any manual zoom/pan on both axes -- Y because buildLayout()'s
      _liveAxisRange() would otherwise keep re-applying the stale zoomed
@@ -12031,7 +12041,7 @@ function _boxBaseSerial(s){
 }
 function _loadBoxGlobalFilter(){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     if(!raw){_boxGfCoarseExcluded=null;return;}
     var obj=JSON.parse(raw);
     var serKws=['serial','unit id','dut id','s/n'];
@@ -12052,7 +12062,7 @@ function _loadBoxGlobalFilter(){
 function _updateBoxGfStatus(){
   var s=document.getElementById('box_gf_status');
   var btn=document.getElementById('box_gf_mode_btn');
-  var mode=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
+  var mode=(localStorage.getItem(GF_MODE_KEY)||'exclude');
   if(btn) btn.textContent='GF Mode: '+(mode==='focus'?'Inspect ◆':'Exclude ◇');
   /* Prominent banner while in Inspect mode -- Inspect shows ONLY the
      GF-flagged data, so ordinary filters look like they "do nothing"; the
@@ -12061,7 +12071,7 @@ function _updateBoxGfStatus(){
   if(banner) banner.style.display=(mode==='focus')?'':'none';
   if(!s) return;
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     if(!raw){s.textContent='';s.style.color='#555';return;}
     var obj=JSON.parse(raw);
     var keys=obj.excluded||[];
@@ -12073,19 +12083,19 @@ function _updateBoxGfStatus(){
   }catch(e){s.textContent='';}
 }
 function toggleGfMode(){
-  var cur=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
-  try{localStorage.setItem('padb_v2_gf_mode',cur==='exclude'?'focus':'exclude');}catch(e){}
+  var cur=(localStorage.getItem(GF_MODE_KEY)||'exclude');
+  try{localStorage.setItem(GF_MODE_KEY,cur==='exclude'?'focus':'exclude');}catch(e){}
   _updateBoxGfStatus();
   update();
 }
 /* Merge newKeys into the existing GF (union), preserving previously added entries */
 function _mergeGf(newKeys){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     var existing=raw?JSON.parse(raw).excluded||[]:[];
     var merged=new Set(existing);
     newKeys.forEach(function(k){merged.add(k);});
-    localStorage.setItem('padb_v2_excluded',JSON.stringify({v:1,excluded:Array.from(merged)}));
+    localStorage.setItem(GF_KEY,JSON.stringify({v:1,excluded:Array.from(merged)}));
     _loadBoxGlobalFilter();_updateBoxGfStatus();update();
   }catch(e){alert('localStorage write failed: '+e.message);}
 }
@@ -12137,7 +12147,7 @@ function applyGlobalFilter(){
   _mergeGf(keys);
 }
 function clearGlobalFilter(){
-  try{localStorage.removeItem('padb_v2_excluded');}catch(e){}
+  try{localStorage.removeItem(GF_KEY);}catch(e){}
   _loadBoxGlobalFilter();_updateBoxGfStatus();update();
 }
 function csvTempToTestStep(t){
@@ -12210,7 +12220,7 @@ function copyPadbFilterMode(mode){
    "harmonic 2, this freq band, these DUTs"), slightly broad for a GF
    assembled from several disjoint selections. */
 function _buildGfExclusionClause(){
-  var raw=localStorage.getItem('padb_v2_excluded');
+  var raw=localStorage.getItem(GF_KEY);
   var keys=raw?(JSON.parse(raw).excluded||[]):[];
   if(!keys.length) return null;
   var fp=typeof PADB_FIELD_PREFIX!=='undefined'?PADB_FIELD_PREFIX:'';
@@ -12352,7 +12362,7 @@ function _buildViewFilterClauses(includeSerial){
 }
 function exportGfCsv(){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     if(!raw){alert('No global filter entries to export.');return;}
     var keys=(JSON.parse(raw).excluded||[]);
     if(!keys.length){alert('No global filter entries to export.');return;}
@@ -12560,7 +12570,7 @@ function _segFilterCondDims(seg){
   var allPorts=getAllBoxPorts(),selPorts=getSelectedBoxPorts();
   var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
-  var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var boxGfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
   /* Real bug reported by the user (2026-08-31): with SpurType (or any other
      condition-dim) already narrowed to a single value, tabbing segments
      used to reset it right back to "everything with data in the new
@@ -12683,7 +12693,7 @@ function _recomputeSpecSegments(){
   var allPorts=getAllBoxPorts(),selPorts=getSelectedBoxPorts();
   var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
-  var boxGfFocus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+  var boxGfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
   var hiPts={},loPts={};
   BOX_DATA.forEach(function(cd){
     if(selConds.indexOf(cd.condition)<0) return;
@@ -12803,7 +12813,7 @@ function update(){
   saveState();
 }
 window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadBoxGlobalFilter();_updateBoxGfStatus();update();}
+  if(e.key===GF_KEY||e.key===GF_MODE_KEY){_loadBoxGlobalFilter();_updateBoxGfStatus();update();}
 });
 /* ---- localStorage state persistence ---- */
 function _stGet(k){try{return localStorage.getItem(STATE_KEY+k);}catch(e){return null;}}
@@ -12863,7 +12873,7 @@ function loadState(){
      is applied"; the real cause was a persisted Inspect mode. Resetting here
      makes each fresh page load start in the expected Exclude mode, while
      Inspect stays a deliberate in-session toggle. */
-  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  try{localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
   _loadBoxGlobalFilter();
   loadState();
   /* Real report (2026-08-28): "on refresh, filter data does not match plot
@@ -13314,6 +13324,8 @@ def _build_box_interactive_html(
         f"var ALL_BOX_PORTS={json.dumps(all_box_ports or [])};",
         f"var BOX_COND_HARM={json.dumps(box_cond_harm or [])};",
         f"var STATE_KEY='padb_{results_dir}';",
+        f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PADB_FIELD_PREFIX={json.dumps(padb_field_prefix)};",
         f"var PADB_FREQ_FIELD={json.dumps(padb_freq_field)};",
         f"var RESULTS_DIR_PATH={json.dumps(results_dir_abs_path)};",
@@ -14049,7 +14061,7 @@ function getSumCondData(cd,selTemps,params){
      cd.dut_info&&cd.dut_info.length&&cd.dut_vals&&cd.dut_vals.length){
     var _coarseKey=(_gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size)?_sumCoarseCondKey(cd.condition):null;
     var _nAll=cd.dut_info.length;
-    var _gfMode=localStorage.getItem('padb_v2_gf_mode')||'exclude';
+    var _gfMode=localStorage.getItem(GF_MODE_KEY)||'exclude';
     var _inclIdxs=[];
     cd.dut_info.forEach(function(di,idx){
       if(_sumSerFlt&&_selSumSers.indexOf(di.s)<0)return;
@@ -14349,7 +14361,7 @@ function resetFilters(){
      in Inspect from a different, unrelated dataset silently hides almost
      everything here (its GF list matches nothing in this data). Reset always
      puts Mode back to Exclude; the GF exclusion list itself is untouched. */
-  try{localStorage.setItem('padb_v2_gf_mode','exclude');}catch(e){}
+  try{localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
   _loadSumGlobalFilter();
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
@@ -14536,7 +14548,7 @@ function _sumCoarseCondKey(cond){
 }
 function _loadSumGlobalFilter(){
   try{
-    var raw=localStorage.getItem('padb_v2_excluded');
+    var raw=localStorage.getItem(GF_KEY);
     if(!raw){_sumGfExcluded=null;_sumGfCoarseExcluded=null;}
     else{
       var obj=JSON.parse(raw);
@@ -14566,7 +14578,7 @@ function _updateSumGfBadge(){
   var dutSers=new Set();
   _sumGfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
   var n=dutSers.size,pts=_sumGfExcluded.size;
-  var mode=(localStorage.getItem('padb_v2_gf_mode')||'exclude');
+  var mode=(localStorage.getItem(GF_MODE_KEY)||'exclude');
   var isFocus=mode==='focus';
   el.textContent=n>0?(isFocus?'Inspect: ':'')+pts+' pts in GF ('+n+' DUT'+(n!==1?'s':')')+(isFocus?' — INSPECT':''):'';
   el.style.background=isFocus?'#e8f0ff':'#ffeaea';
@@ -14575,7 +14587,7 @@ function _updateSumGfBadge(){
   el.style.display=n>0?'':'none';
 }
 window.addEventListener('storage',function(e){
-  if(e.key==='padb_v2_excluded'||e.key==='padb_v2_gf_mode'){_loadSumGlobalFilter();update();}
+  if(e.key===GF_KEY||e.key===GF_MODE_KEY){_loadSumGlobalFilter();update();}
 });
 
 /* ---- Site Population Check: for a cross-site (compare_csv) page, does a
@@ -14653,7 +14665,7 @@ function updateSitePanel(){
     var gfEl=document.getElementById('sum_gf_chk');
     var gfOn=!gfEl||gfEl.checked;
     var hasGf=gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size>0;
-    var gfMode=localStorage.getItem('padb_v2_gf_mode')||'exclude';
+    var gfMode=localStorage.getItem(GF_MODE_KEY)||'exclude';
     var primaryBuckets={},otherPoints=[];
     active.forEach(function(cd){
       var site=cd.cond_keys?cd.cond_keys['Site']:null;
@@ -14976,7 +14988,7 @@ function _getFilteredActive(useGf){
       var coarseCond=_sumCoarseCondKey(cd.condition);
       return _sumGfCoarseExcluded.has(condSerial+'||'+coarseCond);
     };
-    var focus=(localStorage.getItem('padb_v2_gf_mode')||'exclude')==='focus';
+    var focus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
     if(focus){
       active=active.filter(function(cd){return _isGfCond(cd);});
     } else {
@@ -15305,7 +15317,7 @@ function _sumInclDutIdxs(cd){
   var idxs=[];
   if(!cd.dut_info||!cd.dut_info.length) return idxs;
   var coarseKey=(gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size)?_sumCoarseCondKey(cd.condition):null;
-  var gfMode=localStorage.getItem('padb_v2_gf_mode')||'exclude';
+  var gfMode=localStorage.getItem(GF_MODE_KEY)||'exclude';
   cd.dut_info.forEach(function(di,idx){
     if(serFlt&&selSers.indexOf(di.s)<0) return;
     if(coarseKey!==null){
@@ -15638,6 +15650,8 @@ def _build_summary_html(
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in freq_vals))};",
         f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site)};",
     ])
 
