@@ -1467,6 +1467,45 @@ Requested: "where multiple parameters exist, select multiple conditions to group
 Implementation (all in `_STAT_BOXPLOT_INTERACTIVE_JS`):
 - New helpers: `_boxGroupCols()`, `_boxGroupKeyForPoint(cols,cd,d)` (composite per-point key across the selected dims — `__serial__`/`__port__` read the point's own fields, `__temp__` the temp, anything else a COND_DIM value via `_boxCondDimValue`), `_boxGroupColsLabel(cols)` (joined dim labels for legend/table), `_boxGroupHasUnitDim(cols)`, and `_boxGroupSelChanged()` (keeps the UI coherent — picking any real parameter clears "Condition"; clearing all re-selects it).
 - `_computeBoxGroupedByColId(cols, ...)` (was `colId`) builds the composite key per point. Aggregation rule generalizes the old one: **no serial/port in the group → `_dutAverage` (one DUT, one vote)**; **serial/port in the group → keep raw points, optional `_collapseDupRuns`** keyed on the full identity `(cond,temp,serial,port)`. `buildBoxTraces`/`buildPortSerialTraces` and the Statistics-Table grouped branch all switched from the single `box_group_by.value` + `_isPoolableGroupBy` to `_boxGroupCols()` (`_isPoolableGroupBy` is now dead code, left in place). `clearEverything` resets the multi-select to `DEFAULT_GROUP_BY`.
-- Only the boxplot was changed. `stat_summary`/`summary`/`env_coverage` still have their own single-select Group by (their `getGroupKey`/pooling code is separate) — extend later once this is confirmed in use.
+- Boxplot was the prototype; **now extended to the other four views (2026-09-03)** — see the next section.
 
 Verified headlessly against the `qa_padb.py` synthetic (HarmonicNumber × Port × Serial × temp): Condition → 18 full-condition boxes; HarmonicNumber alone → 2; **HarmonicNumber + Port → 4 composite boxes (`RF1 | 2`, `RF1 | 3`, `RF2 | 2`, `RF2 | 3`)**; Statistics Table rows correctly labeled `Port + HarmonicNumber: RF1 | 2`; clicking Condition returns to no-grouping; Reset restores the default. `qa_padb.py` baseline unchanged (37/4).
+
+---
+
+## Multi-select "Group by" extended to scatter, stat_summary, summary, env_coverage (added 2026-09-03)
+
+After the boxplot prototype was confirmed, the user asked to apply it to the other plot types (explicitly including scatter, "makes it easier to compare data across plot types"). Each view has its **own** Group-by selector and grouping code, so each was generalized independently but to the identical pattern:
+
+- **Selector → `<select multiple>`** (`statGroupBySel`, `ecGroupBySel`, `sumGroupBySel`, and scatter's `groupby`), with `size` sized to the option count and a per-view `_xxxGrpChanged()` coherence handler (picking any real parameter clears the "Condition" option; clearing all re-selects it). The three statistical views keep a `<option value="" selected>Condition</option>` default; scatter has no Condition option (it always splits by something) — its default stays the fewest-cardinality dimension.
+- **`getGroupedConditions()`** in `stat_summary` / `env_coverage` / `summary` now reads the selected set (`_statGroupCols`/`_ecGroupCols`/`_sumGroupCols`, the empty `''` filtered out), and groups by the **composite** of the selected dimensions' values (joined `  |  `) instead of one dim. `stat_summary` extracts each dim's value from the condition string via regex (keyed on `col_id`); `env_coverage`/`summary` read `cd.cond_keys[col]`. Empty selection → return the ungrouped active conditions (Condition). The existing pool helpers (`_poolFreqStats`/`_poolEcConditions`/`_poolSumRecords`) are unchanged — only which records group together and the label changed. The group label is the joined dim labels + `: ` + the composite value (e.g. `HarmonicNumber + Upper Spec (<=): 2  |  -43.0`).
+- **scatter** (`buildTraces`): splits/colors traces by the composite of the selected `_grp_*` columns; **none selected → one combined `(all)` trace** (scatter must always draw something). This is a display split, not statistical pooling — same as scatter's Group by always was.
+- `env_coverage`'s "Show excluded" gate (`gbActive`) now uses `_ecGroupCols().length>0` instead of the single `.value`, so it correctly detects grouping-active under multi-select. Resets (`.value=''`) still land on Condition — and even if a browser's multi-select `.value=''` behaved oddly, empty cols always means Condition, so reset is robust either way.
+
+Verified headlessly on the `qa_padb.py` synthetic for all four: single-dim gives the expected N groups, a two-dim selection gives the composite groups (`2  |  -43.0`, …), Condition/none returns the full ungrouped set (scatter → `(all)`). `qa_padb.py` baseline unchanged (37/4). `boxplot` keeps its own richer implementation (serial/port pooling with dut-average-vs-raw rules); these four are the lighter condition-dimension pooling their existing single-select already did, just generalized to a combination.
+
+---
+
+## Dev-environment gotcha: Claude desktop won't launch — "Another program is currently using this file" (diagnosed 2026-09-03)
+
+Not a padb-tools issue at all, but a recurring morning time-sink on this workstation, documented here for the same reason the `backup_memory.ps1` header documents the `schtasks`/Store-alias-stub gotcha: it costs a reboot every time it's rediscovered.
+
+**Symptom:** arrive in the morning, the Claude desktop GUI is closed (nobody closed it), clicking the icon throws a modal error box reading "Another program is currently using this file." Ending "Claude" in Task Manager doesn't clear it; only a reboot does.
+
+**Cause:** Claude desktop installs as an **MSIX package** under `C:\Program Files\WindowsApps\Claude_<version>_x64__pzs8sxrjxfjjc` and auto-updates itself overnight. If any process from the old version is still alive when the new one is staged, Windows can't swap the package and parks it — `Microsoft-Windows-AppXDeploymentServer/Operational` event **658**, "Marking package {new} for deferred registration because {old} is still running." The staging tears down the visible window, which is why the GUI is already closed in the morning. The next launch has to finalize that parked registration first, hits the still-locked package files, and fails — escalating to event **419**/`0x80073D02` (`ERROR_PACKAGES_IN_USE`, "Unable to install because the following apps need to be closed") when it gives up.
+
+Confirmed on this machine across three consecutive days (2026-09-01 through 2026-09-02): every version bump logged a 658, and 2026-09-01 logged the full 419/401/404 failure triple.
+
+**Why Task Manager doesn't fix it — two independent reasons:**
+1. A running Claude spawns ~13 `claude.exe` processes. "End task" on the app entry reaps the visible tree; the headless helpers sit under *Background processes* and survive. One survivor keeps the package locked.
+2. Even at zero processes, a deferred registration **does not retry on demand** — Windows only re-attempts it at a user logon. So the error persists after killing everything, which is what makes a reboot look like the only cure.
+
+**Fix without rebooting:** run [fix_claude_launch.ps1](fix_claude_launch.ps1) from a **plain PowerShell window** (not a terminal inside Claude — step 1 kills the process hosting it):
+```
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\apps\padb\tools\fix_claude_launch.ps1
+```
+It reaps every `claude` process, forces the parked registration via `Add-AppxPackage -RegisterByFamilyName -MainPackage Claude_pzs8sxrjxfjjc` (per-user, no admin needed), then prints the recent 658/419 events for confirmation. If the re-register still fails, sign out of Windows and back in — a logon always clears a deferred registration, and is faster than a full reboot.
+
+**Prevention:** quit Claude from the **tray icon** (right-click → Quit), not the window's X, before leaving for the day. Closing the window leaves the app running; the app also auto-starts at login (`ClaudeStartup` under `HKCU:\...\AppModel\SystemAppData\Claude_pzs8sxrjxfjjc`), so it comes back regardless. With no processes alive overnight, the update registers cleanly and the morning launch is uneventful.
+
+**Related, and worth not confusing with this:** the "webapp restart killed an in-progress job" fix (2026-08-21, above) is a *different* parent/child-lifetime problem — that one was a stdout pipe, this one is MSIX package registration. Neither is a Windows Job Object cascade; both were originally misdiagnosed as one.

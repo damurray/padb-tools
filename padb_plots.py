@@ -468,11 +468,15 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 function buildTraces(filtered){
-  var groupCol=document.getElementById('groupby').value;
+  /* Group by is a MULTI-select (2026-09-02): split/color traces by any
+     combination of parameters (Ctrl/Cmd-click). None selected = one combined
+     trace. */
+  var groupSel=document.getElementById('groupby');
+  var groupCols=Array.from(groupSel.selectedOptions||[]).map(function(o){return o.value;}).filter(function(v){return v;});
   var sortBy=document.getElementById('sortby').value;
   var groups={};
   filtered.forEach(function(r){
-    var key=String(r[groupCol]===null||r[groupCol]===undefined?'(none)':r[groupCol]);
+    var key=groupCols.length?groupCols.map(function(gc){var v=r[gc];return String(v===null||v===undefined?'(none)':v);}).join('  |  '):'(all)';
     if(!groups[key]) groups[key]=[];
     groups[key].push(r);
   });
@@ -1917,6 +1921,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'<option value="{c}"{" selected" if c == _default_grp_col else ""}>{lbl}</option>'
         for c, lbl in group_cols
     ) if group_cols else '<option value="Station" selected>Test Station</option>'
+    _scat_grp_size = min(6, max(3, grp_opts.count("<option")))
 
     # Checkbox panels — one per filter dimension (skip Test_Step; handled by env_bar)
     panels: list[str] = []
@@ -2041,7 +2046,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '<div class="ctrl-bar">\n'
         f'  {panels_html}\n'
         '  <div class="sep"></div>\n'
-        f'  <label>Group&nbsp;by:<select id="groupby" onchange="update()">{grp_opts}</select></label>\n'
+        f'  <label title="Ctrl/Cmd-click to group by multiple parameters">Group&nbsp;by:'
+        f'<select id="groupby" multiple size="{_scat_grp_size}" style="vertical-align:middle" '
+        f'onchange="update()">{grp_opts}</select></label>\n'
         '  <label>Sort:<select id="sortby" onchange="update()">\n'
         '    <option value="name_asc">Name A&#8594;Z</option>\n'
         '    <option value="name_desc">Name Z&#8594;A</option>\n'
@@ -4931,31 +4938,44 @@ function _poolFreqStats(fsList,freq){
    differ only in per-unit Upper Limit/Uncertainty text into one trace per
    real SpurType. No-op (returns getActiveConditions() unchanged) when the
    selector is at its default "Condition" value. */
+/* Group by is a MULTI-select (2026-09-02): pool by any combination of
+   parameters, not just one or all. Empty selection = Condition (ungrouped). */
+function _statGroupCols(){
+  var s=document.getElementById('statGroupBySel');if(!s) return [];
+  return Array.from(s.selectedOptions||[]).map(function(o){return o.value;}).filter(function(v){return v;});
+}
+function _statGrpChanged(){
+  var s=document.getElementById('statGroupBySel');if(!s)return;
+  var opts=Array.from(s.options);var c=opts.filter(function(o){return o.value==='';})[0];
+  if(c)c.selected=!opts.some(function(o){return o.value&&o.selected;});
+}
 function getGroupedConditions(){
   var active=getActiveConditions();
-  var gbEl=document.getElementById('statGroupBySel');
-  var gbCol=gbEl?gbEl.value:'';
-  if(!gbCol) return active;
-  var dim=(COND_DIMS||[]).filter(function(d){return d.col_id===gbCol;})[0];
-  if(!dim) return active;
-  var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
-  var re=new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)');
+  var cols=_statGroupCols();
+  if(!cols.length) return active;
+  var dims=cols.map(function(c){return (COND_DIMS||[]).filter(function(d){return d.col_id===c;})[0];}).filter(Boolean);
+  if(!dims.length) return active;
+  var res=dims.map(function(dim){
+    var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+    return {dim:dim,re:new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)')};
+  });
   var groups={},order=[];
   active.forEach(function(cd){
-    var m=cd.condition.match(re);
-    var val=m?m[1].trim():'(none)';
-    if(!groups[val]){groups[val]={freqMap:{}};order.push(val);}
+    var parts=res.map(function(r){var m=cd.condition.match(r.re);return m?m[1].trim():'(none)';});
+    var key=parts.join('  |  ');
+    if(!groups[key]){groups[key]={freqMap:{}};order.push(key);}
     (cd.freq_stats||[]).forEach(function(fs){
       var f=fs.freq;
-      if(!groups[val].freqMap[f]) groups[val].freqMap[f]=[];
-      groups[val].freqMap[f].push(fs);
+      if(!groups[key].freqMap[f]) groups[key].freqMap[f]=[];
+      groups[key].freqMap[f].push(fs);
     });
   });
-  return order.sort().map(function(val){
-    var g=groups[val];
+  var labelPrefix=dims.map(function(d){return d.label;}).join(' + ');
+  return order.sort().map(function(key){
+    var g=groups[key];
     var freq_stats=Object.keys(g.freqMap).map(Number).sort(function(a,b){return a-b;})
       .map(function(f){return _poolFreqStats(g.freqMap[f],f);});
-    return {condition:dim.label+': '+val,freq_stats:freq_stats,temps_present:TEMPS_PRESENT||[]};
+    return {condition:labelPrefix+': '+key,freq_stats:freq_stats,temps_present:TEMPS_PRESENT||[]};
   });
 }
 
@@ -7012,11 +7032,14 @@ def _build_stat_summary_html(
             f'<hr class="fdiv">{port_items_ss}</div></div>'
         )
 
-    group_by_opts = '<option value="">Condition</option>\n' + "\n".join(
+    group_by_opts = '<option value="" selected>Condition</option>\n' + "\n".join(
         f'<option value="{dim["col_id"]}">{dim["label"]}</option>' for dim in cond_dims
     )
+    _stat_grp_size = min(6, max(3, len(cond_dims) + 1))
     group_by_html = (
-        f'<label>Group&nbsp;by:<select id="statGroupBySel" onchange="update()">\n{group_by_opts}\n</select></label>'
+        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition">'
+        f'Group&nbsp;by:<select id="statGroupBySel" multiple size="{_stat_grp_size}" '
+        f'style="vertical-align:middle" onchange="_statGrpChanged();update()">\n{group_by_opts}\n</select></label>'
         if cond_dims else ""
     )
 
@@ -7655,20 +7678,32 @@ function getSelectedConds(){
    per-condition computation already does (a single mode() value, not a true
    per-frequency spec either). No-op when the selector is at its default
    "Condition" value. */
+/* Group by is a MULTI-select (2026-09-02): pool by any combination of
+   parameters. Empty selection = Condition (ungrouped). */
+function _ecGroupCols(){
+  var s=document.getElementById('ecGroupBySel');if(!s) return [];
+  return Array.from(s.selectedOptions||[]).map(function(o){return o.value;}).filter(function(v){return v;});
+}
+function _ecGrpChanged(){
+  var s=document.getElementById('ecGroupBySel');if(!s)return;
+  var opts=Array.from(s.options);var c=opts.filter(function(o){return o.value==='';})[0];
+  if(c)c.selected=!opts.some(function(o){return o.value&&o.selected;});
+}
 function getGroupedConditions(){
   var active=getSelectedConds();
-  var gbEl=document.getElementById('ecGroupBySel');
-  var gbCol=gbEl?gbEl.value:'';
-  if(!gbCol) return active;
-  var dim=(COND_DIMS||[]).filter(function(d){return d.col===gbCol;})[0];
-  if(!dim) return active;
+  var cols=_ecGroupCols();
+  if(!cols.length) return active;
+  var dims=cols.map(function(c){return (COND_DIMS||[]).filter(function(d){return d.col===c;})[0];}).filter(Boolean);
+  if(!dims.length) return active;
   var groups={},order=[];
   active.forEach(function(cd){
-    var val=(cd.cond_keys&&cd.cond_keys[dim.col]!==undefined)?cd.cond_keys[dim.col]:'';
-    if(!groups[val]){groups[val]=[];order.push(val);}
-    groups[val].push(cd);
+    var parts=dims.map(function(dim){return (cd.cond_keys&&cd.cond_keys[dim.col]!==undefined)?cd.cond_keys[dim.col]:'';});
+    var key=parts.join('  |  ');
+    if(!groups[key]){groups[key]=[];order.push(key);}
+    groups[key].push(cd);
   });
-  return order.sort().map(function(val){return _poolEcConditions(groups[val],dim.label+': '+val);});
+  var labelPrefix=dims.map(function(d){return d.label;}).join(' + ');
+  return order.sort().map(function(key){return _poolEcConditions(groups[key],labelPrefix+': '+key);});
 }
 function _poolEcConditions(recs,label){
   var freqSet={};
@@ -8501,7 +8536,7 @@ function update(){
      doesn't mean anything once Group By is pooling synthetic virtual
      conditions -- skip it in that case rather than have it show everything
      as "excluded". */
-  var gbActive=document.getElementById('ecGroupBySel')&&document.getElementById('ecGroupBySel').value;
+  var gbActive=_ecGroupCols().length>0;
   var _rawSel=gbActive?null:getSelectedConds();
   var exclConds=(showExcl&&!gbActive)?ENV_DATA.filter(function(cd){return _rawSel.indexOf(cd)<0;}):[];
   var _r=buildTraces(selConds,exclConds);
@@ -8946,11 +8981,14 @@ def _build_env_coverage_html(
         )
     panels_html = "\n  ".join(panels)
 
-    group_by_opts = '<option value="">Condition</option>\n' + "\n".join(
+    group_by_opts = '<option value="" selected>Condition</option>\n' + "\n".join(
         f'<option value="{dim["col"]}">{dim["label"]}</option>' for dim in cond_dims
     )
+    _ec_grp_size = min(6, max(3, len(cond_dims) + 1))
     group_by_html = (
-        f'<label>Group&nbsp;by:<select id="ecGroupBySel" onchange="update()">\n{group_by_opts}\n</select></label>'
+        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition">'
+        f'Group&nbsp;by:<select id="ecGroupBySel" multiple size="{_ec_grp_size}" '
+        f'style="vertical-align:middle" onchange="_ecGrpChanged();update()">\n{group_by_opts}\n</select></label>'
         if cond_dims else ""
     )
 
@@ -14806,20 +14844,32 @@ function _sumSerFromCond(cond){
    collapses dozens of records that differ only in per-unit Upper Limit/
    Uncertainty text into one virtual record per real SpurType. No-op when the
    selector is at its default "Condition" value. */
+/* Group by is a MULTI-select (2026-09-02): pool by any combination of
+   parameters. Empty selection = Condition (ungrouped). */
+function _sumGroupCols(){
+  var s=document.getElementById('sumGroupBySel');if(!s) return [];
+  return Array.from(s.selectedOptions||[]).map(function(o){return o.value;}).filter(function(v){return v;});
+}
+function _sumGrpChanged(){
+  var s=document.getElementById('sumGroupBySel');if(!s)return;
+  var opts=Array.from(s.options);var c=opts.filter(function(o){return o.value==='';})[0];
+  if(c)c.selected=!opts.some(function(o){return o.value&&o.selected;});
+}
 function getGroupedConditions(){
   var active=getActive();
-  var gbEl=document.getElementById('sumGroupBySel');
-  var gbCol=gbEl?gbEl.value:'';
-  if(!gbCol) return active;
-  var dim=(COND_DIMS||[]).filter(function(d){return d.col===gbCol;})[0];
-  if(!dim) return active;
+  var cols=_sumGroupCols();
+  if(!cols.length) return active;
+  var dims=cols.map(function(c){return (COND_DIMS||[]).filter(function(d){return d.col===c;})[0];}).filter(Boolean);
+  if(!dims.length) return active;
   var groups={},order=[];
   active.forEach(function(cd){
-    var val=(cd.cond_keys&&cd.cond_keys[dim.col]!==undefined)?cd.cond_keys[dim.col]:'';
-    if(!groups[val]){groups[val]=[];order.push(val);}
-    groups[val].push(cd);
+    var parts=dims.map(function(dim){return (cd.cond_keys&&cd.cond_keys[dim.col]!==undefined)?cd.cond_keys[dim.col]:'';});
+    var key=parts.join('  |  ');
+    if(!groups[key]){groups[key]=[];order.push(key);}
+    groups[key].push(cd);
   });
-  return order.sort().map(function(val){return _poolSumRecords(groups[val],dim.label+': '+val);});
+  var labelPrefix=dims.map(function(d){return d.label;}).join(' + ');
+  return order.sort().map(function(key){return _poolSumRecords(groups[key],labelPrefix+': '+key);});
 }
 /* Pool multiple original records sharing one Group-by dimension value into a
    single virtual record with the identical shape getSumCondData()/
@@ -15491,11 +15541,14 @@ def _build_summary_html(
         )
     panels_html = "\n  ".join(panels)
 
-    group_by_opts = '<option value="">Condition</option>\n' + "\n".join(
+    group_by_opts = '<option value="" selected>Condition</option>\n' + "\n".join(
         f'<option value="{dim["col"]}">{dim["label"]}</option>' for dim in cond_dims
     )
+    _sum_grp_size = min(6, max(3, len(cond_dims) + 1))
     group_by_html = (
-        f'<label>Group&nbsp;by:<select id="sumGroupBySel" onchange="update()">\n{group_by_opts}\n</select></label>'
+        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition">'
+        f'Group&nbsp;by:<select id="sumGroupBySel" multiple size="{_sum_grp_size}" '
+        f'style="vertical-align:middle" onchange="_sumGrpChanged();update()">\n{group_by_opts}\n</select></label>'
         if cond_dims else ""
     )
 
