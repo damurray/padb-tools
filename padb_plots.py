@@ -4428,45 +4428,6 @@ def spec_derivation(csv_path: Path, cfg: dict, output_html: Path) -> None:
     _write(fig, output_html, cfg)
 
 
-def de_summary(csv_path: Path, cfg: dict, output_html: Path) -> None:
-    """
-    Delta Environmental summary: Mean Env. deviation vs frequency, one line per Group.
-    Spec limit lines shown.  Log/linear X toggle.
-    """
-    df = _load_env_csv(csv_path)
-    lo_spec, hi_spec = _get_spec(df, cfg)
-    y_label = cfg.get("y_label", "Mean Env. deviation (dB)")
-
-    filt = cfg.get("group_col_filter")
-    if filt:
-        df = df[df["Group"].str.contains(filt, case=False, na=False)]
-
-    groups = df["Group"].dropna().unique()
-    fig = go.Figure()
-
-    for grp in sorted(groups):
-        sub = df[df["Group"] == grp].sort_values("Frequency_MHz")
-        fig.add_trace(go.Scatter(
-            x=sub["Frequency_MHz"],
-            y=sub["Mean_Env"],
-            mode="lines+markers",
-            marker=dict(size=4),
-            name=grp if len(grp) <= 40 else grp[:37] + "...",
-            hovertemplate=(
-                f"<b>{grp}</b><br>"
-                "Freq: %{x:.4f} MHz<br>"
-                f"{y_label}: %{{y:.4f}}<extra></extra>"
-            ),
-        ))
-
-    _spec_lines(fig, lo_spec, hi_spec)
-    fig.update_xaxes(title_text=cfg.get("x_label", "Frequency (MHz)"),
-                     type="log" if cfg.get("log_x") else "linear")
-    fig.update_yaxes(title_text=y_label, range=cfg.get("y_lim"))
-    fig.update_layout(updatemenus=[_log_x_button()])
-    _write(fig, output_html, cfg)
-
-
 def de_heatmap(csv_path: Path, cfg: dict, output_html: Path) -> None:
     """
     Delta Environmental heatmap: Group × Frequency, coloured by Mean Env. deviation.
@@ -8894,9 +8855,6 @@ function saveState(){
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     document.querySelectorAll('.'+dim.col_id).forEach(function(c){_stSet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
   });
-  var fltEl=document.querySelector('input[name="env_dfilt"]:checked');if(fltEl)_stSet('env_filter_mode',fltEl.value);
-  var yhiEl=document.getElementById('env_y_hi');if(yhiEl)_stSet('env_filter_yhi',yhiEl.value);
-  var tllEl=document.getElementById('env_tll_hi');if(tllEl)_stSet('env_tll_hi',tllEl.value);
   var pREl=document.getElementById('ec_P_room');if(pREl)_stSet('ec_P_room',pREl.value);
   var cREl=document.getElementById('ec_C_room');if(cREl)_stSet('ec_C_room',cREl.value);
   var pEEl=document.getElementById('ec_P_env');if(pEEl)_stSet('ec_P_env',pEEl.value);
@@ -8916,10 +8874,6 @@ function loadState(){
     var allChk=document.getElementById('all_'+dim.col_id);
     if(allChk){var n=chks.filter(function(c){return c.checked;}).length;allChk.checked=(n===chks.length);allChk.indeterminate=(n>0&&n<chks.length);}
   });
-  var fm=_stGet('env_filter_mode');
-  if(fm){var fr=document.querySelector('input[name="env_dfilt"][value="'+fm+'"]');if(fr)fr.checked=true;}
-  var fyhi=_stGet('env_filter_yhi');var fyhiEl=document.getElementById('env_y_hi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
-  var tll=_stGet('env_tll_hi');var tllEl=document.getElementById('env_tll_hi');if(tll!==null&&tllEl)tllEl.value=tll;
   var pR=_stGet('ec_P_room');if(pR!==null){var pREl=document.getElementById('ec_P_room');if(pREl)pREl.value=pR;var lpREl=document.getElementById('lbl_ec_P_room');if(lpREl)lpREl.value=pR;}
   var cR=_stGet('ec_C_room');if(cR!==null){var cREl=document.getElementById('ec_C_room');if(cREl)cREl.value=cR;var lcREl=document.getElementById('lbl_ec_C_room');if(lcREl)lcREl.value=cR;}
   var pE=_stGet('ec_P_env');if(pE!==null){var pEEl=document.getElementById('ec_P_env');if(pEEl)pEEl.value=pE;var lpEEl=document.getElementById('lbl_ec_P_env');if(lpEEl)lpEEl.value=pE;}
@@ -10754,11 +10708,6 @@ function _dutAverage(items){
    for a plain COND_DIM -- see getGroupKey()). __temp__ deliberately stays
    color-only: boxplot's x-axis/box-per-temp structure already varies by
    temperature, so pooling across it the way SpurType now can doesn't apply. */
-function _isPoolableGroupBy(colId){
-  if(colId==='__port__'||colId==='__serial__') return true;
-  if(!colId||colId==='__temp__'||!COND_DIMS) return false;
-  return COND_DIMS.some(function(d){return d.col_id===colId;});
-}
 function _boxDimLabel(colId){
   if(colId==='__port__') return 'Port';
   if(colId==='__serial__') return 'Serial';
