@@ -2870,6 +2870,26 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         spur_types = ["(all)"]
         df["_spur"] = "(all)"
 
+    # Condition-dimension filters (e.g. AlcState, Mode) so Distribution can
+    # subset to the same data the other views can (cross-view parity, requested
+    # 2026-09-03). These are the low-cardinality Group dims OTHER than the spur
+    # (SpurType/HarmonicNumber -- already the Spur Type filter), serial, and
+    # port. Their per-point values ride along in raw_abs/raw_delta so the live
+    # KDE recompute can filter on them, exactly like the serial/port filters.
+    _dist_cond_dims = []
+    for _c in df.columns:
+        if not _c.startswith("_grp_"):
+            continue
+        if _c in ("_grp_SpurType", "_grp_HarmonicNumber", "_grp_Port"):
+            continue
+        _lc = _c[len("_grp_"):]
+        if any(k in _lc.lower() for k in ("serial", "unit id", "dut id", "s/n")):
+            continue
+        _cvals = sorted(str(v) for v in df[_c].dropna().unique() if str(v).strip())
+        if 1 < len(_cvals) <= 50:
+            _dist_cond_dims.append({"col": _c, "col_id": _lc, "label": _lc, "vals": _cvals})
+    _dist_cond_cols = [d["col"] for d in _dist_cond_dims]
+
     # Port per serial (used in delta table)
     dut_port_map: dict = {}
     for serial in all_serials:
@@ -2991,6 +3011,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     # constant, while raw Spec is. See "Spec-limit segment tab-through" in CLAUDE.md.
     _dist_spec_cols = [c for c in ("Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo") if c in df.columns]
     _abs_cols += _dist_spec_cols
+    _abs_cols += [c for c in _dist_cond_cols if c not in _abs_cols]
 
     raw_abs: list = []
     for spur in spur_types:
@@ -3011,6 +3032,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                     c.lower(): [None if pd.isna(x) else round(float(x), 2) for x in t_df[c]]
                     for c in _dist_spec_cols
                 },
+                "c": {d["col_id"]: [str(x) for x in t_df[d["col"]]] for d in _dist_cond_dims},
             })
         raw_abs.append(row)
 
@@ -3026,9 +3048,10 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                     "d": [round(float(x), 3) for x in t_m["delta"]],
                     "s": [str(x) for x in t_m["Serial"]],
                     "p": [str(x) for x in t_m[port_col]] if port_col and port_col in t_m.columns else [""] * len(t_m),
+                    "c": {d["col_id"]: ([str(x) for x in t_m[d["col"]]] if d["col"] in t_m.columns else [""] * len(t_m)) for d in _dist_cond_dims},
                 })
             else:
-                row.append({"f": [], "d": [], "s": [], "p": []})
+                row.append({"f": [], "d": [], "s": [], "p": [], "c": {d["col_id"]: [] for d in _dist_cond_dims}})
         raw_delta.append(row)
 
     # -------------------------------------------------------------------------
@@ -3047,6 +3070,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var TEMP_COLORS={json.dumps(temp_colors)};",
         f"var SERIALS={json.dumps(all_serials)};",
         f"var PORTS={json.dumps(all_ports)};",
+        f"var DIST_COND_DIMS={json.dumps([{'col_id': d['col_id'], 'label': d['label'], 'vals': d['vals']} for d in _dist_cond_dims])};",
         f"var KDE_ABS={json.dumps(kde_abs)};",
         f"var KDE_DELTA={json.dumps(kde_delta)};",
         f"var DUT_DELTA={json.dumps(dut_delta)};",
@@ -3143,6 +3167,11 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     spur_panel_html  = _filter_panel("spur", "Spur Type", spur_types) if len(spur_types) > 1 else ""
     ser_panel_html   = _filter_panel("ser", "Serial", all_serials, "update")
     port_panel_html  = _filter_panel("port", "Port", all_ports, "update") if all_ports else ""
+    # One checkbox panel per condition dimension (AlcState, Mode, ...), keyed by
+    # index so panel ids/classes stay ascii-safe regardless of the dim name.
+    cond_panels_html = "".join(
+        _filter_panel(f"cond{i}", d["label"], d["vals"]) for i, d in enumerate(_dist_cond_dims)
+    )
     help_panel_html = _build_help_panel_html(
         df, [("_spur", "Spur Type"), ("_port", "Port"), ("Serial", "Serial")],
         has_group_by=False,
@@ -3262,6 +3291,29 @@ function getSelPorts(){
   if(!chks.length) return new Set(PORTS.length?PORTS:['']);
   var sel=new Set(_getChecked('dist_port_chk'));
   return sel.size?sel:new Set(PORTS.length?PORTS:['']);
+}
+/* Condition-dimension filters (AlcState/Mode/...): one panel per DIST_COND_DIMS
+   entry, checkboxes classed dist_cond<i>_chk. Returns only the dims actually
+   narrowed (not all checked), each as {col_id, sel:Set} -- the live KDE
+   recompute then keeps a raw point only if raw.c[col_id][i] is in sel. */
+function _distCondFilters(){
+  var out=[];
+  (typeof DIST_COND_DIMS!=='undefined'?DIST_COND_DIMS:[]).forEach(function(d,i){
+    var chks=document.querySelectorAll('.dist_cond'+i+'_chk');
+    if(!chks.length) return;
+    var sel=new Set(_getChecked('dist_cond'+i+'_chk'));
+    if(sel.size<chks.length) out.push({col_id:d.col_id,sel:sel});
+    _distUpdateBadge('cond'+i);
+  });
+  return out;
+}
+function _distCondKeep(raw,i,condFilts){
+  for(var ci=0;ci<condFilts.length;ci++){
+    var cf=condFilts[ci];
+    var cv=(raw.c&&raw.c[cf.col_id])?raw.c[cf.col_id][i]:'';
+    if(!cf.sel.has(cv)) return false;
+  }
+  return true;
 }
 
 /* ---- freq range helpers ---- */
@@ -3539,23 +3591,25 @@ function update(){
   var selSer=getSelSerials();
   var selPor=getSelPorts();
   var serFlt=(selSer.size<SERIALS.length)||(PORTS.length>0&&selPor.size<PORTS.length);
+  var condFilts=_distCondFilters();
+  var condFlt=condFilts.length>0;
 
   if(isAbs){
     var tempIdxs=getSelTempIdxs();
     spurs.forEach(function(si){
       tempIdxs.forEach(function(ti){
         var kde;
-        if((freqFlt||serFlt)&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
+        if((freqFlt||serFlt||condFlt)&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
           var raw=RAW_ABS[si][ti],vals=[];
           for(var i=0;i<raw.f.length;i++){
-            if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi){
-              if(!serFlt){vals.push(raw.v[i]);}
-              else{
-                var ser=raw.s?raw.s[i]:'';
-                var port=raw.p?raw.p[i]:'';
-                if(selSer.has(ser)&&(!PORTS.length||selPor.has(port))) vals.push(raw.v[i]);
-              }
+            if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
+            if(serFlt){
+              var ser=raw.s?raw.s[i]:'';
+              var port=raw.p?raw.p[i]:'';
+              if(!(selSer.has(ser)&&(!PORTS.length||selPor.has(port)))) continue;
             }
+            if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
+            vals.push(raw.v[i]);
           }
           kde=jsKde(vals);
         } else {
@@ -3577,17 +3631,17 @@ function update(){
     spurs.forEach(function(si){
       nrIdxs.forEach(function(di){
         var kde;
-        if((freqFlt||serFlt)&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
+        if((freqFlt||serFlt||condFlt)&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
           var raw=RAW_DELTA[si][di],vals=[];
           for(var i=0;i<raw.f.length;i++){
-            if(raw.f[i]>=fr.lo&&raw.f[i]<=fr.hi){
-              if(!serFlt){vals.push(raw.d[i]);}
-              else{
-                var ser=raw.s?raw.s[i]:'';
-                var port=raw.p?raw.p[i]:'';
-                if(selSer.has(ser)&&(!PORTS.length||selPor.has(port))) vals.push(raw.d[i]);
-              }
+            if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
+            if(serFlt){
+              var ser=raw.s?raw.s[i]:'';
+              var port=raw.p?raw.p[i]:'';
+              if(!(selSer.has(ser)&&(!PORTS.length||selPor.has(port)))) continue;
             }
+            if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
+            vals.push(raw.d[i]);
           }
           kde=jsKde(vals);
         } else {
@@ -3936,6 +3990,10 @@ function resetView(){
   document.querySelectorAll('.dist_spur_chk,.dist_ser_chk,.dist_port_chk')
     .forEach(function(c){c.checked=true;});
   ['spur','ser','port'].forEach(_distUpdateBadge);
+  (typeof DIST_COND_DIMS!=='undefined'?DIST_COND_DIMS:[]).forEach(function(d,i){
+    document.querySelectorAll('.dist_cond'+i+'_chk').forEach(function(c){c.checked=true;});
+    _distUpdateBadge('cond'+i);
+  });
   var fl=document.getElementById('dist_freq_lo'),fh=document.getElementById('dist_freq_hi');
   if(fl&&typeof DIST_FREQ_MIN!=='undefined'){
     fl.value=DIST_FREQ_MIN;
@@ -3981,6 +4039,7 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         + "</div>\n"
         + '<div class="filter-bar" style="gap:6px;align-items:center">\n'
         + (spur_panel_html + "\n" if spur_panel_html else "")
+        + (cond_panels_html + "\n" if cond_panels_html else "")
         + ser_panel_html + "\n"
         + (port_panel_html + "\n" if port_panel_html else "")
         + help_panel_html + "\n"
