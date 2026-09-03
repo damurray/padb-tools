@@ -794,7 +794,48 @@ function update(){
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
   _recomputeSpecSegments();
+  updateScatterTable(filtered);
   saveState();
+}
+
+/* ---------- data-rows table (the plotted rows, after all filters) ---------- */
+var SCATTER_TABLE_CAP=2000;
+function toggleScatterTable(){
+  var p=document.getElementById('scatter_table_panel');if(!p) return;
+  var open=p.style.display!=='none'&&p.style.display!=='';
+  p.style.display=open?'none':'block';
+  var b=document.getElementById('scatter_table_btn');if(b) b.textContent=open?'Table ▾':'Table ▴';
+  if(!open) updateScatterTable();
+}
+function updateScatterTable(filtered){
+  var p=document.getElementById('scatter_table_panel');
+  if(!p||p.style.display==='none'||p.style.display==='') return;
+  if(!filtered) filtered=applyFilters(DATA);
+  var n=filtered.length;
+  if(!n){p.innerHTML='<p style="color:#888;padding:8px">No data matches the current filters.</p>';return;}
+  /* Same columns the CSV export uses, in a stable order: X, Value, Temperature
+     (multi-temp only), then each Group dimension. */
+  var cols=['Frequency_MHz','Value'];
+  var hdrs=[(typeof X_SHORT_LABEL!=='undefined'?X_SHORT_LABEL:'Freq')+' ('+X_UNIT+')',(typeof Y_LABEL!=='undefined'&&Y_LABEL?Y_LABEL:'Value')];
+  if(typeof TEMPS!=='undefined'&&TEMPS&&TEMPS.length>1){cols.push('Test_Step');hdrs.push('Temperature');}
+  GROUP_COLS.forEach(function(pr){cols.push(pr[0]);hdrs.push(pr[1]);});
+  var row0=filtered[0],keep=[],keepH=[];
+  cols.forEach(function(c,i){if(c in row0){keep.push(c);keepH.push(hdrs[i]);}});
+  function esc(v){v=String(v===null||v===undefined?'':v);return v.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+  var shown=filtered.slice(0,SCATTER_TABLE_CAP);
+  var out='<div style="font-size:12px;color:#555;padding:2px 2px 4px">'+n.toLocaleString()+' point'+(n===1?'':'s')+' shown'+
+    (n>SCATTER_TABLE_CAP?(' &mdash; table limited to the first '+SCATTER_TABLE_CAP.toLocaleString()+'; use <b>Save CSV</b> for all'):'')+'</div>';
+  out+='<table class="scatter-tbl"><thead><tr>'+keepH.map(function(h){return '<th>'+esc(h)+'</th>';}).join('')+'</tr></thead><tbody>';
+  var body=[];
+  shown.forEach(function(r){
+    body.push('<tr>'+keep.map(function(c){
+      var v=r[c];
+      if(c==='Frequency_MHz'||c==='Value'){var f=parseFloat(v);if(isFinite(f)) v=f.toFixed(4);}
+      return '<td>'+esc(v)+'</td>';
+    }).join('')+'</tr>');
+  });
+  out+=body.join('')+'</tbody></table>';
+  p.innerHTML=out;
 }
 
 /* ---- localStorage state persistence ---- */
@@ -2053,6 +2094,12 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         "border-radius:3px;cursor:pointer;background:#fff;}"
         "button.reset-btn:hover{background:#e8e8e8;}"
         "#n_points{font-size:12px;color:#666;margin-left:auto;}"
+        "#scatter_table_panel{margin-top:6px;overflow:auto;max-height:400px;"
+        "border:1px solid #e8e8e8;border-radius:4px;}"
+        ".scatter-tbl{border-collapse:collapse;font-size:12px;white-space:nowrap;width:100%;}"
+        ".scatter-tbl th,.scatter-tbl td{border:1px solid #eee;padding:2px 8px;text-align:left;}"
+        ".scatter-tbl th{background:#f0f0f0;position:sticky;top:0;z-index:1;}"
+        ".scatter-tbl tbody tr:nth-child(even){background:#fafafa;}"
         + _CSV_DROPDOWN_CSS
     )
 
@@ -2102,19 +2149,22 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
         ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         f'  {_csv_btn("saveCSV")}\n'
+        '  <button class="reset-btn" id="scatter_table_btn" onclick="toggleScatterTable()"'
+        ' title="Show the plotted rows (after all filters) as a table below the plot">Table&nbsp;&#9662;</button>\n'
         '  <label id="gf_label" style="display:none;white-space:nowrap">'
         '<input type="checkbox" id="gf_chk" checked onchange="_updateGfIndicator();update()">'
         '&nbsp;<span id="gf_badge" style="font-size:12px;border:1px solid #ccc;'
         'border-radius:3px;padding:1px 6px"></span></label>\n'
         '  <label id="gf_focus_label" style="display:none;white-space:nowrap" '
         'title="Inspect mode: show only GF-flagged data points">'
-        '<input type="checkbox" id="gf_focus_chk" onchange="try{localStorage.setItem(\'padb_v2_gf_mode\',this.checked?\'focus\':\'exclude\');}catch(e){}update()">'
+        '<input type="checkbox" id="gf_focus_chk" onchange="try{localStorage.setItem(GF_MODE_KEY,this.checked?\'focus\':\'exclude\');}catch(e){}update()">'
         '&nbsp;Inspect</label>\n'
         '  <span id="n_points"></span>\n'
         "</div>\n"
         + decimation_banner_html
         + env_bar_html + "\n"
         + '<div id="plot"></div>\n'
+        + '<div id="scatter_table_panel" style="display:none"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"

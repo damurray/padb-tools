@@ -4,6 +4,12 @@ Pulled directly from git history. A consolidated **week-of-Aug-27 summary** is f
 
 ---
 
+## Week of 2026-08-27 → (in progress)
+
+- **Scatter: "Table" view** — a toggle that shows the currently-plotted rows (after all filters) as a table below the plot, same columns as the CSV export, capped at 2000 rows with a "use Save CSV for all" note above that.
+- **Scrollbar gutter reserved** on every interactive view — stops the vertical scrollbar toggling on/off (and briefly hiding the buttons below the plot) when a filter/panel/re-render changes page height.
+- **Fixed:** the scatter's GF "Inspect" toggle wrote the *unscoped* GF-mode key (regression from the per-analytic GF scoping) — it now uses the scoped key.
+
 ## Week of 2026-08-27 → 2026-09-03 (53 commits)
 
 ### Interactive plots — features
