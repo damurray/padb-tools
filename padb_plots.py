@@ -3091,6 +3091,11 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     _dist_spec_cols = [c for c in ("Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo") if c in df.columns]
     _abs_cols += _dist_spec_cols
     _abs_cols += [c for c in _dist_cond_cols if c not in _abs_cols]
+    # Carry the raw Group string per point so the Global Filter (shared cross-view
+    # exclusion, keyed on serial + condition) can be honored here too -- matched in
+    # JS via the exact same coarsening stat_summary uses (see _isDistGfExcl).
+    if "Group" in df.columns and "Group" not in _abs_cols:
+        _abs_cols.append("Group")
 
     raw_abs: list = []
     for spur in spur_types:
@@ -3112,6 +3117,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                     for c in _dist_spec_cols
                 },
                 "c": {d["col_id"]: [str(x) for x in t_df[d["col"]]] for d in _dist_cond_dims},
+                "g": ([str(x) for x in t_df["Group"]] if "Group" in t_df.columns else [""] * len(t_df)),
             })
         raw_abs.append(row)
 
@@ -3128,9 +3134,10 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                     "s": [str(x) for x in t_m["Serial"]],
                     "p": [str(x) for x in t_m[port_col]] if port_col and port_col in t_m.columns else [""] * len(t_m),
                     "c": {d["col_id"]: ([str(x) for x in t_m[d["col"]]] if d["col"] in t_m.columns else [""] * len(t_m)) for d in _dist_cond_dims},
+                    "g": ([str(x) for x in t_m["Group"]] if "Group" in t_m.columns else [""] * len(t_m)),
                 })
             else:
-                row.append({"f": [], "d": [], "s": [], "p": [], "c": {d["col_id"]: [] for d in _dist_cond_dims}})
+                row.append({"f": [], "d": [], "s": [], "p": [], "c": {d["col_id"]: [] for d in _dist_cond_dims}, "g": []})
         raw_delta.append(row)
 
     # -------------------------------------------------------------------------
@@ -3159,6 +3166,8 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var TITLE={json.dumps(title)};",
+        f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var RAW_ABS={json.dumps(raw_abs)};",
         f"var RAW_DELTA={json.dumps(raw_delta)};",
         f"var DUT_PORT_MAP={json.dumps(dut_port_map)};",
@@ -3376,6 +3385,78 @@ function getSelPorts(){
    entry, checkboxes classed dist_cond<i>_chk. Returns only the dims actually
    narrowed (not all checked), each as {col_id, sel:Set} -- the live KDE
    recompute then keeps a raw point only if raw.c[col_id][i] is in sel. */
+/* ---- Global Filter (cross-view DUT exclusion) -- honored, not set, here.
+   Matching is identical to stat_summary's (_condKeyForStat/_isStatGfExcl): coarse
+   key = serial + condition-minus-serial, so an exclusion made in any view drops
+   the same DUT/condition points from these density curves too. */
+var _distGfExcluded=null,_distGfCoarse=null,_distGfFocusMode=false;
+function _loadDistGlobalFilter(){
+  try{
+    var raw=(typeof GF_KEY!=='undefined')?localStorage.getItem(GF_KEY):null;
+    if(!raw){_distGfExcluded=null;_distGfCoarse=null;}
+    else{
+      var obj=JSON.parse(raw);
+      _distGfExcluded=new Set(obj.excluded||[]);
+      _distGfCoarse=new Set();
+      var serKws=['serial','unit id','dut id','s/n'];
+      _distGfExcluded.forEach(function(k){
+        var parts=k.split('||');
+        if(parts.length>=2){
+          var coarseCond=parts[1].split('|').filter(function(p){
+            var lo=p.toLowerCase();
+            return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
+          }).join('|');
+          _distGfCoarse.add(parts[0]+'||'+coarseCond);
+        }
+      });
+    }
+  }catch(e){_distGfExcluded=null;_distGfCoarse=null;}
+  _distGfFocusMode=((typeof GF_MODE_KEY!=='undefined'&&localStorage.getItem(GF_MODE_KEY))||'exclude')==='focus';
+  _updateDistGfBadge();
+}
+function _updateDistGfBadge(){
+  var el=document.getElementById('dist_gf_badge');
+  var lbl=document.getElementById('dist_gf_label');
+  if(!el) return;
+  var dutSers=new Set();
+  if(_distGfExcluded) _distGfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
+  var n=dutSers.size,pts=_distGfExcluded?_distGfExcluded.size:0;
+  var isFocus=_distGfFocusMode;
+  var chk=document.getElementById('dist_gf_chk');
+  var active=chk?chk.checked:true;
+  if(n>0){
+    if(lbl) lbl.style.display='';
+    el.textContent=(active?(isFocus?'GF Inspect ON':'GF ON'):'GF OFF')+': '+pts+' pts ('+n+' DUT'+(n!==1?'s':')')+''+(isFocus&&active?' [inspect]':'');
+    el.style.background=!active?'#f0f0f0':isFocus?'#e8f0ff':'#ffeaea';
+    el.style.color=!active?'#888':isFocus?'#0044aa':'#900';
+    el.style.borderColor=!active?'#ccc':isFocus?'#6688cc':'#c88';
+  } else {
+    if(lbl) lbl.style.display='none';
+    el.textContent='';
+  }
+}
+/* Build a condition key without serial parts (matches boxplot/stat_summary format) */
+function _condKeyForDist(cond){
+  var serKws=['serial','unit id','dut id','s/n'];
+  return (cond||'').split(/  +/).map(function(p){
+    return p.replace(/\s*:\s*/,'=').trim();
+  }).filter(function(p){
+    var lo=p.toLowerCase();
+    return p&&!serKws.some(function(kw){return lo.indexOf(kw)===0;});
+  }).sort().join('|');
+}
+function _isDistGfExcl(serial,group){
+  if(!_distGfCoarse||!_distGfCoarse.size) return false;
+  return _distGfCoarse.has((serial||'unknown')+'||'+_condKeyForDist(group));
+}
+function _distGfActive(){
+  if(!_distGfCoarse||!_distGfCoarse.size) return false;
+  var chk=document.getElementById('dist_gf_chk');
+  return chk?chk.checked:true;
+}
+window.addEventListener('storage',function(e){
+  if(typeof GF_KEY!=='undefined'&&(e.key===GF_KEY||e.key===GF_MODE_KEY)){_loadDistGlobalFilter();update();}
+});
 function _distCondFilters(){
   var out=[];
   (typeof DIST_COND_DIMS!=='undefined'?DIST_COND_DIMS:[]).forEach(function(d,i){
@@ -3673,13 +3754,14 @@ function update(){
   var serFlt=(selSer.size<SERIALS.length)||(PORTS.length>0&&selPor.size<PORTS.length);
   var condFilts=_distCondFilters();
   var condFlt=condFilts.length>0;
+  var gfFlt=_distGfActive();
 
   if(isAbs){
     var tempIdxs=getSelTempIdxs();
     spurs.forEach(function(si){
       tempIdxs.forEach(function(ti){
         var kde;
-        if((freqFlt||serFlt||condFlt)&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
+        if((freqFlt||serFlt||condFlt||gfFlt)&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
           var raw=RAW_ABS[si][ti],vals=[];
           for(var i=0;i<raw.f.length;i++){
             if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
@@ -3689,6 +3771,7 @@ function update(){
               if(!(selSer.has(ser)&&(!PORTS.length||selPor.has(port)))) continue;
             }
             if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
+            if(gfFlt){var _ex=_isDistGfExcl(raw.s?raw.s[i]:'',raw.g?raw.g[i]:'');if(_distGfFocusMode?!_ex:_ex) continue;}
             vals.push(raw.v[i]);
           }
           kde=jsKde(vals);
@@ -3711,7 +3794,7 @@ function update(){
     spurs.forEach(function(si){
       nrIdxs.forEach(function(di){
         var kde;
-        if((freqFlt||serFlt||condFlt)&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
+        if((freqFlt||serFlt||condFlt||gfFlt)&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
           var raw=RAW_DELTA[si][di],vals=[];
           for(var i=0;i<raw.f.length;i++){
             if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
@@ -3721,6 +3804,7 @@ function update(){
               if(!(selSer.has(ser)&&(!PORTS.length||selPor.has(port)))) continue;
             }
             if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
+            if(gfFlt){var _ex=_isDistGfExcl(raw.s?raw.s[i]:'',raw.g?raw.g[i]:'');if(_distGfFocusMode?!_ex:_ex) continue;}
             vals.push(raw.d[i]);
           }
           kde=jsKde(vals);
@@ -4083,6 +4167,11 @@ function resetView(){
     fh.value=DIST_FREQ_MAX;
     var fht=document.getElementById('dist_freq_hi_txt');if(fht)fht.value=DIST_FREQ_MAX.toFixed(1);
   }
+  /* GF: re-enable the apply toggle and clear Inspect mode (same convention as
+     every other view's Reset -- the exclusion list itself is left untouched). */
+  var gfChk=document.getElementById('dist_gf_chk');if(gfChk)gfChk.checked=true;
+  try{if(typeof GF_MODE_KEY!=='undefined')localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
+  _loadDistGlobalFilter();
   /* Clear any manual zoom/pan -- otherwise _liveAxisRange() would keep
      re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('kde_plot',{'xaxis.autorange':true,'yaxis.autorange':true});
@@ -4101,7 +4190,7 @@ function autoscaleY(){
   });
 }
 
-window.addEventListener('DOMContentLoaded',function(){loadState();update();});
+window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGlobalFilter();update();});
 """
 
     # -------------------------------------------------------------------------
@@ -4175,6 +4264,13 @@ window.addEventListener('DOMContentLoaded',function(){loadState();update();});
         '<input type="checkbox" id="dist_linear_ti" onchange="update()"> Lin.&nbsp;TI</label>\n'
         '  <label><input type="checkbox" id="dist_hide_spec_chk" onchange="toggleDistHideSpec()">'
         ' Hide&nbsp;spec&nbsp;lines</label>\n'
+        '  <label id="dist_gf_label" style="display:none;white-space:nowrap;margin-left:4px"'
+        ' title="Apply the shared Global Filter -- DUTs/conditions excluded in any view are'
+        ' also dropped from these density curves">'
+        '<input type="checkbox" id="dist_gf_chk" checked onchange="_updateDistGfBadge();update()">'
+        '&nbsp;<span id="dist_gf_badge" style="font-size:11px;background:#fff0e8;'
+        'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000"></span>'
+        '</label>\n'
         '  <div class="sep"></div>\n'
         '  <span id="n_pts"></span>\n'
         "</div>\n"
