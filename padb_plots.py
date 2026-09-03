@@ -1556,6 +1556,32 @@ def _build_help_panel_html(
     on every view that wires in this shared Help panel.
     """
     n_total = len(df)
+    # Constant dimensions: Group parameters that hold ONE value for every point
+    # on this page. They carry no information to filter or group by, so they get
+    # no control (the "1 < distinct <= 50" rule drops them) -- but naming them
+    # confirms the data was tested at a single setting of each, rather than the
+    # dimension being missing (user request 2026-09-03, e.g. the Close-In pod
+    # where AlcState=TRUE / Mode=0 throughout).
+    const_dims = []
+    for _c in df.columns:
+        if not _c.startswith("_grp_"):
+            continue
+        _uv = [v for v in df[_c].dropna().astype(str).map(str.strip).unique() if v]
+        if len(_uv) == 1:
+            const_dims.append((_c[len("_grp_"):], _uv[0]))
+    const_html = ""
+    if const_dims:
+        _citems = ", ".join(
+            f"{html.escape(lbl)}&nbsp;=&nbsp;{html.escape(val)}" for lbl, val in const_dims[:16]
+        )
+        const_html = (
+            '<p style="margin:0 0 8px;padding:6px 8px;background:#eef4ff;'
+            'border-left:3px solid #4a78c0;font-size:12px">'
+            '&#9432;&nbsp;<b>Held constant for every point on this page:</b> '
+            + _citems + '. These parameters were tested at a single setting in '
+            'this dataset, so they have no filter or Group-by control (there is '
+            'nothing to split on).</p>'
+        )
     inv_mask = pd.Series(False, index=df.index)
     if "Spec_Hi" in df.columns and "Spec_Lo" in df.columns:
         inv_mask |= (df["Spec_Hi"].notna() & df["Spec_Lo"].notna()
@@ -1645,6 +1671,7 @@ def _build_help_panel_html(
         )
     body = (
         f'{pod_filter_html}'
+        f'{const_html}'
         '<b>Controls on this page</b>'
         f'<ul style="margin:4px 0 8px 18px;padding:0">{"".join(bullets)}</ul>'
         f'{pitfalls_html}'
