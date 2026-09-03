@@ -10094,18 +10094,68 @@ function isBoxNpTI(){var c=document.getElementById('box_np_ti_chk');return c?c.c
 function isShowPoints(){var c=document.getElementById('box_show_pts_chk');return c?c.checked:false;}
 /* Group By: extract the value for the selected dimension from a condition string.
    Returns the full condition string when 'Condition' (empty) is selected. */
-function getGroupKey(cd){
+/* Group by is a MULTI-select (added 2026-09-02): pool by any COMBINATION of
+   parameters, not just one or all. _boxGroupCols() is the selected set (the
+   empty '' = "Condition" option filtered out); [] means Condition (no
+   pooling, one box per full real condition). A non-empty set pools across
+   every parameter NOT selected. */
+function _boxGroupCols(){
   var sel=document.getElementById('box_group_by');
-  if(!sel||!sel.value) return cd.condition;
-  var colId=sel.value;
-  if(colId==='__temp__') return cd.temp||'';
-  var condition=cd.condition;
+  if(!sel) return [];
+  return Array.from(sel.selectedOptions||[]).map(function(o){return o.value;})
+    .filter(function(v){return v;});
+}
+/* Keep the UI coherent: picking any real parameter clears the "Condition"
+   option; clearing everything re-selects Condition. */
+function _boxGroupSelChanged(){
+  var sel=document.getElementById('box_group_by');if(!sel) return;
+  var opts=Array.from(sel.options);
+  var condOpt=opts.filter(function(o){return o.value==='';})[0];
+  if(!condOpt) return;
+  var anyOther=opts.some(function(o){return o.value&&o.selected;});
+  condOpt.selected=!anyOther;
+}
+/* The value of one COND_DIM for a condition (parsed from the Group string,
+   same extraction getGroupKey has always used). */
+function _boxCondDimValue(condition,colId){
   var dim=null;
   for(var i=0;i<COND_DIMS.length;i++){if(COND_DIMS[i].col_id===colId){dim=COND_DIMS[i];break;}}
   if(!dim) return condition;
   var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
   var m=condition.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
   return m?m[1].trim():condition;
+}
+/* Composite group key for one raw point, across the selected parameters.
+   __serial__/__port__ read the per-point fields; __temp__ the condition's
+   temp; anything else is a COND_DIM value. */
+function _boxGroupKeyForPoint(cols,cd,d){
+  return cols.map(function(colId){
+    if(colId==='__temp__') return cd.temp||'';
+    if(colId==='__serial__') return d.s||'';
+    if(colId==='__port__') return d.p||'';
+    return _boxCondDimValue(cd.condition,colId);
+  }).join('  |  ');
+}
+/* Human label for the selected-parameter combination (legend/table prefix). */
+function _boxGroupColsLabel(cols){
+  return cols.map(_boxDimLabel).join(' + ');
+}
+/* Whether the group includes a per-unit dimension (serial/port): those keep
+   raw points (optional dup-collapse); a pure COND_DIM/temp grouping instead
+   averages each DUT to one point ("one DUT, one vote"). */
+function _boxGroupHasUnitDim(cols){
+  return cols.indexOf('__serial__')>=0||cols.indexOf('__port__')>=0;
+}
+function getGroupKey(cd){
+  /* Only reached on the no-grouping (Condition) path now, but keep it general
+     for cd-level cols (serial/port need a per-point key, handled elsewhere). */
+  var cols=_boxGroupCols();
+  if(!cols.length) return cd.condition;
+  return cols.map(function(colId){
+    if(colId==='__temp__') return cd.temp||'';
+    if(colId==='__serial__'||colId==='__port__') return cd.condition;
+    return _boxCondDimValue(cd.condition,colId);
+  }).join('  |  ');
 }
 /* ---- serial filter ---- */
 function getAllBoxSerials(){return Array.from(document.querySelectorAll('.box_ser_chk')).map(function(c){return c.value;});}
@@ -10388,8 +10438,10 @@ function _boxDimLabel(colId){
   var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
   return dim?dim.label:colId;
 }
-function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
+function _computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
+  /* cols is the selected-parameter set (multi-select Group by). Empty is
+     handled by the caller (Condition path); here cols is always non-empty. */
   /* Real bug reported by the user (2026-08-31): Group by only ever pooled
      data for Serial Number/Port -- picking an arbitrary condition dim
      (e.g. SpurType) just recolored each already-fragmented raw condition's
@@ -10400,7 +10452,7 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
      __port__/__serial__ -- the group key is then the dim's own value
      (extracted from cd.condition, same as getGroupKey()) rather than a
      per-item field. */
-  var isArbDim=colId!=='__port__'&&colId!=='__serial__';
+  var hasUnitDim=_boxGroupHasUnitDim(cols);
   var freqVals={},freqSet={},freqLabels={};
   BOX_DATA.forEach(function(cd){
     /* Real bug found 2026-08-21: this never checked selConds at all, so
@@ -10410,7 +10462,6 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
        ACROSS every condition regardless of which ones are checked. */
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps.indexOf(cd.temp)<0) return;
-    var gkForCond=isArbDim?getGroupKey(cd):null;
     (cd.freq_stats||[]).forEach(function(f){
       if(f.freq<fr.lo||f.freq>fr.hi) return;
       freqSet[f.freq]=true;
@@ -10422,7 +10473,7 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
         if(d.v<rlo) return;
         if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
         if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp);if(boxGfFocus?!_ig:_ig) return;}
-        var gk=isArbDim?gkForCond:(colId==='__port__'?(d.p||''):d.s);
+        var gk=_boxGroupKeyForPoint(cols,cd,d);
         if(!freqVals[gk]) freqVals[gk]={};
         if(!freqVals[gk][f.freq]) freqVals[gk][f.freq]=[];
         /* Tag with the original condition/temp (a fresh shallow copy --
@@ -10441,17 +10492,17 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
     var fs_arr=sortedFreqs.map(function(freq){
       var items=freqVals[gk][freq]||[];
       if(!items.length) return null;
-      if(isArbDim){
+      if(!hasUnitDim){
         items=_dutAverage(items);
       } else if(isCollapseDup()){
-        /* This branch already pools across every selected condition at this
-           frequency (that's the point of Group by), so a genuine duplicate
-           here means the SAME original (condition,temp,port-or-serial) --
-           not just "another item in this array" -- otherwise two points
-           from different SpurTypes would get incorrectly averaged
-           together. */
+        /* Group includes serial/port, so raw points are kept (that's the
+           spread the box shows). A genuine duplicate here means the SAME
+           full original identity (condition, temp, serial, port) at this
+           frequency -- not just "another item in this array" -- otherwise
+           two points from different pooled conditions would be wrongly
+           averaged together. */
         items=_collapseDupRuns(items,function(d){
-          return d._cond+'|'+d._temp+'|'+(colId==='__port__'?d.s:(d.p||''));
+          return (d._cond||'')+'|'+(d._temp||'')+'|'+(d.s||'')+'|'+(d.p||'');
         });
       }
       var vals=items.map(function(d){return d.v;});
@@ -10466,9 +10517,9 @@ function _computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
   });
   return result;
 }
-function buildPortSerialTraces(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
+function buildPortSerialTraces(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
-  var grouped=_computeBoxGroupedByColId(colId,selConds,selBoxSers,selTemps,yFlt,fr,k,
+  var grouped=_computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
     serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
   var groups=Object.keys(grouped).sort();
   var condIdxMap={};groups.forEach(function(g,i){condIdxMap[g]=i;});
@@ -10528,10 +10579,9 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
   var rlo=yActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
   var fr=getBoxFreqRange();
-  var _bxGrpEl=document.getElementById('box_group_by');
-  var _bxGrpId=_bxGrpEl?_bxGrpEl.value:'';
-  if(_isPoolableGroupBy(_bxGrpId)){
-    return buildPortSerialTraces(_bxGrpId,selConds,selBoxSers,selTemps,yFlt,fr,k,
+  var _bxGrpCols=_boxGroupCols();
+  if(_bxGrpCols.length){
+    return buildPortSerialTraces(_bxGrpCols,selConds,selBoxSers,selTemps,yFlt,fr,k,
       serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
   }
   var traces=[];
@@ -10827,14 +10877,14 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
      table's same-looking, ungrouped row reported. Reusing
      _computeBoxGroupedByColId() (the same function the plot itself now
      calls) guarantees this can't drift out of sync again. */
-  var _bxGrpElSt=document.getElementById('box_group_by');
-  var _bxGrpIdSt=_bxGrpElSt?_bxGrpElSt.value:'';
-  if(_isPoolableGroupBy(_bxGrpIdSt)){
+  var _bxGrpColsSt=_boxGroupCols();
+  if(_bxGrpColsSt.length){
+    var _hasUnitDimSt=_boxGroupHasUnitDim(_bxGrpColsSt);
     var allPortsSt=getAllBoxPorts(),selPortsSt=getSelectedBoxPorts();
     var portActiveSt=allPortsSt.length>1&&selPortsSt.length<allPortsSt.length;
     var rhiSt=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rloSt=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
-    var grouped=_computeBoxGroupedByColId(_bxGrpIdSt,selConds,selBoxSers,selTemps,yFlt,fr,getIqrK(),
+    var grouped=_computeBoxGroupedByColId(_bxGrpColsSt,selConds,selBoxSers,selTemps,yFlt,fr,getIqrK(),
       serActive,portActiveSt,selPortsSt,_gfActiveSt,_gfFocusSt,passActive,stPassLo,stPassHi,rhiSt,rloSt);
     Object.keys(grouped).sort().forEach(function(gk){
       grouped[gk].forEach(function(fs){
@@ -10846,8 +10896,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<span class="out"><b>'+outDet.length+'</b>: '+outDet.map(function(d){return d.v.toFixed(4)+(d.s&&d.s!=='unknown'?' ('+d.s+')':'');}).join(', ')+'</span>':
           '<span style="color:#aaa">&#8212;</span>';
         var devCells=_maxDevCells(outDet,fs.q2);
-        var gkLabel=_boxDimLabel(_bxGrpIdSt)+': '+gk;
-        var isArbDimSt=_bxGrpIdSt!=='__port__'&&_bxGrpIdSt!=='__serial__';
+        var gkLabel=_boxGroupColsLabel(_bxGrpColsSt)+': '+gk;
         /* Pooled across conditions by construction (every item here shares
            the same serial/port), so a repeat-serial key would always count
            everything past the first item as "duplicate" -- key on the
@@ -10865,8 +10914,8 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
            directly is simpler and more honest than reusing a keyFn built
            for the port/serial case, which doesn't apply to this shape of
            pooled item at all. */
-        var dupRuns=isArbDimSt?0:_dupRunCount(fs.vals_detail||[],function(d){
-          return (d._cond||'')+'|'+(d._temp||'')+'|'+(_bxGrpIdSt==='__port__'?d.s:(d.p||''));
+        var dupRuns=!_hasUnitDimSt?0:_dupRunCount(fs.vals_detail||[],function(d){
+          return (d._cond||'')+'|'+(d._temp||'')+'|'+(d.s||'')+'|'+(d.p||'');
         });
         /* Real bug found by the user (2026-08-31): this cell used to say
            "pooled across conditions, no normality test" unconditionally
@@ -10880,7 +10929,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
            computeFreqResult), so there's still no normality result to show,
            but the *reason* given now matches what's actually happening. */
         var nCondsHere=new Set((fs.vals_detail||[]).map(function(d){return d._cond;})).size;
-        var noNormMsg=(isArbDimSt||nCondsHere>1)?
+        var noNormMsg=(!_hasUnitDimSt||nCondsHere>1)?
           '&#8212;&nbsp;(pooled&nbsp;across&nbsp;conditions,&nbsp;no&nbsp;normality&nbsp;test)':
           '&#8212;&nbsp;(Group&nbsp;by&nbsp;Serial/Port,&nbsp;no&nbsp;normality&nbsp;test)';
         rows.push('<tr><td>'+gkLabel+'</td><td>'+fs.freq.toFixed(4)+'</td><td>'+fs.n+'</td>'+
@@ -11883,7 +11932,8 @@ function clearEverything(){
   var fhi=document.getElementById('box_freq_hi');if(fhi)fhi.value=BOX_FREQ_MAX;
   /* Group by -- back to this page's own adaptive default, not just whatever
      was last selected. */
-  var grpEl=document.getElementById('box_group_by');if(grpEl)grpEl.value=DEFAULT_GROUP_BY;
+  var grpEl=document.getElementById('box_group_by');
+  if(grpEl)Array.from(grpEl.options).forEach(function(o){o.selected=(o.value===DEFAULT_GROUP_BY);});
   /* Global filter is deliberately NOT cleared here -- it's a cross-view,
      additive-by-design exclusion list (see "Set ... as GF" buttons' own
      "adds to, doesn't replace" semantics) that can take real effort to build
@@ -13017,11 +13067,19 @@ def _build_box_interactive_html(
     _has_grp_opts = (cond_dims or len(all_temps) > 1
                      or (all_box_ports and len(all_box_ports) > 1)
                      or (all_box_serials and len(all_box_serials) > 1))
+    _n_grp_opts = grp_opts.count("<option")
+    _grp_size = min(6, max(3, _n_grp_opts))
     group_by_html = (
         sep_div
-        + '<label style="font-weight:600">Group&thinsp;by:</label>'
-        + f'<select id="box_group_by" style="font-size:12px;padding:1px 4px;'
-          f'border:1px solid #bbb;border-radius:3px" onchange="update()">\n'
+        + '<label style="font-weight:600" title="Select one or more parameters to '
+          'group (pool) the boxes by. Ctrl/Cmd-click to pick multiple; the data is '
+          'pooled across whatever you DON&#39;T select. Click Condition for no grouping '
+          '(one box per full condition).">Group&thinsp;by:</label>'
+        + f'<select id="box_group_by" multiple size="{_grp_size}" '
+          f'style="font-size:12px;padding:1px 4px;border:1px solid #bbb;'
+          f'border-radius:3px;vertical-align:middle" '
+          f'title="Ctrl/Cmd-click to select multiple parameters" '
+          f'onchange="_boxGroupSelChanged();update()">\n'
         + grp_opts + '</select>'
     ) if _has_grp_opts else ''
     ctrl_parts = []
