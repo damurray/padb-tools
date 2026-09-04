@@ -1459,6 +1459,16 @@ This is inherent to the self-contained-HTML design (no server, opens off the sha
 
 **Follow-up (same day):** the SR DCFM/EFC jobs were rebuilt with `binary_encode: true` + `scatter_decimate: "auto"`. The scatters became viewable (DCFM 95→79 MB, EFC 40→33 MB — `scatter_decimate` kept min/max envelopes, 1.66M→397K rows embedded for DCFM); the boxplots stayed too big (DCFM 324 MB, EFC 113 MB) because `scatter_decimate` doesn't touch the boxplot's per-frequency aggregation and 7,662 offset categories is inherently huge — confirming a per-offset boxplot is the wrong view for wide-offset phase-noise data (use the scatter).
 
+## `padb_v2.py`: auto-enable `binary_encode` for large data (added 2026-09-03)
+
+Requested by the user (other groups now using the tool; oversized unrenderable pages are a real error class to prevent). `_maybe_auto_binary_encode(cfg, csv_path, df)` — called in `generate_report()` right after the CSV loads and `_fill_spec_nulls()` — sets `cfg["binary_encode"]=True` when **either** trigger fires: CSV file `>= AUTO_BINARY_ENCODE_MB` (25 MB) **or** usable row count `>= AUTO_BINARY_ENCODE_ROWS` (250,000). User picked "either MB or rows" via AskUserQuestion. Both thresholds are per-job overridable (`binary_encode_auto_mb` / `binary_encode_auto_rows`).
+
+**Safe to auto-enable because `binary_encode` is plot-transparent** — it float32-packs the numeric arrays (scatter Frequency/Value, boxplot `vals_detail`), changing only the file *encoding*/size, never a displayed value, statistic, or the plot. So this is a pure size/latency optimization with zero accuracy risk, which is why it's acceptable to flip on automatically for other groups' jobs.
+
+**An explicit `"binary_encode"` in job.json always wins (true OR false)** — the helper early-returns if the key is present, so anyone can force it on or off regardless of size. Logs a one-line `NOTE:` (console → captured in the webapp's `webapp_console.log`) naming which trigger fired. Note this is orthogonal to `_warn_if_view_too_large` (80 MB post-render warning): auto-encode is a *pre-emptive* input-size gate, the size guard is a *post-render* backstop for whatever slips through (e.g. an inherently-huge per-offset boxplot that no encoding can shrink — see the phase-noise note above).
+
+Verified via direct unit test of `_maybe_auto_binary_encode`: small/no-explicit → not enabled; 250k rows → enabled (NOTE printed); large + explicit `false` → stays false (override, no NOTE); small + explicit `true` → stays true; MB-only and rows-only triggers each fire independently. `qa_padb.py` baseline unchanged (37/4).
+
 ---
 
 ## Boxplot: "Group by" is now a multi-select — pool by any combination of parameters (added 2026-09-02, prototyped on boxplot per user choice)

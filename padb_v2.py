@@ -177,6 +177,42 @@ def _log_build_failure(output_dir: Path, cfg: dict, csv_path: Path, reason: str)
 # offset phase-noise DCFM boxplot produced a 517MB HTML that wouldn't render.
 VIEW_SIZE_WARN_MB = 80
 
+# Auto-enable binary_encode above either threshold. binary_encode is plot-transparent
+# -- it float32-packs the numeric arrays (Frequency/Value, boxplot vals_detail), changing
+# only the file encoding/size, never a displayed value/statistic/plot -- so turning it on
+# for large data is a pure size/latency optimization with no accuracy risk. Whichever
+# trigger fires first wins. An explicit "binary_encode" in job.json (true OR false) always
+# overrides this. Thresholds overridable per-job via binary_encode_auto_mb /
+# binary_encode_auto_rows (set either to a huge value to effectively disable that trigger).
+AUTO_BINARY_ENCODE_MB = 25
+AUTO_BINARY_ENCODE_ROWS = 250_000
+
+
+def _maybe_auto_binary_encode(cfg: dict, csv_path: Path, df) -> None:
+    """Set cfg['binary_encode']=True when the CSV is large by size OR usable row count,
+    unless job.json set it explicitly. Logs a NOTE with the reason."""
+    if "binary_encode" in cfg:
+        return  # explicit job.json setting always wins (either direction)
+    try:
+        mb = csv_path.stat().st_size / (1024 * 1024)
+    except OSError:
+        mb = 0.0
+    rows = len(df)
+    mb_thr = float(cfg.get("binary_encode_auto_mb", AUTO_BINARY_ENCODE_MB))
+    rows_thr = int(cfg.get("binary_encode_auto_rows", AUTO_BINARY_ENCODE_ROWS))
+    hit_mb = mb >= mb_thr
+    hit_rows = rows >= rows_thr
+    if hit_mb or hit_rows:
+        cfg["binary_encode"] = True
+        why = []
+        if hit_mb:
+            why.append(f"CSV {mb:.0f} MB >= {mb_thr:.0f} MB")
+        if hit_rows:
+            why.append(f"{rows:,} usable rows >= {rows_thr:,}")
+        print(f"  NOTE: auto-enabled binary_encode ({' and '.join(why)}) -- float32-packs "
+              f"numeric arrays to cut page size/latency (plot data unchanged); set "
+              f'"binary_encode": false in job.json to override.', flush=True)
+
 
 def _warn_if_view_too_large(out_html: Path, view: str, cfg: dict, output_dir: Path) -> None:
     """Flag a generated view whose file is large enough that a browser may
@@ -910,6 +946,7 @@ def generate_report(
     df = _fill_spec_nulls(df)
     print(f"    Rows: {len(df):,}  |  Temps: {sorted(df['Temperature'].unique())}",
           flush=True)
+    _maybe_auto_binary_encode(cfg, csv_path, df)
 
     # Load alternate env_coverage CSV if specified
     ec_csv_raw = cfg.get("env_coverage_csv", "")
