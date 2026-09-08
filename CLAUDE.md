@@ -1041,6 +1041,10 @@ Found while plotting `AmplitudeAccuracyClosedLoop_PADBToolTest` (5 Type=80 analy
 
 ---
 
+## QA toolchain — see `QA_GUIDE.md` (added 2026-09-08)
+
+The full QA story (how to test a change with minimal PADB runs, each script, a full-pass recipe, the pod-variety coverage matrix, portability) lives in **`QA_GUIDE.md`**. Quick map of the standalone gates: `qa_padb.py` (synthetic regression baseline, 37/4), `qa_js_segments.py` (per-view `getSpecSegments` drift guard), `padb_csv_check.py` (pre-flight one CSV/job — below), `qa_csv_sweep.py` (that check across every CSV under `--root`; x_col-aware, skips tool intermediates), `qa_view_sweep.py` (rebuild real jobs into a temp dir + headless-verify each view renders; portable via `--root`/`--job` and a per-user `qa_view_sweep.json` coverage manifest). All take `--root`/`--job` so other groups run them on their own data.
+
 ## `padb_csv_check.py` — pre-flight CSV sanity check (added 2026-08-10)
 
 Standalone script, run **before** `padb_v2.py`, that would have caught all three findings above (well, #1 and #2's root causes, and directly warns about #3) before spending time on a slow or wrong build. Deliberately does not re-implement any column-detection logic — it calls `padb_plots._load_scatter_for_stats()` directly (the exact function `padb_v2.py` itself uses via `load_scatter()`) and inspects what it actually picked, so the check can never drift out of sync with real pipeline behavior.
