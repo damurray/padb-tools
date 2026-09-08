@@ -30,6 +30,13 @@ _DEFAULT_ROOTS = [
 ]
 # Skip archived / backup copies -- they're stale duplicates of live CSVs.
 _EXCLUDE_DIR_PARTS = {"backup", "Job_Archive"}
+# Skip tool-generated intermediate/helper CSVs -- these aren't source scatter CSVs
+# and would false-FAIL the loader: `_compare_merged.csv` (compare merge intermediate),
+# `_v2_tmp_*.csv` (transient per-view temp), `global_filter_*.csv` (a GF export).
+# The leading-underscore convention covers the first two; GF exports are named
+# explicitly. (Found by the first full sweep, which flagged 7 such files.)
+def _is_internal_csv(name: str) -> bool:
+    return name.startswith("_") or name.startswith("global_filter")
 _SUMMARY_RE = re.compile(r"OK:\s*(\d+)\s+WARN:\s*(\d+)\s+FAIL:\s*(\d+)")
 _PER_CSV_TIMEOUT_S = 600  # a 600 MB CSV takes a minute+ to load; give headroom
 
@@ -43,6 +50,8 @@ def _iter_csvs(roots: list[Path]):
             continue
         for p in sorted(root.rglob("*.csv")):
             if _EXCLUDE_DIR_PARTS & set(p.parts):
+                continue
+            if _is_internal_csv(p.name):
                 continue
             rp = p.resolve()
             if rp in seen:
