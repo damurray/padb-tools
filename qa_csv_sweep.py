@@ -37,6 +37,27 @@ _EXCLUDE_DIR_PARTS = {"backup", "Job_Archive"}
 # explicitly. (Found by the first full sweep, which flagged 7 such files.)
 def _is_internal_csv(name: str) -> bool:
     return name.startswith("_") or name.startswith("global_filter")
+
+
+def _non_scatter_reason(path: Path) -> str | None:
+    """Return a short reason if this CSV is not a Type=80 Scatter CSV the plot
+    pipeline consumes -- so the sweep can skip it instead of false-FAILing on a
+    '0 usable rows' the scatter loader was never going to produce. Else None.
+
+    Detected: DateTime/list metadata CSVs (by name), and Type=60 Environmental
+    CSVs (by their UDE/LDE columns -- a Scatter CSV never has those; the
+    Environmental loader is a different path, padb_plots._load_env_csv)."""
+    if "datetime" in path.name.lower():
+        return "datetime/list CSV (not analytic scatter output)"
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as f:
+            header = f.readline()
+    except OSError:
+        return None
+    cols = {c.strip().strip('"').lower() for c in header.split(",")}
+    if "ude" in cols and "lde" in cols:
+        return "Type=60 Environmental CSV (UDE/LDE columns; not scatter input)"
+    return None
 _SUMMARY_RE = re.compile(r"OK:\s*(\d+)\s+WARN:\s*(\d+)\s+FAIL:\s*(\d+)")
 _PER_CSV_TIMEOUT_S = 600  # a 600 MB CSV takes a minute+ to load; give headroom
 
@@ -124,13 +145,28 @@ def main() -> None:
                     help="Do NOT apply each CSV's job x_col (test raw auto-detection only). "
                          "By default the sweep passes a matching job's x_col so a "
                          "non-frequency-x-axis analytic isn't false-FAILed.")
+    ap.add_argument("--include-non-scatter", action="store_true",
+                    help="Also check non-scatter CSVs (Type=60 Environmental, DateTime/list) "
+                         "that are skipped by default because the scatter loader can't read them.")
     args = ap.parse_args()
 
     roots = args.root or _DEFAULT_ROOTS
-    csvs = list(_iter_csvs(roots))
-    if not csvs:
+    all_csvs = list(_iter_csvs(roots))
+    if not all_csvs:
         print("No CSVs found under: " + ", ".join(str(r) for r in roots))
         sys.exit(0)
+
+    skipped_non_scatter = []
+    if args.include_non_scatter:
+        csvs = all_csvs
+    else:
+        csvs = []
+        for p in all_csvs:
+            reason = _non_scatter_reason(p)
+            if reason:
+                skipped_non_scatter.append((p, reason))
+            else:
+                csvs.append(p)
 
     xcol_map = {} if args.no_xcol else _build_xcol_map(roots)
 
@@ -168,9 +204,18 @@ def main() -> None:
         for f in fails:
             print(f"          -> {f}")
 
+    if skipped_non_scatter:
+        print("\n" + "-" * 72)
+        print(f"Skipped {len(skipped_non_scatter)} non-scatter CSV(s) "
+              f"(not scatter-plot input; use --include-non-scatter to check anyway):")
+        for p, reason in skipped_non_scatter:
+            print(f"  [skip ] {reason:52s} {p.name}")
+
     print("\n" + "-" * 72)
     print(f"Totals: {n_clean} clean, {n_warn} warn-only, {n_fail} FAIL, "
-          f"{n_err} error  (of {len(csvs)} CSV(s))")
+          f"{n_err} error  (of {len(csvs)} CSV(s)"
+          + (f"; {len(skipped_non_scatter)} non-scatter skipped" if skipped_non_scatter else "")
+          + ")")
     sys.exit(1 if (n_fail or n_err) else 0)
 
 

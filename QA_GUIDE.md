@@ -67,6 +67,9 @@ py qa_csv_sweep.py --fails-only            # only FAIL/error rows
   isn't false-FAILed. `--no-xcol` tests raw auto-detection only.
 - Skips tool-generated intermediates (`_compare_merged.csv`, `_v2_tmp_*.csv`,
   `global_filter_*.csv`) and `backup/` / `Job_Archive/` dirs.
+- Skips **non-scatter CSVs** the scatter loader can't read — Type=60 Environmental
+  (detected by their `UDE`/`LDE` columns) and DateTime/list metadata (by name) —
+  and lists them separately at the end. `--include-non-scatter` checks them anyway.
 
 ### `qa_view_sweep.py` — rebuild + headless-verify views (Gate 3)
 Drives real `*_v2_job.json` files into a throwaway `--out` dir via
