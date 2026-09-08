@@ -60,15 +60,46 @@ def _iter_csvs(roots: list[Path]):
             yield p
 
 
-def _check_one(csv_path: Path) -> tuple:
-    """Run padb_csv_check.py on one CSV. Returns
-    (ok, warn, fail, fail_lines, err) -- counts are None when the check
+def _build_xcol_map(roots: list[Path]) -> dict:
+    """Map each resolved csv_path -> x_col from every V2 plot job that sets one.
+    A non-frequency-x-axis analytic (e.g. an Analog-Mod Flatness sweep over
+    'Rate (kHz)') only loads when its job.json's x_col is used; without it the
+    loader auto-detects nothing and reports 0 rows -- a false FAIL if the sweep
+    tests the CSV blind to its job. Reading x_col here makes the sweep match how
+    the analytic is actually built."""
+    import json
+    mp: dict[str, str] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for jp in root.rglob("*_v2_job.json"):
+            if _EXCLUDE_DIR_PARTS & set(jp.parts):
+                continue
+            try:
+                cfg = json.loads(jp.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            xcol = cfg.get("x_col")
+            cpath = cfg.get("csv_path")
+            if xcol and cpath:
+                try:
+                    mp[str(Path(cpath).resolve())] = xcol
+                except Exception:
+                    pass
+    return mp
+
+
+def _check_one(csv_path: Path, x_col: str | None = None) -> tuple:
+    """Run padb_csv_check.py on one CSV (passing its job's x_col when known).
+    Returns (ok, warn, fail, fail_lines, err) -- counts are None when the check
     crashed before printing its summary line."""
     script = Path(__file__).with_name("padb_csv_check.py")
+    cmd = [sys.executable, str(script), str(csv_path)]
+    if x_col:
+        cmd += ["--x-col", x_col]
     try:
         proc = subprocess.run(
-            [sys.executable, str(script), str(csv_path)],
-            capture_output=True, text=True, timeout=_PER_CSV_TIMEOUT_S,
+            cmd, capture_output=True, text=True, timeout=_PER_CSV_TIMEOUT_S,
         )
     except subprocess.TimeoutExpired:
         return (None, None, None, [], f"timeout (>{_PER_CSV_TIMEOUT_S}s)")
@@ -89,6 +120,10 @@ def main() -> None:
                     help="Root dir to scan (repeatable). Defaults to the standard data roots.")
     ap.add_argument("--fails-only", action="store_true",
                     help="Only print CSVs that FAIL or error; skip clean/WARN rows.")
+    ap.add_argument("--no-xcol", action="store_true",
+                    help="Do NOT apply each CSV's job x_col (test raw auto-detection only). "
+                         "By default the sweep passes a matching job's x_col so a "
+                         "non-frequency-x-axis analytic isn't false-FAILed.")
     args = ap.parse_args()
 
     roots = args.root or _DEFAULT_ROOTS
@@ -97,14 +132,19 @@ def main() -> None:
         print("No CSVs found under: " + ", ".join(str(r) for r in roots))
         sys.exit(0)
 
+    xcol_map = {} if args.no_xcol else _build_xcol_map(roots)
+
     print(f"Sweeping {len(csvs)} CSV(s) with padb_csv_check.py "
-          f"(roots: {', '.join(str(r) for r in roots)})\n", flush=True)
+          f"(roots: {', '.join(str(r) for r in roots)}"
+          f"{'' if args.no_xcol else f'; {len(xcol_map)} job x_col override(s) available'})\n",
+          flush=True)
 
     n_fail = n_err = n_warn = n_clean = 0
     rows = []
     for i, p in enumerate(csvs, 1):
-        print(f"  [{i}/{len(csvs)}] {p.name} ...", flush=True)
-        ok, warn, fail, fails, err = _check_one(p)
+        xc = xcol_map.get(str(p.resolve()))
+        print(f"  [{i}/{len(csvs)}] {p.name}{' [x_col='+xc+']' if xc else ''} ...", flush=True)
+        ok, warn, fail, fails, err = _check_one(p, xc)
         if err is not None:
             status = "ERROR"; n_err += 1
         elif fail:
