@@ -6924,10 +6924,15 @@ function setFreqBand(lo,hi){
 }
 _loadStatGlobalFilter();
 loadState();
-updateFilterLabel();
-Plotly.newPlot('plot',buildTraces(getActiveConditions(),getParams()),buildLayout(getActiveConditions(),getParams()),{responsive:true});
-document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
-_recomputeSpecSegments();
+/* Render the first frame via update() rather than a bespoke 2-arg newPlot, so the
+   initial paint applies the SAME full filter set as every later render -- most
+   importantly a restored (narrow) frequency window. The old init called
+   buildLayout() with no fLo/fHi, so a restored narrow freq range drew the DATA
+   windowed but the spec lines across the FULL range until the first update()
+   (e.g. a Segment-by click) corrected them -- the reported bug. update() also
+   attaches the plotly_relayout listener and calls _recomputeSpecSegments(), so
+   those bespoke init lines are no longer needed. */
+update();
 /* END */
 
 """
