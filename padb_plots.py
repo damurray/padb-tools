@@ -3479,8 +3479,18 @@ function _distCondKeep(raw,i,condFilts){
 
 /* ---- freq range helpers ---- */
 function getFreqRange(){
-  var lo=parseFloat(document.getElementById('dist_freq_lo').value);
-  var hi=parseFloat(document.getElementById('dist_freq_hi').value);
+  /* Prefer the text box (exact typed/arrow value) over the range slider, whose
+     .value the browser snaps to its coarse `step`. Reading the snapped slider was
+     harmless for a wide window but caught ZERO points when lo==hi (a single
+     frequency), because the snapped [lo,hi] fell between real frequency samples --
+     the reported "single frequency shows no data" bug. Same fix as scatter/summary
+     (_sumFreqRange): text box authoritative, slider only as a fallback. */
+  var loT=document.getElementById('dist_freq_lo_txt');
+  var hiT=document.getElementById('dist_freq_hi_txt');
+  var loS=document.getElementById('dist_freq_lo');
+  var hiS=document.getElementById('dist_freq_hi');
+  var lo=(loT&&loT.value!=='')?parseFloat(loT.value):parseFloat(loS?loS.value:'');
+  var hi=(hiT&&hiT.value!=='')?parseFloat(hiT.value):parseFloat(hiS?hiS.value:'');
   return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};
 }
 function syncFreqDist(){
@@ -3760,9 +3770,9 @@ function update(){
     var tempIdxs=getSelTempIdxs();
     spurs.forEach(function(si){
       tempIdxs.forEach(function(ti){
-        var kde;
+        var kde,vals=null;
         if((freqFlt||serFlt||condFlt||gfFlt)&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
-          var raw=RAW_ABS[si][ti],vals=[];
+          var raw=RAW_ABS[si][ti];vals=[];
           for(var i=0;i<raw.f.length;i++){
             if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
             if(serFlt){
@@ -3778,10 +3788,21 @@ function update(){
         } else {
           kde=KDE_ABS[si]&&KDE_ABS[si][ti];
         }
-        if(!kde) return;
         var col=TEMP_COLORS[TEMPS[ti]]||'#999';
         var spurLabel=SPUR_TYPES[si],tempLabel=TEMPS[ti];
         var name=multiSpur?(spurLabel+' — '+tempLabel):tempLabel;
+        if(!kde){
+          /* Too few points for a density curve (jsKde needs n>=4). Rather than a
+             silent blank on a narrow selection (e.g. a single frequency), show the
+             raw value(s) as a rug so the actual measurements are still visible. */
+          if(vals&&vals.length){
+            traces.push({x:vals,y:vals.map(function(){return 0;}),type:'scatter',mode:'markers',
+              name:name+' ('+vals.length+' pt'+(vals.length>1?'s':'')+', n<4 for KDE)',
+              marker:{color:col,size:11,symbol:'line-ns-open',line:{color:col,width:2}},
+              hovertemplate:'<b>'+spurLabel+'</b><br>'+tempLabel+'<br>'+Y_LABEL+': %{x:.3f} (raw pt, n<4 for KDE)<extra></extra>'});
+          }
+          return;
+        }
         traces.push({x:kde.x,y:kde.y,type:'scatter',mode:'lines',name:name,
           line:{color:col,width:multiSpur?1:2},opacity:multiSpur?0.65:1.0,
           hovertemplate:'<b>'+spurLabel+'</b><br>'+tempLabel+'<br>'+Y_LABEL+': %{x:.3f}<br>density: %{y:.5f}<extra></extra>'});
@@ -3793,9 +3814,9 @@ function update(){
     var nrIdxs=getSelNonRoomIdxs();
     spurs.forEach(function(si){
       nrIdxs.forEach(function(di){
-        var kde;
+        var kde,vals=null;
         if((freqFlt||serFlt||condFlt||gfFlt)&&RAW_DELTA&&RAW_DELTA[si]&&RAW_DELTA[si][di]){
-          var raw=RAW_DELTA[si][di],vals=[];
+          var raw=RAW_DELTA[si][di];vals=[];
           for(var i=0;i<raw.f.length;i++){
             if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
             if(serFlt){
@@ -3811,10 +3832,20 @@ function update(){
         } else {
           kde=KDE_DELTA[si]&&KDE_DELTA[si][di];
         }
-        if(!kde) return;
         var temp=NON_ROOM_TEMPS[di],col=TEMP_COLORS[temp]||'#999';
         var spurLabel=SPUR_TYPES[si];
         var name=multiSpur?(spurLabel+' — Δ'+temp):('Δ'+temp);
+        if(!kde){
+          /* Too few points for a density curve (jsKde needs n>=4): show the raw
+             delta value(s) as a rug instead of a silent blank -- see the abs branch. */
+          if(vals&&vals.length){
+            traces.push({x:vals,y:vals.map(function(){return 0;}),type:'scatter',mode:'markers',
+              name:name+' ('+vals.length+' pt'+(vals.length>1?'s':'')+', n<4 for KDE)',
+              marker:{color:col,size:11,symbol:'line-ns-open',line:{color:col,width:2}},
+              hovertemplate:'<b>'+spurLabel+'</b><br>Δ'+temp+'<br>Δ: %{x:.3f} dB (raw pt, n<4 for KDE)<extra></extra>'});
+          }
+          return;
+        }
         traces.push({x:kde.x,y:kde.y,type:'scatter',mode:'lines',name:name,
           line:{color:col,width:multiSpur?1:2},opacity:multiSpur?0.65:1.0,
           hovertemplate:'<b>'+spurLabel+'</b><br>Δ'+temp+'<br>Δ: %{x:.3f} dB<br>density: %{y:.5f}<extra></extra>'});
