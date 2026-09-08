@@ -225,22 +225,41 @@ def _warn_if_view_too_large(out_html: Path, view: str, cfg: dict, output_dir: Pa
         return
     if mb < VIEW_SIZE_WARN_MB:
         return
-    already = bool(cfg.get("binary_encode")) or cfg.get("scatter_decimate") not in (None, False)
+    # Tips must be VIEW-AWARE -- suggesting an option that does nothing for this
+    # view is worse than saying nothing. binary_encode is only wired into the two
+    # views that embed the big raw numeric arrays (scatter: Frequency/Value;
+    # boxplot: per-point vals_detail); scatter_decimate only thins the scatter
+    # view's dense series. Both are no-ops on stat_summary/summary/env_coverage/
+    # distribution, so don't recommend them there.
+    binenc_view = view in ("scatter", "boxplot")
+    decimate_view = view == "scatter"
     tips = []
-    if not cfg.get("binary_encode"):
-        tips.append('"binary_encode": true (float32-packs the numeric arrays)')
-    if cfg.get("scatter_decimate") in (None, False):
-        tips.append('"scatter_decimate": "auto" (thins dense series, keeps min/max/spikes)')
+    if binenc_view and not cfg.get("binary_encode"):
+        tips.append('"binary_encode": true (float32-packs the embedded numeric arrays)')
+    if decimate_view and cfg.get("scatter_decimate") in (None, False):
+        tips.append('"scatter_decimate": "auto" (thins dense scatter series, keeps min/max/spikes)')
     tips.append("narrow the extraction (fewer frequency points / conditions / DUTs)")
     if view in ("boxplot", "stat_summary", "summary"):
-        tips.append(f"note the {view} x-axis is per-frequency -- over thousands of distinct "
+        tips.append(f"the {view} x-axis is per-frequency -- over thousands of distinct "
                     f"frequencies (e.g. a wide phase-noise offset sweep) it isn't a meaningful "
-                    f"view and the scatter is the one to use")
+                    f"view; use the scatter instead")
+    # "no size optimizations" only makes sense for a view that HAS an encoding
+    # lever (scatter/boxplot) and isn't already using it. On a boxplot that is
+    # already binary-encoded and still too big, the size is inherent -> say so.
+    opt_on = (bool(cfg.get("binary_encode")) if binenc_view else False) or \
+             (cfg.get("scatter_decimate") not in (None, False) if decimate_view else False)
+    if not binenc_view and not decimate_view:
+        note = ""  # no encoding lever exists for this view
+    elif opt_on:
+        note = (f" (This view already uses {'binary_encode' if cfg.get('binary_encode') else 'scatter_decimate'}; "
+                f"the remaining size is inherent to the data.)")
+    else:
+        note = " This job used no size optimizations."
     _log_note(output_dir,
               f"{out_html.name} is {mb:.0f} MB -- a self-contained page this large can be very "
               f"slow to open, and past ~a few hundred MB a browser may not render it at all "
               f"(it can look like 'no plot data' even though the data is present)."
-              + ("" if already else " This job used no size optimizations.")
+              + note
               + " Options: " + "; ".join(tips) + ".")
 
 
