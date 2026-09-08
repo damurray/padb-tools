@@ -20,9 +20,18 @@ Because it runs REAL job.json files, it uses each pod's real cfg (x_col,
 spec_direction, compare_csv, ...) with no guessing -- it just needs the jobs to
 exist. Missing jobs are reported as SKIP, not failures.
 
+The coverage set (one representative job per pod-variety axis) is loaded from a
+`qa_view_sweep.json` manifest if present (explicit --manifest, else the per-user
+Padb dir next to padb_config.json, else next to this script); otherwise it uses
+the built-in set, whose globs match THIS workstation's pod names. Another group
+runs `--write-manifest` once, edits the globs to their own pod/job names, and the
+sweep auto-loads it thereafter.
+
 Usage:
-  py qa_view_sweep.py                      # run the default coverage set
+  py qa_view_sweep.py                      # run the coverage set (manifest or built-in)
   py qa_view_sweep.py --list               # show which jobs resolve, run nothing
+  py qa_view_sweep.py --write-manifest      # emit a starter manifest to edit, then exit
+  py qa_view_sweep.py --manifest my.json    # use a specific coverage manifest
   py qa_view_sweep.py --job PATH ...        # add ad-hoc job.json(s) to the run
   py qa_view_sweep.py --keep                # keep the temp output for inspection
   py qa_view_sweep.py --max-headless-mb 200 # DOM-dump larger views too (slow)
@@ -31,10 +40,13 @@ Exit code 1 if any built view fails a hard check (didn't render, or hit an
 error sentinel, or a required needle was missing/forbidden one present).
 """
 import argparse
+import json
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+_MANIFEST_NAME = "qa_view_sweep.json"
 
 _ROOTS = [
     Path(r"C:\temp\data"),
@@ -93,6 +105,66 @@ _DEFAULT_JOBS = [
     {"label": "multi-analytic Harmonics family",
      "glob": ["[Hh]armonics*_v2_job.json", "[Hh]armonics_and_[Ss]ub*_v2_job.json"]},
 ]
+
+
+def _per_user_manifest_path() -> Path:
+    """Preferred per-user manifest location -- next to padb_config.json (same
+    convention), falling back to the standard Padb dir if padb_config can't be
+    imported (e.g. run from outside the repo)."""
+    try:
+        import padb_config
+        return padb_config.CONFIG_PATH.parent / _MANIFEST_NAME
+    except Exception:
+        return (Path.home() / "OneDrive - Keysight Technologies"
+                / "Documents" / "Padb" / _MANIFEST_NAME)
+
+
+def _manifest_search_paths(explicit: str | None) -> list[Path]:
+    """Where a coverage manifest may live, in priority order: an explicit
+    --manifest path, then the per-user path, then one shipped next to this
+    script in the repo."""
+    paths: list[Path] = []
+    if explicit:
+        paths.append(Path(explicit))
+    paths.append(_per_user_manifest_path())
+    paths.append(Path(__file__).with_name(_MANIFEST_NAME))
+    return paths
+
+
+def _valid_entries(data) -> bool:
+    return (isinstance(data, list) and bool(data)
+            and all(isinstance(e, dict) and e.get("label") and e.get("glob") for e in data))
+
+
+def _load_coverage(explicit: str | None) -> tuple[list, str]:
+    """Return (coverage_entries, source_description). Reads the first manifest
+    found; on a missing/invalid/unparseable manifest, falls back to the built-in
+    _DEFAULT_JOBS so the sweep still runs (this workstation's pod globs)."""
+    for p in _manifest_search_paths(explicit):
+        if not (p and p.exists()):
+            continue
+        try:
+            data = json.loads(p.read_text(encoding="utf-8"))
+        except Exception as exc:
+            print(f"[WARN] could not parse coverage manifest {p}: {exc} -- using built-in set")
+            return list(_DEFAULT_JOBS), "built-in (manifest parse error)"
+        if not _valid_entries(data):
+            print(f"[WARN] coverage manifest {p} is not a non-empty list of "
+                  f"{{label, glob, needles?}} entries -- using built-in set")
+            return list(_DEFAULT_JOBS), "built-in (manifest invalid)"
+        return data, str(p)
+    return list(_DEFAULT_JOBS), "built-in"
+
+
+def _write_manifest(target: str | None) -> None:
+    """Emit the built-in coverage set as a starter manifest another group can
+    edit to their own pod names. Target defaults to the per-user path."""
+    path = Path(target) if target and target != "__default__" else _per_user_manifest_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(_DEFAULT_JOBS, indent=2, ensure_ascii=False), encoding="utf-8")
+    print(f"Wrote starter coverage manifest ({len(_DEFAULT_JOBS)} entries) to:\n  {path}\n"
+          f"Edit the 'glob' patterns to your own pod/job names, then run qa_view_sweep.py "
+          f"(it auto-loads this file).")
 
 
 def _find_edge() -> str | None:
@@ -181,6 +253,14 @@ def main() -> None:
                     help="Root dir to search for the coverage-set jobs (repeatable). "
                          "Defaults to the standard data roots -- point this at your own "
                          "data dir to run the sweep on another machine's jobs.")
+    ap.add_argument("--manifest", default=None,
+                    help=f"Coverage manifest JSON (list of {{label, glob, needles?}}). "
+                         f"If omitted, auto-loads {_MANIFEST_NAME} from the per-user Padb dir "
+                         f"or next to this script, else uses the built-in set.")
+    ap.add_argument("--write-manifest", nargs="?", const="__default__", default=None,
+                    metavar="PATH",
+                    help="Write the built-in coverage set to PATH (or the per-user location "
+                         "if PATH omitted) as a starter manifest to edit, then exit.")
     ap.add_argument("--job", action="append", default=[],
                     help="Extra job.json to run (repeatable), added to the default set.")
     ap.add_argument("--no-defaults", action="store_true",
@@ -198,10 +278,19 @@ def main() -> None:
                          "(a giant page can take minutes to serialize). Default 120.")
     args = ap.parse_args()
 
+    if args.write_manifest is not None:
+        _write_manifest(args.write_manifest)
+        return
+
     roots = args.root or _ROOTS
-    entries = [] if args.no_defaults else list(_DEFAULT_JOBS)
+    if args.no_defaults:
+        coverage, cov_source = [], "none (--no-defaults)"
+    else:
+        coverage, cov_source = _load_coverage(args.manifest)
+    entries = list(coverage)
     for j in args.job:
         entries.append({"label": "ad-hoc", "glob": None, "path": Path(j)})
+    print(f"Coverage source: {cov_source}")
 
     # Resolve jobs
     resolved = []
