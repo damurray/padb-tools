@@ -682,6 +682,27 @@ An explicit `"views"` key in job.json always overrides auto-detection, preservin
 
 ---
 
+## `histogram` view — CSV-driven value distribution for no-swept-x tests (added 2026-09-09)
+
+Some tests have **no numeric swept x-axis at all** — switching-speed and similar "one number per event" measurements produce a *population* of times (µs) against an upper spec limit, not a value-vs-frequency (or vs-amplitude) sweep. The real motivating case was `SwitchingSpeed.pod`: every Type=80 Scatter analytic has an x-axis label of `~Device Family [T] (1 x 1)` — text-typed (`[T]`) and a single value (`1 x 1`), so there is nothing numeric to put on an x-axis and a scatter is impossible. The test's original analysis used PADB's native Type=70 histograms, but **Type=70 emits only PNG/PDF, no per-measurement CSV** — so it can't feed this tool's CSV-based pipeline.
+
+The fix is an interactive, self-contained `histogram` view that reads the **Type=80 analytic's own raw-value CSV** and plots the value distribution instead of value-vs-x.
+
+**This is why a switching-speed pod must keep its Type=80 Scatter analytics even though we no longer draw them as scatter plots** — the Type=80 CSV is the histogram's raw-value data source. Dropping the Type=80 analytics (leaving only Type=70) removes the data source entirely. Keep Type=80; the Type=70 native histograms are redundant with this view and can be dropped.
+
+**What triggers histogram vs scatter — a build-time decision in `padb_make_v2_job.py`, not runtime auto-detection.** `parse_pod_analytics()` (`padb_run.py`) captures each analytic's `Data_ScatterPlot_XData_Label`; `_is_non_sweep_x(raw_label)` returns True when that label contains `[T]` (text type) or `(1 x 1)` (single value) or is empty. In the per-analytic loop, a True result sets the generated plot job's `plot_job["views"] = ["histogram"]` (with a printed `NOTE:`); otherwise the existing scatter/`x_col`-override path runs. So the choice is baked into the generated plot job's `"views"` key — edit that key by hand to force either view. A normal numeric sweep (`~Vgg (V) (1 x 303)`, `~Frequency (MHz) (1 x 500)`, etc.) is unaffected and still routes to scatter.
+
+**Rendering (`padb_plots.py`):**
+- `histogram(csv_path, cfg, output_html)` — the public plot function (same signature as every other plot type, so `padb_v2.py` dispatches to it by name). Builds a fully self-contained HTML: `_get_plotlyjs()` inline in `<head>`, a control bar (bins slider + **Auto** button, hide-spec, Reset), inline-checkbox condition-filter panels, the `#plot` div, and a collapsible stats panel. Writes a placeholder page if the payload is empty.
+- `_load_histogram_csv(csv_path)` — detects the most-numeric non-metadata/non-limit value column, parses its label/unit from a `prefix:Name (unit)` header, reads Upper/Lower spec limits (treating a lower<0 / hi<0 sentinel as None), and splits `Group` into condition dimensions (2..50 distinct, non-serial) plus serial. Drops NaN values.
+- `_HISTOGRAM_JS` — overlaid Plotly histograms (`barmode:'overlay'`) with a **shared `xbins`** across conditions, **Freedman–Diaconis** auto-bin width (`2·IQR/n^(1/3)`), spec lines, and a stats table (n / mean / median / p95 / p99 / max / **% out-of-spec**).
+
+**Routing tail (`padb_v2.py`):** a histogram branch in `generate_report()` fires when `cfg.get("views") == ["histogram"]`, right after `prefix` is computed and **before** `load_scatter` (the histogram loads the CSV itself). A shared `_finish_report(output_dir, prefix, generated, cfg, is_room_only=False)` helper does the `_write_index` + publish/opt-out tail for both the histogram branch and the normal path.
+
+Verified end-to-end on real `SwitchingSpeed` CSVs: all 5 Type=80 analytics auto-route to histogram; Amplitude Switching renders 2 overlaid Port traces (RF1 n=6160, 7.1% out-of-spec; RF2 n=880, 0.1%), auto bins, spec line, and the full stats table. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
+
+---
+
 ## Default publish location (added 2026-07-22)
 
 Jobs with **no `publish_to` key at all** now default to publishing to:
