@@ -16411,6 +16411,34 @@ def _load_histogram_csv(csv_path: Path) -> dict:
     if hi is not None and hi < 0:
         hi = None
 
+    # Flat / previously-Exported CSV (no Group column: condition dims and Serial
+    # are separate columns) -- synthesize a Group string from those columns so the
+    # normal Group parser below reproduces the same dims + serial. This is what
+    # makes an Exported-CSV round-trip re-plottable through histogram().
+    if "Group" not in df.columns:
+        _scol = next((c for c in df.columns
+                      if c.strip().lower() in ("serial", "serial number")
+                      or any(k in c.lower() for k in ("serial num", "serial no", "unit id", "dut id"))), None)
+        _dim_cols = []
+        for c in df.columns:
+            lc = c.strip().lower()
+            if c == val_col or c == _scol:
+                continue
+            if "limit" in lc or lc in _HISTOGRAM_META:
+                continue
+            if lc in ("out of spec", "out_of_spec", "result", "pass/fail", "pass fail"):
+                continue
+            _dim_cols.append(c)
+
+        def _mk_group(row):
+            parts = [f"{c}: {row[c]}" for c in _dim_cols
+                     if str(row[c]).strip() not in ("", "nan")]
+            if _scol is not None and str(row[_scol]).strip() not in ("", "nan"):
+                parts.append(f"Serial Number: {row[_scol]}")
+            return "  ".join(parts)
+
+        df["Group"] = df.apply(_mk_group, axis=1)
+
     # --- parse Group -> per-row condition dict + serial ---
     serial_col = next((c for c in df.columns
                        if any(k in c.lower() for k in ("serial num", "serial no", "unit id", "dut id"))
@@ -16542,11 +16570,16 @@ function hExportCsv(){
   if(hasSer) header.push('Serial');
   header.push(VLABEL+(VUNIT?' ('+VUNIT+')':''));
   if(spec) header.push('Out of spec');
+  // Upper/Lower Limit columns are always emitted (empty when unset) so a
+  // re-imported export can redraw the spec line and recompute pass/fail.
+  header.push('Upper Limit'); header.push('Lower Limit');
   var lines=[header.map(_hCsvCell).join(',')];
   for(var j=0;j<idx.length;j++){ var i=idx[j], row=DIMS.map(function(d){return DIMVALS[d.col_id][i];});
     if(hasSer) row.push(SERIAL[i]);
     row.push(VALUES[i]);
     if(spec){ row.push(_hIsFail(VALUES[i])?'Y':'N'); }
+    row.push(LIMIT_HI===null?'':LIMIT_HI);
+    row.push(LIMIT_LO===null?'':LIMIT_LO);
     lines.push(row.map(_hCsvCell).join(','));
   }
   var blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8;'});
