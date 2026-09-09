@@ -11935,6 +11935,24 @@ function updateSitePanel(){
         });
       });
     });
+    // "Collapse dup runs" (the same toggle the box plot uses) -- average each
+    // DUT's exact-identity repeats to one point, in BOTH the primary-site fence
+    // population and the non-primary points being checked, so this panel matches
+    // the plot's collapsed view instead of weighting a repeated DUT extra.
+    var collapseDup=isCollapseDup();
+    if(collapseDup){
+      Object.keys(primaryBuckets).forEach(function(bk){
+        primaryBuckets[bk]=_collapseDupRuns(primaryBuckets[bk],
+          function(d){return d.s+'|'+d.cond+'|'+(d.p||'');});
+      });
+      var _om={},_oo=[];
+      otherPoints.forEach(function(p){
+        var kk=p.site+'|'+p.serial+'|'+(p.port||'')+'|'+p.cond+'|'+p.temp+'|'+p.freq;
+        if(!_om[kk]){_om[kk]={base:p,sum:0,n:0};_oo.push(kk);}
+        _om[kk].sum+=p.value; _om[kk].n++;
+      });
+      otherPoints=_oo.map(function(kk){ var g=_om[kk],o={}; for(var key in g.base) o[key]=g.base[key]; o.value=g.sum/g.n; return o; });
+    }
     if(!otherPoints.length){
       el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current filter/selection'+
         (freqWindowed?' and frequency window ('+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+')':'')+'.</i>';
@@ -11960,10 +11978,23 @@ function updateSitePanel(){
     var rows=otherPoints.map(function(p){
       var pvItems=primaryBuckets[p.temp+'|'+p.freq]||[];
       var pv=pvItems.map(function(it){return it.v;});
-      /* Per-DUT breakdown, not a single summed total -- "3" read as "one
-         DUT has 3 copies" when it actually meant "three separate DUTs
-         each have 2 copies", indistinguishable from the total alone. */
-      var pvDup=_dupBreakdown(pvItems,function(d){return d.s+'|'+d.cond+'|'+(d.p||'');},function(d){return d.s;});
+      /* Per-SERIAL breakdown. Detect a genuine repeat per exact
+         (serial,condition,port) identity -- a DUT that ran twice under the
+         SAME condition -- then roll up to ONE entry per serial. Without the
+         roll-up, a DUT that ran twice under each of N selected conditions
+         (e.g. all SpurTypes at once) emitted "<serial>x2" N separate times in
+         this one cell, which read as nonsense (user report 2026-09-09: "just
+         401 and 502 ... repeated dozens of times ... makes no sense ...
+         something to do with all spur types selected"). Now: "<serial>xN"
+         once, with " (K conds)" when the DUT repeats under several. */
+      var _pvGrp={};
+      pvItems.forEach(function(it){ var kk=it.s+'|'+it.cond+'|'+(it.p||'');
+        (_pvGrp[kk]=_pvGrp[kk]||{s:it.s,n:0}).n++; });
+      var _pvSer={};
+      Object.keys(_pvGrp).forEach(function(kk){ var g=_pvGrp[kk]; if(g.n>1){
+        var e=_pvSer[g.s]||(_pvSer[g.s]={maxN:0,conds:0}); e.maxN=Math.max(e.maxN,g.n); e.conds++; } });
+      var pvDup=Object.keys(_pvSer).sort().map(function(s){ var e=_pvSer[s];
+        return s+'×'+e.maxN+(e.conds>1?' ('+e.conds+' conds)':''); });
       var otherKey=p.site+'|'+p.serial+'|'+(p.port||'')+'|'+p.cond+'|'+p.temp+'|'+p.freq;
       var otherDup=Math.max(0,(otherDupCounts[otherKey]||1)-1);
       if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,pvDup:pvDup,fenceHint:'',otherDup:otherDup};
@@ -12119,7 +12150,11 @@ function updateSitePanel(){
       html+='<div style="font-size:12px;color:#666;margin:6px 0">No frequency shows more than one DUT affected -- no systemic/station-level pattern detected in the current selection.</div>';
     }
 
-    html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
+    html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail'+
+      (collapseDup?' <span style="font-weight:400;color:#080;font-size:11px">(dup runs collapsed &mdash; one point per DUT)</span>':'')+'</div>';
+    // Height-bounded scroll box so the horizontal scrollbar sits at the bottom
+    // of the viewport (always reachable) instead of the bottom of a long table.
+    html+='<div style="overflow:auto;max-height:60vh;border:1px solid #eee">';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Temp</th><th>Freq</th>'+
       '<th>Value</th>'+
       '<th title="Extra raw rows sharing this exact (site, serial, port, condition, temp, frequency) beyond one -- a genuine repeat test run on the point being checked itself, not the '+PRIMARY_SITE+' fence\'s population. A real, confirmed case: some datasets ran every point twice, universally -- the same (Serial, Freq) then legitimately appears as two separate rows with two different real values, which is not a data error.">Site&nbsp;dup&nbsp;pts</th>'+
@@ -12140,7 +12175,7 @@ function updateSitePanel(){
         '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
         '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
-        '<td>'+(r.pvDup&&r.pvDup.length?'<span class="out">'+r.pvDup.join(', ')+'</span>':'<span style="color:#aaa">&mdash;</span>')+'</td>'+
+        '<td style="max-width:220px;white-space:normal;overflow-wrap:break-word">'+(r.pvDup&&r.pvDup.length?'<span class="out">'+r.pvDup.join(', ')+'</span>':'<span style="color:#aaa">&mdash;</span>')+'</td>'+
         /* .stbl td sets white-space:nowrap globally -- without overriding
            it here, max-width has no effect on a nowrap cell (there's
            nothing to wrap), so this cell's long text just overflows its
@@ -12153,7 +12188,7 @@ function updateSitePanel(){
         '<td>'+(r.dir||'&mdash;')+'</td>'+
         '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
     });
-    html+='</tbody></table>';
+    html+='</tbody></table></div>';
     el.innerHTML=html;
   }catch(e){
     el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>';

@@ -1564,3 +1564,16 @@ It reaps every `claude` process, forces the parked registration via `Add-AppxPac
 **Prevention:** quit Claude from the **tray icon** (right-click → Quit), not the window's X, before leaving for the day. Closing the window leaves the app running; the app also auto-starts at login (`ClaudeStartup` under `HKCU:\...\AppModel\SystemAppData\Claude_pzs8sxrjxfjjc`), so it comes back regardless. With no processes alive overnight, the update registers cleanly and the morning launch is uneventful.
 
 **Related, and worth not confusing with this:** the "webapp restart killed an in-progress job" fix (2026-08-21, above) is a *different* parent/child-lifetime problem — that one was a stdout pipe, this one is MSIX package registration. Neither is a Windows Job Object cascade; both were originally misdiagnosed as one.
+
+---
+
+## Boxplot Site Population Check: dup-pts per-serial rollup, wrap, scroll box, collapse-aware (2026-09-09)
+
+Four fixes to the boxplot cross-site **Site Population Check** per-point detail table, all reported by the user against a real CloseIn compare page (`compare_SR_vs_AMC_NonHarmonics_Close_In...boxplot.html`):
+
+1. **"`<SITE>` dup pts" repeated the same serial once per selected condition — real bug.** `pvDup` was `_dupBreakdown(pvItems, key=(serial,cond,port), label=serial)` — so a DUT that ran twice under each of N selected conditions (e.g. *all* SpurTypes at once) emitted `US...×2` N times in one cell ("repeated dozens of times ... makes no sense"). Fixed to **roll up to one entry per serial**: detect a genuine repeat per exact `(serial,cond,port)` identity, then aggregate → `US65080401×2 (6 conds)` once. The underlying ×2 is *real data* (this dataset genuinely ran every point twice, two different real values per point — the column exists to surface exactly that); only the display was wrong.
+2. **"Collapse dup runs" now drives this panel too.** `updateSitePanel()` reads `isCollapseDup()` and, when on, averages each DUT's exact-identity repeats in BOTH the primary-site fence population and the checked non-primary points (via `_collapseDupRuns`, keyed `serial|cond|port`), matching the plot's collapsed view; the panel header notes "(dup runs collapsed — one point per DUT)" and the dup-pts column then reads `—`. Boxplot-only, because boxplot's per-DUT data is raw `vals_detail`; summary/stat_summary use server-pre-averaged `dut_vals` (no raw repeat to collapse), and their Site panels have no dup-pts column at all.
+3. **Dup-pts cell wraps** (`max-width:220px;white-space:normal;overflow-wrap:break-word`) — `.stbl td` is `white-space:nowrap` globally, so a long serial×count list overflowed; same treatment the "Fence check" cell already had.
+4. **Per-point table sits in a `max-height:60vh;overflow:auto` box** so the horizontal scrollbar is at the bottom of the viewport (always reachable) instead of the bottom of a very long table.
+
+Verified on a synthetic multi-SpurType compare (401 & 402 ran twice under all 6 SpurTypes): collapse-off shows `US65080401×2 (6 conds), US65080402×2 (6 conds)` (one per serial, was 12 entries); collapse-on shows `—` with the header note. `qa_padb.py` unchanged (37/4).
