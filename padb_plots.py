@@ -16532,6 +16532,25 @@ function buildStats(groups,keys,multi){
 }
 function toggleStats(){ var el=document.getElementById('h_stats'),b=document.getElementById('h_stats_btn'); var show=el.style.display==='none'; el.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Statistics'; if(show) update(); }
 function hResetFilters(){ document.querySelectorAll('.fchk_h').forEach(function(c){c.checked=true;}); document.getElementById('h_binmode').value='auto'; document.getElementById('h_hidespec').checked=false; update(); }
+function _hCsvCell(x){ x=(x===null||x===undefined)?'':String(x); return /[",\n\r]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x; }
+function hExportCsv(){
+  var idx=_hFilteredIdx(), hasSer=SERIAL_LIST.length>0, spec=(LIMIT_HI!==null||LIMIT_LO!==null);
+  var header=DIMS.map(function(d){return d.label;});
+  if(hasSer) header.push('Serial');
+  header.push(VLABEL+(VUNIT?' ('+VUNIT+')':''));
+  if(spec) header.push('Out of spec');
+  var lines=[header.map(_hCsvCell).join(',')];
+  for(var j=0;j<idx.length;j++){ var i=idx[j], row=DIMS.map(function(d){return DIMVALS[d.col_id][i];});
+    if(hasSer) row.push(SERIAL[i]);
+    row.push(VALUES[i]);
+    if(spec){ var v=VALUES[i]; row.push(((LIMIT_HI!==null&&v>LIMIT_HI)||(LIMIT_LO!==null&&v<LIMIT_LO))?'Y':'N'); }
+    lines.push(row.map(_hCsvCell).join(','));
+  }
+  var blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob), a=document.createElement('a');
+  a.href=url; a.download=(TITLE||'histogram').replace(/[^\w.-]+/g,'_')+'_export.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(url);},0);
+}
 window.addEventListener('DOMContentLoaded',function(){ update(); });
 """
 
@@ -16616,6 +16635,8 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         " <span id='h_binlabel'></span> <button class='hbtn' onclick='hSetAuto()'>Auto</button></span>\n"
         "  <label><input type='checkbox' id='h_hidespec' onchange='update()'> Hide spec lines</label>\n"
         "  <button class='hbtn' onclick='hResetFilters()'>Reset</button>\n"
+        "  <button class='hbtn' onclick='hExportCsv()' title='Download the currently-filtered "
+        "rows (one per measurement) with serial, condition, value and out-of-spec flag'>Export CSV</button>\n"
         "  <span id='h_n' style='color:#555'></span>\n"
         "  <input type='hidden' id='h_binmode' value='auto'>\n"
         "</div>\n"
