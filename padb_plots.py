@@ -16570,16 +16570,11 @@ function hExportCsv(){
   if(hasSer) header.push('Serial');
   header.push(VLABEL+(VUNIT?' ('+VUNIT+')':''));
   if(spec) header.push('Out of spec');
-  // Upper/Lower Limit columns are always emitted (empty when unset) so a
-  // re-imported export can redraw the spec line and recompute pass/fail.
-  header.push('Upper Limit'); header.push('Lower Limit');
   var lines=[header.map(_hCsvCell).join(',')];
   for(var j=0;j<idx.length;j++){ var i=idx[j], row=DIMS.map(function(d){return DIMVALS[d.col_id][i];});
     if(hasSer) row.push(SERIAL[i]);
     row.push(VALUES[i]);
     if(spec){ row.push(_hIsFail(VALUES[i])?'Y':'N'); }
-    row.push(LIMIT_HI===null?'':LIMIT_HI);
-    row.push(LIMIT_LO===null?'':LIMIT_LO);
     lines.push(row.map(_hCsvCell).join(','));
   }
   var blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8;'});
@@ -16609,6 +16604,15 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         output_html.parent.mkdir(parents=True, exist_ok=True)
         output_html.write_text(html_doc, encoding="utf-8")
         return
+
+    # Spec can be supplied by job.json (hist_limit_hi / hist_limit_lo) -- used
+    # when re-plotting a previously-Exported CSV, whose data columns are clean
+    # (the spec is carried in the job, not repeated on every row). Only fills a
+    # side the CSV itself didn't already provide, so native CSVs are unaffected.
+    if payload.get("limit_hi") is None and cfg.get("hist_limit_hi") not in (None, ""):
+        payload["limit_hi"] = float(cfg["hist_limit_hi"])
+    if payload.get("limit_lo") is None and cfg.get("hist_limit_lo") not in (None, ""):
+        payload["limit_lo"] = float(cfg["hist_limit_lo"])
 
     dims = payload["dims"]
 
