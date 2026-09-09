@@ -1251,7 +1251,7 @@ def _resolve_csv_path(csv_path: Path) -> Path:
     return csv_path
 
 
-def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> Path:
+def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> tuple[Path, bool]:
     """
     Merge two or more sites' own scatter CSVs into one, tagging each row's
     Group text with "  Site: <name>" before any downstream Group parsing
@@ -1264,10 +1264,18 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> Pa
     allowed to have different columns (pd.concat unions them, missing ones
     become NaN), different Group dimensions (a site missing a key just gets
     no _grp_ value for it), and one site having no spec limits at all.
+
+    Returns (merged_csv_path, no_swept_x). ``no_swept_x`` is True when *every*
+    site's CSV lacks a Frequency/X-value column -- i.e. this is a no-swept-x
+    value-distribution test (e.g. switching speed) that should render as a
+    histogram, not a scatter. The caller uses it to auto-select the histogram
+    view when the job didn't set one explicitly.
     """
     if not isinstance(compare_csv, dict) or len(compare_csv) < 2:
         sys.exit('"compare_csv" must be an object mapping 2+ site names to CSV paths')
     dfs = []
+    # sites whose own CSV has no Frequency/X-value column -- (site, csv_name, cols)
+    sites_without_freq: list[tuple[str, str, list]] = []
     for site_name, rel_path in compare_csv.items():
         p = Path(rel_path)
         if not p.is_absolute():
@@ -1283,25 +1291,39 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> Pa
         else:
             df[group_col] = df[group_col].fillna("").astype(str).str.rstrip() + f"  Site: {site_name}"
         print(f"  compare_csv: site {site_name!r} -- {len(df):,} rows from {p.name}", flush=True)
-        # With the other site(s) as the 'good reference', flag any site whose
-        # own CSV has no Frequency/X-value column at all -- a placeholder export
-        # (no matching test data for this analytic at that site). The merged
-        # build can still succeed on the real site's rows, so this is a NOTE,
-        # not a failure -- but it's exactly the "this site has no matching
-        # test" signal that's easy to state when one reference CSV is good.
         if not any(("frequency" in c.lower() or "x value" in c.lower()) for c in df.columns):
-            _log_note(output_dir,
-                      f"compare_csv: site {site_name!r} has no Frequency/X-value column in "
-                      f"{p.name} -- looks like a placeholder export (no matching test data for "
-                      f"this analytic at this site); its rows won't appear in the plot. "
-                      f"Columns: {list(df.columns)}")
+            sites_without_freq.append((site_name, p.name, list(df.columns)))
         dfs.append(df)
     merged = pd.concat(dfs, ignore_index=True, sort=False)
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / "_compare_merged.csv"
     merged.to_csv(out_path, index=False)
     print(f"  compare_csv: merged {len(merged):,} total rows from {len(compare_csv)} site(s) -> {out_path.name}", flush=True)
-    return out_path
+
+    # A missing Frequency/X column means two very different things depending on
+    # whether it's *every* site or just some:
+    #   - EVERY site lacks it  -> a genuine no-swept-x value-distribution test
+    #     (e.g. switching speed). The histogram view reads the measurement
+    #     column, not Frequency, so the rows DO render -- warning about it here
+    #     would be a false alarm. Signal the caller to auto-route to histogram.
+    #   - SOME sites lack it   -> those are placeholder exports (no matching
+    #     test data for this analytic at that site) while the others have real
+    #     swept data; keep the per-site NOTE for the genuine gaps.
+    no_swept_x = len(sites_without_freq) == len(compare_csv)
+    if no_swept_x:
+        _log_note(output_dir,
+                  "compare_csv: no site has a Frequency/X-value column -- this looks like a "
+                  "no-swept-x value-distribution test (e.g. switching speed). It will render "
+                  "as an overlaid-by-site histogram, with 'Site' as a filterable condition "
+                  "dimension; every site's rows are included.")
+    else:
+        for site_name, csv_name, cols in sites_without_freq:
+            _log_note(output_dir,
+                      f"compare_csv: site {site_name!r} has no Frequency/X-value column in "
+                      f"{csv_name} -- looks like a placeholder export (no matching test data for "
+                      f"this analytic at this site); its rows won't appear in the plot. "
+                      f"Columns: {cols}")
+    return out_path, no_swept_x
 
 
 def _run_padb_for_csv(cfg: dict, job_dir: Path) -> Path:
@@ -1376,7 +1398,14 @@ def main(argv: list[str] | None = None) -> None:
     elif cfg.get("compare_csv"):
         if not cfg.get("primary_site"):
             cfg["primary_site"] = next(iter(cfg["compare_csv"]))
-        csv_path = _build_compare_csv(cfg["compare_csv"], job_dir, output_dir)
+        csv_path, no_swept_x = _build_compare_csv(cfg["compare_csv"], job_dir, output_dir)
+        # No-swept-x compare (every site lacks a numeric x-axis, e.g. switching
+        # speed) -> auto-select the histogram view, unless the job set views
+        # explicitly. Without this, auto view-selection would try scatter, which
+        # this data has no x-axis for.
+        if no_swept_x and "views" not in cfg:
+            cfg["views"] = ["histogram"]
+            print("  compare_csv: no numeric x-axis at any site -> auto-selecting histogram view", flush=True)
         print(f"  CSV  : {csv_path.name} (merged compare_csv, primary_site={cfg['primary_site']!r})")
     elif cfg.get("csv_path"):
         csv_path = _resolve_csv_path(Path(cfg["csv_path"]).resolve())

@@ -701,6 +701,12 @@ The fix is an interactive, self-contained `histogram` view that reads the **Type
 
 Verified end-to-end on real `SwitchingSpeed` CSVs: all 5 Type=80 analytics auto-route to histogram; Amplitude Switching renders 2 overlaid Port traces (RF1 n=6160, 7.1% out-of-spec; RF2 n=880, 0.1%), auto bins, spec line, and the full stats table. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
 
+**Cross-site compare works (added 2026-09-09).** A `compare_csv` job merges each site's rows and tags `Site: <name>` into the Group text, so `_load_histogram_csv` picks `Site` up as a normal 2-value condition dimension — the histogram then overlays per-`(Site × other dims)` combination with a per-combination stats table (n/mean/median/p95/p99/%out-of-spec, plus an `All` row). Two compare-path fixes make this seamless:
+- **Auto-routing**: `_build_compare_csv()` now returns `(path, no_swept_x)`. `no_swept_x` is True only when *every* site's CSV lacks a Frequency/X-value column (a genuine no-swept-x test); `main()` then sets `cfg["views"]=["histogram"]` when the job didn't set `views` explicitly. Without this, a switching-speed compare job would fall to auto view-selection → scatter → fail (no numeric x). A job that sets `views` itself is respected.
+- **NOTE de-noised**: the per-site "no Frequency/X-value column ... rows won't appear" placeholder warning was a false alarm for histograms (they read the *value* column, not Frequency). It now fires **only** when *some* sites have a Frequency column and others don't (genuine placeholder exports); when *all* sites lack one it's replaced by an informational NOTE saying it'll render as an overlaid-by-site histogram. Verified all three cases (all-no-freq → auto-route + info NOTE; mixed → placeholder NOTE, no auto-route; explicit `views` → respected).
+
+**Not** ported to the histogram: the Site Population Check fence-membership panel, coverage-gap banner, and `primary_site` triage (those are boxplot/stat_summary/summary only). The spec line is also a single global value (first non-NaN limit in the merged file), not per-site. So compare mode here is a visual overlay + per-site distribution stats, not the fence-membership analysis.
+
 ---
 
 ## Default publish location (added 2026-07-22)
