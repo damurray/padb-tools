@@ -1251,6 +1251,36 @@ def _resolve_csv_path(csv_path: Path) -> Path:
     return csv_path
 
 
+def _site_has_swept_x(df) -> bool:
+    """True only if a site's CSV has a *genuine* swept x-axis: an x-like column
+    (name contains 'frequency' or 'x value') AND a separate numeric value column
+    to plot against it.
+
+    A no-swept-x test (switching speed) whose only numeric column is the
+    measurement itself -- even when that measurement is named e.g. 'Frequency
+    Switching Speed (us)', which merely contains the word 'frequency' -- returns
+    False, so a cross-site compare of it is correctly routed to the histogram
+    view instead of a scatter. (The plain substring check this replaced was
+    fooled by 'Frequency' appearing in the measurement name.)"""
+    cols = [str(c).strip() for c in df.columns]
+    lcs = [c.lower() for c in cols]
+    x_idx = {i for i, l in enumerate(lcs) if ("frequency" in l or "x value" in l)}
+    if not x_idx:
+        return False
+    meta = {"analysis type", "model(s)", "algorithm -> result", "units",
+            "group", "device family", "serial number", "station"}
+    for i, c in enumerate(cols):
+        if i in x_idx or "limit" in lcs[i] or lcs[i] in meta:
+            continue
+        # Any numeric value column (even sparse -- real measurements can have
+        # many blanks) counts, matching the scatter loader's own "first numeric
+        # column after the x-axis" selection. A no-swept-x test has no such
+        # separate column (its only numeric col is the x-named measurement).
+        if bool(pd.to_numeric(df[c], errors="coerce").notna().any()):
+            return True
+    return False
+
+
 def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> tuple[Path, bool]:
     """
     Merge two or more sites' own scatter CSVs into one, tagging each row's
@@ -1291,7 +1321,7 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> tu
         else:
             df[group_col] = df[group_col].fillna("").astype(str).str.rstrip() + f"  Site: {site_name}"
         print(f"  compare_csv: site {site_name!r} -- {len(df):,} rows from {p.name}", flush=True)
-        if not any(("frequency" in c.lower() or "x value" in c.lower()) for c in df.columns):
+        if not _site_has_swept_x(df):
             sites_without_freq.append((site_name, p.name, list(df.columns)))
         dfs.append(df)
     merged = pd.concat(dfs, ignore_index=True, sort=False)
@@ -1312,17 +1342,17 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> tu
     no_swept_x = len(sites_without_freq) == len(compare_csv)
     if no_swept_x:
         _log_note(output_dir,
-                  "compare_csv: no site has a Frequency/X-value column -- this looks like a "
-                  "no-swept-x value-distribution test (e.g. switching speed). It will render "
-                  "as an overlaid-by-site histogram, with 'Site' as a filterable condition "
-                  "dimension; every site's rows are included.")
+                  "compare_csv: no site has a swept x-axis (a numeric x column plus a separate "
+                  "value column) -- this looks like a no-swept-x value-distribution test (e.g. "
+                  "switching speed). It will render as an overlaid-by-site histogram, with "
+                  "'Site' as a filterable condition dimension; every site's rows are included.")
     else:
         for site_name, csv_name, cols in sites_without_freq:
             _log_note(output_dir,
-                      f"compare_csv: site {site_name!r} has no Frequency/X-value column in "
-                      f"{csv_name} -- looks like a placeholder export (no matching test data for "
-                      f"this analytic at this site); its rows won't appear in the plot. "
-                      f"Columns: {cols}")
+                      f"compare_csv: site {site_name!r} has no swept x-axis in "
+                      f"{csv_name} -- a placeholder export (no matching test data for this "
+                      f"analytic at this site) or a different test shape than the other site(s); "
+                      f"its rows may not appear in a scatter/swept view. Columns: {cols}")
     return out_path, no_swept_x
 
 
