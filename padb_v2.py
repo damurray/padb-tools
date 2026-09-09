@@ -930,6 +930,20 @@ def _fill_spec_nulls(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _finish_report(output_dir, prefix, generated, cfg, is_room_only=False):
+    """Write the gallery index and publish (or opt out per cfg), then return the
+    generated-file list. Shared by the normal multi-view path and the histogram
+    branch so both handle index + publish identically."""
+    _write_index(output_dir, prefix, generated, cfg, is_room_only=is_room_only)
+    if "publish_to" in cfg:
+        if cfg["publish_to"]:
+            _publish(output_dir, Path(cfg["publish_to"]))
+    else:
+        publish_root = COMPARE_PUBLISH_ROOT if cfg.get("compare_csv") else DEFAULT_PUBLISH_ROOT
+        _publish(output_dir, Path(publish_root) / output_dir.name)
+    return generated
+
+
 def generate_report(
     csv_path: Path,
     cfg: dict,
@@ -950,6 +964,24 @@ def generate_report(
     """
     output_dir.mkdir(parents=True, exist_ok=True)
     prefix = cfg.get("title_prefix", csv_path.stem)
+
+    # No-swept-x value-distribution view (e.g. switching speed: one number per
+    # event, spec'd against a limit -- the pod's original analytics are Type=70
+    # histograms). Routed here BEFORE load_scatter, which requires a numeric
+    # Frequency/X axis this data doesn't have; padb_plots.histogram() reads the
+    # CSV's measurement column directly.
+    if cfg.get("views") == ["histogram"]:
+        out_html = output_dir / (re.sub(r"[^\w]+", "_", prefix) + "_histogram.html")
+        title = prefix + " - Histogram"
+        print(f"  Rendering Histogram -> {out_html.name}", flush=True)
+        try:
+            _pp.histogram(csv_path, {**cfg, "title": title}, out_html)
+            generated = [out_html]
+        except Exception as exc:
+            print(f"    [ERROR] {exc}", flush=True)
+            _write_placeholder(out_html, title, f"Error: {exc}")
+            generated = []
+        return _finish_report(output_dir, prefix, generated, cfg)
 
     print(f"  Loading scatter CSV: {csv_path.name}", flush=True)
     df = load_scatter(csv_path, cfg)
@@ -1039,18 +1071,7 @@ def generate_report(
             print(f"    [ERROR] {exc}", flush=True)
             _write_placeholder(out_html, view_cfg["title"], f"Error: {exc}")
 
-    _write_index(output_dir, prefix, generated, cfg, is_room_only=is_room_only)
-
-    if "publish_to" in cfg:
-        if cfg["publish_to"]:
-            _publish(output_dir, Path(cfg["publish_to"]))
-        # else: "publish_to" explicitly set to "" / false / null -> opt out, skip publishing
-    else:
-        publish_root = COMPARE_PUBLISH_ROOT if cfg.get("compare_csv") else DEFAULT_PUBLISH_ROOT
-        default_dest = Path(publish_root) / output_dir.name
-        _publish(output_dir, default_dest)
-
-    return generated
+    return _finish_report(output_dir, prefix, generated, cfg, is_room_only=is_room_only)
 
 
 # ===========================================================================

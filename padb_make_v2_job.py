@@ -166,6 +166,30 @@ def _predict_csv_stem(a: dict, all_analytics: list[dict], unique_slugs: dict[int
     return (output_file or name).replace(" ", "_")
 
 
+def _is_non_sweep_x(raw_label: str | None) -> bool:
+    """True when a Type=80 analytic has no usable *numeric swept* x-axis, so a
+    scatter/6-view build is meaningless and it should be plotted as a value
+    histogram instead. Signals, read from Data_ScatterPlot_XData_Label:
+      * a text-typed axis (a "[T]" tag, e.g. "~Device Family [T] (1 x 1)")
+      * a single-value "1 x 1" dimension (nothing to sweep against)
+    A real numeric sweep like "~Vgg (V) (1 x 303)" returns False.
+    Motivating case (SwitchingSpeed): the Type=80 analytics carry the switching-
+    speed values in the measurement column with x = Device Family (one text
+    value); the pod's original analytics were Type=70 histograms. The histogram
+    plot job reads that same Type=80 CSV's value column -- so the Type=80
+    analytic must be KEPT (it's the data source); the histogram view just plots
+    it as a distribution instead of a scatter."""
+    if not raw_label:
+        return True
+    s = raw_label.strip()
+    if re.search(r"\[\s*T\s*\]", s):
+        return True
+    m = re.search(r"\(\s*(\d+)\s*x\s*(\d+)\s*\)\s*$", s)
+    if m and m.group(1) == "1" and m.group(2) == "1":
+        return True
+    return False
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate V2 (interactive) job.json files from a .pod file")
     parser.add_argument("pod", help="Path to the .pod file")
@@ -287,15 +311,27 @@ def main() -> None:
             "index_title": _dev_tag(stem),
             "spec_direction": args.spec_direction,
         }
-        x_override = _x_col_override(a.get("x_axis_label"))
-        if x_override:
-            x_col, x_label, x_unit = x_override
-            plot_job["x_col"] = x_col
-            plot_job["x_label"] = x_label
-            plot_job["x_unit"] = x_unit
-            print(f"NOTE: [{name}]'s swept x-axis is {x_col!r}, not a Frequency/X-value column -- "
-                  f"setting \"x_col\"/\"x_label\"/\"x_unit\" on this plot job so column "
-                  f"auto-detection doesn't silently zero out every row.")
+        if _is_non_sweep_x(a.get("x_axis_label")):
+            # No numeric swept x -> plot the measurement column as a value
+            # histogram instead of a (meaningless) scatter. padb_v2 routes
+            # views==["histogram"] straight to padb_plots.histogram(), reading
+            # this same Type=80 CSV's value column.
+            plot_job["views"] = ["histogram"]
+            print(f"NOTE: [{name}] has no numeric swept x-axis "
+                  f"(x = {a.get('x_axis_label')!r}) -- generating a value-distribution "
+                  f"HISTOGRAM plot job instead of a scatter (switching-speed / one-number-"
+                  f"per-event style test). Its Type=80 CSV supplies the raw values, so keep "
+                  f"the Type=80 analytic.")
+        else:
+            x_override = _x_col_override(a.get("x_axis_label"))
+            if x_override:
+                x_col, x_label, x_unit = x_override
+                plot_job["x_col"] = x_col
+                plot_job["x_label"] = x_label
+                plot_job["x_unit"] = x_unit
+                print(f"NOTE: [{name}]'s swept x-axis is {x_col!r}, not a Frequency/X-value column -- "
+                      f"setting \"x_col\"/\"x_label\"/\"x_unit\" on this plot job so column "
+                      f"auto-detection doesn't silently zero out every row.")
         filter_expr = a.get("filter_expression")
         if filter_expr:
             plot_job["pod_filter_expression"] = filter_expr

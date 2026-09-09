@@ -6,6 +6,7 @@ Pulled directly from git history. A consolidated **week-of-Aug-27 summary** is f
 
 ## Week of 2026-08-27 → (in progress)
 
+- **New `histogram` view** — a CSV-driven interactive value-distribution histogram for tests with no swept x-axis (switching speed and similar "one number per event" measurements). Auto-detected bins (Freedman–Diaconis), overlaid conditions (e.g. per port), a spec-limit line, and a stats panel (n / mean / median / p95 / p99 / max / % out-of-spec). `padb_make_v2_job.py` now routes any Type=80 analytic whose x-axis is text / single-value (`[T]` or `(1 x 1)`) to `views:["histogram"]` automatically; the Type=80 analytic's CSV remains the raw-value source.
 - **Scatter: "Table" view** — a toggle that shows the currently-plotted rows (after all filters) as a table below the plot, same columns as the CSV export, capped at 2000 rows with a "use Save CSV for all" note above that.
 - **Scrollbar gutter reserved** on every interactive view — stops the vertical scrollbar toggling on/off (and briefly hiding the buttons below the plot) when a filter/panel/re-render changes page height.
 - **Fixed:** the scatter's GF "Inspect" toggle wrote the *unscoped* GF-mode key (regression from the per-analytic GF scoping) — it now uses the scoped key.

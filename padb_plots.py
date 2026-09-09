@@ -16348,3 +16348,291 @@ def summary_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
         hi_spec=hi_spec, lo_spec=lo_spec,
         freq_min=freq_min, freq_max=freq_max, freq_vals=freq_vals,
     )
+
+
+# =====================================================================
+# histogram — value-distribution view for tests with NO swept x-axis
+# (e.g. switching speed: one number per switch event, spec'd against a
+# limit). The original PADB analytics for these are Type=70 histograms;
+# this is the self-contained interactive equivalent, built straight from
+# the Type=80 Scatter CSV's measurement column. Deliberately does NOT go
+# through _load_scatter_for_stats (that requires a numeric Frequency/X
+# axis this data doesn't have) -- it has its own lightweight loader.
+# =====================================================================
+_HISTOGRAM_META = {
+    "analysis type", "model(s)", "algorithm -> result", "units", "group",
+    "device family", "serial number", "station",
+}
+
+
+def _load_histogram_csv(csv_path: Path) -> dict:
+    """Load a Type=80 CSV for a value-distribution (histogram) view. Detects
+    the measurement column (the most-numeric non-metadata/non-limit column),
+    parses Group into condition dimensions + serial, and reads the spec limits.
+    Returns the compact payload the JS histogram consumes, or {} if there's no
+    usable numeric measurement column."""
+    df = pd.read_csv(csv_path, low_memory=False)
+    df.columns = [str(c).strip() for c in df.columns]
+
+    # --- measurement column: most-numeric column that isn't metadata/limit ---
+    best = None  # (numeric_fraction, col, parsed_series)
+    for c in df.columns:
+        lc = c.lower()
+        if lc in _HISTOGRAM_META or "limit" in lc:
+            continue
+        num = pd.to_numeric(df[c], errors="coerce")
+        frac = float(num.notna().mean())
+        if frac > 0 and (best is None or frac > best[0]):
+            best = (frac, c, num)
+    if best is None:
+        return {}
+    val_col, vser = best[1], best[2]
+
+    # value label / unit from the column name: "prefix:Name (unit)" -> Name, unit
+    _name = val_col.split(":", 1)[1] if ":" in val_col else val_col
+    vunit = ""
+    m = re.search(r"\(([^()]*)\)\s*$", _name)
+    if m:
+        vunit = m.group(1).strip()
+        _name = _name[: m.start()].strip()
+    vlabel = _name or "Value"
+
+    # --- spec limits (single value each; -1/negative lower is PADB's "none") ---
+    def _limit(substr):
+        col = next((c for c in df.columns if substr in c.lower()), None)
+        if not col:
+            return None
+        vals = pd.to_numeric(df[col], errors="coerce").dropna()
+        return float(vals.iloc[0]) if len(vals) else None
+    lo = _limit("lower limit")
+    hi = _limit("upper limit")
+    if lo is not None and lo < 0:      # switching times are >=0; -1 == no lower spec
+        lo = None
+    if hi is not None and hi < 0:
+        hi = None
+
+    # --- parse Group -> per-row condition dict + serial ---
+    serial_col = next((c for c in df.columns
+                       if any(k in c.lower() for k in ("serial num", "serial no", "unit id", "dut id"))
+                       or c.strip().lower() == "serial number"), None)
+    groups = df["Group"].astype(str) if "Group" in df.columns else pd.Series([""] * len(df))
+    _kv_cache: dict = {}
+
+    def _kv(g):
+        if g not in _kv_cache:
+            _kv_cache[g] = _parse_group_kv(g)
+        return _kv_cache[g]
+
+    serial_kws = ("serial", "unit id", "dut id", "s/n")
+    # which Group keys are serial-like (excluded from condition dims)
+    all_keys: dict = {}
+    for g in groups.unique():
+        for k in _kv(g):
+            all_keys.setdefault(k, set())
+    for g in groups.unique():
+        kv = _kv(g)
+        for k, v in kv.items():
+            all_keys[k].add(v)
+    serial_group_keys = {k for k in all_keys if any(kw in k.lower() for kw in serial_kws)}
+    # condition dims = non-serial Group keys with 2..50 distinct values
+    cond_keys = [k for k in all_keys
+                 if k not in serial_group_keys and 1 < len(all_keys[k]) <= 50]
+    cond_keys.sort()
+
+    values, serials = [], []
+    dimvals: dict = {k: [] for k in cond_keys}
+    dim_seen: dict = {k: [] for k in cond_keys}
+    ser_seen: list = []
+    for i in range(len(df)):
+        v = vser.iloc[i]
+        if pd.isna(v):
+            continue
+        kv = _kv(groups.iloc[i])
+        values.append(round(float(v), 4))
+        for k in cond_keys:
+            val = str(kv.get(k, ""))
+            dimvals[k].append(val)
+            if val not in dim_seen[k]:
+                dim_seen[k].append(val)
+        if serial_col is not None and not pd.isna(df[serial_col].iloc[i]):
+            s = str(df[serial_col].iloc[i]).strip()
+        else:
+            s = next((kv[k] for k in serial_group_keys if k in kv), "")
+        serials.append(s)
+        if s and s not in ser_seen:
+            ser_seen.append(s)
+
+    if not values:
+        return {}
+
+    dims = [{"col_id": re.sub(r"[^\w]+", "_", k), "label": k,
+             "vals": sorted(dim_seen[k]), "_key": k} for k in cond_keys]
+    # remap dimvals to col_id keys for the JS payload
+    dimvals_out = {d["col_id"]: dimvals[d["_key"]] for d in dims}
+    for d in dims:
+        d.pop("_key")
+
+    return {
+        "values": values, "serials": serials, "ser_list": sorted(ser_seen),
+        "dims": dims, "dimvals": dimvals_out,
+        "limit_hi": hi, "limit_lo": lo, "vlabel": vlabel, "vunit": vunit,
+    }
+
+
+_HISTOGRAM_JS = r"""
+function _hpct(sorted,p){ if(!sorted.length) return NaN; var i=(p/100)*(sorted.length-1),lo=Math.floor(i); return lo+1<sorted.length?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo]; }
+function _hSelDims(){ var out={}; DIMS.forEach(function(d){ var sel=new Set(); document.querySelectorAll('.hf_'+d.col_id).forEach(function(c){ if(c.checked) sel.add(c.value); }); out[d.col_id]=sel; }); return out; }
+function _hSelSer(){ var s=new Set(); document.querySelectorAll('.hf_serial').forEach(function(c){ if(c.checked) s.add(c.value); }); return s; }
+function _hFilteredIdx(){ var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.length>0, out=[];
+  for(var i=0;i<VALUES.length;i++){ var ok=true;
+    for(var k=0;k<DIMS.length;k++){ var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;} }
+    if(ok&&hasSer&&!ss.has(SERIAL[i])) ok=false;
+    if(ok) out.push(i);
+  } return out; }
+function _hCond(i){ if(!DIMS.length) return 'All'; return DIMS.map(function(d){return d.label+'='+DIMVALS[d.col_id][i];}).join('  |  '); }
+function _hAutoBins(vals){ if(vals.length<2) return 10; var s=vals.slice().sort(function(a,b){return a-b;}); var iqr=_hpct(s,75)-_hpct(s,25); var w=iqr>0?2*iqr/Math.pow(vals.length,1/3):0; var span=s[s.length-1]-s[0]; var n=(w>0&&span>0)?Math.ceil(span/w):30; return Math.max(5,Math.min(200,n)); }
+var _HCOLORS=['#4a78c0','#c0504a','#4aa564','#9a6fb0','#d08a34','#3aa0a0','#b05070','#7f7f2f','#5b8fd0','#d06a6a'];
+function hSetAuto(){ document.getElementById('h_binmode').value='auto'; update(); }
+function hSetManual(){ document.getElementById('h_binmode').value='manual'; update(); }
+function _hFail(vals){ var f=0; for(var i=0;i<vals.length;i++){ var v=vals[i]; if(LIMIT_HI!==null&&v>LIMIT_HI) f++; else if(LIMIT_LO!==null&&v<LIMIT_LO) f++; } return f; }
+function update(){
+  var idx=_hFilteredIdx(), vals=idx.map(function(i){return VALUES[i];});
+  var mode=document.getElementById('h_binmode').value, nb;
+  if(mode==='auto'){ nb=_hAutoBins(vals); var sl=document.getElementById('h_bincount'); if(sl) sl.value=Math.min(200,Math.max(5,nb)); }
+  else { nb=parseInt(document.getElementById('h_bincount').value)||30; }
+  var bl=document.getElementById('h_binlabel'); if(bl) bl.textContent=nb+(mode==='auto'?' (auto)':' (manual)');
+  var vmin=Infinity,vmax=-Infinity; for(var i=0;i<vals.length;i++){ if(vals[i]<vmin)vmin=vals[i]; if(vals[i]>vmax)vmax=vals[i]; }
+  if(!isFinite(vmin)){ vmin=0; vmax=1; }
+  var size=(vmax-vmin)/nb; if(!(size>0)) size=1;
+  var groups={}; idx.forEach(function(i){ var k=_hCond(i); (groups[k]=groups[k]||[]).push(VALUES[i]); });
+  var keys=Object.keys(groups).sort();
+  var multi=keys.length>1;
+  var traces=keys.map(function(k,gi){ return {type:'histogram',x:groups[k],name:k,opacity:multi?0.55:0.85,
+      marker:{color:_HCOLORS[gi%_HCOLORS.length],line:{width:0.5,color:'#fff'}},
+      xbins:{start:vmin,end:vmax+size*0.5,size:size},autobinx:false,
+      hovertemplate:k+'<br>'+VLABEL+': %{x}<br>count: %{y}<extra></extra>'}; });
+  var shapes=[],ann=[],hide=document.getElementById('h_hidespec').checked;
+  function spec(v,lbl){ if(v===null||!isFinite(v)) return; shapes.push({type:'line',x0:v,x1:v,yref:'paper',y0:0,y1:1,line:{color:'#c00',dash:'dash',width:2}}); ann.push({x:v,yref:'paper',y:1.0,yanchor:'bottom',text:lbl,showarrow:false,font:{color:'#c00',size:11}}); }
+  if(!hide){ spec(LIMIT_HI,'Upper limit '+LIMIT_HI); spec(LIMIT_LO,'Lower limit '+LIMIT_LO); }
+  var xt=VLABEL+(VUNIT?' ('+VUNIT+')':'');
+  Plotly.react('plot',traces,{barmode:'overlay',bargap:0.02,xaxis:{title:xt},yaxis:{title:'Count'},
+      shapes:shapes,annotations:ann,legend:{orientation:'h'},margin:{t:24,r:20},uirevision:'keep'},
+      {responsive:true,displaylogo:false});
+  var nEl=document.getElementById('h_n'); if(nEl) nEl.textContent=vals.length.toLocaleString()+' measurements'+(multi?' in '+keys.length+' conditions':'');
+  buildStats(groups,keys,multi);
+}
+function buildStats(groups,keys,multi){
+  var el=document.getElementById('h_stats'); if(!el||el.style.display==='none') return;
+  function row(label,vals){ var s=vals.slice().sort(function(a,b){return a-b;}),n=s.length,mean=0; for(var i=0;i<n;i++) mean+=s[i]; mean=n?mean/n:NaN; var fail=_hFail(vals),spec=(LIMIT_HI!==null||LIMIT_LO!==null);
+    return '<tr><td>'+label+'</td><td>'+n+'</td><td>'+(n?mean.toFixed(2):'--')+'</td><td>'+(n?_hpct(s,50).toFixed(2):'--')+'</td><td>'+(n?_hpct(s,95).toFixed(2):'--')+'</td><td>'+(n?_hpct(s,99).toFixed(2):'--')+'</td><td>'+(n?s[n-1].toFixed(2):'--')+'</td><td'+(spec&&n&&fail>0?' style="color:#c04000;font-weight:bold"':'')+'>'+(spec?(n?(100*fail/n).toFixed(1)+'%':'--'):'n/a')+'</td></tr>'; }
+  var h='<table class="htbl"><thead><tr><th>Condition</th><th>n</th><th>Mean</th><th>Median</th><th>p95</th><th>p99</th><th>Max</th><th>% out-of-spec</th></tr></thead><tbody>';
+  if(multi){ var all=[]; keys.forEach(function(k){ all=all.concat(groups[k]); }); h+=row('<b>All</b>',all); }
+  keys.forEach(function(k){ h+=row(k,groups[k]); });
+  el.innerHTML=h+'</tbody></table>';
+}
+function toggleStats(){ var el=document.getElementById('h_stats'),b=document.getElementById('h_stats_btn'); var show=el.style.display==='none'; el.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Statistics'; if(show) update(); }
+function hResetFilters(){ document.querySelectorAll('.fchk_h').forEach(function(c){c.checked=true;}); document.getElementById('h_binmode').value='auto'; document.getElementById('h_hidespec').checked=false; update(); }
+window.addEventListener('DOMContentLoaded',function(){ update(); });
+"""
+
+
+def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
+    """Interactive value-distribution histogram for a no-swept-x test (e.g.
+    switching speed). Overlaid per-condition, auto (Freedman-Diaconis) bins with
+    a live count slider, spec-limit lines, condition/serial filters, and an
+    out-of-spec stats table. Self-contained HTML (Plotly inline)."""
+    title = cfg.get("title", output_html.stem)
+    payload = _load_histogram_csv(Path(csv_path))
+    if not payload:
+        html_doc = (
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            f"<title>{html.escape(title)}</title></head><body>"
+            f"<h3>{html.escape(title)}</h3>"
+            "<p style='color:#900'>No numeric measurement column found in this CSV — "
+            "nothing to histogram.</p></body></html>"
+        )
+        output_html.parent.mkdir(parents=True, exist_ok=True)
+        output_html.write_text(html_doc, encoding="utf-8")
+        return
+
+    dims = payload["dims"]
+
+    def _chk_group(cls_prefix, label, vals):
+        items = "".join(
+            f'<label class="hfitem"><input type="checkbox" class="fchk_h {cls_prefix}" '
+            f'value="{html.escape(v)}" checked onchange="update()">&nbsp;{html.escape(v)}</label>'
+            for v in vals
+        )
+        return (f'<span class="hf-group"><b>{html.escape(label)}:</b> {items}</span>')
+
+    filt_html = "".join(_chk_group("hf_" + d["col_id"], d["label"], d["vals"]) for d in dims)
+    if payload["ser_list"] and len(payload["ser_list"]) > 1:
+        filt_html += _chk_group("hf_serial", "Serial", payload["ser_list"])
+
+    auto_default = 30  # JS recomputes the real auto value on first render
+    constants = (
+        f"var TITLE={json.dumps(title)};\n"
+        f"var VALUES={json.dumps(payload['values'])};\n"
+        f"var SERIAL={json.dumps(payload['serials'])};\n"
+        f"var SERIAL_LIST={json.dumps(payload['ser_list'])};\n"
+        f"var DIMS={json.dumps(payload['dims'])};\n"
+        f"var DIMVALS={json.dumps(payload['dimvals'])};\n"
+        f"var LIMIT_HI={json.dumps(payload['limit_hi'])};\n"
+        f"var LIMIT_LO={json.dumps(payload['limit_lo'])};\n"
+        f"var VLABEL={json.dumps(payload['vlabel'])};\n"
+        f"var VUNIT={json.dumps(payload['vunit'])};\n"
+    )
+    css = (
+        "body{font-family:Segoe UI,Arial,sans-serif;margin:10px;font-size:13px}"
+        ".ctrl-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;"
+        "padding:6px 4px;border-bottom:1px solid #eee;margin-bottom:6px}"
+        ".hf-group{white-space:nowrap;padding:2px 6px;background:#f6f6f6;border:1px solid #e0e0e0;border-radius:4px}"
+        ".hfitem{margin:0 4px;font-weight:normal}"
+        "#plot{width:100%;height:60vh}"
+        ".htbl{border-collapse:collapse;font-size:12px;margin-top:6px}"
+        ".htbl th,.htbl td{border:1px solid #ddd;padding:2px 8px;text-align:right}"
+        ".htbl th:first-child,.htbl td:first-child{text-align:left}"
+        ".htbl thead th{background:#f0f4fb}"
+        "button.hbtn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;background:#f4f4f4;cursor:pointer}"
+    )
+    spec_note = ""
+    if payload["limit_hi"] is not None or payload["limit_lo"] is not None:
+        parts = []
+        if payload["limit_hi"] is not None:
+            parts.append(f"upper {payload['limit_hi']:g}")
+        if payload["limit_lo"] is not None:
+            parts.append(f"lower {payload['limit_lo']:g}")
+        spec_note = f" &nbsp;|&nbsp; spec: {', '.join(parts)} {html.escape(payload['vunit'])}"
+
+    body = (
+        "</head>\n<body>\n"
+        f"<div style='font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px;padding:4px 2px'>"
+        f"<b>{html.escape(title)}</b> &mdash; value distribution (histogram). Overlaid per condition; "
+        f"auto bins (Freedman&ndash;Diaconis){spec_note}. This test has no swept axis, so it's shown "
+        f"as a distribution, not a scatter.</div>\n"
+        "<div class='ctrl-bar'>\n"
+        "  <span><b>Bins:</b> <input type='range' id='h_bincount' min='5' max='200' "
+        f"value='{auto_default}' style='vertical-align:middle' oninput='hSetManual()'>"
+        " <span id='h_binlabel'></span> <button class='hbtn' onclick='hSetAuto()'>Auto</button></span>\n"
+        "  <label><input type='checkbox' id='h_hidespec' onchange='update()'> Hide spec lines</label>\n"
+        "  <button class='hbtn' onclick='hResetFilters()'>Reset</button>\n"
+        "  <span id='h_n' style='color:#555'></span>\n"
+        "  <input type='hidden' id='h_binmode' value='auto'>\n"
+        "</div>\n"
+        f"<div class='ctrl-bar'>{filt_html}</div>\n"
+        "<div id='plot'></div>\n"
+        "<div style='margin:6px 2px'><button class='hbtn' id='h_stats_btn' onclick='toggleStats()'>"
+        "&#9654; Statistics</button></div>\n"
+        "<div id='h_stats' style='display:none;padding:0 2px 16px'></div>\n"
+    )
+
+    html_doc = (
+        "<!DOCTYPE html>\n<html>\n<head>\n<meta charset='utf-8'>\n"
+        f"<title>{html.escape(title)}</title>\n"
+        f"<script>{_get_plotlyjs()}</script>\n"
+        f"<style>{css}</style>\n"
+        + body
+        + f"<script>\n{constants}\n{_HISTOGRAM_JS}</script>\n</body>\n</html>\n"
+    )
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html_doc, encoding="utf-8")
