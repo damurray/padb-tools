@@ -16483,10 +16483,13 @@ _HISTOGRAM_JS = r"""
 function _hpct(sorted,p){ if(!sorted.length) return NaN; var i=(p/100)*(sorted.length-1),lo=Math.floor(i); return lo+1<sorted.length?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo]; }
 function _hSelDims(){ var out={}; DIMS.forEach(function(d){ var sel=new Set(); document.querySelectorAll('.hf_'+d.col_id).forEach(function(c){ if(c.checked) sel.add(c.value); }); out[d.col_id]=sel; }); return out; }
 function _hSelSer(){ var s=new Set(); document.querySelectorAll('.hf_serial').forEach(function(c){ if(c.checked) s.add(c.value); }); return s; }
-function _hFilteredIdx(){ var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.length>0, out=[];
+function _hIsFail(v){ return (LIMIT_HI!==null&&v>LIMIT_HI)||(LIMIT_LO!==null&&v<LIMIT_LO); }
+function _hPfMode(){ var el=document.getElementById('h_pf'); return el?el.value:'all'; }
+function _hFilteredIdx(){ var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.length>0, pf=_hPfMode(), out=[];
   for(var i=0;i<VALUES.length;i++){ var ok=true;
     for(var k=0;k<DIMS.length;k++){ var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;} }
     if(ok&&hasSer&&!ss.has(SERIAL[i])) ok=false;
+    if(ok&&pf!=='all'){ var f=_hIsFail(VALUES[i]); if((pf==='fail')!==f) ok=false; }
     if(ok) out.push(i);
   } return out; }
 function _hCond(i){ if(!DIMS.length) return 'All'; return DIMS.map(function(d){return d.label+'='+DIMVALS[d.col_id][i];}).join('  |  '); }
@@ -16494,7 +16497,7 @@ function _hAutoBins(vals){ if(vals.length<2) return 10; var s=vals.slice().sort(
 var _HCOLORS=['#4a78c0','#c0504a','#4aa564','#9a6fb0','#d08a34','#3aa0a0','#b05070','#7f7f2f','#5b8fd0','#d06a6a'];
 function hSetAuto(){ document.getElementById('h_binmode').value='auto'; update(); }
 function hSetManual(){ document.getElementById('h_binmode').value='manual'; update(); }
-function _hFail(vals){ var f=0; for(var i=0;i<vals.length;i++){ var v=vals[i]; if(LIMIT_HI!==null&&v>LIMIT_HI) f++; else if(LIMIT_LO!==null&&v<LIMIT_LO) f++; } return f; }
+function _hFail(vals){ var f=0; for(var i=0;i<vals.length;i++){ if(_hIsFail(vals[i])) f++; } return f; }
 function update(){
   var idx=_hFilteredIdx(), vals=idx.map(function(i){return VALUES[i];});
   var mode=document.getElementById('h_binmode').value, nb;
@@ -16531,7 +16534,7 @@ function buildStats(groups,keys,multi){
   el.innerHTML=h+'</tbody></table>';
 }
 function toggleStats(){ var el=document.getElementById('h_stats'),b=document.getElementById('h_stats_btn'); var show=el.style.display==='none'; el.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Statistics'; if(show) update(); }
-function hResetFilters(){ document.querySelectorAll('.fchk_h').forEach(function(c){c.checked=true;}); document.getElementById('h_binmode').value='auto'; document.getElementById('h_hidespec').checked=false; update(); }
+function hResetFilters(){ document.querySelectorAll('.fchk_h').forEach(function(c){c.checked=true;}); document.getElementById('h_binmode').value='auto'; document.getElementById('h_hidespec').checked=false; var pf=document.getElementById('h_pf'); if(pf)pf.value='all'; update(); }
 function _hCsvCell(x){ x=(x===null||x===undefined)?'':String(x); return /[",\n\r]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x; }
 function hExportCsv(){
   var idx=_hFilteredIdx(), hasSer=SERIAL_LIST.length>0, spec=(LIMIT_HI!==null||LIMIT_LO!==null);
@@ -16543,7 +16546,7 @@ function hExportCsv(){
   for(var j=0;j<idx.length;j++){ var i=idx[j], row=DIMS.map(function(d){return DIMVALS[d.col_id][i];});
     if(hasSer) row.push(SERIAL[i]);
     row.push(VALUES[i]);
-    if(spec){ var v=VALUES[i]; row.push(((LIMIT_HI!==null&&v>LIMIT_HI)||(LIMIT_LO!==null&&v<LIMIT_LO))?'Y':'N'); }
+    if(spec){ row.push(_hIsFail(VALUES[i])?'Y':'N'); }
     lines.push(row.map(_hCsvCell).join(','));
   }
   var blob=new Blob([lines.join('\r\n')],{type:'text/csv;charset=utf-8;'});
@@ -16614,14 +16617,24 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         ".htbl thead th{background:#f0f4fb}"
         "button.hbtn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;background:#f4f4f4;cursor:pointer}"
     )
+    has_spec = payload["limit_hi"] is not None or payload["limit_lo"] is not None
     spec_note = ""
-    if payload["limit_hi"] is not None or payload["limit_lo"] is not None:
+    if has_spec:
         parts = []
         if payload["limit_hi"] is not None:
             parts.append(f"upper {payload['limit_hi']:g}")
         if payload["limit_lo"] is not None:
             parts.append(f"lower {payload['limit_lo']:g}")
         spec_note = f" &nbsp;|&nbsp; spec: {', '.join(parts)} {html.escape(payload['vunit'])}"
+    # Pass/Fail filter -- only meaningful when a spec limit exists. Feeds the same
+    # _hFilteredIdx() the plot, stats and Export CSV all use, so it filters them
+    # together.
+    pf_html = (
+        "  <label><b>Spec:</b> <select id='h_pf' onchange='update()'>"
+        "<option value='all'>All</option>"
+        "<option value='pass'>Pass only</option>"
+        "<option value='fail'>Fail only</option></select></label>\n"
+    ) if has_spec else ""
 
     body = (
         "</head>\n<body>\n"
@@ -16634,6 +16647,7 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"value='{auto_default}' style='vertical-align:middle' oninput='hSetManual()'>"
         " <span id='h_binlabel'></span> <button class='hbtn' onclick='hSetAuto()'>Auto</button></span>\n"
         "  <label><input type='checkbox' id='h_hidespec' onchange='update()'> Hide spec lines</label>\n"
+        f"{pf_html}"
         "  <button class='hbtn' onclick='hResetFilters()'>Reset</button>\n"
         "  <button class='hbtn' onclick='hExportCsv()' title='Download the currently-filtered "
         "rows (one per measurement) with serial, condition, value and out-of-spec flag'>Export CSV</button>\n"
