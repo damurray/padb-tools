@@ -16582,6 +16582,65 @@ function hExportCsv(){
   a.href=url; a.download=(TITLE||'histogram').replace(/[^\w.-]+/g,'_')+'_export.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(url);},0);
 }
+// ---- Import a previously-exported (flat) CSV and re-plot it in place ----
+var _HMETA_SKIP={'analysis type':1,'model(s)':1,'algorithm -> result':1,'units':1,'group':1,'device family':1,'serial number':1,'station':1};
+function _hEsc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function _hParseCsv(text){ var rows=[],row=[],cur='',i=0,inq=false,c;
+  while(i<text.length){ c=text[i];
+    if(inq){ if(c==='"'){ if(text[i+1]==='"'){cur+='"';i+=2;continue;} inq=false;i++;continue;} cur+=c;i++;continue; }
+    if(c==='"'){ inq=true;i++;continue; }
+    if(c===','){ row.push(cur);cur='';i++;continue; }
+    if(c==='\r'){ i++;continue; }
+    if(c==='\n'){ row.push(cur);rows.push(row);row=[];cur='';i++;continue; }
+    cur+=c;i++;
+  }
+  if(cur!==''||row.length){ row.push(cur);rows.push(row); }
+  return rows; }
+function _hRebuildFilterPanels(){ var html='';
+  DIMS.forEach(function(d){ var items=d.vals.map(function(v){ return '<label class="hfitem"><input type="checkbox" class="fchk_h hf_'+d.col_id+'" value="'+_hEsc(v)+'" checked onchange="update()">&nbsp;'+_hEsc(v)+'</label>'; }).join('');
+    html+='<span class="hf-group"><b>'+_hEsc(d.label)+':</b> '+items+'</span>'; });
+  if(SERIAL_LIST.length>1){ var it=SERIAL_LIST.map(function(v){ return '<label class="hfitem"><input type="checkbox" class="fchk_h hf_serial" value="'+_hEsc(v)+'" checked onchange="update()">&nbsp;'+_hEsc(v)+'</label>'; }).join('');
+    html+='<span class="hf-group"><b>Serial:</b> '+it+'</span>'; }
+  document.getElementById('h_filterbar').innerHTML=html; }
+function hImportCsvFile(input){ var f=input.files&&input.files[0]; if(!f) return;
+  var rd=new FileReader(); rd.onload=function(e){ try{ _hApplyImport(e.target.result,f.name); }catch(err){ alert('Import failed: '+err.message); } };
+  rd.readAsText(f); input.value=''; }
+function _hApplyImport(text,fname){
+  var rows=_hParseCsv(text).filter(function(r){ return r.length>1 || (r.length===1 && r[0].trim()!==''); });
+  if(rows.length<2) throw new Error('CSV has no data rows');
+  var hdr=rows[0].map(function(s){return s.trim();}), lc=hdr.map(function(s){return s.toLowerCase();});
+  // value column: prefer exact match to this plot's value header, else most-numeric non-serial/limit/flag col
+  var curValHdr=VLABEL+(VUNIT?' ('+VUNIT+')':''), valIdx=hdr.indexOf(curValHdr);
+  var isSkip=function(l){ return l.indexOf('serial')>=0||l.indexOf('limit')>=0||l==='out of spec'||l==='out_of_spec'||l==='result'||l==='pass/fail'||l==='pass fail'; };
+  if(valIdx<0){ var bf=-1; for(var i=0;i<hdr.length;i++){ if(isSkip(lc[i])) continue; var num=0,tot=0; for(var r=1;r<rows.length;r++){ if(rows[r].length>i){ tot++; var x=parseFloat(rows[r][i]); if(rows[r][i]!==''&&!isNaN(x)) num++; } } var fr=tot?num/tot:0; if(fr>bf){bf=fr;valIdx=i;} } }
+  if(valIdx<0) throw new Error('no numeric value column found');
+  var vh=hdr[valIdx], m=vh.match(/\(([^()]*)\)\s*$/), vname=vh, vunit='';
+  if(m){ vunit=m[1].trim(); vname=vh.slice(0,m.index).trim(); }
+  var serIdx=-1; for(var i=0;i<hdr.length;i++){ var l=lc[i]; if(l==='serial'||l==='serial number'||l.indexOf('serial num')>=0||l.indexOf('serial no')>=0||l.indexOf('unit id')>=0||l.indexOf('dut id')>=0){ serIdx=i; break; } }
+  var hiIdx=lc.indexOf('upper limit'), loIdx=lc.indexOf('lower limit');
+  var dimIdx=[]; for(var i=0;i<hdr.length;i++){ if(i===valIdx||i===serIdx||i===hiIdx||i===loIdx) continue; var l=lc[i]; if(isSkip(l)||_HMETA_SKIP[l]) continue; dimIdx.push(i); }
+  var nv=[],ns=[],ndims=[],ndimvals={},seen={},serSet={};
+  dimIdx.forEach(function(i){ var cid='c'+i; ndimvals[cid]=[]; seen[cid]={}; ndims.push({col_id:cid,label:hdr[i],_i:i}); });
+  for(var r=1;r<rows.length;r++){ var row=rows[r]; if(row.length<hdr.length) continue; var raw=row[valIdx], v=parseFloat(raw); if(raw===''||isNaN(v)) continue;
+    nv.push(Math.round(v*10000)/10000);
+    ndims.forEach(function(d){ var val=(row[d._i]||'').trim(); ndimvals[d.col_id].push(val); seen[d.col_id][val]=1; });
+    var s=serIdx>=0?(row[serIdx]||'').trim():''; ns.push(s); if(s) serSet[s]=1; }
+  if(!nv.length) throw new Error('no usable numeric rows');
+  ndims.forEach(function(d){ d.vals=Object.keys(seen[d.col_id]).sort(); delete d._i; });
+  ndims=ndims.filter(function(d){ return d.vals.length>1 && d.vals.length<=50; });
+  var nhi=null,nlo=null;
+  if(hiIdx>=0){ for(var r=1;r<rows.length;r++){ var x=parseFloat(rows[r][hiIdx]); if(!isNaN(x)){nhi=x;break;} } }
+  if(loIdx>=0){ for(var r=1;r<rows.length;r++){ var x=parseFloat(rows[r][loIdx]); if(!isNaN(x)){nlo=x;break;} } }
+  if(nhi!==null&&nhi<0) nhi=null; if(nlo!==null&&nlo<0) nlo=null;
+  if(hiIdx<0&&loIdx<0){ nhi=LIMIT_HI; nlo=LIMIT_LO; }  // clean export: keep this plot's spec
+  VALUES=nv; SERIAL=ns; SERIAL_LIST=Object.keys(serSet).sort(); DIMS=ndims; DIMVALS=ndimvals; LIMIT_HI=nhi; LIMIT_LO=nlo; VLABEL=vname||'Value'; VUNIT=vunit;
+  _hRebuildFilterPanels();
+  document.getElementById('h_binmode').value='auto';
+  var pf=document.getElementById('h_pf'); if(pf) pf.value='all';
+  var hd=document.getElementById('h_hidespec'); if(hd) hd.checked=false;
+  update();
+  var st=document.getElementById('h_import_status'); if(st) st.textContent='Imported '+fname+' ('+nv.length.toLocaleString()+' rows)';
+}
 window.addEventListener('DOMContentLoaded',function(){ update(); });
 """
 
@@ -16688,10 +16747,16 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "  <button class='hbtn' onclick='hResetFilters()'>Reset</button>\n"
         "  <button class='hbtn' onclick='hExportCsv()' title='Download the currently-filtered "
         "rows (one per measurement) with serial, condition, value and out-of-spec flag'>Export CSV</button>\n"
+        "  <button class='hbtn' onclick=\"document.getElementById('h_import_file').click()\" "
+        "title='Load a previously exported histogram CSV and re-plot it here. Keeps this "
+        "plot&#39;s spec limit if the CSV has none.'>Import CSV</button>\n"
+        "  <input type='file' id='h_import_file' accept='.csv,text/csv' style='display:none' "
+        "onchange='hImportCsvFile(this)'>\n"
+        "  <span id='h_import_status' style='color:#080'></span>\n"
         "  <span id='h_n' style='color:#555'></span>\n"
         "  <input type='hidden' id='h_binmode' value='auto'>\n"
         "</div>\n"
-        f"<div class='ctrl-bar'>{filt_html}</div>\n"
+        f"<div class='ctrl-bar' id='h_filterbar'>{filt_html}</div>\n"
         "<div id='plot'></div>\n"
         "<div style='margin:6px 2px'><button class='hbtn' id='h_stats_btn' onclick='toggleStats()'>"
         "&#9654; Statistics</button></div>\n"
