@@ -207,8 +207,25 @@ py qa_filters.py --page <one_boxplot.html>
 over-exclusion — `removed=63, 23 outside the outlier identity`). Tests pages AS
 BUILT, so rebuild a page (padb_v2.py) before testing it if it predates a fix.
 
-**Roadmap (compare-first, then generalize):** v1 covers the boxplot (single-site
-+ compare). Next: view-appropriate readers for scatter / stat_summary / summary /
-env_coverage / distribution / histogram (each exposes plotted points differently),
-and a plot↔table (`#box_stat_panel`) cross-check, so the same invariant set runs
-on every view.
+**All 7 view types are covered (2026-09-10).** Rather than a bespoke per-point
+reader for each (the views are too idiosyncratic -- per-serial `scattergl` traces,
+aggregated per-condition traces, `type:'histogram'` x-only traces, distribution's
+own plot-div id, and five different serial/temp checkbox class families), the
+generic layer uses one oracle-free invariant that works everywhere:
+**filter reversibility** -- toggle a filter checkbox off then back on (via a real
+`change` event) and the plot's *signature* (every data trace as `name:len`,
+sorted; `len` = y-array or, for histograms, x-array) must return to the exact
+baseline. A filter that does nothing changes nothing (reported soft); a filter
+that corrupts state fails to restore (hard FAIL). Plus baseline-not-blank and
+reset-restores (tries `clearEverything`/`resetFilters`/`resetView`/`hResetFilters`).
+The **boxplot** additionally gets the deep point-precise GF set-difference checks
+(it's the view where GF is *set*). The Plotly graph div is found generically
+(`#plot` or `.js-plotly-plot`), and Show Points is NOT forced in the generic path
+(reset toggles it, which would false-positive reset-restores). Validated with no
+false positives on current scatter/stat_summary/summary/env_coverage/distribution/
+histogram/boxplot pages, and it still catches the pre-fix boxplot GF over-exclusion.
+
+**Remaining depth (optional):** a plot↔table (`#box_stat_panel` etc.) numeric
+cross-check per view, and GF-*consumption* checks on the aggregated views (inject a
+GF serial, assert its contribution drops) -- the reversibility layer already covers
+the filter-consistency bug class those would target.

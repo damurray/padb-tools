@@ -90,11 +90,91 @@ _HARNESS_JS = r"""
     pre.id='__qa_results'; pre.style.display='none';
     pre.textContent=JSON.stringify(obj); document.body.appendChild(pre);
   }
+  // ---- generic helpers (all views) ----
+  // A stable signature of the plotted DATA: every trace with a y-array, as
+  // name:len, sorted. Reference lines (Spec Hi/Lo, TTL) are included -- they are
+  // constant across filter changes, so they don't affect the diff either way.
+  // The Plotly graph div: most views use #plot, but distribution uses its own
+  // id -- find it generically by Plotly's own marker class.
+  function _gd(){ return document.getElementById('plot') || document.querySelector('.js-plotly-plot'); }
+  function plotSig(){
+    var gd=_gd(); if(!gd||!gd.data) return '[]';
+    var a=[];
+    gd.data.forEach(function(t){
+      // data length = y-array (scatter/lines/box overlay) or x-array (histogram
+      // traces carry values on x, counts are computed so there's no y).
+      var L=(t.y&&t.y.length!==undefined)?t.y.length:((t.x&&t.x.length!==undefined)?t.x.length:null);
+      if(L!==null) a.push((t.name||'?')+':'+L);
+    });
+    a.sort(); return JSON.stringify(a);
+  }
+  // Filter checkboxes across every view (condition-dim / serial / port / temp).
+  // Deliberately excludes non-filter toggles (hover columns 'hchk', show-points,
+  // hide-spec, GF-mode) so reversibility isn't tested on controls that don't
+  // (or shouldn't) map 1:1 to the plotted set.
+  var _FILT_RE=/(^|\s)(ser_chk|sum_ser_chk|ec_ser_chk|box_ser_chk|hf_serial|sum_temp_chk|ec_temp_chk|env_chk|ss_port_chk|box_cond_[A-Za-z0-9_]+|box_cond_lf_chk|hf_[A-Za-z0-9_]+|fchk)(\s|$)/;
+  function filterBoxes(){
+    return [].slice.call(document.querySelectorAll('input[type=checkbox]'))
+      .filter(function(c){return _FILT_RE.test(c.className||'');});
+  }
+  function fire(c,checked){ if(c.checked!==checked){c.checked=checked; c.dispatchEvent(new Event('change',{bubbles:true}));} }
+  function firstResetFn(){
+    var names=['clearEverything','resetFilters','resetView','hResetFilters'];
+    for(var i=0;i<names.length;i++){ try{ if(eval('typeof '+names[i])==='function') return names[i]; }catch(e){} }
+    return null;
+  }
+  // Generic invariants for ANY view. `runViewSetup` optionally primes the view
+  // (e.g. box: turn on Show Points) and returns a label. Returns pushes into R.
+  function runGeneric(R,chk,skip){
+    var S0=plotSig();
+    chk('baseline-not-blank', S0!=='[]' && JSON.parse(S0).some(function(s){return parseInt(s.split(':').pop(),10)>0;}), 'sig='+S0.slice(0,120));
+    // Per distinct filter class, exercise ONE checkbox: off -> on must restore
+    // the exact baseline (reversibility), and unchecking should change something
+    // (a filter that does nothing is itself suspicious -- reported soft).
+    var boxes=filterBoxes(), byClass={};
+    boxes.forEach(function(c){var k=(c.className||'').trim(); if(!byClass[k]) byClass[k]=c;});
+    var classes=Object.keys(byClass);
+    if(!classes.length) skip('filter-reversibility','no recognised filter checkboxes');
+    classes.forEach(function(k){
+      var c=byClass[k]; if(!c.checked){ // ensure we start from checked
+        // find a checked one of the same class instead
+        var alt=boxes.filter(function(x){return (x.className||'').trim()===k && x.checked;})[0];
+        if(alt) c=alt; else { skip('filter-reversibility['+k+']','none checked'); return; }
+      }
+      var before=plotSig();
+      fire(c,false); var off=plotSig();
+      fire(c,true);  var back=plotSig();
+      chk('filter-reversible['+k+'='+c.value+']', back===before, 'restored='+(back===before)+(back===before?'':' | before='+before.slice(0,80)+' back='+back.slice(0,80)));
+      if(off===before) R.push({name:'filter-had-no-effect['+k+'='+c.value+']',skip:true,detail:'toggling this filter did not change the plot (may be legitimate, e.g. single-value dim)'});
+    });
+    // Reset must return to baseline.
+    var rf=firstResetFn();
+    if(rf){ try{ eval(rf+'()'); }catch(e){} chk('reset-restores', plotSig()===S0, 'via '+rf+'()'); }
+    else skip('reset-restores','no reset function found');
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
     try{
-      if(typeof BOX_DATA==='undefined'||typeof update==='undefined'){emit({view:'not-boxplot',results:R});return;}
+      if(typeof update==='undefined'){emit({view:'unknown',results:R});return;}
+      // View detection for reporting
+      var view = (typeof BOX_DATA!=='undefined')?'boxplot'
+               : (typeof STAT_DATA!=='undefined')?'stat_summary'
+               : (typeof ENV_DATA!=='undefined')?'env_coverage'
+               : (typeof VALUES!=='undefined'&&typeof DIMS!=='undefined')?'histogram'
+               : (typeof RAW_ABS!=='undefined')?'distribution'
+               : 'scatter_or_summary';
+      // NB: do NOT enable Show Points here -- reset (clearEverything) turns it
+      // back off, which would make reset-restores see a different signature. The
+      // generic layer works on the default traces (box traces carry x categories,
+      // so they still reflect condition/serial filtering). The deep boxplot block
+      // below enables Show Points itself where it needs per-point detail.
+      try{update();}catch(e){}   // force one render so the plot is populated before we read it
+      // Generic invariants for every view.
+      runGeneric(R,chk,skip);
+      // Deep boxplot-only GF invariants (the view where GF is SET).
+      if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');
       function ensurePts(){ if(pc&&!pc.checked){pc.checked=true; update();} }
       // Read plotted points from the "Show Points" overlay traces: name ends
