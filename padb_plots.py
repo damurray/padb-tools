@@ -4757,6 +4757,14 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
     proportion_env = cfg.get("proportion_env", cfg.get("proportion", 0.90))
     confidence_env = cfg.get("confidence_env", cfg.get("confidence", 0.90))
 
+    # Categorical box-identity label per frequency, computed from the WHOLE df
+    # (all temps) with the SAME _freq_label_map the boxplot uses -- so a GF key
+    # set in the boxplot (keyed on freq_label) matches point-precisely here. Must
+    # use the full df's freq set, not a per-condition/Room subset, or the
+    # adaptive-precision labels could drift from the boxplot's for the same freq.
+    _gf_freq_lbl_map = _freq_label_map(
+        sorted(df["Frequency_MHz"].dropna().unique()), cfg.get("x_unit", "MHz"))
+
     _serial_val_pat = re.compile(r'^[A-Z]{2,3}\d{5,}$')
     _serial_key_kws = ("serial", "unit id", "dut id", "s/n")
     _port_key_kws   = ("port",)
@@ -4983,6 +4991,7 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
             np_lo, np_up = _nonparametric_ti(sorted(float(v) for v in dut_vals), _P, _C)
             freq_stats.append({
                 "freq":     float(freq),
+                "freq_label": _gf_freq_lbl_map.get(float(freq), str(freq)),
                 "n":        int(n),
                 "dup_runs": dup_runs,
                 "mean":     round(mean_v, 6),
@@ -5563,7 +5572,7 @@ function buildTraces(conds,params){
         (fs.dut_vals||[]).forEach(function(dv){
           var serExcl=useSerFlt&&selSers2.indexOf(dv.s)<0;
           var portExcl=usePortFlt&&selPorts2.indexOf(dv.p||'')<0;
-          var gfExcl=hasGfForPts&&_isStatGfExcl(dv.s,cd.condition,fs.freq);
+          var gfExcl=hasGfForPts&&_isStatGfExcl(dv.s,cd.condition,'Room',fs.freq_label,dv.p);
           pt_x.push(fs.freq);
           pt_y.push(dv.v);
           pt_cols.push(gfExcl?'rgba(220,80,40,0.5)':(serExcl||portExcl)?'rgba(160,160,160,0.4)':color);
@@ -5706,7 +5715,13 @@ function _loadStatGlobalFilter(){
             var lo=p.toLowerCase();
             return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
           }).join('|');
-          _gfCoarseExcluded.add(parts[0]+'||'+coarseCond);
+          /* Point-precise: keep Temp + Freq(label) dims (mirrors the boxplot's
+             _loadBoxGlobalFilter). A whole-DUT "Set filter as GF" key carries
+             temp 'manual'/freq '0' -> no dim added -> still matches all temps/
+             freqs via _statGfIsIn's dims-intersection. */
+          var _tp=(parts.length>=3&&parts[2]&&parts[2]!=='manual')?'|Temp='+parts[2]:'';
+          var _fq=(parts.length>=4&&parts[3]&&parts[3]!=='0')?'|Freq='+parts[3]:'';
+          _gfCoarseExcluded.add(parts[0]+'||'+coarseCond+_tp+_fq);
         }
       });
     }
@@ -5748,10 +5763,50 @@ function _condKeyForStat(cond){
     return p&&!serKws.some(function(kw){return lo.indexOf(kw)===0;});
   }).sort().join('|');
 }
-function _isStatGfExcl(serial,cond,freq){
+/* GF membership via dimension-intersection (mirrors the boxplot's _boxIsInGf):
+   a stored key only constrains the dims it actually carries, so a whole-DUT
+   filter key (no Temp/Freq dim) still matches every temp/freq, while an outlier
+   key (Temp=X|Freq=label) matches only that exact temperature and frequency box. */
+function _statGfIsIn(checkKey){
   if(!_gfCoarseExcluded||!_gfCoarseExcluded.size) return false;
-  /* Coarse match: DUT serial + condition WITHOUT temperature or frequency */
-  return _gfCoarseExcluded.has((serial||'unknown')+'||'+_condKeyForStat(cond));
+  if(_gfCoarseExcluded.has(checkKey)) return true;
+  var sep=checkKey.indexOf('||');if(sep<0) return false;
+  var ser=checkKey.slice(0,sep);
+  var rowMap={};
+  checkKey.slice(sep+2).split('|').filter(Boolean).forEach(function(kv){
+    var i=kv.indexOf('=');if(i>=0) rowMap[kv.slice(0,i)]=kv.slice(i+1);
+  });
+  var found=false;
+  _gfCoarseExcluded.forEach(function(gk){
+    if(found) return;
+    var gs=gk.indexOf('||');if(gs<0||gk.slice(0,gs)!==ser) return;
+    var ok=true;
+    gk.slice(gs+2).split('|').filter(Boolean).forEach(function(kv){
+      if(!ok) return; var i=kv.indexOf('='); if(i<0) return;
+      var dim=kv.slice(0,i);
+      if(rowMap.hasOwnProperty(dim)&&rowMap[dim]!==kv.slice(i+1)) ok=false;
+    });
+    if(ok) found=true;
+  });
+  return found;
+}
+/* Strip a trailing _<port> so we compare on BASE serial -- the boxplot stores GF
+   keys with the base serial (_boxBaseSerial, "cross-plot compatible with scatter/
+   stat_summary"), while this view's dut_vals carry the port-qualified serial. */
+function _statBaseSerial(s){
+  var pl=(typeof SS_ALL_PORTS!=='undefined')?SS_ALL_PORTS:((typeof ALL_PORTS!=='undefined')?ALL_PORTS:[]);
+  for(var i=0;i<pl.length;i++){var sfx='_'+pl[i];if(s&&s.length>sfx.length&&s.slice(-sfx.length)===sfx)return s.slice(0,-sfx.length);}
+  return s||'unknown';
+}
+/* Point-precise GF: match on serial + condition + port + temperature + frequency
+   box (freq_label). The boxplot stores Port inside its condKey (_boxFullCondKey),
+   so include the point's port for port-precision (an RF1 outlier must not exclude
+   RF2). stat_summary is Room-only, so temp is always 'Room'. */
+function _isStatGfExcl(serial,cond,temp,freqLabel,port){
+  if(!_gfCoarseExcluded||!_gfCoarseExcluded.size) return false;
+  var ck=_statBaseSerial(serial)+'||'+_condKeyForStat(cond)
+       +(port?'|Port='+port:'')+(temp?'|Temp='+temp:'')+(freqLabel?'|Freq='+freqLabel:'');
+  return _statGfIsIn(ck);
 }
 function recomputeFreqStat(fs,selSers,cond,freq,applyGf,selPorts){
   var f=freq!==undefined?freq:(fs.freq||0);
@@ -5760,7 +5815,7 @@ function recomputeFreqStat(fs,selSers,cond,freq,applyGf,selPorts){
     if(selSers.indexOf(d.s)<0) return false;
     if(selPorts&&selPorts.length&&selPorts.indexOf(d.p||'')<0) return false;
     if(applyGf===false) return true;
-    var _excl=_isStatGfExcl(d.s,c,f);
+    var _excl=_isStatGfExcl(d.s,c,'Room',fs.freq_label,d.p);
     return _statGfFocusMode?_excl:!_excl;
   });
   if(!dv.length) return null;
@@ -6135,7 +6190,7 @@ function updateSitePanel(){
           if(serFlt&&selSers.indexOf(d.s)<0) return;
           if(portFlt&&selPorts.indexOf(d.p||'')<0) return;
           if(hasGf){
-            var _excl=_isStatGfExcl(d.s,cd.condition,fs.freq);
+            var _excl=_isStatGfExcl(d.s,cd.condition,'Room',fs.freq_label,d.p);
             if(_statGfFocusMode?!_excl:_excl) return;
           }
           if(cd.site===PRIMARY_SITE){
@@ -6573,7 +6628,7 @@ function _segFilterCondDims(seg){
       if(fs.freq<seg.lo||fs.freq>seg.hi) return;
       (fs.dut_vals||[]).forEach(function(d){
         if(serFlt&&selSers.indexOf(d.s)<0) return;
-        if(hasGf){var _excl=_isStatGfExcl(d.s,cd.condition,fs.freq);if(_statGfFocusMode?!_excl:_excl) return;}
+        if(hasGf){var _excl=_isStatGfExcl(d.s,cd.condition,'Room',fs.freq_label,d.p);if(_statGfFocusMode?!_excl:_excl) return;}
         condsInSeg[cd.condition]=true;
       });
     });
@@ -6628,7 +6683,7 @@ function _recomputeSpecSegments(){
     (cd.freq_stats||[]).forEach(function(fs){
       (fs.dut_vals||[]).forEach(function(d){
         if(serFlt&&selSers.indexOf(d.s)<0) return;
-        if(hasGf){var _excl=_isStatGfExcl(d.s,cd.condition,fs.freq);if(_statGfFocusMode?!_excl:_excl) return;}
+        if(hasGf){var _excl=_isStatGfExcl(d.s,cd.condition,'Room',fs.freq_label,d.p);if(_statGfFocusMode?!_excl:_excl) return;}
         var hiV=d[hiField],loV=d[loField];
         if(hiV!=null&&!isNaN(Number(hiV))){
           var v=Number(hiV);
