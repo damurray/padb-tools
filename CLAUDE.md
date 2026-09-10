@@ -1577,3 +1577,18 @@ Four fixes to the boxplot cross-site **Site Population Check** per-point detail 
 4. **Per-point table sits in a `max-height:60vh;overflow:auto` box** so the horizontal scrollbar is at the bottom of the viewport (always reachable) instead of the bottom of a very long table.
 
 Verified on a synthetic multi-SpurType compare (401 & 402 ran twice under all 6 SpurTypes): collapse-off shows `US65080401×2 (6 conds), US65080402×2 (6 conds)` (one per serial, was 12 entries); collapse-on shows `—` with the header note. `qa_padb.py` unchanged (37/4).
+
+---
+
+## Boxplot: "Set outliers as GF" over-excluded whole DUTs (frequency dropped at match) — now point-precise (fixed 2026-09-10)
+
+Reported against a real page (`AmplitudeAccuracyClosedLoop` `Absolute_Accuracy_NA` boxplot, whose analytic now *does* carry serials — the old "NA has blank serials" note was a stale extraction): "remove outliers does not work in the plot" / "clear global filter does not work" (the latter could **not** be reproduced — the Clear button correctly restores the plot in both Exclude and Inspect modes; it was almost certainly the blank plot below being read as "clear broke").
+
+**Root cause of the real bug:** "Set outliers as GF" builds precise per-point keys (`serial‖condKey‖temp‖freq`, real frequency), but the GF matcher deliberately **dropped the frequency** — `_loadBoxGlobalFilter()` coarsened every key to `serial‖condKey|Temp=temp` and `_boxIsInGf()` matched that (documented "frequency is dropped at match time"). So setting outliers as GF didn't remove the outlier *points* — it removed **every frequency** for those (serial, port, temp) combos. On NA (one pooled "All" condition, Room-only, 8 DUTs, and *every* DUT has ≥1 outlier) that excluded the entire dataset → `update()` rendered **0 traces**, a blank plot.
+
+**Fix (boxplot only, per user choice):** the GF match is now frequency-aware for keys that carry a real frequency, while whole-DUT "Set filter as GF" (freq `'0'`) stays coarse:
+- `_loadBoxGlobalFilter()` appends `|Freq=<parts[3]>` to the coarse key **only** when `parts[3]` is a real frequency (present, not `'0'`, parses > 0). Filter keys (freq `'0'`) get no `Freq` dim → still whole-DUT.
+- All 6 per-point `_boxIsInGf(...)` check-key constructions now append `+'|Freq='+<freqvar>.freq.toFixed(3)` (five sites use loop var `f`, the Site-panel site uses `fs` — matching the stored `f.freq.toFixed(3)` in `_collectOutliers`).
+- `_boxIsInGf()` needed **no change**: its dims-intersection only constrains dims present in the *stored* key, so a whole-DUT stored key (no `Freq` dim) still matches every frequency, while an outlier stored key (`Freq=X`) matches only that frequency.
+
+Verified on the real NA boxplot: "Set outliers as GF" now keeps the plot populated (2 traces, 1099 box positions, GF=404) and is point-precise — the outlier point `US65080433 RF1 Room @ 17.578` is excluded while the *same DUT at 50.000 MHz* is kept; "Set filter as GF" still excludes all frequencies (whole-DUT); Clear restores fully. `qa_padb.py` 37/4, `qa_js_segments.py` 10/0 unchanged. Scope is boxplot-only — the other views' GF helpers (`_isStatGfExcl`, etc.) were not touched.
