@@ -8247,7 +8247,14 @@ function _loadEcGlobalFilter(){
       _gfCoarseExcluded=new Set();
       _gfExcluded.forEach(function(k){
         var parts=k.split('||');
-        if(parts.length>=2) _gfCoarseExcluded.add(parts[0]+'||'+parts[1]);
+        if(parts.length>=2){
+          /* Point-precise: keep Temp + Freq(label) dims. Whole-DUT "Set filter
+             as GF" keys (temp 'manual'/freq '0') add no dim -> matched by
+             _isEcGfWholeDut; outlier keys carry Freq -> matched per-freq. */
+          var _tp=(parts.length>=3&&parts[2]&&parts[2]!=='manual')?'|Temp='+parts[2]:'';
+          var _fq=(parts.length>=4&&parts[3]&&parts[3]!=='0')?'|Freq='+parts[3]:'';
+          _gfCoarseExcluded.add(parts[0]+'||'+parts[1]+_tp+_fq);
+        }
       });
     }
   }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;}
@@ -8279,13 +8286,38 @@ function _updateEcGfBadge(){
 window.addEventListener('storage',function(e){
   if(e.key===GF_KEY||e.key===GF_MODE_KEY){_loadEcGlobalFilter();update();}
 });
-function _isEcGfExcl(serial,gfKey){
+/* Dims-intersection GF match. A stored key only constrains the dims it carries.
+   wholeDutOnly=true ignores stored OUTLIER keys (those with a Freq dim), so it
+   matches only whole-DUT "Set filter as GF" entries -- used to drop a DUT from
+   the population entirely. The per-freq path (freqLabel set) instead matches an
+   outlier key only at its own frequency box. Temp is left unconstrained here
+   (env_coverage pools Room + temperature deltas per DUT, so a single temp is
+   ambiguous -- freq-precise, temp-agnostic). */
+function _ecGfKeyMatch(checkKey,wholeDutOnly){
   if(!_gfCoarseExcluded||!_gfCoarseExcluded.size) return false;
-  /* Exact match: serial||gfKey must be in the set.
-     Both _make_ec_gf_key (Python) and _boxFullCondKey (JS) produce sorted keys,
-     so exact matching is safe and avoids false positives from old/partial GF entries. */
-  return _gfCoarseExcluded.has((serial||'unknown')+'||'+gfKey);
+  var sep=checkKey.indexOf('||');if(sep<0) return false;
+  var ser=checkKey.slice(0,sep),rowMap={};
+  checkKey.slice(sep+2).split('|').filter(Boolean).forEach(function(kv){var i=kv.indexOf('=');if(i>=0)rowMap[kv.slice(0,i)]=kv.slice(i+1);});
+  var found=false;
+  _gfCoarseExcluded.forEach(function(gk){
+    if(found)return; var gs=gk.indexOf('||');if(gs<0||gk.slice(0,gs)!==ser)return;
+    var dims=gk.slice(gs+2).split('|').filter(Boolean);
+    if(wholeDutOnly&&dims.some(function(kv){return kv.indexOf('Freq=')===0;})) return;
+    var ok=true;
+    dims.forEach(function(kv){if(!ok)return;var i=kv.indexOf('=');if(i<0)return;var dim=kv.slice(0,i);
+      if(dim==='Temp') return;   /* temp-agnostic */
+      if(rowMap.hasOwnProperty(dim)&&rowMap[dim]!==kv.slice(i+1))ok=false;});
+    if(ok)found=true;
+  });
+  return found;
 }
+/* Whole-DUT exclusion (used to drop a DUT from the population). */
+function _isEcGfWholeDut(serial,gfKey){ return _ecGfKeyMatch((serial||'unknown')+'||'+gfKey,true); }
+/* Point-precise exclusion at one frequency box (used per-freq in computeStats). */
+function _isEcGfAtFreq(serial,gfKey,freqLabel){ return _ecGfKeyMatch((serial||'unknown')+'||'+gfKey+(freqLabel?'|Freq='+freqLabel:''),false); }
+/* Back-compat coarse check (any entry for this serial+cond) -- used by non-math
+   consumers (Show-excluded, Site panel) that just need "is this DUT GF-touched". */
+function _isEcGfExcl(serial,gfKey){ return _ecGfKeyMatch((serial||'unknown')+'||'+gfKey,false); }
 /* ---- aggregate per-DUT stats for one condition ---- */
 function _vecMean(vals){if(!vals.length) return 0;var s=0;vals.forEach(function(v){s+=v;});return s/vals.length;}
 function _vecStd(vals){
@@ -8306,7 +8338,7 @@ function getActiveDuts(cd){
     if(serFlt&&selSers.indexOf(baseSer)<0) return;
     if(portFlt&&selPorts.indexOf(dut.port||'')<0) return;
     if(hasGf){
-      var excl=_isEcGfExcl(baseSer,dut.gf_key);
+      var excl=_isEcGfWholeDut(baseSer,dut.gf_key);
       if(_gfFocusMode?!excl:excl) return;
     }
     result.push([dutKey,dut]);
@@ -8328,7 +8360,7 @@ function getDeltaDuts(cd){
     var baseSer=dut.serial||dutKey;
     if(serFlt&&selSers.indexOf(baseSer)<0) return;
     if(hasGf){
-      var excl=_isEcGfExcl(baseSer,dut.gf_key);
+      var excl=_isEcGfWholeDut(baseSer,dut.gf_key);
       if(_gfFocusMode?!excl:excl) return;
     }
     result.push([dutKey,dut]);
@@ -8358,13 +8390,23 @@ function computeStats(cd,params,fr,selTemps){
      activeDuts (full filter, including port) is reserved for future per-port
      display, not used in this function's math. */
   var deltaDuts=getDeltaDuts(cd);
+  /* Point-precise GF: getDeltaDuts already dropped whole-DUT-excluded DUTs; here
+     we additionally drop an OUTLIER-GF'd DUT's contribution at ONLY its own
+     frequency box (freq-precise), via _isEcGfAtFreq per (dut, freq). */
+  var _ecHasGf=_ecGfEnabled&&_gfCoarseExcluded&&_gfCoarseExcluded.size>0;
+  function _ecPtExcl(sd,flabel){
+    if(!_ecHasGf) return false;
+    var e=_isEcGfAtFreq(sd[1].serial||sd[0],sd[1].gf_key,flabel);
+    return _gfFocusMode?!e:e;
+  }
   var freqs=[],room_lo=[],room_hi=[],ude=[],lde=[],room_means=[],room_ns=[],delta_ns=[];
   for(var j=0;j<cd.freqs.length;j++){
     var f=cd.freqs[j];
     if(f<fr.lo||f>fr.hi) continue;
     freqs.push(f);
+    var _flbl=(cd.freq_labels&&cd.freq_labels[j])||null;
     var roomVals=[];
-    deltaDuts.forEach(function(sd){var v=sd[1].room[j];if(v!==null&&v!==undefined)roomVals.push(v);});
+    deltaDuts.forEach(function(sd){if(_ecPtExcl(sd,_flbl))return;var v=sd[1].room[j];if(v!==null&&v!==undefined)roomVals.push(v);});
     var n_r=roomVals.length;
     room_means.push(n_r?_vecMean(roomVals):null);
     room_ns.push(n_r);
@@ -8378,6 +8420,7 @@ function computeStats(cd,params,fr,selTemps){
     selTemps.forEach(function(temp){
       var dVals=[];
       deltaDuts.forEach(function(sd){
+        if(_ecPtExcl(sd,_flbl))return;
         var dt=sd[1].deltas[temp];
         if(!dt) return;
         var v=dt[j];if(v!==null&&v!==undefined)dVals.push(v);
@@ -9133,6 +9176,11 @@ def _aggregate_env_coverage_data(df: pd.DataFrame, cfg: dict) -> tuple:
     all_ports_set: set = set()
     results: list = []
 
+    # Categorical box-identity label per frequency (same _freq_label_map the
+    # boxplot uses, from the WHOLE df) so GF keys the boxplot stores match
+    # point-precisely here.
+    _ec_flmap = _freq_label_map(sorted(df["Frequency_MHz"].dropna().unique()), cfg.get("x_unit", "MHz"))
+
     for sc, sc_df in df.groupby("_super_cond", sort=True):
         all_freqs = sorted(float(f) for f in sc_df["Frequency_MHz"].dropna().unique())
         n_f = len(all_freqs)
@@ -9260,6 +9308,7 @@ def _aggregate_env_coverage_data(df: pd.DataFrame, cfg: dict) -> tuple:
             "condition":  sc,
             "cond_keys":  cond_keys_dict,
             "freqs":      [round(f, 6) for f in all_freqs],
+            "freq_labels": [_ec_flmap.get(f, str(f)) for f in all_freqs],
             "spec_hi":    spec_hi,
             "spec_lo":    spec_lo,
             "duts":       duts,
