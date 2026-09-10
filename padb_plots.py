@@ -3111,6 +3111,12 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     if "Group" in df.columns and "Group" not in _abs_cols:
         _abs_cols.append("Group")
 
+    # Per-point categorical box label (from FULL-precision freq, before the 1-dec
+    # rounding of "f" below) so GF keys the boxplot stores (keyed on freq_label)
+    # match point-precisely -- a client-side numeric lookup would miss because "f"
+    # is rounded. Same _freq_label_map the boxplot uses.
+    _dist_flmap = _freq_label_map(sorted(df["Frequency_MHz"].dropna().unique()), x_unit)
+
     raw_abs: list = []
     for spur in spur_types:
         spur_df = df[df["_spur"] == spur]
@@ -3121,6 +3127,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                 t_df = t_df[t_df["Serial"].isin(env_serials)]
             row.append({
                 "f":  [round(float(x), 1) for x in t_df["Frequency_MHz"]],
+                "fl": [_dist_flmap.get(float(x), str(x)) for x in t_df["Frequency_MHz"]],
                 "v":  [round(float(x), 2) for x in t_df["Value"]],
                 "s":  [str(x) for x in t_df["Serial"]],
                 "p":  [str(x) for x in t_df[port_col]] if port_col else [""] * len(t_df),
@@ -3144,6 +3151,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
             if len(t_m) > 0:
                 row.append({
                     "f": [round(float(x), 1) for x in t_m["Frequency_MHz"]],
+                    "fl": [_dist_flmap.get(float(x), str(x)) for x in t_m["Frequency_MHz"]],
                     "d": [round(float(x), 3) for x in t_m["delta"]],
                     "s": [str(x) for x in t_m["Serial"]],
                     "p": [str(x) for x in t_m[port_col]] if port_col and port_col in t_m.columns else [""] * len(t_m),
@@ -3151,7 +3159,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                     "g": ([str(x) for x in t_m["Group"]] if "Group" in t_m.columns else [""] * len(t_m)),
                 })
             else:
-                row.append({"f": [], "d": [], "s": [], "p": [], "c": {d["col_id"]: [] for d in _dist_cond_dims}, "g": []})
+                row.append({"f": [], "fl": [], "d": [], "s": [], "p": [], "c": {d["col_id"]: [] for d in _dist_cond_dims}, "g": []})
         raw_delta.append(row)
 
     # -------------------------------------------------------------------------
@@ -3170,6 +3178,9 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var TEMP_COLORS={json.dumps(temp_colors)};",
         f"var SERIALS={json.dumps(all_serials)};",
         f"var PORTS={json.dumps(all_ports)};",
+        # Categorical box-identity labels (same _freq_label_map the boxplot uses),
+        # so a GF key the boxplot stores (keyed on freq_label) matches point-precisely.
+        f"var FREQ_LABEL_PAIRS={json.dumps([[float(_f), _l] for _f, _l in _freq_label_map(sorted(df['Frequency_MHz'].dropna().unique()), x_unit).items()])};",
         f"var DIST_COND_DIMS={json.dumps([{'col_id': d['col_id'], 'label': d['label'], 'vals': d['vals']} for d in _dist_cond_dims])};",
         f"var KDE_ABS={json.dumps(kde_abs)};",
         f"var KDE_DELTA={json.dumps(kde_delta)};",
@@ -3420,7 +3431,12 @@ function _loadDistGlobalFilter(){
             var lo=p.toLowerCase();
             return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
           }).join('|');
-          _distGfCoarse.add(parts[0]+'||'+coarseCond);
+          /* Point-precise: keep Temp + Freq(label) dims (see boxplot's
+             _loadBoxGlobalFilter). Whole-DUT filter keys (temp 'manual'/freq '0')
+             add no dim -> still match all via _distGfIsIn's dims-intersection. */
+          var _tp=(parts.length>=3&&parts[2]&&parts[2]!=='manual')?'|Temp='+parts[2]:'';
+          var _fq=(parts.length>=4&&parts[3]&&parts[3]!=='0')?'|Freq='+parts[3]:'';
+          _distGfCoarse.add(parts[0]+'||'+coarseCond+_tp+_fq);
         }
       });
     }
@@ -3459,9 +3475,40 @@ function _condKeyForDist(cond){
     return p&&!serKws.some(function(kw){return lo.indexOf(kw)===0;});
   }).sort().join('|');
 }
-function _isDistGfExcl(serial,group){
+/* freq -> categorical box label (boxplot GF keys are keyed on this), keyed on
+   String(freq) to match a point's own number stringification. */
+var DIST_FREQ_LABEL_MAP={};
+if(typeof FREQ_LABEL_PAIRS!=='undefined'){FREQ_LABEL_PAIRS.forEach(function(p){DIST_FREQ_LABEL_MAP[String(p[0])]=p[1];});}
+function _distFreqLabel(f){var k=String(f);return (DIST_FREQ_LABEL_MAP[k]!==undefined)?DIST_FREQ_LABEL_MAP[k]:((typeof f==='number')?f.toFixed(3):k);}
+/* Strip a trailing _<port> so we match the boxplot's base serial. */
+function _distBaseSerial(s){
+  var pl=(typeof PORTS!=='undefined')?PORTS:[];
+  for(var i=0;i<pl.length;i++){if(pl[i]){var sfx='_'+pl[i];if(s&&s.length>sfx.length&&s.slice(-sfx.length)===sfx)return s.slice(0,-sfx.length);}}
+  return s||'unknown';
+}
+/* dims-intersection: a stored key only constrains the dims it carries (whole-DUT
+   keys match all temps/freqs; outlier keys match only their box). */
+function _distGfIsIn(checkKey){
   if(!_distGfCoarse||!_distGfCoarse.size) return false;
-  return _distGfCoarse.has((serial||'unknown')+'||'+_condKeyForDist(group));
+  if(_distGfCoarse.has(checkKey)) return true;
+  var sep=checkKey.indexOf('||');if(sep<0) return false;
+  var ser=checkKey.slice(0,sep),rowMap={};
+  checkKey.slice(sep+2).split('|').filter(Boolean).forEach(function(kv){var i=kv.indexOf('=');if(i>=0)rowMap[kv.slice(0,i)]=kv.slice(i+1);});
+  var found=false;
+  _distGfCoarse.forEach(function(gk){
+    if(found)return; var gs=gk.indexOf('||');if(gs<0||gk.slice(0,gs)!==ser)return;
+    var ok=true;
+    gk.slice(gs+2).split('|').filter(Boolean).forEach(function(kv){if(!ok)return;var i=kv.indexOf('=');if(i<0)return;var dim=kv.slice(0,i);if(rowMap.hasOwnProperty(dim)&&rowMap[dim]!==kv.slice(i+1))ok=false;});
+    if(ok)found=true;
+  });
+  return found;
+}
+/* Point-precise GF: serial + condition + port + temperature + frequency box. */
+function _isDistGfExcl(serial,group,temp,freqLabel,port){
+  if(!_distGfCoarse||!_distGfCoarse.size) return false;
+  var ck=_distBaseSerial(serial)+'||'+_condKeyForDist(group)
+       +(port?'|Port='+port:'')+(temp?'|Temp='+temp:'')+(freqLabel?'|Freq='+freqLabel:'');
+  return _distGfIsIn(ck);
 }
 function _distGfActive(){
   if(!_distGfCoarse||!_distGfCoarse.size) return false;
@@ -3795,7 +3842,7 @@ function update(){
               if(!(selSer.has(ser)&&(!PORTS.length||selPor.has(port)))) continue;
             }
             if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
-            if(gfFlt){var _ex=_isDistGfExcl(raw.s?raw.s[i]:'',raw.g?raw.g[i]:'');if(_distGfFocusMode?!_ex:_ex) continue;}
+            if(gfFlt){var _ex=_isDistGfExcl(raw.s?raw.s[i]:'',raw.g?raw.g[i]:'',TEMPS[ti],(raw.fl?raw.fl[i]:_distFreqLabel(raw.f[i])),raw.p?raw.p[i]:'');if(_distGfFocusMode?!_ex:_ex) continue;}
             vals.push(raw.v[i]);
           }
           kde=jsKde(vals);
@@ -3839,7 +3886,10 @@ function update(){
               if(!(selSer.has(ser)&&(!PORTS.length||selPor.has(port)))) continue;
             }
             if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
-            if(gfFlt){var _ex=_isDistGfExcl(raw.s?raw.s[i]:'',raw.g?raw.g[i]:'');if(_distGfFocusMode?!_ex:_ex) continue;}
+            /* ΔTemp mode: a delta spans Room + a non-Room temp, so temp precision
+               is ambiguous -- match freq-precise but temp-agnostic (exclude the
+               delta if the DUT is GF'd at that freq under any temp). */
+            if(gfFlt){var _ex=_isDistGfExcl(raw.s?raw.s[i]:'',raw.g?raw.g[i]:'','',(raw.fl?raw.fl[i]:_distFreqLabel(raw.f[i])),raw.p?raw.p[i]:'');if(_distGfFocusMode?!_ex:_ex) continue;}
             vals.push(raw.d[i]);
           }
           kde=jsKde(vals);
