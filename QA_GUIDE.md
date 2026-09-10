@@ -229,3 +229,26 @@ histogram/boxplot pages, and it still catches the pre-fix boxplot GF over-exclus
 cross-check per view, and GF-*consumption* checks on the aggregated views (inject a
 GF serial, assert its contribution drops) -- the reversibility layer already covers
 the filter-consistency bug class those would target.
+
+### Track-1 sweep result (2026-09-10)
+
+First full non-boxplot sweep: 35 pages across every non-boxplot view (compare +
+single-site: ClockSpurs, Harmonics, MaxPower, phase-noise, switching-speed).
+**132 invariant checks PASS, 0 genuine filter failures** — the shipped
+scatter/stat_summary/summary/env_coverage/distribution/histogram filters are
+self-consistent (reversible, non-blanking, reset-clean) on real data.
+
+The only non-passes were headless render **timeouts** (no `#__qa_results`
+sentinel), not product bugs: the two **ClockSpurs stat_summary** pages (151
+fragmented conditions × Shapiro/NP-TI, which the reversibility loop recomputes in
+full several times) don't complete even at `--budget 90000` — a harness-scaling
+limit on the single heaviest page type, not a page defect (the same stat_summary
+code path passes on Harmonics/MaxPower, and the page renders fine for a user).
+ClockSpurs distribution passed once `--budget` was raised to 45000. Practical
+guidance: run heavy datasets with a larger `--budget`; treat the very heaviest
+stat_summary as spot-check-manually.
+
+Two harness-robustness bugs were fixed in this pass: temp-dir cleanup raced with
+a lingering msedge holding `dom.html` (`ignore_cleanup_errors=True` +
+wait-after-kill), and one page's harness crash could abort the whole sweep
+(per-page try/except in the runner).

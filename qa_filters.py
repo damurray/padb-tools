@@ -306,7 +306,9 @@ def _run_page(edge: str, html_path: Path, budget_ms: int, timeout_s: int) -> dic
     except OSError as e:
         return {"error": f"read failed: {e}"}
     injected = _inject(src)
-    with tempfile.TemporaryDirectory() as td:
+    # ignore_cleanup_errors: msedge can linger holding dom.html open a moment
+    # after --dump-dom has already written it (a real WinError 32 on cleanup).
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         test_html = Path(td) / "qa_test.html"
         test_html.write_text(injected, encoding="utf-8")
         dom_path = Path(td) / "dom.html"
@@ -321,6 +323,10 @@ def _run_page(edge: str, html_path: Path, budget_ms: int, timeout_s: int) -> dic
                 proc.wait(timeout=timeout_s)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                try:
+                    proc.wait(timeout=10)   # let it actually die + release dom.html
+                except subprocess.TimeoutExpired:
+                    pass
         dom = dom_path.read_text(encoding="utf-8", errors="ignore")
     m = re.search(r'<pre id="__qa_results"[^>]*>(.*?)</pre>', dom, re.DOTALL)
     if not m:
@@ -387,7 +393,10 @@ def main(argv=None) -> None:
     failed_pages = []
 
     for pg in pages:
-        res = _run_page(edge, pg, args.budget, args.timeout)
+        try:
+            res = _run_page(edge, pg, args.budget, args.timeout)
+        except Exception as e:   # one page's harness crash must not abort the sweep
+            res = {"error": f"harness exception: {e}"}
         label = pg.parent.name + "/" + pg.name
         if "error" in res:
             print(f"  [ERROR] {label}: {res['error']}")
