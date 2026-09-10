@@ -14598,21 +14598,31 @@ function getSumCondData(cd,selTemps,params){
     var _coarseKey=(_gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size)?_sumCoarseCondKey(cd.condition):null;
     var _nAll=cd.dut_info.length;
     var _gfMode=localStorage.getItem(GF_MODE_KEY)||'exclude';
-    var _inclIdxs=[];
-    cd.dut_info.forEach(function(di,idx){
-      if(_sumSerFlt&&_selSumSers.indexOf(di.s)<0)return;
-      if(_coarseKey!==null){
-        var inGf=_sumGfCoarseExcluded.has(di.s+'||'+_coarseKey);
-        if(_gfMode==='focus'?inGf:!inGf)return;
-      }
-      _inclIdxs.push(idx);
-    });
-    if(_inclIdxs.length>0&&_inclIdxs.length<_nAll){
-      var _nGf=_inclIdxs.length;
-      var _scale=_nGf/_nAll;
-      /* Per-freq mean from included DUTs only */
-      var _gfMeans=cd.dut_vals.map(function(row){
-        var vs=_inclIdxs.map(function(i){return row[i];}).filter(function(v){return v!==null;});
+    var _gfActive=(_coarseKey!==null);
+    var _lbls=cd.freq_labels||[];
+    /* serial-filtered DUT indices (GF applied per-freq below, not here) */
+    var _serIdxs=[];
+    cd.dut_info.forEach(function(di,idx){ if(!(_sumSerFlt&&_selSumSers.indexOf(di.s)<0)) _serIdxs.push(idx); });
+    /* Per-frequency included DUT indices -- point-precise GF: an outlier GF'd at
+       one frequency box drops that DUT only there, not across the whole sweep.
+       Summary pools temperatures into one per-DUT mean, so this is freq-precise /
+       temp-agnostic (its dut_info carries no per-point temp or port). */
+    function _sumInclAt(fi){
+      var lbl=_lbls[fi];
+      return _serIdxs.filter(function(idx){
+        if(!_gfActive) return true;
+        var inGf=_isSumGfExcl(cd.dut_info[idx].s, cd.condition, lbl);
+        return _gfMode==='focus'?inGf:!inGf;
+      });
+    }
+    var _nF0=cd.dut_vals.length,_inclF=[]; for(var _q=0;_q<_nF0;_q++) _inclF.push(_sumInclAt(_q));
+    var _anyGf=_gfActive&&_inclF.some(function(ix){return ix.length<_serIdxs.length;});
+    var _serChanged=_sumSerFlt&&_serIdxs.length<_nAll;
+    if((_anyGf||_serChanged)&&_serIdxs.length>0){
+      var _nGf=_serIdxs.length;
+      /* Per-freq mean from that freq's included DUTs only */
+      var _gfMeans=cd.dut_vals.map(function(row,_mfi){
+        var vs=_inclF[_mfi].map(function(i){return row[i];}).filter(function(v){return v!==null&&v!==undefined;});
         return vs.length?Math.round(vs.reduce(function(a,b){return a+b;},0)/vs.length*1e6)/1e6:null;
       });
       if(!cd.by_temp){
@@ -14625,11 +14635,13 @@ function getSumCondData(cd,selTemps,params){
       var _om=[],_omin=[],_omax=[],_ou=[],_ol=[];
       for(var _fi=0;_fi<_nF;_fi++){
         var _tn=0,_pss=0,_mn=null,_mx=null;
+        /* Per-freq scale: this freq's included-DUT fraction (point-precise GF) */
+        var _scaleFi=_nAll?(_inclF[_fi]?_inclF[_fi].length:_serIdxs.length)/_nAll:0;
         _tps.forEach(function(t){
           var bt=cd.by_temp[t];if(!bt)return;
           var n=bt.n[_fi],m=bt.mean[_fi],s=bt.std[_fi];
           if(!n||m===null||m===undefined)return;
-          var ns=Math.max(1,Math.round(n*_scale));
+          var ns=Math.max(1,Math.round(n*_scaleFi));
           _pss+=(ns>1?(ns-1)*s*s:0);_tn+=ns;
           if(_mn===null||bt.min_data[_fi]<_mn)_mn=bt.min_data[_fi];
           if(_mx===null||bt.max_data[_fi]>_mx)_mx=bt.max_data[_fi];
@@ -15086,6 +15098,25 @@ function _sumCoarseCondKey(cond){
     return !stripKws.some(function(kw){return lo.indexOf(kw)===0;});
   }).sort().join('|');
 }
+/* Point-precise GF match (freq-precise, temp/port-agnostic -- summary pools temps
+   and carries no per-DUT port). Dims-intersection: a stored key only constrains
+   the dims it carries, so a whole-DUT filter key (no Freq) matches all frequencies
+   while an outlier key matches only its own frequency box. */
+function _isSumGfExcl(serial,cond,freqLabel){
+  if(!_sumGfCoarseExcluded||!_sumGfCoarseExcluded.size) return false;
+  var ck=(serial||'unknown')+'||'+_sumCoarseCondKey(cond)+(freqLabel?'|Freq='+freqLabel:'');
+  if(_sumGfCoarseExcluded.has(ck)) return true;
+  var sep=ck.indexOf('||'),ser=ck.slice(0,sep),rowMap={};
+  ck.slice(sep+2).split('|').filter(Boolean).forEach(function(kv){var i=kv.indexOf('=');if(i>=0)rowMap[kv.slice(0,i)]=kv.slice(i+1);});
+  var found=false;
+  _sumGfCoarseExcluded.forEach(function(gk){
+    if(found)return; var gs=gk.indexOf('||');if(gs<0||gk.slice(0,gs)!==ser)return;
+    var ok=true;
+    gk.slice(gs+2).split('|').filter(Boolean).forEach(function(kv){if(!ok)return;var i=kv.indexOf('=');if(i<0)return;var dim=kv.slice(0,i);if(rowMap.hasOwnProperty(dim)&&rowMap[dim]!==kv.slice(i+1))ok=false;});
+    if(ok)found=true;
+  });
+  return found;
+}
 function _loadSumGlobalFilter(){
   try{
     var raw=localStorage.getItem(GF_KEY);
@@ -15104,7 +15135,11 @@ function _loadSumGlobalFilter(){
             var lo=p.toLowerCase();
             return !stripKws.some(function(kw){return lo.indexOf(kw)===0;});
           }).sort().join('|');
-          _sumGfCoarseExcluded.add(parts[0]+'||'+coarseCond);
+          /* Keep Freq(label) for point-precise matching (Temp is stripped -- summary
+             pools temperatures). A whole-DUT "Set filter as GF" key (freq '0') adds
+             no dim -> still matches all freqs via _isSumGfExcl's dims-intersection. */
+          var _fq=(parts.length>=4&&parts[3]&&parts[3]!=='0')?'|Freq='+parts[3]:'';
+          _sumGfCoarseExcluded.add(parts[0]+'||'+coarseCond+_fq);
         }
       });
     }
@@ -15224,7 +15259,7 @@ function updateSitePanel(){
              other filtering function's serActive pattern. */
           if(serFlt&&selSers.indexOf(di.s)<0) return;
           if(coarseKey!==null){
-            var inGf=_sumGfCoarseExcluded.has(di.s+'||'+coarseKey);
+            var inGf=_isSumGfExcl(di.s,cd.condition,(cd.freq_labels||[])[fi]);
             if(gfMode==='focus'?!inGf:inGf) return;
           }
           var v=row[di_idx];
@@ -15465,6 +15500,11 @@ function _poolSumRecords(recs,label){
   var freqSet={};
   recs.forEach(function(r){(r.freqs||[]).forEach(function(f){freqSet[f]=true;});});
   var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  /* Carry freq_labels through pooling so Group-by'd conditions stay freq-precise
+     for GF (a freq maps to the same box label across the pooled constituents). */
+  var _flByFreq={};
+  recs.forEach(function(r){(r.freqs||[]).forEach(function(f,i){if(r.freq_labels&&r.freq_labels[i]!=null)_flByFreq[f]=r.freq_labels[i];});});
+  var freq_labels=freqs.map(function(f){return _flByFreq[f]!=null?_flByFreq[f]:String(f);});
   var serIdx={},dut_info=[];
   recs.forEach(function(r){
     (r.dut_info||[]).forEach(function(di){
@@ -15508,7 +15548,7 @@ function _poolSumRecords(recs,label){
   });
   var shVals=spec_hi_list.filter(function(v){return v!=null;});
   var slVals=spec_lo_list.filter(function(v){return v!=null;});
-  return {condition:label,cond_keys:{},freqs:freqs,mean:mean,min_data:min_data,max_data:max_data,
+  return {condition:label,cond_keys:{},freqs:freqs,freq_labels:freq_labels,mean:mean,min_data:min_data,max_data:max_data,
     uttl:uttl,lttl:lttl,uttl_is_estimate:true,spec_hi:shVals.length?shVals[0]:null,spec_lo:slVals.length?slVals[0]:null,
     spec_hi_list:spec_hi_list,spec_lo_list:spec_lo_list,by_temp:null,temps:[],
     dut_info:dut_info,dut_vals:dut_vals,dut_spec_vals:dut_spec_vals};

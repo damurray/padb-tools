@@ -525,9 +525,14 @@ def render_summary(
     Computes mean/min/max/NP-TI per (condition × frequency) from raw scatter data.
     """
     import padb_stats as pst
+    import padb_plots as _pp
 
     proportion = cfg.get("proportion", 0.90)
     confidence = cfg.get("confidence", 0.90)
+    # Categorical box-identity label per frequency (same _freq_label_map the
+    # boxplot uses, from the WHOLE df) so a GF key the boxplot stores matches
+    # point-precisely in this view's per-freq GF recompute.
+    _sum_flmap = _pp._freq_label_map(sorted(df["Frequency_MHz"].dropna().unique()), cfg.get("x_unit", "MHz"))
 
     _path_pat   = re.compile(r'^(rf|path|port|ch|channel)\s*\d*$', re.IGNORECASE)
     _serial_pat = re.compile(r'^[A-Z]{2,4}\d{4,}$')
@@ -713,6 +718,7 @@ def render_summary(
             "condition":        cond,
             "cond_keys":        cond_keys_dict,
             "freqs":            [round(float(f), 6) for f in all_freqs],
+            "freq_labels":      [_sum_flmap.get(float(f), str(f)) for f in all_freqs],
             "mean":             means,
             "min_data":         mins,
             "max_data":         maxs,
