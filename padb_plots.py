@@ -627,6 +627,16 @@ function resetFilters(){
 var _gfExcluded=null;
 var _gfCoarseExcluded=null;
 var _gfParsed=null; /* Map<baseSer,[{condKvs,isManual,temp,freq}]> pre-indexed for O(1) serial lookup */
+/* freq -> categorical box label, keyed on String(freq) to match a row's own
+   number stringification. Boxplot GF keys are now keyed on this label (not a
+   rounded number), so a row's freq must be looked up the same way to match. */
+var FREQ_LABEL_MAP={};
+if(typeof FREQ_LABEL_PAIRS!=='undefined'){FREQ_LABEL_PAIRS.forEach(function(p){FREQ_LABEL_MAP[String(p[0])]=p[1];});}
+function _gfRowFreqKey(r){
+  var v=r.Frequency_MHz, k=String(v);
+  if(FREQ_LABEL_MAP[k]!==undefined) return FREQ_LABEL_MAP[k];
+  return (typeof v==='number')?v.toFixed(3):k;   /* fallback: old numeric form */
+}
 /* Extract serial from a data row: prefer r.Serial column, fall back to serial-like _grp_ column */
 function _rowSerial(r){
   if(r.Serial!=null&&r.Serial!=='') return String(r.Serial);
@@ -710,7 +720,7 @@ function _isInGfFull(r){
   var entries=_gfParsed.get(ser);
   if(!entries||!entries.length) return false; /* fast path: serial not in GF */
   var tmp=String(r.Test_Step===null||r.Test_Step===undefined?'Room':r.Test_Step);
-  var frq=typeof r.Frequency_MHz==='number'?r.Frequency_MHz.toFixed(3):String(r.Frequency_MHz);
+  var frq=_gfRowFreqKey(r);
   var rowCondMap={};
   GROUP_COLS.forEach(function(p){
     if(p[0].indexOf('_grp_')===0)
@@ -2056,6 +2066,10 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var X_LABEL={json.dumps(x_label)};",
         f"var X_SHORT_LABEL={json.dumps(_short_x_label(x_label))};",
         f"var X_UNIT={json.dumps(x_unit)};",
+        # Categorical box-identity labels (same _freq_label_map the boxplot uses),
+        # so GF keys the boxplot stores (keyed on freq_label) match point-precisely
+        # here. [[freq, label], ...] -> a JS map keyed on String(freq).
+        f"var FREQ_LABEL_PAIRS={json.dumps([[float(_f), _l] for _f, _l in _freq_label_map(sorted(df['Frequency_MHz'].dropna().unique()), x_unit).items()])};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var LOG_X={'true' if log_x else 'false'};",
         f"var TITLE={json.dumps(title)};",
