@@ -1251,10 +1251,19 @@ def _resolve_csv_path(csv_path: Path) -> Path:
     return csv_path
 
 
-def _site_has_swept_x(df) -> bool:
+def _site_has_swept_x(df, x_col=None) -> bool:
     """True only if a site's CSV has a *genuine* swept x-axis: an x-like column
-    (name contains 'frequency' or 'x value') AND a separate numeric value column
-    to plot against it.
+    AND a separate numeric value column to plot against it.
+
+    The x-like column is found by, in priority order:
+      1. an explicitly configured ``x_col`` (job.json), when it names a real
+         numeric column -- this is how a non-'Frequency'-named swept axis
+         (e.g. 'Rate (kHz)' for AM flatness, 'Vgg (V)' for an IV sweep) is
+         recognised. ``padb_make_v2_job.py`` already sets ``x_col`` from the
+         pod's own ``Data_ScatterPlot_XData_Label`` for exactly these pods, and
+         the scatter loader already honours it -- only this routing check was
+         still name-only, so such a compare wrongly fell through to histogram.
+      2. otherwise, a column whose name contains 'frequency' or 'x value'.
 
     A no-swept-x test (switching speed) whose only numeric column is the
     measurement itself -- even when that measurement is named e.g. 'Frequency
@@ -1264,7 +1273,17 @@ def _site_has_swept_x(df) -> bool:
     fooled by 'Frequency' appearing in the measurement name.)"""
     cols = [str(c).strip() for c in df.columns]
     lcs = [c.lower() for c in cols]
-    x_idx = {i for i, l in enumerate(lcs) if ("frequency" in l or "x value" in l)}
+    x_idx = set()
+    if x_col:
+        xl = str(x_col).strip().lower()
+        cand = {i for i, l in enumerate(lcs) if l == xl}
+        # Only trust the configured x_col if it's actually a present, numeric
+        # column; otherwise fall through to name-based detection (a predicted
+        # x_col that doesn't exist in this site's CSV must not force True).
+        if cand and any(pd.to_numeric(df[cols[i]], errors="coerce").notna().any() for i in cand):
+            x_idx = cand
+    if not x_idx:
+        x_idx = {i for i, l in enumerate(lcs) if ("frequency" in l or "x value" in l)}
     if not x_idx:
         return False
     meta = {"analysis type", "model(s)", "algorithm -> result", "units",
@@ -1281,7 +1300,7 @@ def _site_has_swept_x(df) -> bool:
     return False
 
 
-def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> tuple[Path, bool]:
+def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path, x_col=None) -> tuple[Path, bool]:
     """
     Merge two or more sites' own scatter CSVs into one, tagging each row's
     Group text with "  Site: <name>" before any downstream Group parsing
@@ -1321,7 +1340,7 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path) -> tu
         else:
             df[group_col] = df[group_col].fillna("").astype(str).str.rstrip() + f"  Site: {site_name}"
         print(f"  compare_csv: site {site_name!r} -- {len(df):,} rows from {p.name}", flush=True)
-        if not _site_has_swept_x(df):
+        if not _site_has_swept_x(df, x_col):
             sites_without_freq.append((site_name, p.name, list(df.columns)))
         dfs.append(df)
     merged = pd.concat(dfs, ignore_index=True, sort=False)
@@ -1428,7 +1447,7 @@ def main(argv: list[str] | None = None) -> None:
     elif cfg.get("compare_csv"):
         if not cfg.get("primary_site"):
             cfg["primary_site"] = next(iter(cfg["compare_csv"]))
-        csv_path, no_swept_x = _build_compare_csv(cfg["compare_csv"], job_dir, output_dir)
+        csv_path, no_swept_x = _build_compare_csv(cfg["compare_csv"], job_dir, output_dir, cfg.get("x_col"))
         # No-swept-x compare (every site lacks a numeric x-axis, e.g. switching
         # speed) -> auto-select the histogram view, unless the job set views
         # explicitly. Without this, auto view-selection would try scatter, which
