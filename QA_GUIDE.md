@@ -225,10 +225,43 @@ The **boxplot** additionally gets the deep point-precise GF set-difference check
 false positives on current scatter/stat_summary/summary/env_coverage/distribution/
 histogram/boxplot pages, and it still catches the pre-fix boxplot GF over-exclusion.
 
-**Remaining depth (optional):** a plot↔table (`#box_stat_panel` etc.) numeric
-cross-check per view, and GF-*consumption* checks on the aggregated views (inject a
-GF serial, assert its contribution drops) -- the reversibility layer already covers
-the filter-consistency bug class those would target.
+**Table cross-check (added 2026-09-10).** Beyond plot self-consistency, every view
+with a Statistics/Results table (`#box_stat_panel`, `#stat_panel`, `#sum_table_wrap`,
+`#h_stats`, `#ec_stat_panel`) is now cross-checked against the plot and for internal
+sanity — the "are you also verifying tables, statistical and otherwise?" ask. It is
+deliberately **oracle-free**: it never recomputes Shapiro/NP-TI/k-factor from
+scratch, only checks relationships the table must satisfy however it computed. The
+harness force-opens the collapsible panel *once* (idempotent — only toggles if the
+panel is hidden — since a double-toggle would leave it closed and `update()` skips a
+closed panel, reading stale DOM) and refreshes without re-toggling. Checks:
+- **table-not-blank** — an open table has rows whenever the plot has data.
+- **table-conds-are-plotted** — every table Condition row is an actually-plotted
+  trace (`All` allowed as an aggregate label); catches phantom/stale rows.
+- **plotted-groups-in-table** — every `type:'box'`/`type:'histogram'` primary trace
+  has a table row (the clean reverse direction, by trace type).
+- **table-n-matches-plotted-points** — where per-point data is embedded (histogram),
+  each condition row's `n` equals that trace's value count, and the `All` row equals
+  the total. The one *exact* oracle.
+- **table-stats-sane** — per row: `Q1≤Median≤Q3`, `Min≤Mean≤Max`, `Std≥0`, `n≥1`,
+  `%out-of-spec∈[0,100]`, `p95≤p99≤Max`, TI `[lo,hi]` with `lo≤hi`, and margin signs
+  agree with the pass/fail token (`PASS`⇒no margin<0; a `✔` cell ⇒ value≥0). Runs
+  whatever columns the view exposes (1340 checks over 335 rows on a real
+  stat_summary; 42 over 14 on the compare boxplot).
+- **table-updates-on-filter / table-restores-on-filter** — toggle one filter off:
+  the plot changes *and* the table digest changes together, then both restore. A
+  view whose table only refreshes on an explicit Refresh (the large-dataset design)
+  is honored (it force-refreshes and passes with a note), not failed.
+
+Views without such a table (scatter, distribution) skip `table-present`; env_coverage
+gets consistency + update checks (its UDE/LDE columns aren't in the sanity set, so
+`table-stats-sane` skips there). Validated with no false positives across all view
+types. `--verbose` prints every check (pass/skip too), not just failures; stdout is
+UTF-8-reconfigured so table arrows/checkmarks (`↑↓✔✘`) in details don't crash the
+cp1252 console.
+
+**Remaining depth (optional):** GF-*consumption* checks on the aggregated views
+(inject a GF serial, assert its contribution drops) -- the reversibility + table
+layers already cover the filter/table-consistency bug class those would target.
 
 ### Track-1 sweep result (2026-09-10)
 

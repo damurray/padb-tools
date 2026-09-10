@@ -153,6 +153,162 @@ _HARNESS_JS = r"""
     else skip('reset-restores','no reset function found');
   }
 
+  // ---- table cross-check (all views with a Statistics/Results table) ----
+  // Verifies the on-page numeric table is (a) consistent with the plotted set,
+  // (b) internally sane (Q1<=median<=Q3, min<=mean<=max, %oos in [0,100], margin
+  // signs match pass/fail), and (c) refreshes when a filter changes (not stale).
+  // Deliberately does NOT re-derive Shapiro/NP-TI/k-factor from scratch -- it
+  // checks relationships the table must satisfy regardless of how it computed.
+  function _norm(s){ return String(s==null?'':s).replace(/\s+/g,' ').trim(); }
+  function _num(s){ // first signed float in a cell (strips arrows/nbsp/✔✘)
+    var m=_norm(s).replace(/[↓↑]/g,' ').match(/-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?/);
+    return m?parseFloat(m[0]):null;
+  }
+  function _passTok(s){ var t=_norm(s); if(/✘|FAIL/.test(t))return false; if(/✔|PASS/.test(t))return true; return null; }
+  function _tablePanelEl(){
+    var ids=['box_stat_panel','stat_panel','sum_table_wrap','h_stats','ec_stat_panel'];
+    for(var i=0;i<ids.length;i++){var e=document.getElementById(ids[i]); if(e) return e;} return null;
+  }
+  function _ensurePanelOpen(){ // open the collapsible stats panel exactly once (idempotent)
+    var el=_tablePanelEl(); if(!el) return;
+    if(getComputedStyle(el).display==='none'){
+      var b=[].slice.call(document.querySelectorAll('button')).filter(function(x){
+        return /statistic|results table|▶/i.test(x.textContent) && !/refresh/i.test(x.textContent);})[0];
+      if(b){ try{b.click();}catch(e){} }
+      if(getComputedStyle(el).display==='none'){ // still closed? try the toggle fns (single call)
+        var fns=['toggleStatPanel','toggleStatsPanel'];
+        for(var i=0;i<fns.length&&getComputedStyle(el).display==='none';i++){
+          try{ if(eval('typeof '+fns[i])==='function') eval(fns[i]+'()'); }catch(e){} } }
+    }
+  }
+  function openTable(){ _ensurePanelOpen(); _buildTable(); } // open + build (call ONCE)
+  function _buildTable(){ // (re)build whatever table this view has, WITHOUT toggling the panel
+    try{ if(typeof buildTable==='function') buildTable(true); }catch(e){}   // summary Results Table
+    try{ [].slice.call(document.querySelectorAll('button')).forEach(function(b){
+      if(/refresh/i.test(b.textContent)){ try{b.click();}catch(e){} } }); }catch(e){} // large-data manual refresh
+  }
+  function refreshTable(){ // rebuild the ALREADY-OPEN table WITHOUT toggling it
+    try{update();}catch(e){}   // stat_summary/boxplot/histogram auto-rebuild an open table here
+    _buildTable();
+  }
+  function readTable(){ // -> {headers, rows, col{}} for the first stats/results table
+    var ids=['box_stat_panel','stat_panel','sum_table_wrap','h_stats','ec_stat_panel'];
+    var t=null;
+    for(var i=0;i<ids.length&&!t;i++){ var c=document.getElementById(ids[i]); if(c){ t=c.querySelector('table')||(c.tagName==='TABLE'?c:null); } }
+    if(!t){ // fallback: any table whose header names a Condition/Freq/n column
+      var all=[].slice.call(document.querySelectorAll('table'));
+      t=all.filter(function(x){var h=_norm((x.tHead||{}).textContent||''); return /Condition|Freq|\bn\b/.test(h);})[0]||null;
+    }
+    if(!t) return null;
+    var headers=[].slice.call(t.querySelectorAll('thead th, thead td')).map(function(h){return _norm(h.textContent);});
+    var rows=[].slice.call(t.querySelectorAll('tbody tr')).map(function(tr){
+      return [].slice.call(tr.children).map(function(td){return _norm(td.textContent);}); });
+    var col={}; function find(re){ for(var i=0;i<headers.length;i++) if(re.test(headers[i])) return i; return -1; }
+    col.cond=find(/Condition/i); col.freq=find(/Freq/i); col.n=find(/^n( DUTs)?$/i);
+    col.q1=find(/^Q1$/i); col.med=find(/Median/i); col.q3=find(/^Q3$/i); col.std=find(/^Std$/i);
+    col.mean=find(/^Mean$/i); col.min=find(/^Min$/i); col.max=find(/^Max$/i);
+    col.ti=find(/TI Bounds/i); col.pass=find(/^Pass$/i); col.margin=find(/^Margin/i);
+    col.mup=find(/Margin↑/i); col.mdn=find(/Margin↓/i);
+    col.oos=find(/out-of-spec/i); col.p95=find(/p95/i); col.p99=find(/p99/i);
+    return {el:t,headers:headers,rows:rows,col:col};
+  }
+  function tableConds(T){ var s={}; if(T.col.cond<0) return s;
+    T.rows.forEach(function(r){ var c=r[T.col.cond]; if(c) s[c]=(s[c]||0)+1; }); return s; }
+  function traceNames(){ var gd=_gd(); return (gd&&gd.data?gd.data:[]).map(function(t){return _norm(t.name||'');}); }
+
+  function runTableChecks(R,chk,skip){
+    openTable();
+    var T=readTable();
+    if(!T){ skip('table-present','no stats/results table in this view'); return; }
+    var eps=6e-4;
+    // (a1) not blank when the plot isn't
+    var sig=plotSig(), plotHasData = sig!=='[]' && JSON.parse(sig).some(function(s){return parseInt(s.split(':').pop(),10)>0;});
+    chk('table-not-blank', T.rows.length>0 || !plotHasData, 'rows='+T.rows.length);
+    if(!T.rows.length){ return; }
+    // (a2) every table condition is actually plotted (catches phantom/stale rows).
+    // 'All' is an allowed aggregate label (histogram total / stat_summary pooled).
+    var names=traceNames(), tc=tableConds(T);
+    if(T.col.cond>=0){
+      var phantom=Object.keys(tc).filter(function(c){ return c!=='All' && names.indexOf(c)<0
+          && !names.some(function(n){return n.indexOf(c)===0;}); });
+      chk('table-conds-are-plotted', phantom.length===0, phantom.length?('not plotted: '+phantom.slice(0,4).join(' | ')):('conds='+Object.keys(tc).length));
+    } else skip('table-conds-are-plotted','no Condition column');
+    // (a3) reverse: every box/histogram PRIMARY trace has a table row (clean by type)
+    var gd=_gd(), prim=(gd&&gd.data?gd.data:[]).filter(function(t){return t.type==='box'||t.type==='histogram';})
+        .map(function(t){return _norm(t.name||'');}).filter(function(n){return n;});
+    if(prim.length){
+      var missing=prim.filter(function(n){return !tc[n];});
+      chk('plotted-groups-in-table', missing.length===0, missing.length?('missing rows: '+missing.slice(0,4).join(' | ')):('primary='+prim.length));
+    }
+    // (b) statistical sanity, per whatever columns this table exposes
+    var bad=[], checked=0;
+    T.rows.forEach(function(r,ri){
+      function N(i){return i>=0?_num(r[i]):null;}
+      var q1=N(T.col.q1),md=N(T.col.med),q3=N(T.col.q3);
+      if(q1!=null&&md!=null&&q3!=null){checked++; if(!(q1<=md+eps&&md<=q3+eps))bad.push('row'+ri+' Q1<=Med<=Q3 ['+q1+','+md+','+q3+']');}
+      var mn=N(T.col.min),me=N(T.col.mean),mx=N(T.col.max);
+      if(mn!=null&&me!=null&&mx!=null){checked++; if(!(mn<=me+eps&&me<=mx+eps))bad.push('row'+ri+' Min<=Mean<=Max ['+mn+','+me+','+mx+']');}
+      var sd=N(T.col.std); if(sd!=null){checked++; if(sd<-eps)bad.push('row'+ri+' Std<0 ('+sd+')');}
+      var nn=N(T.col.n); if(nn!=null){checked++; if(nn<1)bad.push('row'+ri+' n<1 ('+nn+')');}
+      var oos=N(T.col.oos); if(oos!=null){checked++; if(oos<-eps||oos>100+eps)bad.push('row'+ri+' %oos out of [0,100] ('+oos+')');}
+      // TI bounds [lo,hi]
+      if(T.col.ti>=0){ var m=_norm(r[T.col.ti]).match(/(-?\d+(?:\.\d+)?)[^\d-]+(-?\d+(?:\.\d+)?)/);
+        if(m){checked++; if(parseFloat(m[1])>parseFloat(m[2])+eps)bad.push('row'+ri+' TI lo>hi ['+m[1]+','+m[2]+']');} }
+      // percentile ordering med<=p95<=p99<=max (histogram)
+      var p95=N(T.col.p95),p99=N(T.col.p99);
+      if(p95!=null&&p99!=null){checked++; if(p95>p99+eps)bad.push('row'+ri+' p95>p99 ['+p95+','+p99+']');
+        if(mx!=null&&p99>mx+eps)bad.push('row'+ri+' p99>Max ['+p99+','+mx+']'); }
+      // margin sign must agree with pass/fail token (summary Margin↑/↓; stat_summary Pass)
+      var pt=T.col.pass>=0?_passTok(r[T.col.pass]):null;
+      if(pt!==null){ checked++;
+        var mup=T.col.margin>=0?null:null; // stat_summary: Margin↓/↑ combined; PASS => both >=0
+        var mcol=T.col.margin>=0?T.col.margin:-1;
+        if(mcol>=0){ var nums=_norm(r[mcol]).replace(/[↓↑]/g,' ').match(/-?\d+(?:\.\d+)?/g)||[];
+          var anyNeg=nums.some(function(x){return parseFloat(x)<-eps;});
+          if(pt===true&&anyNeg)bad.push('row'+ri+' PASS but a margin<0 ('+_norm(r[mcol])+')');
+          if(pt===false&&!anyNeg&&nums.length)bad.push('row'+ri+' FAIL but no margin<0 ('+_norm(r[mcol])+')'); }
+      }
+      // summary per-side margin cells carry their own ✔/✘
+      [T.col.mup,T.col.mdn].forEach(function(ci){ if(ci>=0){ var cell=r[ci]; var t=_passTok(cell), v=_num(cell);
+        if(t!==null&&v!=null){checked++; if(t===true&&v<-eps)bad.push('row'+ri+' margin ✔ but <0 ('+_norm(cell)+')');
+          if(t===false&&v>eps)bad.push('row'+ri+' margin ✘ but >0 ('+_norm(cell)+')');}} });
+    });
+    if(checked>0) chk('table-stats-sane', bad.length===0, bad.length?bad.slice(0,5).join(' ; '):('checks='+checked+' rows='+T.rows.length));
+    else skip('table-stats-sane','no sanity-checkable columns');
+    // (c) table n == plotted point count, where per-point data is embedded (histogram)
+    var hist=(gd&&gd.data?gd.data:[]).filter(function(t){return t.type==='histogram';});
+    if(hist.length&&T.col.n>=0&&T.col.cond>=0){
+      var nbad=[], tot=0;
+      hist.forEach(function(t){ var nm=_norm(t.name||''), L=(t.x?t.x.length:0); tot+=L;
+        var row=T.rows.filter(function(r){return r[T.col.cond]===nm;})[0];
+        if(row){ var tn=_num(row[T.col.n]); if(tn!=null&&tn!==L)nbad.push(nm+' table_n='+tn+' pts='+L); } });
+      var allRow=T.rows.filter(function(r){return r[T.col.cond]==='All';})[0];
+      if(allRow){ var an=_num(allRow[T.col.n]); if(an!=null&&an!==tot)nbad.push('All table_n='+an+' total_pts='+tot); }
+      chk('table-n-matches-plotted-points', nbad.length===0, nbad.length?nbad.slice(0,4).join(' ; '):('traces='+hist.length+' totpts='+tot));
+    }
+    // (d) table refreshes on a filter change (not stale) and restores
+    function digest(){ var T2=readTable(); if(!T2) return null;
+      return T2.rows.length+'|'+T2.rows.map(function(r){return r.join('␟');}).join('‖'); }
+    var boxes=filterBoxes().filter(function(c){return c.checked;});
+    if(boxes.length>=2){
+      var c=boxes[0], d0=digest(), s0=plotSig();
+      // Fire the change (its onchange calls update(), which auto-refreshes an
+      // open table in every view except large-data summary). Do NOT re-toggle
+      // the panel -- that would close it and leave stale DOM behind.
+      fire(c,false); var d1=digest(), s1=plotSig();
+      var needForce=false;
+      if(d1===d0 && s1!==s0){ refreshTable(); d1=digest(); needForce=(d1!==d0); } // large-data manual-refresh path
+      if(s1===s0){ R.push({name:'table-updates-on-filter',skip:true,detail:'chosen filter did not change the plot (single-value dim?)'}); }
+      else {
+        chk('table-updates-on-filter', d1!==d0, (d1!==d0)?(needForce?'updated only after an explicit Refresh (large-data design)':'auto-updated on filter change'):'STALE: plot changed but table did not');
+        fire(c,true); refreshTable(); var d2=digest();
+        chk('table-restores-on-filter', d2===d0, 'restored='+(d2===d0));
+      }
+    } else skip('table-updates-on-filter','fewer than 2 checked filter boxes');
+    // leave the view at baseline
+    var rf=firstResetFn(); if(rf){ try{eval(rf+'()');}catch(e){} }
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -173,6 +329,8 @@ _HARNESS_JS = r"""
       try{update();}catch(e){}   // force one render so the plot is populated before we read it
       // Generic invariants for every view.
       runGeneric(R,chk,skip);
+      // Table cross-check for every view that has a Statistics/Results table.
+      try{ runTableChecks(R,chk,skip); }catch(e){ chk('TABLE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');
@@ -362,6 +520,12 @@ def _discover(root: Path, glob: str, include_single: bool) -> list[Path]:
 
 
 def main(argv=None) -> None:
+    # Details can carry table text with arrows/checkmarks (↑↓✔✘) -- this Windows
+    # console's cp1252 codepage can't encode them, which would crash print().
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     ap = argparse.ArgumentParser(description="Filter/GF self-consistency gate for boxplot pages.")
     ap.add_argument("--root", default=r"C:\temp\data", help="Data root to scan (default C:\\temp\\data).")
     ap.add_argument("--glob", default="*boxplot*.html", help="Filename glob (default *boxplot*.html).")
@@ -371,6 +535,7 @@ def main(argv=None) -> None:
     ap.add_argument("--budget", type=int, default=20000, help="Edge --virtual-time-budget ms (default 20000).")
     ap.add_argument("--timeout", type=int, default=120, help="Per-page headless kill timeout s (default 120).")
     ap.add_argument("--limit", type=int, default=0, help="Test at most N pages (0 = all).")
+    ap.add_argument("--verbose", action="store_true", help="Print every check (pass/skip too), not just failures.")
     args = ap.parse_args(argv)
 
     edge = _find_edge()
@@ -413,8 +578,13 @@ def main(argv=None) -> None:
         total_pass += len(ppass); total_fail += len(pfail); total_skip += len(pskip)
         status = "PASS" if not pfail else "FAIL"
         print(f"  [{status}] {label}  ({len(ppass)} ok, {len(pfail)} fail, {len(pskip)} skip)")
-        for r in pfail:
-            print(f"           FAIL: {r['name']} -- {r['detail']}")
+        if args.verbose:
+            for r in rows:
+                tag = "skip" if r.get("skip") else ("ok  " if r.get("ok") else "FAIL")
+                print(f"           {tag}: {r['name']} -- {r.get('detail','')}")
+        else:
+            for r in pfail:
+                print(f"           FAIL: {r['name']} -- {r['detail']}")
         if pfail:
             failed_pages.append(label)
 
