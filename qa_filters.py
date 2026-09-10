@@ -234,15 +234,30 @@ _HARNESS_JS = r"""
     // 'All' is an allowed aggregate label (histogram total / stat_summary pooled).
     var names=traceNames(), tc=tableConds(T);
     if(T.col.cond>=0){
-      var phantom=Object.keys(tc).filter(function(c){ return c!=='All' && names.indexOf(c)<0
-          && !names.some(function(n){return n.indexOf(c)===0;}); });
+      // A table row is "plotted" if it equals a trace name, is a prefix of one,
+      // OR is a plotted trace name plus a per-temp suffix / grouped-row prefix that
+      // the table legitimately adds without its own trace: "All / 20°C" (boxplot
+      // non-Room breakdown), "Serial: X" / "Port: X" (Group-by rows). Strip those
+      // affixes and re-check against the trace names.
+      var _base=function(c){ return _norm(c.replace(/^(Serial|Port|Temp|Site|[A-Za-z ()<>=+.-]+)\s*:\s*/,'').replace(/\s*\/\s*[^/]+$/,'')); };
+      var phantom=Object.keys(tc).filter(function(c){
+        if(c==='All') return false;
+        if(names.indexOf(c)>=0 || names.some(function(n){return n.indexOf(c)===0;})) return false;
+        var b=_base(c);
+        return !(names.indexOf(b)>=0 || names.some(function(n){return n.indexOf(b)===0 || b.indexOf(n)===0;}));
+      });
       chk('table-conds-are-plotted', phantom.length===0, phantom.length?('not plotted: '+phantom.slice(0,4).join(' | ')):('conds='+Object.keys(tc).length));
     } else skip('table-conds-are-plotted','no Condition column');
     // (a3) reverse: every box/histogram PRIMARY trace has a table row (clean by type)
     var gd=_gd(), prim=(gd&&gd.data?gd.data:[]).filter(function(t){return t.type==='box'||t.type==='histogram';})
         .map(function(t){return _norm(t.name||'');}).filter(function(n){return n;});
     if(prim.length){
-      var missing=prim.filter(function(n){return !tc[n];});
+      // Normalize the temp affix: a multi-temp box trace is "cond (temp)" while
+      // its table row is "cond / temp" -- same box, different affix. Compare a
+      // temp-stripped base and also the trace's own "(temp)"->"/ temp" form.
+      var _affix=function(s){ return _norm(String(s).replace(/\s*\([^()]*\)\s*$/,'').replace(/\s*\/\s*[^/]+$/,'')); };
+      var tcBases={}; Object.keys(tc).forEach(function(c){ tcBases[_affix(c)]=1; tcBases[c]=1; });
+      var missing=prim.filter(function(n){ return !(tc[n]||tcBases[n]||tcBases[_affix(n)]); });
       chk('plotted-groups-in-table', missing.length===0, missing.length?('missing rows: '+missing.slice(0,4).join(' | ')):('primary='+prim.length));
     }
     // (b) statistical sanity, per whatever columns this table exposes
@@ -396,8 +411,16 @@ _HARNESS_JS = r"""
       // ---- outliers-GF-precise ----
       if(typeof _collectOutliers!=='undefined'&&typeof applyGlobalFilter!=='undefined'){
         var outs=_collectOutliers(getSelectedConds(),getSelectedTemps(),getYFilter(),getSelectedBoxSerials());
-        // outlier identity by (baseSerial, condition, freqLabel)
-        var outId={}; outs.forEach(function(o){ outId[(typeof _boxBaseSerial!=='undefined'?_boxBaseSerial(o.serial):o.serial)+'||'+o.cond+'||'+(o.freqLabel!=null?o.freqLabel:o.freq)]=1; });
+        // outlier identity by (baseSerial, condition, freqLabel). A multi-temp
+        // single-site boxplot names its box group "cond (temp)", so add that
+        // variant too (keeps temp precision -- an outlier at 20C adds only the
+        // "(20C)" group, not "(30C)").
+        var outId={}; outs.forEach(function(o){
+          var bs=(typeof _boxBaseSerial!=='undefined'?_boxBaseSerial(o.serial):o.serial);
+          var fl=(o.freqLabel!=null?o.freqLabel:o.freq);
+          outId[bs+'||'+o.cond+'||'+fl]=1;
+          if(o.temp) outId[bs+'||'+o.cond+' ('+o.temp+')||'+fl]=1;
+        });
         var b0=ppPts();
         applyGlobalFilter(); update();
         var a0=ppPts(); var P1=a0.length;
@@ -405,7 +428,11 @@ _HARNESS_JS = r"""
         var rem=removedBetween(b0,a0);
         // every removed point must belong to an outlier (serial,cond,freqLabel)
         // identity -- catches whole-DUT / cross-frequency over-exclusion.
-        var outside=rem.filter(function(k){var p=k.split('||'); return !outId[p[1]+'||'+p[0]+'||'+p[2]];});
+        // The removed point's serial (from the pts hover text) is port-qualified,
+        // but outId is keyed on the BASE serial (as the boxplot stores GF keys) --
+        // strip the port before checking, or a ported boxplot flags everything.
+        var _bs=function(s){return (typeof _boxBaseSerial!=='undefined')?_boxBaseSerial(s):s;};
+        var outside=rem.filter(function(k){var p=k.split('||'); return !outId[_bs(p[1])+'||'+p[0]+'||'+p[2]];});
         chk('outliers-GF-precise (no cross-freq/DUT over-exclusion)', outside.length===0,
             'removed='+rem.length+' outside-outlier-identity='+outside.length+' numOutliers='+outs.length);
         chk('outliers-GF-removed-something', rem.length>0||outs.length===0, 'removed='+rem.length+' numOutliers='+outs.length);
