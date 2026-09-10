@@ -10633,6 +10633,20 @@ function _boxFullCondKey(rawCond, port){
   parts.sort();
   return parts.join('|');
 }
+/* GF frequency-key component. Uses the categorical box LABEL (freq_label), NOT
+   f.freq.toFixed(3): the boxplot x-axis is keyed by freq_label, and toFixed(3)
+   collapses genuinely-distinct close categories (e.g. 0.099999 vs 0.1 MHz,
+   8.789061 vs 8.789062 MHz -- instrument float-rounding noise rendered as
+   separate boxes) into one GF key, so "Set outliers as GF" on one box also
+   excluded its collision-siblings. Keying on freq_label makes GF frequency
+   granularity identical to the plotted box, by construction. Falls back to the
+   old numeric form only if a label is somehow missing. Only the boxplot's own
+   _boxIsInGf consumes this dim; stat_summary/distribution/env_coverage GF
+   matching drops frequency entirely, so this change is boxplot-contained. */
+function _gfFreqKey(f){
+  if(f&&f.freq_label!=null&&f.freq_label!=='') return f.freq_label;
+  return (f&&f.freq!=null)?f.freq.toFixed(3):'0';
+}
 /* GF membership check with dimension-intersection + serial normalisation.
    Handles old-format keys (port-qualified serial, missing Port/AlcState/Mode in condKey)
    by: (1) exact match first, (2) strip port suffix from stored serial and compare base,
@@ -10786,7 +10800,7 @@ function _computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
         if(d.v>rhi) return;
         if(d.v<rlo) return;
         if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
-        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+f.freq.toFixed(3));if(boxGfFocus?!_ig:_ig) return;}
+        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return;}
         var gk=_boxGroupKeyForPoint(cols,cd,d);
         if(!freqVals[gk]) freqVals[gk]={};
         if(!freqVals[gk][f.freq]) freqVals[gk][f.freq]=[];
@@ -10922,7 +10936,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
           if(d.v>rhi) return false;
           if(d.v<rlo) return false;
           if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
-          if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+f.freq.toFixed(3));if(boxGfFocus?!_ig:_ig) return false;}
+          if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return false;}
           return true;
         });
         if(isCollapseDup()) detail=_collapseDupRuns(detail);
@@ -11356,7 +11370,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
         if(f.freq<fr.lo||f.freq>fr.hi) return;
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
           .filter(function(d){
-            if(gfFocusActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+f.freq.toFixed(3);if(!_boxIsInGf(_ck)) return false;}
+            if(gfFocusActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);if(!_boxIsInGf(_ck)) return false;}
             return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
               &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi));
           });
@@ -11612,7 +11626,7 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
         var risk=outlierRisk(d.v,fv);
         result.push({cond:cd.condition,temp:cd.temp,freq:f.freq,freqLabel:f.freq_label,
           serial:d.s,port:d.p||'',value:d.v,sigma:risk.sigma,dNpTi:risk.dNpTi,
-          key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'||'+cd.temp+'||'+f.freq.toFixed(3)});
+          key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'||'+cd.temp+'||'+_gfFreqKey(f)});
       });
     });
   });
@@ -11709,7 +11723,7 @@ function _collectDeltaOutliers(selConds,selTemps,selBoxSers){
               cond:cond,temp:temp,freq:fs.freq,freqLabel:fs.freq_label,
               serial:d.s,port:d.p||'',delta:d.delta,absVal:d.absVal,roomVal:d.roomVal,
               q1:q1,q3:q3,iqr:iqr,loF:loF,hiF:hiF,sigma:sigma,
-              key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cond,d.p)+'||'+temp+'||'+fs.freq.toFixed(3)
+              key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cond,d.p)+'||'+temp+'||'+_gfFreqKey(fs)
             });
           });
         });
@@ -11917,7 +11931,7 @@ function updateSitePanel(){
         (fs.vals_detail||[]).forEach(function(d){
           if(serActiveSt&&selSerials.indexOf(d.s)<0) return;
           if(gfActive){
-            var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+fs.freq.toFixed(3));
+            var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(fs));
             if(boxGfFocus?!_ig:_ig) return;
           }
           if(cd.site===PRIMARY_SITE){
@@ -12384,13 +12398,16 @@ function _loadBoxGlobalFilter(){
           return !serKws.some(function(kw){return lo.indexOf(kw)===0;});
         }).join('|');
         var _tp=(parts.length>=3&&parts[2]&&parts[2]!=='manual')?'|Temp='+parts[2]:'';
-        /* Point-precise for OUTLIER keys (they carry a real per-point frequency),
-           whole-DUT for filter keys (freq '0'). Without this, "Set outliers as
-           GF" dropped the frequency and excluded EVERY frequency for that DUT --
-           blanking a plot where every DUT has an outlier. A stored key with no
-           Freq dim still matches all frequencies via _boxIsInGf's dims-
-           intersection, so "Set filter as GF" (whole-DUT) is unaffected. */
-        var _fq=(parts.length>=4&&parts[3]&&parts[3]!=='0'&&!isNaN(parseFloat(parts[3]))&&parseFloat(parts[3])>0)?'|Freq='+parts[3]:'';
+        /* Point-precise for OUTLIER keys (they carry a real per-point frequency
+           -- now the categorical box LABEL, e.g. "0.1 MHz", not a rounded number,
+           so distinct close boxes don't collide; see _gfFreqKey), whole-DUT for
+           filter keys (freq '0'). Without this, "Set outliers as GF" dropped the
+           frequency and excluded EVERY frequency for that DUT -- blanking a plot
+           where every DUT has an outlier. A stored key with no Freq dim still
+           matches all frequencies via _boxIsInGf's dims-intersection, so "Set
+           filter as GF" (whole-DUT) is unaffected. Any non-'0', non-empty value
+           (a label like "0.1 MHz", or an old numeric key) is point-precise. */
+        var _fq=(parts.length>=4&&parts[3]&&parts[3]!=='0')?'|Freq='+parts[3]:'';
         _boxGfCoarseExcluded.add(parts[0]+'||'+condKey+_tp+_fq);
       }
     });
@@ -12466,7 +12483,7 @@ function setFilterAsGf(){
         var baseSer=_boxBaseSerial(d.s);
         var fck=_boxFullCondKey(cd.condition,d.p||'');
         var useTemp=(tempFlt||freqFlt)?cd.temp:'manual';
-        var useFreq=(tempFlt||freqFlt)?f.freq.toFixed(3):'0';
+        var useFreq=(tempFlt||freqFlt)?_gfFreqKey(f):'0';
         var k=baseSer+'||'+fck+'||'+useTemp+'||'+useFreq;
         if(!seen.has(k)){seen.add(k);keys.push(k);}
       });
@@ -12953,7 +12970,7 @@ function _segFilterCondDims(seg){
       (f.vals_detail||[]).forEach(function(d){
         if(serActive&&selBoxSers.indexOf(d.s)<0) return;
         if(portActive&&selPorts.indexOf(d.p||'')<0) return;
-        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+f.freq.toFixed(3));if(boxGfFocus?!_ig:_ig) return;}
+        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return;}
         condsInSeg[cd.condition]=true;
       });
     });
@@ -13040,7 +13057,7 @@ function _recomputeSpecSegments(){
       (f.vals_detail||[]).forEach(function(d){
         if(serActive&&selBoxSers.indexOf(d.s)<0) return;
         if(portActive&&selPorts.indexOf(d.p||'')<0) return;
-        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+f.freq.toFixed(3));if(boxGfFocus?!_ig:_ig) return;}
+        if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return;}
         var hiV=d[hiField],loV=d[loField];
         if(hiV!=null&&!isNaN(Number(hiV))){
           var v=Number(hiV);
