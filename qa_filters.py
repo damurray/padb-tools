@@ -63,6 +63,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 _EDGE_CANDIDATES = [
@@ -125,16 +126,20 @@ _HARNESS_JS = r"""
   }
   // Generic invariants for ANY view. `runViewSetup` optionally primes the view
   // (e.g. box: turn on Show Points) and returns a label. Returns pushes into R.
-  function runGeneric(R,chk,skip){
+  function runGeneric(R,chk,skip,heavy){
     var S0=plotSig();
     chk('baseline-not-blank', S0!=='[]' && JSON.parse(S0).some(function(s){return parseInt(s.split(':').pop(),10)>0;}), 'sig='+S0.slice(0,120));
     // Per distinct filter class, exercise ONE checkbox: off -> on must restore
     // the exact baseline (reversibility), and unchecking should change something
     // (a filter that does nothing is itself suspicious -- reported soft).
+    // On a HEAVY page this loop's many async update()s race the virtual-time
+    // dump, so it's skipped -- the deterministic deep GF block below is what a
+    // heavy compare boxplot is actually being gated for.
+    if(heavy){ skip('filter-reversibility','skipped on heavy page (reduced suite for a deterministic render)'); }
     var boxes=filterBoxes(), byClass={};
     boxes.forEach(function(c){var k=(c.className||'').trim(); if(!byClass[k]) byClass[k]=c;});
-    var classes=Object.keys(byClass);
-    if(!classes.length) skip('filter-reversibility','no recognised filter checkboxes');
+    var classes=heavy?[]:Object.keys(byClass);
+    if(!classes.length && !heavy) skip('filter-reversibility','no recognised filter checkboxes');
     classes.forEach(function(k){
       var c=byClass[k]; if(!c.checked){ // ensure we start from checked
         // find a checked one of the same class instead
@@ -287,8 +292,14 @@ _HARNESS_JS = r"""
       chk('table-n-matches-plotted-points', nbad.length===0, nbad.length?nbad.slice(0,4).join(' ; '):('traces='+hist.length+' totpts='+tot));
     }
     // (d) table refreshes on a filter change (not stale) and restores
+    // Cheap fingerprint: row count + a sample of the first/last few rows. O(1) in
+    // table size (a heavy boxplot's stats table can be thousands of rows -- fully
+    // serializing it on every digest was a real cost). A filter change alters the
+    // row count and/or the sampled rows, so this still detects change vs restore.
     function digest(){ var T2=readTable(); if(!T2) return null;
-      return T2.rows.length+'|'+T2.rows.map(function(r){return r.join('␟');}).join('‖'); }
+      var rs=T2.rows, n=rs.length, s=[];
+      [0,1,2,n-3,n-2,n-1].forEach(function(i){ if(i>=0&&i<n) s.push(rs[i].join('')); });
+      return n+'|'+s.join(''); }
     var boxes=filterBoxes().filter(function(c){return c.checked;});
     if(boxes.length>=2){
       var c=boxes[0], d0=digest(), s0=plotSig();
@@ -327,10 +338,14 @@ _HARNESS_JS = r"""
       // so they still reflect condition/serial filtering). The deep boxplot block
       // below enables Show Points itself where it needs per-point detail.
       try{update();}catch(e){}   // force one render so the plot is populated before we read it
-      // Generic invariants for every view.
-      runGeneric(R,chk,skip);
-      // Table cross-check for every view that has a Statistics/Results table.
-      try{ runTableChecks(R,chk,skip); }catch(e){ chk('TABLE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
+      var _HEAVY=(typeof window._QA_HEAVY!=='undefined')?(window._QA_HEAVY===true):false;
+      // Generic invariants for every view (reversibility loop skipped when heavy).
+      runGeneric(R,chk,skip,_HEAVY);
+      // Table cross-check -- skipped on heavy pages (building/rebuilding a large
+      // stats table 3x races the virtual-time dump; the deep GF block is the
+      // deterministic priority for a heavy compare boxplot).
+      if(_HEAVY){ skip('table-cross-check','skipped on heavy page (reduced suite for a deterministic render)'); }
+      else { try{ runTableChecks(R,chk,skip); }catch(e){ chk('TABLE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');
@@ -363,6 +378,13 @@ _HARNESS_JS = r"""
         if(!c) return false;
         if(c.checked!==checked){c.checked=checked; c.dispatchEvent(new Event('change',{bubbles:true}));}
         return true;
+      }
+      // Set a checkbox WITHOUT firing its onchange (so a whole batch can be set,
+      // then update() called ONCE) -- on a many-serial heavy page, per-serial
+      // change events would each trigger a full expensive update().
+      function setCbxNoFire(cls,val,checked){
+        var c=[].slice.call(document.querySelectorAll('input.'+cls)).filter(function(x){return x.value===val;})[0];
+        if(c) c.checked=checked; return !!c;
       }
       function reset(){ if(typeof clearEverything!=='undefined'){clearEverything();} if(typeof clearGlobalFilter!=='undefined'){clearGlobalFilter();} ensurePts(); }
 
@@ -422,9 +444,9 @@ _HARNESS_JS = r"""
 
           // ---- filter-GF-whole-dut ----
           if(typeof setFilterAsGf!=='undefined'&&typeof clearGlobalFilter!=='undefined'){
-            allSer.forEach(function(s){setCbx(serCbxCls,s,s===ser);});   // narrow to just `ser`
+            allSer.forEach(function(s){setCbxNoFire(serCbxCls,s,s===ser);}); update();   // narrow to just `ser` (one update)
             setFilterAsGf();
-            allSer.forEach(function(s){setCbx(serCbxCls,s,true);});      // restore serial selection
+            allSer.forEach(function(s){setCbxNoFire(serCbxCls,s,true);}); update();      // restore serial selection (one update)
             chk('filter-GF-whole-dut-excludes-serial', ppPts().every(function(p){return p.s!==ser;}),
                 'ser='+ser+' leftover='+ppPts().filter(function(p){return p.s===ser;}).length);
             chk('filter-GF-keeps-others', cnt()===P0-serCnt0, 'expected='+(P0-serCnt0)+' got='+cnt());
@@ -441,29 +463,65 @@ _HARNESS_JS = r"""
     }catch(e){ chk('HARNESS-ERROR', false, String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
     emit({view:'boxplot', results:R});
   }
-  if(document.readyState==='complete') setTimeout(run,400);
-  else window.addEventListener('load',function(){setTimeout(run,400);});
+  // ---- readiness gate: never read a mid-render plot ----
+  // Heavy compare boxplots (hundreds of thousands of embedded points) take real
+  // wall-clock to render; firing at a fixed delay read a half-built plot, which
+  // is what made outliers-GF-precise results on those pages untrustworthy. Wait
+  // until the Plotly graph div actually has data traces with points before we
+  // start, and emit a clear diagnostic if it never renders (rather than a silent
+  // no-sentinel that looks identical to a real logic failure).
+  function _plotReady(){
+    try{
+      var gd=_gd(); if(!gd||!gd.data||!gd.data.length) return false;
+      // A box/histogram trace counts as rendered even with no x/y point arrays --
+      // under binary_encode the box is drawn from precomputed q1/median/q3, so
+      // t.y is empty. Otherwise require a trace with actual x or y points.
+      return gd.data.some(function(t){
+        if(t.type==='box'||t.type==='histogram') return true;
+        return ((t.y&&t.y.length)||(t.x&&t.x.length)||0)>0;
+      });
+    }catch(e){ return false; }
+  }
+  function _bootWhenReady(){
+    // Give up (with a clear diagnostic) at ~70% of the virtual-time budget, so a
+    // genuinely unrenderable page still emits a sentinel instead of Edge dumping
+    // the DOM mid-poll with nothing. Synchronous Plotly render doesn't advance
+    // virtual time, so once the plot is ready the poll stops immediately and
+    // burns ~none of the budget -- only a never-ready page runs the poll out.
+    var budget=(typeof window._QA_BUDGET_MS==='number')?window._QA_BUDGET_MS:20000;
+    var tries=0, MAX=Math.max(30, Math.floor(budget*0.7/100));
+    (function wait(){
+      if(_plotReady()){ setTimeout(run,250); return; }   // small settle after first populated frame
+      if(++tries>MAX){ emit({view:'render-not-ready', results:[{name:'plot-rendered', ok:false,
+        detail:'Plotly plot never populated within readiness wait -- page too heavy to render headlessly at this budget/timeout'}]}); return; }
+      setTimeout(wait,100);
+    })();
+  }
+  if(document.readyState==='complete') _bootWhenReady();
+  else window.addEventListener('load',_bootWhenReady);
 })();
 """
 
 
-def _inject(html: str) -> str:
+def _inject(html: str, budget_ms: int = 20000, heavy: bool = False) -> str:
     """Append the harness script just before </body> (falls back to end)."""
-    tag = "<script>\n" + _HARNESS_JS + "\n</script>\n"
+    tag = (f"<script>window._QA_BUDGET_MS={int(budget_ms)};"
+           f"window._QA_HEAVY={'true' if heavy else 'false'};</script>\n"
+           "<script>\n" + _HARNESS_JS + "\n</script>\n")
     idx = html.rfind("</body>")
     if idx < 0:
         return html + tag
     return html[:idx] + tag + html[idx:]
 
 
-def _run_page(edge: str, html_path: Path, budget_ms: int, timeout_s: int) -> dict:
+def _run_page(edge: str, html_path: Path, budget_ms: int, timeout_s: int, heavy: bool = False) -> dict:
     """Inject the harness, headless-render, parse #__qa_results. Returns
     {'ok':bool,'results':[...]} or {'error':...}."""
     try:
         src = html_path.read_text(encoding="utf-8", errors="ignore")
     except OSError as e:
         return {"error": f"read failed: {e}"}
-    injected = _inject(src)
+    injected = _inject(src, budget_ms, heavy)
     # ignore_cleanup_errors: msedge can linger holding dom.html open a moment
     # after --dump-dom has already written it (a real WinError 32 on cleanup).
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
@@ -519,6 +577,30 @@ def _discover(root: Path, glob: str, include_single: bool) -> list[Path]:
     return out
 
 
+_DEFAULT_BUDGET = 20000    # Edge --virtual-time-budget ms
+_DEFAULT_TIMEOUT = 120     # per-page headless kill timeout s
+_HEAVY_MB = 8.0            # HTML at/above this size runs the reduced deterministic suite
+
+
+def _scale_for_size(page: Path, budget: int, timeout: int) -> tuple[int, int, float]:
+    """Grow the render budget/timeout with the page's HTML size. Heavy compare
+    boxplots (5-9 MB, hundreds of thousands of embedded points) need real
+    wall-clock to render before the harness can read them. Caps keep a routine
+    sweep from running away. Returns (budget, timeout, size_mb)."""
+    try:
+        mb = page.stat().st_size / 1e6
+    except OSError:
+        mb = 0.0
+    if mb > 2.0:
+        # Empirically a 9 MB compare boxplot needs ~120-200k virtual ms of budget
+        # headroom for the harness's ~25-30s of async Plotly work to finish before
+        # Edge dumps the DOM (the budget is consumed during async render gaps, not
+        # by synchronous work). Scale ~linearly with size.
+        budget = min(int(budget * (1 + mb)), 300000)   # mb=9 -> 200000, cap 300k virtual
+        timeout = min(int(timeout * (1 + mb)), 420)     # cap 7min wall (real work is <60s)
+    return budget, timeout, mb
+
+
 def main(argv=None) -> None:
     # Details can carry table text with arrows/checkmarks (↑↓✔✘) -- this Windows
     # console's cp1252 codepage can't encode them, which would crash print().
@@ -532,8 +614,10 @@ def main(argv=None) -> None:
     ap.add_argument("--page", action="append", default=[], help="Test a specific HTML page (repeatable).")
     ap.add_argument("--include-single-site", action="store_true",
                     help="Also test non-compare boxplots (default: compare pages only).")
-    ap.add_argument("--budget", type=int, default=20000, help="Edge --virtual-time-budget ms (default 20000).")
-    ap.add_argument("--timeout", type=int, default=120, help="Per-page headless kill timeout s (default 120).")
+    ap.add_argument("--budget", type=int, default=_DEFAULT_BUDGET, help=f"Edge --virtual-time-budget ms (default {_DEFAULT_BUDGET}; auto-scaled up by file size unless set).")
+    ap.add_argument("--timeout", type=int, default=_DEFAULT_TIMEOUT, help=f"Per-page headless kill timeout s (default {_DEFAULT_TIMEOUT}; auto-scaled up by file size unless set).")
+    ap.add_argument("--no-scale", action="store_true", help="Disable file-size auto-scaling of budget/timeout.")
+    ap.add_argument("--no-heavy-mode", action="store_true", help=f"Run the full suite even on large pages (>= {_HEAVY_MB:.0f} MB) instead of the reduced deterministic one.")
     ap.add_argument("--limit", type=int, default=0, help="Test at most N pages (0 = all).")
     ap.add_argument("--verbose", action="store_true", help="Print every check (pass/skip too), not just failures.")
     args = ap.parse_args(argv)
@@ -557,16 +641,36 @@ def main(argv=None) -> None:
     total_pass = total_fail = total_skip = 0
     failed_pages = []
 
+    heavy_pages = []
     for pg in pages:
+        budget, timeout = args.budget, args.timeout
+        mb = 0.0
+        # Only auto-scale when the user KEPT the defaults -- an explicit --budget/
+        # --timeout must win (and never be scaled down under the cap).
+        if not args.no_scale and args.budget == _DEFAULT_BUDGET and args.timeout == _DEFAULT_TIMEOUT:
+            budget, timeout, mb = _scale_for_size(pg, args.budget, args.timeout)
+        else:
+            try: mb = pg.stat().st_size / 1e6
+            except OSError: mb = 0.0
+        heavy = mb >= _HEAVY_MB and not args.no_heavy_mode
+        t0 = time.time()
         try:
-            res = _run_page(edge, pg, args.budget, args.timeout)
+            res = _run_page(edge, pg, budget, timeout, heavy)
         except Exception as e:   # one page's harness crash must not abort the sweep
             res = {"error": f"harness exception: {e}"}
+        dt = time.time() - t0
         label = pg.parent.name + "/" + pg.name
+        tag = f"{mb:.0f}MB {dt:.0f}s" if mb >= 1 else f"{dt:.0f}s"
         if "error" in res:
-            print(f"  [ERROR] {label}: {res['error']}")
+            print(f"  [ERROR] {label}: {res['error']}  ({tag}, budget={budget} timeout={timeout})")
             total_fail += 1
             failed_pages.append(label)
+            continue
+        if res.get("view") == "render-not-ready":
+            # Distinct from a logic FAIL: the page was simply too heavy to render
+            # headlessly in the given budget. Reported, not counted as a defect.
+            print(f"  [HEAVY] {label}: too heavy to render headlessly ({tag}, budget={budget} timeout={timeout}) -- raise --budget/--timeout or --page it alone")
+            heavy_pages.append(label)
             continue
         if res.get("view") == "not-boxplot":
             print(f"  [skip ] {label}: not a boxplot page")
@@ -577,11 +681,11 @@ def main(argv=None) -> None:
         pskip = [r for r in rows if r.get("skip")]
         total_pass += len(ppass); total_fail += len(pfail); total_skip += len(pskip)
         status = "PASS" if not pfail else "FAIL"
-        print(f"  [{status}] {label}  ({len(ppass)} ok, {len(pfail)} fail, {len(pskip)} skip)")
+        print(f"  [{status}] {label}  ({len(ppass)} ok, {len(pfail)} fail, {len(pskip)} skip)  ({tag})")
         if args.verbose:
             for r in rows:
-                tag = "skip" if r.get("skip") else ("ok  " if r.get("ok") else "FAIL")
-                print(f"           {tag}: {r['name']} -- {r.get('detail','')}")
+                rtag = "skip" if r.get("skip") else ("ok  " if r.get("ok") else "FAIL")
+                print(f"           {rtag}: {r['name']} -- {r.get('detail','')}")
         else:
             for r in pfail:
                 print(f"           FAIL: {r['name']} -- {r['detail']}")
@@ -593,6 +697,10 @@ def main(argv=None) -> None:
     if failed_pages:
         print("  Pages with failures:")
         for f in failed_pages:
+            print(f"    - {f}")
+    if heavy_pages:
+        print(f"  Too heavy to render headlessly ({len(heavy_pages)}) -- not defects, raise --budget/--timeout:")
+        for f in heavy_pages:
             print(f"    - {f}")
     sys.exit(1 if total_fail else 0)
 

@@ -259,6 +259,44 @@ types. `--verbose` prints every check (pass/skip too), not just failures; stdout
 UTF-8-reconfigured so table arrows/checkmarks (`↑↓✔✘`) in details don't crash the
 cp1252 console.
 
+**Heavy-page hardening (added 2026-09-10).** The big compare boxplots (5-10 MB,
+hundreds of thousands of embedded points) used to intermittently produce *no
+`#__qa_results` sentinel* — reads happened mid-render, so any result off them was
+untrustworthy. Four fixes made them deterministic:
+- **Readiness gate** — the harness no longer fires at a fixed delay; it waits until
+  the Plotly graph div actually has data traces before starting. Crucially the
+  "ready" predicate treats a `type:'box'`/`type:'histogram'` trace as rendered even
+  with **no `x`/`y` point arrays** — under `binary_encode` the box is drawn from
+  precomputed q1/median/q3, so `t.y` is empty; the old "has points" predicate never
+  fired and the poll spun out the whole virtual-time budget (the actual root cause
+  of every "no sentinel"). If the plot genuinely never renders, a clean
+  `render-not-ready` sentinel is emitted (reported as `[HEAVY]`, not a logic FAIL).
+- **Size-scaled budget/timeout** — `--virtual-time-budget` and the kill timeout auto-
+  scale with HTML size (a 9 MB page gets ~200k ms), since the budget is consumed
+  during async Plotly render gaps and a too-small budget lets Edge dump the DOM
+  before `run()` finishes. `--no-scale` and explicit `--budget`/`--timeout` override.
+- **Reduced deterministic suite on ≥ 8 MB pages** (`_HEAVY_MB`, `--no-heavy-mode` to
+  force full) — the generic filter-reversibility loop and the table cross-check do
+  many `update()`s / rebuild a huge stats table, whose async work races the dump.
+  On a genuinely heavy page those are skipped and only the **deep GF block** (the
+  point-precise outlier/GF invariants — what a compare boxplot is actually gated
+  for) runs, which is fast (~0.2 s) and deterministic. Light/medium pages (≤ 7 MB)
+  still run the full suite.
+- **Batched checkbox sets** — the filter-GF serial loop sets all checkboxes without
+  firing per-serial `change` events, then `update()`s once (was 2×N expensive
+  updates on a many-serial page), and `digest()` is an O(1) fingerprint instead of
+  serializing thousands of table rows.
+
+Result: PM1 (5 MB) full suite 27/0 in ~5 s; AM1_Flatness (7 MB) full suite
+deterministic in ~12 s; AbsoluteAccuracy_PM/NA (9-10 MB, previously silent timeouts)
+reduced suite deterministic in ~20 s. These heavy pages now reproduce a **real** GF
+over-exclusion (`outliers-GF-precise` FAIL: "Set outliers as GF" drops whole DUTs
+across all x-axis frequencies on the AmplitudeAccuracyClosedLoop compare boxplots,
+whose coarse GF keys carry the carrier "Frequency (MHz)" condition but not the swept
+modulation-frequency x-axis — the secondary-numeric-dimension case; the e3b53d8
+`|Freq=` fix's path isn't hit here). That is a genuine `padb_plots.py` bug to fix,
+now that the gate can measure it deterministically.
+
 **Remaining depth (optional):** GF-*consumption* checks on the aggregated views
 (inject a GF serial, assert its contribution drops) -- the reversibility + table
 layers already cover the filter/table-consistency bug class those would target.
