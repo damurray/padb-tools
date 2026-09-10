@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+"""
+qa_filters.py -- automated filter / Global-Filter self-consistency gate for the
+interactive boxplot pages (single-site AND cross-site compare).
+
+WHY THIS EXISTS
+---------------
+The recurring class of bug in this tool is a filter (especially the Global
+Filter) that does not do exactly what it says, or a plot/table that drift out of
+sync when a filter changes. Those are trust-killers for engineers who bring data
+they know cold. `qa_view_sweep.py` proves a page *renders*; this proves its
+filters are *self-consistent*: for every filter operation, the plotted point set
+changes by exactly the right set difference, and nothing silently blanks.
+
+HOW IT WORKS
+------------
+For each target boxplot HTML, we inject a self-test harness (`_HARNESS_JS`) that
+drives the page's OWN controls headlessly -- turning on "Show Points" so every
+plotted point is a real marker we can read back (with its serial via the point's
+hover text and its frequency via the box category on x) -- applies a matrix of
+filter / GF operations, and after each asserts a set of invariants by comparing
+the plotted-point set before/after. Results are written into a `#__qa_results`
+JSON sentinel; we render under headless Edge (`--dump-dom`, same mechanism as
+qa_js_segments.py / qa_view_sweep.py -- each run is a fresh temp file + fresh
+--user-data-dir, so browser caching can't stale a result) and parse it back.
+
+Any inconsistency is a FAIL naming the (page, scenario, invariant). Exit code 1
+on any FAIL (matches qa_padb.py's convention), so it's usable as a gate.
+
+INVARIANTS (boxplot)
+--------------------
+  baseline-not-blank      the page shows points before any op
+  outliers-GF-precise     "Set outliers as GF" removes ONLY points sharing an
+                          outlier's (serial, condition, freq-label) identity --
+                          never a whole DUT across other frequencies -- and never
+                          blanks the plot; every flagged outlier is removed
+  clear-GF-restores       Clear global filter returns the exact baseline point set
+  deselect-site           (compare) unchecking a Site value removes exactly that
+                          site's points; re-checking restores
+  deselect-serial         unchecking a serial removes exactly that serial's
+                          points; re-checking restores
+  filter-GF-whole-dut     "Set filter as GF" on one narrowed serial removes that
+                          serial across ALL frequencies (whole-DUT) and leaves the
+                          rest; clear restores
+  reset-restores          Reset returns the exact baseline point set
+
+USAGE
+-----
+  py qa_filters.py                       # all compare boxplots under the default root
+  py qa_filters.py --root C:\\temp\\data   # point at another data root
+  py qa_filters.py --glob "*boxplot*.html" --include-single-site
+  py qa_filters.py --page path\\to\\one_boxplot.html
+  py qa_filters.py --budget 20000 --timeout 120
+
+NOTE: this tests the pages AS BUILT. A page built before a GF fix will (rightly)
+fail -- rebuild it first (padb_v2.py) so it carries current code.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+_EDGE_CANDIDATES = [
+    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+]
+_EXCLUDE_DIR_PARTS = {"backup", ".git", "__pycache__"}
+
+
+def _find_edge() -> str | None:
+    for cand in _EDGE_CANDIDATES:
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+# ---------------------------------------------------------------------------
+# The injected self-test harness. Boxplot-aware; degrades (SKIP) on pages that
+# aren't boxplots or lack a given control. Writes JSON into #__qa_results.
+# ---------------------------------------------------------------------------
+_HARNESS_JS = r"""
+(function(){
+  function emit(obj){
+    var pre=document.getElementById('__qa_results')||document.createElement('pre');
+    pre.id='__qa_results'; pre.style.display='none';
+    pre.textContent=JSON.stringify(obj); document.body.appendChild(pre);
+  }
+  function run(){
+    var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
+    function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
+    try{
+      if(typeof BOX_DATA==='undefined'||typeof update==='undefined'){emit({view:'not-boxplot',results:R});return;}
+      var pc=document.getElementById('box_show_pts_chk');
+      function ensurePts(){ if(pc&&!pc.checked){pc.checked=true; update();} }
+      // Read plotted points from the "Show Points" overlay traces: name ends
+      // " pts", y=value, x=freq category (label), text="<serial>: <value>".
+      function ppPts(){
+        var gd=document.getElementById('plot'), out=[];
+        (gd.data||[]).forEach(function(t){
+          if(t.type==='scatter'&&t.mode==='markers'&&/ pts$/.test(t.name||'')){
+            var g=(t.name||'').replace(/ pts$/,''), tx=t.text||[], xs=t.x||[];
+            for(var i=0;i<(t.y?t.y.length:0);i++){
+              var s=null; if(tx[i]){var m=String(tx[i]).match(/^([^:]+):/); if(m)s=m[1].trim();}
+              out.push({g:g,x:String(xs[i]),v:t.y[i],s:s});
+            }
+          }
+        });
+        return out;
+      }
+      function cnt(){return ppPts().length;}
+      function ident(p){return p.g+'||'+p.s+'||'+p.x+'||'+p.v;}  // count-aware point identity
+      function bag(arr){var m={};arr.forEach(function(p){var k=ident(p);m[k]=(m[k]||0)+1;});return m;}
+      function removedBetween(before,after){
+        var b=bag(before),a=bag(after),rem=[];
+        Object.keys(b).forEach(function(k){var d=b[k]-(a[k]||0);for(var i=0;i<d;i++)rem.push(k);});
+        return rem;
+      }
+      function setCbx(cls,val,checked){
+        var c=[].slice.call(document.querySelectorAll('input.'+cls)).filter(function(x){return x.value===val;})[0];
+        if(!c) return false;
+        if(c.checked!==checked){c.checked=checked; c.dispatchEvent(new Event('change',{bubbles:true}));}
+        return true;
+      }
+      function reset(){ if(typeof clearEverything!=='undefined'){clearEverything();} if(typeof clearGlobalFilter!=='undefined'){clearGlobalFilter();} ensurePts(); }
+
+      reset();
+      var P0=cnt(); var base=ppPts();
+      chk('baseline-not-blank', P0>0, 'P0='+P0);
+      if(P0===0){emit({view:'boxplot',results:R});return;}
+
+      // ---- outliers-GF-precise ----
+      if(typeof _collectOutliers!=='undefined'&&typeof applyGlobalFilter!=='undefined'){
+        var outs=_collectOutliers(getSelectedConds(),getSelectedTemps(),getYFilter(),getSelectedBoxSerials());
+        // outlier identity by (baseSerial, condition, freqLabel)
+        var outId={}; outs.forEach(function(o){ outId[(typeof _boxBaseSerial!=='undefined'?_boxBaseSerial(o.serial):o.serial)+'||'+o.cond+'||'+(o.freqLabel!=null?o.freqLabel:o.freq)]=1; });
+        var b0=ppPts();
+        applyGlobalFilter(); update();
+        var a0=ppPts(); var P1=a0.length;
+        chk('outliers-GF-not-blank', P1>0, 'P1='+P1+' P0='+P0);
+        var rem=removedBetween(b0,a0);
+        // every removed point must belong to an outlier (serial,cond,freqLabel)
+        // identity -- catches whole-DUT / cross-frequency over-exclusion.
+        var outside=rem.filter(function(k){var p=k.split('||'); return !outId[p[1]+'||'+p[0]+'||'+p[2]];});
+        chk('outliers-GF-precise (no cross-freq/DUT over-exclusion)', outside.length===0,
+            'removed='+rem.length+' outside-outlier-identity='+outside.length+' numOutliers='+outs.length);
+        chk('outliers-GF-removed-something', rem.length>0||outs.length===0, 'removed='+rem.length+' numOutliers='+outs.length);
+        if(typeof clearGlobalFilter!=='undefined'){ clearGlobalFilter(); ensurePts();
+          chk('clear-GF-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);
+        }
+      } else skip('outliers-GF-precise','no _collectOutliers/applyGlobalFilter');
+
+      // ---- deselect-site (compare only) ----
+      var siteCbx=[].slice.call(document.querySelectorAll('input.box_cond_Site'));
+      if(siteCbx.length>=2){
+        var siteVals=siteCbx.map(function(c){return c.value;});
+        var v0=siteVals[0];
+        var cntFor=function(pred){return ppPts().filter(pred).length;};
+        var thisSite0=cntFor(function(p){return p.g.indexOf('Site: '+v0)>=0;});
+        setCbx('box_cond_Site',v0,false);
+        var remain=ppPts();
+        chk('deselect-site-removes-it', remain.every(function(p){return p.g.indexOf('Site: '+v0)<0;}),
+            'site='+v0+' leftover='+remain.filter(function(p){return p.g.indexOf('Site: '+v0)>=0;}).length);
+        chk('deselect-site-keeps-others', remain.length===P0-thisSite0, 'expected='+(P0-thisSite0)+' got='+remain.length);
+        setCbx('box_cond_Site',v0,true);
+        chk('reselect-site-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);
+      } else skip('deselect-site','not a compare page (no >=2 Site checkboxes)');
+
+      // ---- deselect-serial ----
+      var allSer=(typeof getAllBoxSerials!=='undefined')?getAllBoxSerials():[];
+      var serCbxCls='box_ser_chk';
+      if(allSer.length>1 && document.querySelector('input.'+serCbxCls)){
+        var ser=allSer[0];
+        var serCnt0=ppPts().filter(function(p){return p.s===ser;}).length;
+        if(setCbx(serCbxCls,ser,false)){
+          chk('deselect-serial-removes-it', ppPts().every(function(p){return p.s!==ser;}), 'ser='+ser);
+          chk('deselect-serial-keeps-others', cnt()===P0-serCnt0, 'expected='+(P0-serCnt0)+' got='+cnt());
+          setCbx(serCbxCls,ser,true);
+          chk('reselect-serial-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);
+
+          // ---- filter-GF-whole-dut ----
+          if(typeof setFilterAsGf!=='undefined'&&typeof clearGlobalFilter!=='undefined'){
+            allSer.forEach(function(s){setCbx(serCbxCls,s,s===ser);});   // narrow to just `ser`
+            setFilterAsGf();
+            allSer.forEach(function(s){setCbx(serCbxCls,s,true);});      // restore serial selection
+            chk('filter-GF-whole-dut-excludes-serial', ppPts().every(function(p){return p.s!==ser;}),
+                'ser='+ser+' leftover='+ppPts().filter(function(p){return p.s===ser;}).length);
+            chk('filter-GF-keeps-others', cnt()===P0-serCnt0, 'expected='+(P0-serCnt0)+' got='+cnt());
+            clearGlobalFilter(); ensurePts();
+            chk('clear-after-filter-GF-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);
+          }
+        } else skip('deselect-serial','serial checkbox not settable');
+      } else skip('deselect-serial','no serial checkboxes / single serial');
+
+      // ---- reset-restores ----
+      reset();
+      chk('reset-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);
+
+    }catch(e){ chk('HARNESS-ERROR', false, String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
+    emit({view:'boxplot', results:R});
+  }
+  if(document.readyState==='complete') setTimeout(run,400);
+  else window.addEventListener('load',function(){setTimeout(run,400);});
+})();
+"""
+
+
+def _inject(html: str) -> str:
+    """Append the harness script just before </body> (falls back to end)."""
+    tag = "<script>\n" + _HARNESS_JS + "\n</script>\n"
+    idx = html.rfind("</body>")
+    if idx < 0:
+        return html + tag
+    return html[:idx] + tag + html[idx:]
+
+
+def _run_page(edge: str, html_path: Path, budget_ms: int, timeout_s: int) -> dict:
+    """Inject the harness, headless-render, parse #__qa_results. Returns
+    {'ok':bool,'results':[...]} or {'error':...}."""
+    try:
+        src = html_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError as e:
+        return {"error": f"read failed: {e}"}
+    injected = _inject(src)
+    with tempfile.TemporaryDirectory() as td:
+        test_html = Path(td) / "qa_test.html"
+        test_html.write_text(injected, encoding="utf-8")
+        dom_path = Path(td) / "dom.html"
+        with dom_path.open("w", encoding="utf-8") as dom_f:
+            proc = subprocess.Popen(
+                [edge, "--headless", "--disable-gpu", "--disable-crash-reporter",
+                 f"--virtual-time-budget={budget_ms}", f"--user-data-dir={td}",
+                 "--dump-dom", str(test_html)],
+                stdout=dom_f, stderr=subprocess.DEVNULL,
+            )
+            try:
+                proc.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        dom = dom_path.read_text(encoding="utf-8", errors="ignore")
+    m = re.search(r'<pre id="__qa_results"[^>]*>(.*?)</pre>', dom, re.DOTALL)
+    if not m:
+        return {"error": "no __qa_results sentinel (page did not run / render timed out)"}
+    raw = m.group(1)
+    # un-escape the minimal HTML entities the DOM dump introduces
+    raw = raw.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as e:
+        return {"error": f"bad __qa_results JSON: {e}"}
+
+
+def _discover(root: Path, glob: str, include_single: bool) -> list[Path]:
+    hits = []
+    for p in root.rglob(glob):
+        if _EXCLUDE_DIR_PARTS & set(p.parts):
+            continue
+        if "boxplot" not in p.name.lower():
+            continue
+        is_compare = "compare" in str(p).lower()
+        if is_compare or include_single:
+            hits.append(p)
+    # de-dup by resolved path, newest first
+    seen, out = set(), []
+    for p in sorted(hits, key=lambda x: x.stat().st_mtime, reverse=True):
+        rp = str(p.resolve()).lower()
+        if rp in seen:
+            continue
+        seen.add(rp)
+        out.append(p)
+    return out
+
+
+def main(argv=None) -> None:
+    ap = argparse.ArgumentParser(description="Filter/GF self-consistency gate for boxplot pages.")
+    ap.add_argument("--root", default=r"C:\temp\data", help="Data root to scan (default C:\\temp\\data).")
+    ap.add_argument("--glob", default="*boxplot*.html", help="Filename glob (default *boxplot*.html).")
+    ap.add_argument("--page", action="append", default=[], help="Test a specific HTML page (repeatable).")
+    ap.add_argument("--include-single-site", action="store_true",
+                    help="Also test non-compare boxplots (default: compare pages only).")
+    ap.add_argument("--budget", type=int, default=20000, help="Edge --virtual-time-budget ms (default 20000).")
+    ap.add_argument("--timeout", type=int, default=120, help="Per-page headless kill timeout s (default 120).")
+    ap.add_argument("--limit", type=int, default=0, help="Test at most N pages (0 = all).")
+    args = ap.parse_args(argv)
+
+    edge = _find_edge()
+    if not edge:
+        print("[FATAL] msedge.exe not found -- cannot run headless self-tests.")
+        sys.exit(2)
+
+    if args.page:
+        pages = [Path(p) for p in args.page]
+    else:
+        pages = _discover(Path(args.root), args.glob, args.include_single_site)
+    if args.limit:
+        pages = pages[: args.limit]
+    if not pages:
+        print("No boxplot pages found to test.")
+        sys.exit(0)
+
+    print(f"qa_filters: {len(pages)} page(s), edge={Path(edge).name}\n")
+    total_pass = total_fail = total_skip = 0
+    failed_pages = []
+
+    for pg in pages:
+        res = _run_page(edge, pg, args.budget, args.timeout)
+        label = pg.parent.name + "/" + pg.name
+        if "error" in res:
+            print(f"  [ERROR] {label}: {res['error']}")
+            total_fail += 1
+            failed_pages.append(label)
+            continue
+        if res.get("view") == "not-boxplot":
+            print(f"  [skip ] {label}: not a boxplot page")
+            continue
+        rows = res.get("results", [])
+        pfail = [r for r in rows if not r.get("skip") and not r.get("ok")]
+        ppass = [r for r in rows if not r.get("skip") and r.get("ok")]
+        pskip = [r for r in rows if r.get("skip")]
+        total_pass += len(ppass); total_fail += len(pfail); total_skip += len(pskip)
+        status = "PASS" if not pfail else "FAIL"
+        print(f"  [{status}] {label}  ({len(ppass)} ok, {len(pfail)} fail, {len(pskip)} skip)")
+        for r in pfail:
+            print(f"           FAIL: {r['name']} -- {r['detail']}")
+        if pfail:
+            failed_pages.append(label)
+
+    print("\n" + "=" * 60)
+    print(f"  PASS: {total_pass}   FAIL: {total_fail}   SKIP: {total_skip}")
+    if failed_pages:
+        print("  Pages with failures:")
+        for f in failed_pages:
+            print(f"    - {f}")
+    sys.exit(1 if total_fail else 0)
+
+
+if __name__ == "__main__":
+    main()

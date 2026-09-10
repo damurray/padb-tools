@@ -168,3 +168,47 @@ pages OK + one real extraction completes clean.
 | `qa_csv_sweep.py` | `--root` |
 | `qa_view_sweep.py` | `--root` + `qa_view_sweep.json` manifest / `--job` |
 | core run-job / plot pipeline | job.json + per-user `padb_config.json` |
+
+---
+
+## `qa_filters.py` — filter / Global-Filter self-consistency gate (added 2026-09-10)
+
+Where `qa_view_sweep.py` proves a page *renders*, `qa_filters.py` proves its
+**filters are self-consistent** — the recurring bug class (a filter, especially
+the Global Filter, that doesn't do exactly what it says, or a plot/table that
+drift apart on a filter change). Boxplot-focused, **compare-aware** (the priority
+for cross-site production-ramp comparisons).
+
+**Mechanism:** injects a self-test harness into each boxplot HTML that drives the
+page's OWN controls headlessly — it turns on "Show Points" so every plotted point
+is a real marker it can read back (serial from the point's hover text, frequency
+from the box category on x), applies a filter/GF matrix, and after each op asserts
+invariants by diffing the plotted-point set. Rendered under headless Edge
+(`--dump-dom`, same house mechanism as `qa_js_segments.py`; each run is a fresh
+temp file + `--user-data-dir`, so browser caching can't stale a result — a real
+gotcha when driving these pages interactively). Results parsed from a
+`#__qa_results` JSON sentinel. Exit 1 on any FAIL.
+
+**Invariants:** baseline-not-blank; **outliers-GF-precise** (Set outliers as GF
+removes ONLY points sharing an outlier's `(serial, condition, freq-label)`
+identity — never a whole DUT across other frequencies — and never blanks);
+clear-GF-restores; deselect-site (compare) / deselect-serial remove exactly their
+target and restore; filter-GF-whole-dut (Set filter as GF on one narrowed serial
+removes that serial across ALL frequencies); reset-restores.
+
+```
+py qa_filters.py                          # all compare boxplots under C:\temp\data
+py qa_filters.py --root <dir> --include-single-site
+py qa_filters.py --page <one_boxplot.html>
+```
+
+**Validated:** passes 15/0 on a freshly-built compare boxplot; correctly FAILS
+`outliers-GF-precise` on an old-code page (the pre-2026-09-10 whole-DUT
+over-exclusion — `removed=63, 23 outside the outlier identity`). Tests pages AS
+BUILT, so rebuild a page (padb_v2.py) before testing it if it predates a fix.
+
+**Roadmap (compare-first, then generalize):** v1 covers the boxplot (single-site
++ compare). Next: view-appropriate readers for scatter / stat_summary / summary /
+env_coverage / distribution / histogram (each exposes plotted points differently),
+and a plot↔table (`#box_stat_panel`) cross-check, so the same invariant set runs
+on every view.
