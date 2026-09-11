@@ -40,6 +40,15 @@ def main(argv=None) -> int:
         "--hidden-import", "plotly.offline",
         # pyarrow ships compiled arrow DLLs the parquet reader needs
         "--collect-all", "pyarrow",
+        # The band-windowed /view endpoint lazily imports padb_v2, which pulls in
+        # padb_plots/padb_run/padb_config and scipy (Shapiro / NP-TI). Lazy imports
+        # aren't seen by PyInstaller's static analysis, so name them explicitly;
+        # scipy needs its full data/binaries collected to work frozen.
+        "--hidden-import", "padb_v2",
+        "--hidden-import", "padb_plots",
+        "--hidden-import", "padb_run",
+        "--hidden-import", "padb_config",
+        "--collect-all", "scipy",
         "--noconfirm", "--clean",
         "--distpath", str(out),
         "--workpath", str(work),
