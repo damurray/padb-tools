@@ -335,6 +335,32 @@ _HARNESS_JS = r"""
     var rf=firstResetFn(); if(rf){ try{eval(rf+'()');}catch(e){} }
   }
 
+  // ---- "Group by" robustness (all views with a group-by selector) ----
+  // Every group-by mode must produce a valid, non-blank plot (no group-by option
+  // should blank the plot or throw), and reverting to the default must restore the
+  // baseline. Catches pooling/aggregation bugs a specific group-by mode can hit.
+  function runGroupBy(R,chk,skip){
+    var ids=['groupby','box_group_by','statGroupBySel','sumGroupBySel','ecGroupBySel'];
+    var sel=null; for(var i=0;i<ids.length;i++){var e=document.getElementById(ids[i]); if(e&&e.tagName==='SELECT'){sel=e;break;}}
+    if(!sel){ skip('group-by','no group-by selector in this view'); return; }
+    var opts=[].slice.call(sel.options).map(function(o){return o.value;});
+    if(opts.length<2){ skip('group-by','single group-by option'); return; }
+    var base=[].slice.call(sel.selectedOptions).map(function(o){return o.value;});
+    var S0=plotSig();
+    function setOnly(v){ [].slice.call(sel.options).forEach(function(o){o.selected=(o.value===v);}); sel.dispatchEvent(new Event('change',{bubbles:true})); }
+    var blank=[];
+    opts.forEach(function(v){
+      try{ setOnly(v); }catch(e){ blank.push(v+'(threw)'); return; }
+      var s=plotSig(), ok=s!=='[]'&&JSON.parse(s).some(function(x){return parseInt(x.split(':').pop(),10)>0;});
+      if(!ok) blank.push(v||'(Condition)');
+    });
+    // restore baseline selection
+    [].slice.call(sel.options).forEach(function(o){o.selected=base.indexOf(o.value)>=0;});
+    sel.dispatchEvent(new Event('change',{bubbles:true}));
+    chk('group-by-all-modes-nonblank', blank.length===0, blank.length?('blank/threw for: '+blank.slice(0,5).join(' | ')):('modes='+opts.length));
+    chk('group-by-reversible', plotSig()===S0, 'restored='+(plotSig()===S0));
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -361,6 +387,9 @@ _HARNESS_JS = r"""
       // deterministic priority for a heavy compare boxplot).
       if(_HEAVY){ skip('table-cross-check','skipped on heavy page (reduced suite for a deterministic render)'); }
       else { try{ runTableChecks(R,chk,skip); }catch(e){ chk('TABLE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // Group-by robustness -- skipped on heavy pages (cycles every mode = many updates).
+      if(_HEAVY){ skip('group-by','skipped on heavy page'); }
+      else { try{ runGroupBy(R,chk,skip); }catch(e){ chk('GROUPBY-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');
