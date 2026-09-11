@@ -4803,6 +4803,22 @@ def _nonparametric_ti(sorted_vals: list, P: float, C: float):
     return round(float(sorted_vals[best_d]), 6), round(float(sorted_vals[n - best_d - 1]), 6)
 
 
+def _strip_stat_dut_vals(stat_data: list) -> list:
+    """Return a copy of _aggregate_stat_data output with each freq_stats entry's
+    per-DUT `dut_vals` array removed. Used for the boxplot page's lite (windowed)
+    render: the boxplot JS never reads dut_vals (it uses the pre-computed
+    per-freq stats), so dropping them cuts the dominant embed on giant bands with
+    no effect on that page. Every dut_vals consumer elsewhere guards with
+    `fs.dut_vals||[]`, so absence is safe."""
+    return [
+        {**cd, "freq_stats": [
+            {k: v for k, v in fs.items() if k != "dut_vals"}
+            for fs in cd.get("freq_stats", [])
+        ]}
+        for cd in stat_data
+    ]
+
+
 def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
     """
     Aggregate scatter data into per-condition, per-frequency statistics for stat_summary.
@@ -11097,6 +11113,18 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
       fs=[];
       cd.freq_stats.forEach(function(f){
         if(f.freq<fr.lo||f.freq>fr.hi) return;
+        if(!f.vals_detail && !(f.vals&&f.vals.length)){
+          /* Lite render (box_drop_points): no per-point overlay was embedded,
+             so trust the exact server-computed box stats. Serial/Y/GF/exclude
+             re-filtering and Show-points are inert here (no raw points); the
+             box + Outlier Detail are exact. */
+          fs.push({freq:f.freq,freq_label:f.freq_label,n:f.n,mean:f.mean,
+            q1:f.q1,q2:f.q2,q3:f.q3,lo_w:f.lo_w,hi_w:f.hi_w,
+            outlier_detail:f.outlier_detail||[],
+            outliers:(f.outlier_detail||[]).map(function(d){return d.v;}),
+            vals_detail:[]});
+          return;
+        }
         var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
         var detail=allDet.filter(function(d){
           if(serActive&&selBoxSers.indexOf(d.s)<0) return false;
@@ -13432,9 +13460,16 @@ function loadState(){
 
 def _aggregate_box_data_by_temp(
     df: pd.DataFrame, x_unit: str = "MHz", freq_label_map: dict | None = None,
-    binary_encode: bool = False,
+    binary_encode: bool = False, drop_points: bool = False,
 ) -> list:
-    """Raw-measurement IQR box stats grouped by (condition, temperature, frequency)."""
+    """Raw-measurement IQR box stats grouped by (condition, temperature, frequency).
+
+    drop_points ("lite" render, used by the band-windowed viewer): keep the exact
+    server-computed box stats + outlier_detail, but DON'T embed the per-point
+    overlay (vals_detail / vals) -- the giant size driver. buildBoxTraces then
+    falls back to the pre-computed stats. Trade-off: Show-points, live serial/Y
+    re-filtering, and the Site Population Check need the raw points, so they're
+    inert in lite mode; the boxes, stats table, and Outlier Detail stay exact."""
     sorted_freqs = sorted(df["Frequency_MHz"].dropna().unique())
     # Accept a precomputed map so this function's freq_label values always
     # match the caller's categoryarray (freq_cat_order) exactly -- computing
@@ -13499,13 +13534,17 @@ def _aggregate_box_data_by_temp(
                 # to n, so the wire-size win from binary-encoding this too
                 # would be negligible next to vals_detail's own.
                 s["outlier_detail"] = [d for d in vals_detail if d["v"] < lf or d["v"] > hf]
-                if binary_encode:
+                if drop_points:
+                    # lite render: exact box stats + outlier_detail, no overlay
+                    s["vals"] = []
+                elif binary_encode:
                     s["vals_detail_bin"] = _encode_vals_detail_bin(vals_detail)
+                    s["vals"] = [round(v, 6) for v in vals]
                 else:
                     s["vals_detail"] = vals_detail
+                    s["vals"] = [round(v, 6) for v in vals]
                 s["freq"] = float(freq)
                 s["freq_label"] = freq_label_map[freq]
-                s["vals"] = [round(v, 6) for v in vals]
                 freq_stats.append(s)
             if freq_stats:
                 results.append({"condition": str(cond), "temp": str(temp), "freq_stats": freq_stats})
@@ -13533,6 +13572,7 @@ def _build_box_interactive_html(
     primary_site: str | None = None,
     coverage_gap_html: str = "",
     has_segments: bool = True,
+    drop_points: bool = False,
 ) -> str:
     css = (
         "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
@@ -13824,7 +13864,13 @@ def _build_box_interactive_html(
 
     constants = "\n".join([
         f"var BOX_DATA={json.dumps(box_data)};",
-        f"var BOX_STATS={json.dumps(stat_data_box)};",
+        # Lite render: BOX_STATS' per-DUT dut_vals arrays (the Statistics-Table
+        # per-DUT recompute source) are the dominant embed on giant bands but
+        # are NOT read by the boxplot JS at all -- it uses the pre-computed
+        # per-freq stats. Strip them so a windowed boxplot isn't dominated by
+        # unused per-point data. (The default table + Outlier Detail stay exact;
+        # live serial re-filtering / Site Population Check need the full render.)
+        f"var BOX_STATS={json.dumps(_strip_stat_dut_vals(stat_data_box) if drop_points else stat_data_box)};",
         f"var BOX_TITLE={json.dumps(title)};",
         f"var BOX_FREQ_ORDER={json.dumps(freq_cat_order)};",
         # Parallel to BOX_FREQ_ORDER (same order, same length) -- lets a
@@ -14220,6 +14266,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     box_data = _aggregate_box_data_by_temp(
         df, x_unit=x_unit, freq_label_map=freq_label_map,
         binary_encode=bool(cfg.get("binary_encode", False)),
+        drop_points=bool(cfg.get("box_drop_points", False)),
     )
     if site_compare_enabled:
         for cd in box_data:
@@ -14321,6 +14368,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         primary_site=primary_site if site_compare_enabled else None,
         coverage_gap_html=coverage_gap_html,
         has_segments=has_segments,
+        drop_points=bool(cfg.get("box_drop_points", False)),
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")

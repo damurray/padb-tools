@@ -281,8 +281,17 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span class="sitebox" id="sites"></span>
   <button onclick="update()">Update</button>
   <button onclick="resetView()">Reset</button>
-  <button onclick="openView('boxplot')" title="Render the real interactive boxplot for the current frequency band">Boxplot (this band)</button>
   <span id="status"></span>
+</div>
+<div id="viewbar" style="padding:6px 14px;background:#eef4ff;border-bottom:1px solid #ddd;font-size:12px">
+  <b>Band view:</b>
+  <button onclick="openView('boxplot')">Boxplot</button>
+  <button onclick="openView('stat_summary')">Stat&nbsp;Summary</button>
+  <button onclick="openView('summary')">Summary</button>
+  <button onclick="openView('env_coverage')">Env&nbsp;Coverage</button>
+  <button onclick="openView('distribution')">Distribution</button>
+  <label style="margin-left:10px" title="Full render embeds every point -- enables Show-points, live serial/Y re-filtering, and the Site Population Check, but is slower and larger. Off (default) = fast lite render: exact boxes/stats/outliers, no per-point overlay.">
+    <input type="checkbox" id="fullrender"> Full render (all points / Site check &mdash; slower)</label>
 </div>
 <div id="bandbar" style="padding:6px 14px;background:#f0f6ff;border-bottom:1px solid #ddd;display:none;font-size:12px">
   <b>Bands:</b> <span id="bands"></span>
@@ -332,13 +341,14 @@ function selectedSites(){return [...document.querySelectorAll('.sitechk:checked'
 function resetView(){document.getElementById('flo').value=META.x_min;document.getElementById('fhi').value=META.x_max;update();}
 function openView(v){
   const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
+  const full=document.getElementById('fullrender').checked?1:0;
   const wrap=document.getElementById('viewwrap');
   wrap.style.display='block';
-  document.getElementById('vtitle').textContent=v+'  ['+flo+' .. '+fhi+' '+META.x_label+']';
-  document.getElementById('vstatus').textContent='rendering the real interactive view for this band...';
+  document.getElementById('vtitle').textContent=v+'  ['+flo+' .. '+fhi+' '+META.x_label+']'+(full?'  (full)':'  (lite)');
+  document.getElementById('vstatus').textContent=(full?'full':'lite')+' render for this band'+(full?' (embeds all points -- may take a while)...':'...');
   const f=document.getElementById('vframe');
-  f.onload=()=>{document.getElementById('vstatus').textContent='rendered (full interactive view, band-sized).';};
-  f.src='/view?view='+encodeURIComponent(v)+'&flo='+flo+'&fhi='+fhi;
+  f.onload=()=>{document.getElementById('vstatus').textContent='rendered ('+(full?'full: all points, Site check':'lite: exact boxes/stats, no overlay')+').';};
+  f.src='/view?view='+encodeURIComponent(v)+'&flo='+flo+'&fhi='+fhi+'&full='+full;
   wrap.scrollIntoView({behavior:'smooth'});
 }
 async function update(){
@@ -393,16 +403,21 @@ def api_scatter():
 _band_cache: dict = {}
 
 
-def _render_view_band(view: str, flo: float, fhi: float) -> tuple[str, int]:
+def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> tuple[str, int]:
     """Render `view` (e.g. 'boxplot') for the frequency band [flo,fhi] via the
     real padb_v2 pipeline on a parquet slice. Returns (html_path, n_rows).
-    Cached per (view, band)."""
+    Cached per (view, band, full).
+
+    full=False (default) is the fast "lite" render: for the boxplot it drops the
+    per-point overlay (box_drop_points) so the page is small. full=True embeds
+    every point -- slower/larger, but enables Show-points, live serial/Y
+    re-filtering, and the Site Population Check."""
     import pyarrow as pa
     import pyarrow.parquet as pqm
     import pyarrow.compute as pc
     import pyarrow.csv as pacsv
 
-    key = (view, round(flo, 6), round(fhi, 6))
+    key = (view, round(flo, 6), round(fhi, 6), bool(full))
     cached = _band_cache.get(key)
     if cached and os.path.exists(cached[0]):
         return cached
@@ -425,6 +440,8 @@ def _render_view_band(view: str, flo: float, fhi: float) -> tuple[str, int]:
         "publish_to": "",          # never publish a scratch render
         "export_parquet": False,   # don't re-emit a parquet for the slice
     }
+    if view == "boxplot" and not full:
+        cfg["box_drop_points"] = True   # lite: exact stats, no per-point overlay
     if len(DS.sites) >= 2:
         cfg["primary_site"] = DS.sites[0]
     padb_v2.generate_report(band_csv, cfg, tmp)
@@ -439,8 +456,9 @@ def api_view():
     view = request.args.get("view", "boxplot")
     flo = float(request.args.get("flo", DS.x_min))
     fhi = float(request.args.get("fhi", DS.x_max))
+    full = request.args.get("full", "0") in ("1", "true", "True")
     try:
-        path, n = _render_view_band(view, flo, fhi)
+        path, n = _render_view_band(view, flo, fhi, full=full)
     except Exception as exc:  # surface the real error in the iframe
         return Response(f"<pre>render error: {exc}</pre>", mimetype="text/html", status=500)
     if not path or not os.path.exists(path):
