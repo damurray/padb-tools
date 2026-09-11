@@ -26,8 +26,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import socket
 import sys
+import tempfile
 import threading
 import webbrowser
 from pathlib import Path
@@ -47,6 +50,54 @@ _META_COLS = {
     "analysis type", "model(s)", "algorithm -> result", "units", "group",
     "station", "test step",
 }
+
+
+def _free_port(start: int, tries: int = 50) -> int:
+    """First bindable localhost port at/after `start`. Lets several folders'
+    viewers run at once (shared exe + a View.bat per folder) without colliding
+    on one fixed port."""
+    for p in range(start, start + tries):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                s.bind(("127.0.0.1", p))
+                return p
+            except OSError:
+                continue
+    return start
+
+
+_UNIT_HZ = {"hz": 1.0, "khz": 1e3, "mhz": 1e6, "ghz": 1e9}
+
+
+def _load_bands(path: Path, data_unit: str) -> list[dict]:
+    """Read a named-band JSON and convert each band's lo/hi from the config's
+    unit into the data's x-axis unit. Config shape:
+        {"unit": "Hz",
+         "bands": [{"name": "Low Band", "lo": 8e6, "hi": 1500e6}, ...]}
+    `unit` is optional (defaults to the data's own unit -> no conversion).
+    A bad/missing file yields no bands (the band bar just doesn't show)."""
+    try:
+        cfg = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"  [bands] ignoring {path}: {exc}", flush=True)
+        return []
+    conf_u = (cfg.get("unit") or data_unit or "").strip().lower()
+    cf, df = _UNIT_HZ.get(conf_u), _UNIT_HZ.get((data_unit or "").strip().lower())
+    scale = (cf / df) if (cf and df) else 1.0  # config-unit -> data-unit
+    out = []
+    for b in cfg.get("bands", []):
+        try:
+            lo, hi = float(b["lo"]) * scale, float(b["hi"]) * scale
+        except (KeyError, TypeError, ValueError):
+            continue
+        if hi < lo:
+            lo, hi = hi, lo
+        out.append({"name": str(b.get("name", "band")), "lo": lo, "hi": hi})
+    if out:
+        print(f"  [bands] loaded {len(out)} band(s) from {Path(path).name} "
+              f"(config unit {conf_u or '?'} -> data unit {data_unit or '?'}, x{scale:g})",
+              flush=True)
+    return out
 
 
 def _default_target() -> Path:
@@ -137,6 +188,9 @@ class DataSet:
         self.sites = list(map(str, self.df["site"].cat.categories))
         self.value_label = self.value_col
         self.x_label = self.x_col
+        m = re.search(r"\(([^)]+)\)", self.x_label)
+        self.x_unit = m.group(1) if m else ""
+        self.bands: list[dict] = []  # filled by _load_bands() in main()
 
     def meta(self):
         return {
@@ -148,6 +202,8 @@ class DataSet:
             "x_max": self.x_max,
             "sites": self.sites,
             "n_serials": int(self.df["serial"].cat.categories.size),
+            "x_unit": self.x_unit,
+            "bands": self.bands,
         }
 
     def scatter(self, flo, fhi, sites, maxpts):
@@ -225,9 +281,20 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span class="sitebox" id="sites"></span>
   <button onclick="update()">Update</button>
   <button onclick="resetView()">Reset</button>
+  <button onclick="openView('boxplot')" title="Render the real interactive boxplot for the current frequency band">Boxplot (this band)</button>
   <span id="status"></span>
 </div>
+<div id="bandbar" style="padding:6px 14px;background:#f0f6ff;border-bottom:1px solid #ddd;display:none;font-size:12px">
+  <b>Bands:</b> <span id="bands"></span>
+</div>
 <div id="plot"></div>
+<div id="viewwrap" style="display:none;border-top:2px solid #0066cc;margin-top:6px">
+  <div style="padding:6px 14px;background:#eef4ff;font-size:12px">
+    <b id="vtitle">Band view</b> <span id="vstatus" style="color:#666"></span>
+    <button onclick="document.getElementById('viewwrap').style.display='none'" style="float:right">Close</button>
+  </div>
+  <iframe id="vframe" style="width:100%;height:78vh;border:0"></iframe>
+</div>
 <script>
 let META=null;
 async function boot(){
@@ -242,10 +309,38 @@ async function boot(){
     sb.insertAdjacentHTML('beforeend',
       '<label><input type="checkbox" checked value="'+s+'" class="sitechk"> '+s+'</label>');
   });
+  if(META.bands && META.bands.length){
+    const bb=document.getElementById('bands');
+    META.bands.forEach((b,i)=>{
+      const btn=document.createElement('button');
+      btn.textContent=b.name;
+      btn.title='Set range to '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'');
+      btn.style.marginRight='6px';
+      btn.onclick=()=>setBand(b.lo,b.hi);
+      bb.appendChild(btn);
+    });
+    document.getElementById('bandbar').style.display='block';
+  }
+  update();
+}
+function setBand(lo,hi){
+  document.getElementById('flo').value=lo;
+  document.getElementById('fhi').value=hi;
   update();
 }
 function selectedSites(){return [...document.querySelectorAll('.sitechk:checked')].map(c=>c.value);}
 function resetView(){document.getElementById('flo').value=META.x_min;document.getElementById('fhi').value=META.x_max;update();}
+function openView(v){
+  const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
+  const wrap=document.getElementById('viewwrap');
+  wrap.style.display='block';
+  document.getElementById('vtitle').textContent=v+'  ['+flo+' .. '+fhi+' '+META.x_label+']';
+  document.getElementById('vstatus').textContent='rendering the real interactive view for this band...';
+  const f=document.getElementById('vframe');
+  f.onload=()=>{document.getElementById('vstatus').textContent='rendered (full interactive view, band-sized).';};
+  f.src='/view?view='+encodeURIComponent(v)+'&flo='+flo+'&fhi='+fhi;
+  wrap.scrollIntoView({behavior:'smooth'});
+}
 async function update(){
   const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
   const maxpts=document.getElementById('maxpts').value;
@@ -289,6 +384,70 @@ def api_scatter():
     return jsonify(DS.scatter(flo, fhi, sites, maxpts))
 
 
+# --- Band-windowed rendering of the EXISTING interactive views (option B) -----
+# The heavy giant HTML is unopenable only because it embeds the whole dataset.
+# Here we slice the parquet to one frequency band, write it back out as a CSV
+# with the original headers, and run the REAL padb_v2 pipeline for that view on
+# just that slice -- so the page the user gets is the identical interactive view
+# (all controls, Site compare, stats), just band-sized so it actually loads.
+_band_cache: dict = {}
+
+
+def _render_view_band(view: str, flo: float, fhi: float) -> tuple[str, int]:
+    """Render `view` (e.g. 'boxplot') for the frequency band [flo,fhi] via the
+    real padb_v2 pipeline on a parquet slice. Returns (html_path, n_rows).
+    Cached per (view, band)."""
+    import pyarrow as pa
+    import pyarrow.parquet as pqm
+    import pyarrow.compute as pc
+    import pyarrow.csv as pacsv
+
+    key = (view, round(flo, 6), round(fhi, 6))
+    cached = _band_cache.get(key)
+    if cached and os.path.exists(cached[0]):
+        return cached
+
+    t = pqm.read_table(str(DS.path))
+    col = pc.cast(t.column(DS.x_col), pa.float64())
+    mask = pc.and_(pc.greater_equal(col, pa.scalar(flo)),
+                   pc.less_equal(col, pa.scalar(fhi)))
+    t2 = t.filter(mask)
+    n = t2.num_rows
+
+    tmp = Path(tempfile.mkdtemp(prefix="padbview_"))
+    band_csv = tmp / "band.csv"
+    pacsv.write_csv(t2, str(band_csv))
+
+    import padb_v2  # lazy: pulls in padb_plots/scipy only when a view is rendered
+    cfg = {
+        "views": [view],
+        "title_prefix": f"Band_{flo:g}_{fhi:g}",
+        "publish_to": "",          # never publish a scratch render
+        "export_parquet": False,   # don't re-emit a parquet for the slice
+    }
+    if len(DS.sites) >= 2:
+        cfg["primary_site"] = DS.sites[0]
+    padb_v2.generate_report(band_csv, cfg, tmp)
+    cands = sorted(tmp.glob(f"*_{view}.html"))
+    out = str(cands[0]) if cands else ""
+    _band_cache[key] = (out, n)
+    return out, n
+
+
+@app.route("/view")
+def api_view():
+    view = request.args.get("view", "boxplot")
+    flo = float(request.args.get("flo", DS.x_min))
+    fhi = float(request.args.get("fhi", DS.x_max))
+    try:
+        path, n = _render_view_band(view, flo, fhi)
+    except Exception as exc:  # surface the real error in the iframe
+        return Response(f"<pre>render error: {exc}</pre>", mimetype="text/html", status=500)
+    if not path or not os.path.exists(path):
+        return Response("<pre>render produced no output</pre>", mimetype="text/html", status=500)
+    return Response(Path(path).read_text(encoding="utf-8"), mimetype="text/html")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -299,6 +458,8 @@ def main(argv=None):
     ap.add_argument("--x", help="Exact x-axis column name (override auto-detect)")
     ap.add_argument("--value", help="Exact value column name (override auto-detect)")
     ap.add_argument("--no-open", action="store_true", help="Do not open a browser")
+    ap.add_argument("--bands", help="JSON file of named frequency bands "
+                    "(default: bands.json / padb_viewer_bands.json next to the parquet)")
     args = ap.parse_args(argv)
 
     global DS
@@ -306,14 +467,25 @@ def main(argv=None):
     pqpath = _find_parquet(target)
     print(f"Loading {pqpath} ...", flush=True)
     DS = DataSet(pqpath, x_override=args.x, value_override=args.value)
+
+    bands_path = Path(args.bands).resolve() if args.bands else None
+    if not bands_path:
+        for cand in ("bands.json", "padb_viewer_bands.json"):
+            p = pqpath.parent / cand
+            if p.exists():
+                bands_path = p
+                break
+    if bands_path and bands_path.exists():
+        DS.bands = _load_bands(bands_path, DS.x_unit)
     m = DS.meta()
     print(f"  {m['rows']:,} rows | x={m['x_label']} [{m['x_min']:.4g}..{m['x_max']:.4g}] "
           f"| value={m['value_label']} | sites={m['sites']}", flush=True)
-    url = f"http://127.0.0.1:{args.port}/"
+    port = _free_port(args.port)
+    url = f"http://127.0.0.1:{port}/"
     print(f"Serving {url}  (Ctrl+C to stop)", flush=True)
     if not args.no_open:
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    app.run(host="127.0.0.1", port=args.port, threaded=True)
+    app.run(host="127.0.0.1", port=port, threaded=True)
 
 
 if __name__ == "__main__":
