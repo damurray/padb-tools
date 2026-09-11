@@ -214,6 +214,65 @@ def _maybe_auto_binary_encode(cfg: dict, csv_path: Path, df) -> None:
               f'"binary_encode": false in job.json to override.', flush=True)
 
 
+def _csv_to_parquet(csv_path: Path, out_path: Path) -> tuple[int, float, float]:
+    """Stream a CSV to a zstd-compressed parquet (bounded memory). Returns
+    (rows, csv_MB, parquet_MB). Raises on failure (caller decides what to do)."""
+    import pyarrow.csv as pacsv
+    import pyarrow.parquet as pq
+    reader = pacsv.open_csv(str(csv_path),
+                            read_options=pacsv.ReadOptions(block_size=64 << 20))
+    writer = None
+    rows = 0
+    try:
+        for batch in reader:
+            if writer is None:
+                writer = pq.ParquetWriter(str(out_path), batch.schema,
+                                          compression="zstd", compression_level=9)
+            writer.write_batch(batch)
+            rows += batch.num_rows
+    finally:
+        if writer is not None:
+            writer.close()
+    smb = csv_path.stat().st_size / 1e6
+    dmb = out_path.stat().st_size / 1e6 if out_path.exists() else 0.0
+    return rows, smb, dmb
+
+
+def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) -> None:
+    """Write a compact parquet sidecar of the SOURCE csv next to the report, so
+    padb_viewer.py can serve datasets too big to open as self-contained HTML.
+    The raw CSV (not the loaded/filtered df) is exported, so the viewer sees the
+    same columns the loader detects (x/value/Serial/Group incl. 'Site: ...').
+
+    Gate: explicit cfg['export_parquet'] wins (true/false). Otherwise auto-export
+    for compare jobs, or when the CSV is large by the same size/row thresholds as
+    binary_encode. Never fails the build -- a parquet error is logged and skipped."""
+    explicit = cfg.get("export_parquet")
+    if explicit is False:
+        return
+    if explicit is not True:
+        try:
+            mb = csv_path.stat().st_size / (1024 * 1024)
+        except OSError:
+            mb = 0.0
+        large = (mb >= float(cfg.get("export_parquet_auto_mb", AUTO_BINARY_ENCODE_MB))
+                 or (df is not None
+                     and len(df) >= int(cfg.get("export_parquet_auto_rows",
+                                                AUTO_BINARY_ENCODE_ROWS))))
+        if not (cfg.get("compare_csv") or large):
+            return
+    out_path = output_dir / (csv_path.stem + ".parquet")
+    try:
+        rows, smb, dmb = _csv_to_parquet(csv_path, out_path)
+    except Exception as exc:  # pragma: no cover - defensive; never break a build
+        _log_note(output_dir, f"parquet export skipped for {csv_path.name}: {exc}")
+        return
+    ratio = (smb / dmb) if dmb else 0.0
+    print(f"  NOTE: wrote parquet sidecar {out_path.name} ({rows:,} rows, "
+          f"{smb:.0f} MB CSV -> {dmb:.1f} MB parquet, {ratio:.0f}x) -- open with "
+          f"padb_viewer.py for large datasets a browser can't load as HTML.", flush=True)
+
+
 def _warn_if_view_too_large(out_html: Path, view: str, cfg: dict, output_dir: Path) -> None:
     """Flag a generated view whose file is large enough that a browser may
     struggle to (or can't) render it -- logged to build_failures.log and the
@@ -987,6 +1046,7 @@ def generate_report(
             print(f"    [ERROR] {exc}", flush=True)
             _write_placeholder(out_html, title, f"Error: {exc}")
             generated = []
+        _maybe_export_parquet(cfg, csv_path, output_dir)
         return _finish_report(output_dir, prefix, generated, cfg)
 
     print(f"  Loading scatter CSV: {csv_path.name}", flush=True)
@@ -1004,6 +1064,7 @@ def generate_report(
     print(f"    Rows: {len(df):,}  |  Temps: {sorted(df['Temperature'].unique())}",
           flush=True)
     _maybe_auto_binary_encode(cfg, csv_path, df)
+    _maybe_export_parquet(cfg, csv_path, output_dir, df)
 
     # Load alternate env_coverage CSV if specified
     ec_csv_raw = cfg.get("env_coverage_csv", "")
