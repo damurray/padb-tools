@@ -7,3 +7,9 @@ __pycache__/
 *.pdf
 !Training_Setup_1Pager.pdf
 tutorial/
+# padb_viewer.py PyInstaller build artifacts (build_viewer.py) -- the .exe is
+# ~130 MB and rebuildable; never commit it.
+dist/
+_pyi_build/
+*.exe
+*.parquet

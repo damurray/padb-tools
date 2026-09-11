@@ -49,6 +49,15 @@ _META_COLS = {
 }
 
 
+def _default_target() -> Path:
+    """Where to look for a parquet when no target is given. For a frozen .exe
+    that's the folder the .exe sits in (so a user drops PADB_Viewer.exe into a
+    results folder and double-clicks); otherwise the current directory."""
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path.cwd()
+
+
 def _find_parquet(target: Path) -> Path:
     """Resolve a folder-or-file arg to a single parquet path."""
     if target.is_file() and target.suffix.lower() == ".parquet":
@@ -283,7 +292,9 @@ def api_scatter():
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("target", help="Results folder or a .parquet file")
+    ap.add_argument("target", nargs="?", default=None,
+                    help="Results folder or a .parquet file "
+                         "(default: the folder the viewer is run from / sits in)")
     ap.add_argument("--port", type=int, default=8799)
     ap.add_argument("--x", help="Exact x-axis column name (override auto-detect)")
     ap.add_argument("--value", help="Exact value column name (override auto-detect)")
@@ -291,7 +302,8 @@ def main(argv=None):
     args = ap.parse_args(argv)
 
     global DS
-    pqpath = _find_parquet(Path(args.target).resolve())
+    target = Path(args.target).resolve() if args.target else _default_target()
+    pqpath = _find_parquet(target)
     print(f"Loading {pqpath} ...", flush=True)
     DS = DataSet(pqpath, x_override=args.x, value_override=args.value)
     m = DS.meta()

@@ -219,8 +219,13 @@ def _csv_to_parquet(csv_path: Path, out_path: Path) -> tuple[int, float, float]:
     (rows, csv_MB, parquet_MB). Raises on failure (caller decides what to do)."""
     import pyarrow.csv as pacsv
     import pyarrow.parquet as pq
-    reader = pacsv.open_csv(str(csv_path),
-                            read_options=pacsv.ReadOptions(block_size=64 << 20))
+    # newlines_in_values: some PADB Group/label cells contain embedded newlines
+    # (e.g. Phase_Nose merged CSVs) -- without this the chunker desyncs and the
+    # whole export fails ("CSV parser got out of sync with chunker").
+    reader = pacsv.open_csv(
+        str(csv_path),
+        read_options=pacsv.ReadOptions(block_size=64 << 20),
+        parse_options=pacsv.ParseOptions(newlines_in_values=True))
     writer = None
     rows = 0
     try:
