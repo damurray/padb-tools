@@ -411,8 +411,7 @@ def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = T
         else:
             _append_log(job_id, f"\n--- Building plots: {plot_job.name} ---")
             sib_cmd = [sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(plot_job)]
-            if not publish:
-                sib_cmd.append("--no-publish")
+            sib_cmd.append("--publish" if publish else "--no-publish")
             rc = _stream(sib_cmd, job_id)
             if rc != 0:
                 ok = False
@@ -541,7 +540,13 @@ def _worker() -> None:
             # Publishing is opt-in per run (default off) -- a runtime override
             # only, so the job file's own publish_to is left untouched on disk
             # ("let existing objects keep their settings"). When off, we force
-            # --no-publish; when on, the job's own publish_to is honored.
+            # --no-publish. When on, we force --publish for padb_v2.py plot
+            # jobs so a local-only compare job (publish_to:"") still reaches
+            # the standard PADB-Compare/PADB-Interactive share; a real
+            # publish_to still wins. (padb_run.py has no --publish flag, so a
+            # pod run job's own extraction page still honors its publish_to;
+            # its interactive plot siblings go through _run_v2_siblings below,
+            # which does force --publish.)
             publish = bool(job.get("publish"))
             if "pod" in cfg:
                 cmd = [sys.executable, str(TOOLS_DIR / "padb_run.py"), str(job_path)]
@@ -558,8 +563,7 @@ def _worker() -> None:
                 # already-extracted CSV via padb_v2.py directly. No PADB-R.exe involved,
                 # so --dry-run has no equivalent here and is simply ignored.
                 plot_cmd = [sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(job_path)]
-                if not publish:
-                    plot_cmd.append("--no-publish")
+                plot_cmd.append("--publish" if publish else "--no-publish")
                 rc = _stream(plot_cmd, job_id)
                 ok = rc == 0
             if result_index is None:

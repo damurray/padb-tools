@@ -1420,6 +1420,15 @@ def main(argv: list[str] | None = None) -> None:
         help="Build locally only; do not publish, regardless of the job's "
              "publish_to (leaves the job file itself untouched)",
     )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Force publishing to the standard share location even when the "
+             "job's publish_to is empty/absent (a real publish_to still "
+             "wins). Publishes to COMPARE_PUBLISH_ROOT\\<dir> for compare "
+             "jobs, DEFAULT_PUBLISH_ROOT\\<dir> otherwise. Leaves the job "
+             "file itself untouched. --no-publish wins if both are given.",
+    )
     args = parser.parse_args(argv)
 
     job_path = Path(args.job).resolve()
@@ -1429,10 +1438,17 @@ def main(argv: list[str] | None = None) -> None:
     with job_path.open(encoding="utf-8") as f:
         cfg = json.load(f)
 
-    # --no-publish is a runtime override only -- force the opt-out path in
-    # generate_report() without rewriting the job file on disk.
+    # --no-publish / --publish are runtime overrides only -- they steer
+    # _finish_report()'s publish decision without rewriting the job file on
+    # disk. --no-publish forces the opt-out path; --publish forces the
+    # default-share path when the job opted out ("") or never set a
+    # destination, while leaving a real publish_to untouched (it wins). This
+    # is what the webapp's "copy to share" checkbox uses so a local-only
+    # compare job can reach PADB-Compare without hand-editing its JSON.
     if args.no_publish:
         cfg["publish_to"] = ""
+    elif args.publish and not cfg.get("publish_to"):
+        cfg.pop("publish_to", None)
 
     job_dir = job_path.parent
 
