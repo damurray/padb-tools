@@ -743,7 +743,12 @@ function _isInGfFull(r){
 function _loadGlobalFilter(){
   try{
     var raw=localStorage.getItem(GF_KEY);
-    if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;}
+    // Must reset _gfParsed too: applyFilters gates GF on _gfParsed.size, so a
+    // no-raw reload (e.g. the cross-tab storage event when GF is cleared from
+    // another view) that cleared only _gfExcluded/_gfCoarseExcluded left this
+    // view still excluding the "cleared" points until a full page reload -- the
+    // real "clear global filter does not work" on the scatter.
+    if(!raw){_gfExcluded=null;_gfCoarseExcluded=null;_gfParsed=null;}
     else{
       var obj=JSON.parse(raw);
       _gfExcluded=new Set(obj.excluded||[]);
