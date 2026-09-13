@@ -442,45 +442,68 @@ _HARNESS_JS = r"""
     try{ if(typeof update==='function') update(); }catch(e){}
   }
   function runCoordination(R,chk,skip){
-    var p=_freqPair();
-    if(!p){ skip('coordination','no frequency-range input in this view'); return; }
     _openAnyTable();
-    var lo0=parseFloat(p.lo.value), hi0=parseFloat(p.hi.value);
-    if(!(hi0>lo0)){ skip('coordination','freq range not readable ('+p.lo.value+'..'+p.hi.value+')'); return; }
-    var S0=plotSig(), D0=_coordDigest();
-    // (A) narrow the frequency-range INPUT -> plot and table must both narrow
-    _setFreq(p, lo0+(hi0-lo0)*0.40, lo0+(hi0-lo0)*0.60);
-    var S1=plotSig(), D1=_coordDigest();
-    if(S1===S0){ skip('freq-range-coordinates','narrowing the freq range did not change the plot (few distinct freqs?)'); }
-    else{
-      chk('freq-range-narrows-plot', true, 'plot responded to the freq-range input');
-      if(D0!==null) chk('freq-range-narrows-table', D1!==D0, (D1!==D0)?'table tracked the freq range':'STALE: plot narrowed but table did not');
-      else skip('freq-range-narrows-table','no table in this view');
-    }
-    _setFreq(p, lo0, hi0);
-    var S2=plotSig(), D2=_coordDigest();
-    chk('freq-range-restores', S2===S0 && (D0===null||D2===D0), 'plot='+(S2===S0)+' table='+(D0===null?'n/a':(D2===D0)));
-    // (B) drag-zoom (Plotly relayout) -> freq inputs + plot + table must all respond.
-    // Sub-range the axis in its OWN current units (numeric freq / log-freq / box
-    // category indices), so _onPlotRelayout interprets it the same way a real drag
-    // would, for every view type.
-    var gd=document.getElementById('plot');
-    var xr=(gd&&gd.layout&&gd.layout.xaxis)?gd.layout.xaxis.range:null;
-    if(gd && typeof _onPlotRelayout==='function' && gd.emit && xr && xr.length===2 && xr[1]>xr[0]){
-      var a=xr[0], b=xr[1], ev={};
-      ev['xaxis.range[0]']=a+(b-a)*0.40; ev['xaxis.range[1]']=a+(b-a)*0.60;
-      try{ gd.emit('plotly_relayout',ev); }catch(e){}
-      var moved=(Math.abs(parseFloat(p.lo.value)-lo0)>1e-6)||(Math.abs(parseFloat(p.hi.value)-hi0)>1e-6);
-      var Sz=plotSig(), Dz=_coordDigest();
-      if(Sz===S0){ skip('drag-zoom-coordinates','drag-zoom did not change the plot (few distinct freqs?)'); }
+    var p=_freqPair();
+    if(p){
+     var lo0=parseFloat(p.lo.value), hi0=parseFloat(p.hi.value);
+     if(hi0>lo0){
+      var S0=plotSig(), D0=_coordDigest();
+      // (A) narrow the frequency-range INPUT -> plot and table must both narrow
+      _setFreq(p, lo0+(hi0-lo0)*0.40, lo0+(hi0-lo0)*0.60);
+      var S1=plotSig(), D1=_coordDigest();
+      if(S1===S0){ skip('freq-range-coordinates','narrowing the freq range did not change the plot (few distinct freqs?)'); }
       else{
-        chk('drag-zoom-syncs-freq-inputs', moved, moved?'freq inputs moved with the zoom':'zoom moved the plot but NOT the freq inputs');
-        chk('drag-zoom-narrows-plot', true, 'plot responded to drag-zoom');
-        if(D0!==null) chk('drag-zoom-narrows-table', Dz!==D0, (Dz!==D0)?'table tracked the drag-zoom':'STALE: zoom moved the plot but not the table');
+        chk('freq-range-narrows-plot', true, 'plot responded to the freq-range input');
+        if(D0!==null) chk('freq-range-narrows-table', D1!==D0, (D1!==D0)?'table tracked the freq range':'STALE: plot narrowed but table did not');
+        else skip('freq-range-narrows-table','no table in this view');
       }
-      try{ gd.emit('plotly_relayout',{'xaxis.autorange':true}); }catch(e){}
+      _setFreq(p, lo0, hi0);
+      var S2=plotSig(), D2=_coordDigest();
+      chk('freq-range-restores', S2===S0 && (D0===null||D2===D0), 'plot='+(S2===S0)+' table='+(D0===null?'n/a':(D2===D0)));
+      // (B) drag-zoom (Plotly relayout) -> freq inputs + plot + table must all respond.
+      // Sub-range the axis in its OWN current units (numeric freq / log-freq / box
+      // category indices), so _onPlotRelayout interprets it the same way a real drag would.
+      var gd=document.getElementById('plot');
+      var xr=(gd&&gd.layout&&gd.layout.xaxis)?gd.layout.xaxis.range:null;
+      if(gd && typeof _onPlotRelayout==='function' && gd.emit && xr && xr.length===2 && xr[1]>xr[0]){
+        var a=xr[0], b=xr[1], ev={};
+        ev['xaxis.range[0]']=a+(b-a)*0.40; ev['xaxis.range[1]']=a+(b-a)*0.60;
+        try{ gd.emit('plotly_relayout',ev); }catch(e){}
+        var moved=(Math.abs(parseFloat(p.lo.value)-lo0)>1e-6)||(Math.abs(parseFloat(p.hi.value)-hi0)>1e-6);
+        var Sz=plotSig(), Dz=_coordDigest();
+        if(Sz===S0){ skip('drag-zoom-coordinates','drag-zoom did not change the plot (few distinct freqs?)'); }
+        else{
+          chk('drag-zoom-syncs-freq-inputs', moved, moved?'freq inputs moved with the zoom':'zoom moved the plot but NOT the freq inputs');
+          chk('drag-zoom-narrows-plot', true, 'plot responded to drag-zoom');
+          if(D0!==null) chk('drag-zoom-narrows-table', Dz!==D0, (Dz!==D0)?'table tracked the drag-zoom':'STALE: zoom moved the plot but not the table');
+        }
+        try{ gd.emit('plotly_relayout',{'xaxis.autorange':true}); }catch(e){}
+      } else {
+        skip('drag-zoom-coordination','view has no _onPlotRelayout / numeric x-range (drag-zoom not wired to filters)');
+      }
+     } else { skip('freq-range-coordination','freq range not readable ('+p.lo.value+'..'+p.hi.value+')'); }
     } else {
-      skip('drag-zoom-coordination','view has no _onPlotRelayout / numeric x-range (drag-zoom not wired to filters)');
+      skip('freq-range-coordination','no frequency-range input in this view (e.g. histogram)');
+    }
+    // (C) Histogram Pass/Fail filter -> plot AND stats table must both respond+restore.
+    // The histogram has no swept x, so its coordination is the pass/fail (h_pf)
+    // and condition filters, not a freq range. This is the switching-speed case.
+    var pf=document.getElementById('h_pf');
+    if(pf && pf.options && pf.options.length>=2){
+      var hS0=plotSig(), hD0=_coordDigest();
+      var curPf=pf.value, altPf=null;
+      for(var oi=0;oi<pf.options.length;oi++){ if(pf.options[oi].value!==curPf){altPf=pf.options[oi].value;break;} }
+      pf.value=altPf; pf.dispatchEvent(new Event('change',{bubbles:true})); try{if(typeof update==='function')update();}catch(e){}
+      var hS1=plotSig(), hD1=_coordDigest();
+      if(hS1===hS0){ skip('histogram-passfail-coordinates','Pass/Fail did not change the plot (no spec / all pass?)'); }
+      else{
+        chk('histogram-passfail-narrows-plot', true, 'plot responded to the Pass/Fail filter');
+        if(hD0!==null) chk('histogram-passfail-narrows-table', hD1!==hD0, (hD1!==hD0)?'stats table tracked Pass/Fail':'STALE: plot changed but the stats table did not');
+        else skip('histogram-passfail-narrows-table','no stats table');
+      }
+      pf.value=curPf; pf.dispatchEvent(new Event('change',{bubbles:true})); try{if(typeof update==='function')update();}catch(e){}
+      var hS2=plotSig(), hD2=_coordDigest();
+      chk('histogram-passfail-restores', hS2===hS0 && (hD0===null||hD2===hD0), 'plot='+(hS2===hS0)+' table='+(hD0===null?'n/a':(hD2===hD0)));
     }
     var rf=firstResetFn(); if(rf){ try{eval(rf+'()');}catch(e){} }
   }
@@ -734,7 +757,12 @@ def _discover(root: Path, glob: str, include_single: bool) -> list[Path]:
     for p in root.rglob(glob):
         if _EXCLUDE_DIR_PARTS & set(p.parts):
             continue
-        if "boxplot" not in p.name.lower():
+        # Cover both interactive views the harness has view-specific logic for:
+        # boxplot (deep GF block) and histogram (switching-speed value dists --
+        # table-n-matches-plotted-points is histogram-exact, and the coordination
+        # check exercises the pass/fail filter). Other views (scatter/summary/...)
+        # are still reachable via --page but aren't swept by default.
+        if not any(k in p.name.lower() for k in ("boxplot", "histogram")):
             continue
         is_compare = "compare" in str(p).lower()
         if is_compare or include_single:
@@ -783,7 +811,9 @@ def main(argv=None) -> None:
         pass
     ap = argparse.ArgumentParser(description="Filter/GF self-consistency gate for boxplot pages.")
     ap.add_argument("--root", default=r"C:\temp\data", help="Data root to scan (default C:\\temp\\data).")
-    ap.add_argument("--glob", default="*boxplot*.html", help="Filename glob (default *boxplot*.html).")
+    ap.add_argument("--glob", default="*.html",
+                    help="Filename glob (default *.html; the discovery then keeps only "
+                         "*boxplot* and *histogram* pages).")
     ap.add_argument("--page", action="append", default=[], help="Test a specific HTML page (repeatable).")
     ap.add_argument("--include-single-site", action="store_true",
                     help="Also test non-compare boxplots (default: compare pages only).")
