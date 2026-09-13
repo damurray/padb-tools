@@ -15776,7 +15776,15 @@ function buildTable(){
 }
 function exportTableCSV(){
   var active=_getFilteredActive();
-  var excluded=DATA.filter(function(cd){return active.indexOf(cd)<0;});
+  /* "excluded" must be ONLY the rows the Global Filter removed from the CURRENT
+     condition/temp/data selection -- not every non-active condition. The old
+     DATA.filter(not active) also swept in rows hidden by the condition/temp/data
+     filters and mislabeled them "GF Excluded", so this export became a superset
+     of the on-screen Results Table (which shows the active set only) and tagged
+     filter-hidden rows as GF-excluded. Diff the GF-bypassed selection against the
+     shown set to recover exactly the GF-excluded rows; a condition the user hid
+     via a filter is simply not exported, matching what's on screen. */
+  var excluded=_getFilteredActive(false).filter(function(cd){return active.indexOf(cd)<0;});
   var selTemps=getSelTemps();
   var params=getSumParams();
   var rows=_buildCondRows(active,'',selTemps,params)

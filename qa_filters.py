@@ -44,6 +44,19 @@ INVARIANTS (boxplot)
                           rest; clear restores
   reset-restores          Reset returns the exact baseline point set
 
+INVARIANTS (CSV export -- all views with an export; via captured Blob text)
+--------------------------------------------------------------------------
+  csv-export-nonblank            an export produces a non-empty data section when
+                                 the view has data
+  csv-export-tracks-filter       a filter that shrinks the plot shrinks the export
+                                 (and undo restores the exact baseline row count) --
+                                 the export must reflect the FILTERED view, not the
+                                 whole dataset
+  csv-export-matches-plotted-points  (histogram) CSV data rows == plotted measurements
+  csv-export-matches-results-table   (summary)   CSV data rows == on-screen table rows
+  csv-import-roundtrip-same-plot/table  (histogram) re-importing the just-exported
+                                 CSV reproduces the identical plot + table view
+
 USAGE
 -----
   py qa_filters.py                       # all compare boxplots under the default root
@@ -508,6 +521,133 @@ _HARNESS_JS = r"""
     var rf=firstResetFn(); if(rf){ try{eval(rf+'()');}catch(e){} }
   }
 
+  // ---- CSV export matches the on-screen view (all views with an export) ----
+  // Every "Export CSV" / "Save CSV" must emit exactly what the viewer is looking
+  // at right now -- the FILTERED condition/freq table (summary/stat_summary/
+  // env_coverage) or the FILTERED point/measurement set (scatter/histogram) --
+  // never the whole unfiltered dataset. This is the self-consistency version of
+  // the real bug class where a filter (e.g. the Temperature checkboxes) was
+  // honoured by the table but ignored by the export.
+  //
+  // Exports trigger a download (build a Blob -> object URL -> a.click) rather than
+  // returning text, so we intercept the Blob constructor to capture the exact
+  // string, stub a.click + alert/confirm so nothing navigates or blocks, and
+  // restore all of them afterwards. "Data rows" = the lines after any leading
+  // #-comment metadata block and the single header line.
+  function captureCsv(fn){
+    var realBlob=window.Blob, cap=null;
+    var realClick=HTMLAnchorElement.prototype.click, realAlert=window.alert, realConfirm=window.confirm;
+    window.Blob=function(parts,opts){ try{ if(parts&&parts[0]!=null) cap=String(parts[0]); }catch(e){} return new realBlob(parts,opts); };
+    HTMLAnchorElement.prototype.click=function(){};
+    window.alert=function(){}; window.confirm=function(){return true;};
+    try{ fn(); }catch(e){ if(cap===null) cap='__THREW__ '+e; }
+    finally{ window.Blob=realBlob; HTMLAnchorElement.prototype.click=realClick; window.alert=realAlert; window.confirm=realConfirm; }
+    return cap;
+  }
+  function csvDataRows(text){
+    if(text==null) return null;
+    if(String(text).indexOf('__THREW__')===0) return text;   // error marker; caller handles
+    var lines=String(text).split(/\r\n|\n/).filter(function(l){return l.length>0;});
+    var i=0; while(i<lines.length && lines[i].charAt(0)==='#') i++;   // drop leading metadata comments
+    return lines.slice(i+1);   // drop the header row
+  }
+  function _plotHasData(){ var s=plotSig(); return s!=='[]' && JSON.parse(s).some(function(x){return parseInt(x.split(':').pop(),10)>0;}); }
+  function runCsvExport(R,chk,skip){
+    var exps=[];
+    if(typeof exportTableCSV==='function') exps.push({name:'exportTableCSV',call:function(){exportTableCSV();},ref:'table'});
+    if(typeof hExportCsv==='function')     exps.push({name:'hExportCsv',call:function(){hExportCsv();},ref:'points'});
+    if(typeof saveCSV==='function')        exps.push({name:'saveCSV',call:function(){saveCSV(false);},ref:'none'});
+    if(!exps.length){ skip('csv-export','no CSV export in this view'); return; }
+    var rf=firstResetFn(); if(rf){ try{eval(rf+'()');}catch(e){} }
+    openTable();                       // ensure a table-backed export has its table built
+    var hadData=_plotHasData();
+    exps.forEach(function(ex){
+      var t0=captureCsv(ex.call);
+      if(typeof t0==='string' && t0.indexOf('__THREW__')===0){ chk('csv-export['+ex.name+']-runs', false, t0.slice(0,160)); return; }
+      var r0=csvDataRows(t0);
+      chk('csv-export['+ex.name+']-nonblank', !hadData || (r0&&r0.length>0), 'rows='+(r0?r0.length:'null'));
+      if(!r0||!r0.length) return;
+      // (a) filter-tracking: a filter that shrinks the plot must shrink the export,
+      // and undoing it must restore the exact baseline row count. Try a condition/
+      // serial/temp checkbox first; if none changes the (length-based) plot
+      // signature (e.g. env_coverage, whose ΔEnv band trace lengths don't move
+      // when a serial/temp is dropped -- only n does), fall back to narrowing the
+      // frequency-range input, which reliably drops condition/freq rows.
+      var boxes=filterBoxes().filter(function(c){return c.checked;}), moved=false;
+      for(var bi=0; bi<boxes.length && !moved; bi++){
+        var c=boxes[bi], s0=plotSig();
+        fire(c,false);
+        if(plotSig()!==s0){
+          moved=true;
+          var r1=csvDataRows(captureCsv(ex.call));
+          chk('csv-export['+ex.name+']-tracks-filter', r1!=null && r1.length!==r0.length,
+              (r1!=null&&r1.length!==r0.length)?('rows '+r0.length+' -> '+r1.length+' on filter')
+              :('STALE: plot filtered but export row count unchanged ('+r0.length+') -- export ignores this filter'));
+          fire(c,true);
+          var r2=csvDataRows(captureCsv(ex.call));
+          chk('csv-export['+ex.name+']-restores', r2!=null && r2.length===r0.length, 'rows='+(r2?r2.length:'null')+' base='+r0.length);
+        } else { fire(c,true); }
+      }
+      if(!moved){
+        var fp=_freqPair();
+        if(fp){
+          var flo0=parseFloat(fp.lo.value), fhi0=parseFloat(fp.hi.value), sf0=plotSig();
+          if(fhi0>flo0){
+            _setFreq(fp, flo0+(fhi0-flo0)*0.40, flo0+(fhi0-flo0)*0.60);
+            if(plotSig()!==sf0){
+              moved=true;
+              var rf1=csvDataRows(captureCsv(ex.call));
+              chk('csv-export['+ex.name+']-tracks-freq-range', rf1!=null && rf1.length<r0.length,
+                  (rf1!=null&&rf1.length<r0.length)?('rows '+r0.length+' -> '+rf1.length+' on narrower freq range')
+                  :('STALE: freq range narrowed the plot but export rows unchanged ('+r0.length+') -- export ignores the freq range'));
+              _setFreq(fp, flo0, fhi0);
+              var rf2=csvDataRows(captureCsv(ex.call));
+              chk('csv-export['+ex.name+']-restores-freq-range', rf2!=null && rf2.length===r0.length, 'rows='+(rf2?rf2.length:'null')+' base='+r0.length);
+            } else { _setFreq(fp, flo0, fhi0); }
+          }
+        }
+      }
+      if(!moved) R.push({name:'csv-export['+ex.name+']-tracks-filter',skip:true,detail:'no filter checkbox or freq range changed the plot (single-value dims?)'});
+      // (b) exact "matches the screen" equality for the two clean 1:1 cases.
+      // Re-capture at baseline (state restored above) so the reference is current.
+      if(ex.ref==='points'){   // histogram: one CSV row per plotted measurement
+        var gd=_gd(), hist=(gd&&gd.data?gd.data:[]).filter(function(t){return t.type==='histogram';});
+        var tot=0; hist.forEach(function(t){tot+=(t.x?t.x.length:0);});
+        var rb=csvDataRows(captureCsv(ex.call));
+        chk('csv-export-matches-plotted-points', rb!=null && rb.length===tot, 'csv_rows='+(rb?rb.length:'null')+' plotted_points='+tot);
+        // (c) round-trip: re-importing the just-exported CSV must reproduce the
+        // same plot and table. The histogram's in-page Import (_hApplyImport)
+        // keeps this plot's own spec when the export carried none (clean export),
+        // so a same-page round-trip should land on the identical view. This
+        // REPLACES the page's data globals, so it runs last (nothing generic
+        // reads histogram state after it).
+        if(typeof _hApplyImport==='function'){
+          var beforeSig=plotSig();
+          var Tb=readTable(); var rowNb=Tb?Tb.rows.length:-1;
+          var condB=Tb?Object.keys(tableConds(Tb)).sort().join('|'):'';
+          var exportText=captureCsv(ex.call);
+          var ok=true, err='';
+          try{ _hApplyImport(exportText,'__qa_roundtrip.csv'); }catch(e){ ok=false; err=String(e); }
+          chk('csv-import-roundtrip-runs', ok, err);
+          if(ok){
+            var afterSig=plotSig();
+            var Ta=readTable(); var rowNa=Ta?Ta.rows.length:-1;
+            var condA=Ta?Object.keys(tableConds(Ta)).sort().join('|'):'';
+            chk('csv-import-roundtrip-same-plot', afterSig===beforeSig,
+                (afterSig===beforeSig)?'plot identical after re-import':('before='+beforeSig.slice(0,90)+' after='+afterSig.slice(0,90)));
+            chk('csv-import-roundtrip-same-table', rowNa===rowNb && condA===condB,
+                'rows '+rowNb+'->'+rowNa+', conditions '+(condA===condB?'identical':'DIFFER'));
+          }
+        }
+      } else if(ex.ref==='table'){   // summary Results Table: one CSV row per shown table row (no GF => no extra excluded rows)
+        var T=readTable(), rb2=csvDataRows(captureCsv(ex.call));
+        if(T && T.rows) chk('csv-export-matches-results-table', rb2!=null && rb2.length===T.rows.length, 'csv_rows='+(rb2?rb2.length:'null')+' table_rows='+T.rows.length);
+        else skip('csv-export-matches-results-table','no results table read');
+      }
+    });
+    if(rf){ try{eval(rf+'()');}catch(e){} }
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -540,6 +680,9 @@ _HARNESS_JS = r"""
       // Filter/plot/table coordination (freq range + drag-zoom) -- same heavy-page skip.
       if(_HEAVY){ skip('coordination','skipped on heavy page'); }
       else { try{ runCoordination(R,chk,skip); }catch(e){ chk('COORD-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // CSV-export-matches-screen + import round-trip -- same heavy-page skip.
+      if(_HEAVY){ skip('csv-export','skipped on heavy page'); }
+      else { try{ runCsvExport(R,chk,skip); }catch(e){ chk('CSV-EXPORT-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');

@@ -263,6 +263,22 @@ clear-GF-restores; deselect-site (compare) / deselect-serial remove exactly thei
 target and restore; filter-GF-whole-dut (Set filter as GF on one narrowed serial
 removes that serial across ALL frequencies); reset-restores.
 
+**CSV-export-matches-screen + import round-trip (added 2026-09-13).** For every
+view with an export, `runCsvExport` proves the exported CSV is *what you see*, not
+the whole dataset. It captures the download by intercepting the `Blob` constructor
+(exports download rather than return text), then checks: **nonblank**; **tracks a
+filter** — narrowing a condition/serial/temp checkbox (or, when that doesn't move a
+length-based signature, the frequency range) must shrink the export and undo must
+restore it exactly; **matches the on-screen count** — histogram CSV rows ==
+plotted measurements, summary `exportTableCSV` rows == Results-Table rows; and
+**import round-trip** — re-importing a just-exported histogram CSV (`_hApplyImport`)
+reproduces the identical plot + table. This found and fixed a real bug: summary's
+`exportTableCSV` was emitting condition/temp-filtered rows too, mislabeled "GF
+Excluded" (it diffed against the whole dataset instead of the GF-bypassed
+selection) — a superset of the on-screen table. Verified across all views
+(histogram/summary/stat_summary/env_coverage/scatter pass; boxplot has no table
+export → clean skip).
+
 ```
 py qa_filters.py                          # all compare boxplots under C:\temp\data
 py qa_filters.py --root <dir> --include-single-site
