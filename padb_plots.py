@@ -2879,6 +2879,191 @@ update();
     output_html.write_text(html, encoding="utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Shared, view-agnostic Site Population Check panel (fence + triage + render +
+# CSV). Injected into env_coverage and distribution (each supplies only its own
+# point-gathering + a fence-basis radio). Function names use a `_sp` prefix so
+# they can't collide with the boxplot/histogram views' own bespoke copies. A row
+# is {p:{site,serial,bucket,value}, verdict:'OUTSIDE'|'inside'|'n/a', dir, dist,
+# lo, hi, n, specRelevant}; meta is {primary,k,basisLabel,bucketLabel,valueLabel,
+# towardFail,exportFnName}.
+# ---------------------------------------------------------------------------
+_SITE_PANEL_SHARED_JS = r"""
+function _spFence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.5;
+  var s=vals.slice().sort(function(a,b){return a-b;});
+  function q(p){var i=(p/100)*(s.length-1),lo=Math.floor(i);return lo+1<s.length?s[lo]+(s[lo+1]-s[lo])*(i-lo):s[lo];}
+  var q1=q(25),q3=q(75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
+function _spTriage(d,towardFail,primary){ if(!d.outside) return null;
+  var ms=d.sharedCount/d.outside>0.5, mh=d.high/d.outside>0.5, ml=d.low/d.outside>0.5;
+  var bad=towardFail==='high'?mh:towardFail==='low'?ml:null;
+  if(ms) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(bad===true&&d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
+  if(bad===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
+  if(bad===false) return {label:'Below '+primary+' population (benign)',cls:'sev-lo'};
+  return {label:'Ambiguous (two-sided spec)',cls:'sev-med'}; }
+function _spRollup(rows,towardFail,primary){
+  var clus={}; rows.forEach(function(r){ if(r.verdict!=='OUTSIDE')return; var key=r.p.site+'||'+r.p.bucket;
+    (clus[key]=clus[key]||{site:r.p.site,bucket:r.p.bucket,serials:{}}); if(r.p.serial)clus[key].serials[r.p.serial]=1; });
+  var dutMap={}; rows.forEach(function(r){ var key=r.p.site+'||'+r.p.serial;
+    var d=dutMap[key]||(dutMap[key]={site:r.p.site,serial:r.p.serial,checked:0,outside:0,high:0,low:0,maxDist:0,buckets:[]});
+    d.checked++; if(r.verdict==='OUTSIDE'){d.outside++;if(r.dir==='high')d.high++;else d.low++;if(r.dist>d.maxDist)d.maxDist=r.dist;d.buckets.push(r.p.bucket);} });
+  Object.keys(dutMap).forEach(function(key){var d=dutMap[key];var sh=0;d.buckets.forEach(function(b){var c=clus[d.site+'||'+b];if(c&&Object.keys(c.serials).length>1)sh++;});d.sharedCount=sh;d.tag=_spTriage(d,towardFail,primary);});
+  return {clus:clus,dutMap:dutMap}; }
+function _spRender(rows,meta){
+  var primary=meta.primary, roll=_spRollup(rows,meta.towardFail,primary), rank={OUTSIDE:0,inside:1,'n/a':2};
+  rows.sort(function(a,b){if(rank[a.verdict]!==rank[b.verdict])return rank[a.verdict]-rank[b.verdict];return (b.dist||0)-(a.dist||0);});
+  var outside=rows.filter(function(r){return r.verdict==='OUTSIDE';});
+  var nBenign=outside.filter(function(r){return r.specRelevant===false;}).length;
+  var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
+  var dirNote=meta.towardFail?(' Direction relative to spec: <b>'+meta.towardFail+'</b> is toward failing -- OUTSIDE points the other way are flagged benign.'):' (Spec two-sided/unconfigured -- both directions shown as plain deviations.)';
+  var html='<div style="font-size:12px;margin-bottom:6px"><b>'+outside.length+'</b> of <b>'+rows.length+'</b> non-'+primary+' point(s) fall outside the '+primary+' '+meta.k+'&times;IQR fence ('+meta.basisLabel+') for their own '+meta.bucketLabel+(nBenign?' (<b>'+nBenign+'</b> benign)':'')+(nNA?' ('+nNA+' skipped -- <4 '+primary+' points in that group)':'')+'.'+dirNote+'</div>';
+  html+='<div style="margin:0 0 8px"><button class="csv-btn" onclick="'+meta.exportFnName+'(false)">&#8595; Export CSV (All)</button>&nbsp;&nbsp;<button class="csv-btn" onclick="'+meta.exportFnName+'(true)">&#8595; Export CSV (Outside only)</button></div>';
+  var dutRows=Object.keys(roll.dutMap).map(function(k){return roll.dutMap[k];}).filter(function(d){return d.outside>0;}).sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
+  if(dutRows.length){ html+='<div style="font-weight:600;margin:8px 0 2px">Per-DUT summary (suggested triage, not a verdict)</div><table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th><th>Outside</th><th>%</th><th>High</th><th>Low</th><th>Max dist</th><th>Shared w/ others</th><th>Suggested triage</th></tr></thead><tbody>';
+    dutRows.forEach(function(d){var pct=(100*d.outside/d.checked).toFixed(0)+'%';var tag=d.tag?'<td class="'+d.tag.cls+'">'+d.tag.label+'</td>':'<td>&mdash;</td>';html+='<tr><td>'+d.site+'</td><td>'+d.serial+'</td><td>'+d.checked+'</td><td>'+d.outside+'</td><td>'+pct+'</td><td>'+d.high+'</td><td>'+d.low+'</td><td>'+d.maxDist.toFixed(4)+'</td><td>'+(d.sharedCount?d.sharedCount+' of '+d.outside:'&mdash;')+'</td>'+tag+'</tr>';});
+    html+='</tbody></table>'; }
+  var clusters=Object.keys(roll.clus).map(function(k){return roll.clus[k];}).filter(function(e){return Object.keys(e.serials).length>1;}).sort(function(a,b){return Object.keys(b.serials).length-Object.keys(a.serials).length;});
+  if(clusters.length){ html+='<div style="font-weight:600;margin:8px 0 2px">Groups with multiple DUTs affected (points at a station/fixture/calibration issue, not one DUT)</div><table class="stbl"><thead><tr><th>Site</th><th>'+meta.bucketLabel+'</th><th>DUTs</th><th>Serials</th></tr></thead><tbody>';
+    clusters.forEach(function(e){var ser=Object.keys(e.serials).sort();html+='<tr><td>'+e.site+'</td><td>'+(e.bucket||'All')+'</td><td class="sev-hi">'+ser.length+'</td><td>'+ser.join(', ')+'</td></tr>';});
+    html+='</tbody></table>'; }
+  html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div><div style="overflow:auto;max-height:60vh;border:1px solid #eee"><table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>'+meta.bucketLabel+'</th><th>'+meta.valueLabel+'</th><th>'+primary+' fence lo</th><th>'+primary+' fence hi</th><th>'+primary+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+  rows.forEach(function(r){var p=r.p;var vTd=r.verdict!=='OUTSIDE'?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>'):r.specRelevant===false?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only.">OUTSIDE (benign)</td>':'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>';
+    html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td><td>'+(p.bucket||'All')+'</td><td>'+p.value.toFixed(4)+'</td><td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td><td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td><td>'+(r.n!==undefined?r.n:'&mdash;')+'</td><td>'+(r.dir||'&mdash;')+'</td><td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';});
+  html+='</tbody></table></div>'; return html; }
+function _spCsv(rows,meta){
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var hdrs=['Site','Serial','Group',meta.valueLabel,meta.primary+'_fence_lo',meta.primary+'_fence_hi',meta.primary+'_n','Dir','Dist','Verdict','Spec_relevant'];
+  var out=[hdrs.join(',')];
+  rows.forEach(function(r){var p=r.p;out.push([esc(p.site),esc(p.serial),esc(p.bucket),p.value.toFixed(6),r.lo!==undefined?r.lo.toFixed(6):'',r.hi!==undefined?r.hi.toFixed(6):'',r.n!==undefined?r.n:'',r.dir||'',r.dist?r.dist.toFixed(6):'',r.verdict,r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown'].join(','));});
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var mh=['# PADB Export -- Site Population Check','# Generated: '+ts,'# Primary site: '+meta.primary,'# Fence basis: '+meta.basisLabel,'# Fence: '+meta.primary+' '+meta.k+'xIQR per '+meta.bucketLabel,'# Rows: '+rows.length,'#'].join('\r\n');
+  return mh+'\r\n'+out.join('\r\n'); }
+function _spDownload(text,fname){var blob=new Blob([text],{type:'text/csv;charset=utf-8;'});var url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=fname;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);}
+function _spSiteFromG(g){ var m=String(g==null?'':g).match(/Site:\s*([^|]+?)(?:\s{2,}|$)/i); return m?m[1].trim():''; }
+"""
+
+# Distribution view's own point-gathering for the shared Site Population panel.
+# Basis radio: Absolute value (RAW_ABS) vs ΔTemp delta (RAW_DELTA); fence per
+# (spur | temp | port | freq) combination, respecting the view's live filters.
+_DIST_SITE_JS = r"""
+var _distLastSiteRows=[], _distLastSiteMeta={};
+function _distSiteBasis(){ var el=document.querySelector('input[name="dist_site_basis"]:checked'); return el?el.value:'abs'; }
+function _distSiteK(){ var el=document.getElementById('dist_site_k'); var k=el?parseFloat(el.value):1.5; return (isFinite(k)&&k>=0)?k:1.5; }
+function toggleDistSitePanel(){ var p=document.getElementById('dist_site_panel'),b=document.getElementById('dist_site_btn'); if(!p||!b)return;
+  var show=p.style.display==='none'; p.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Site Population Check'; if(show) updateDistSitePanel(); }
+function updateDistSitePanel(){
+  var el=document.getElementById('dist_site_panel'); if(!el||el.style.display==='none') return;
+  try{
+    if(typeof PRIMARY_SITE==='undefined'||!PRIMARY_SITE){ el.innerHTML='<i style="color:#888">No comparison site configured.</i>'; return; }
+    var basis=_distSiteBasis(), k=_distSiteK();
+    var spurs=getSelSpurIdxs(), selSer=getSelSerials(), selPor=getSelPorts(), fr=getFreqRange();
+    var serFlt=(selSer.size<SERIALS.length)||(PORTS.length>0&&selPor.size<PORTS.length);
+    var condFilts=_distCondFilters(), condFlt=condFilts.length>0, gfFlt=_distGfActive();
+    var prim={}, others=[];
+    function consider(raw,spurLbl,tempLabel,valueArr,gfTemp){
+      for(var i=0;i<raw.f.length;i++){
+        if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
+        var ser=raw.s?raw.s[i]:'', port=raw.p?raw.p[i]:'';
+        if(serFlt&&!(selSer.has(ser)&&(!PORTS.length||selPor.has(port)))) continue;
+        if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
+        var fl=raw.fl?raw.fl[i]:_distFreqLabel(raw.f[i]);
+        if(gfFlt){var _ex=_isDistGfExcl(ser,raw.g?raw.g[i]:'',gfTemp,fl,port);if(_distGfFocusMode?!_ex:_ex) continue;}
+        var site=_spSiteFromG(raw.g?raw.g[i]:''); if(!site) continue;
+        var bucket=spurLbl+' | '+tempLabel+(PORTS.length&&port?' | '+port:'')+' | '+fl;
+        var val=valueArr[i];
+        if(site===PRIMARY_SITE){ (prim[bucket]=prim[bucket]||[]).push(val); }
+        else others.push({site:site,serial:ser,bucket:bucket,value:val});
+      }
+    }
+    if(basis==='abs'){
+      var tIdxs=getSelTempIdxs();
+      spurs.forEach(function(si){ if(!RAW_ABS[si])return; tIdxs.forEach(function(ti){ var raw=RAW_ABS[si][ti]; if(!raw)return; consider(raw,SPUR_TYPES[si],TEMPS[ti],raw.v,TEMPS[ti]); }); });
+    } else {
+      var dIdxs=getSelNonRoomIdxs();
+      spurs.forEach(function(si){ if(!RAW_DELTA[si])return; dIdxs.forEach(function(di){ var raw=RAW_DELTA[si][di]; if(!raw)return; consider(raw,SPUR_TYPES[si],'Δ'+NON_ROOM_TEMPS[di],raw.d,''); }); });
+    }
+    if(!others.length){ el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current selection.</i>'; return; }
+    var towardFail=(basis==='abs')?((HI_SPEC!=null&&LO_SPEC==null)?'high':(LO_SPEC!=null&&HI_SPEC==null)?'low':null):null;
+    var rows=others.map(function(p){ var f=_spFence(prim[p.bucket]||[],k); if(!f) return {p:p,verdict:'n/a',n:(prim[p.bucket]||[]).length};
+      var dir=null,dist=0; if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
+      var sr=(dir&&towardFail)?(dir===towardFail):null;
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:sr}; });
+    var meta={primary:PRIMARY_SITE,k:k,basisLabel:(basis==='abs'?'Absolute value':'ΔTemp delta'),
+      bucketLabel:'Spur | '+(basis==='abs'?'Temp':'ΔTemp')+(PORTS.length?' | Port':'')+' | Freq',
+      valueLabel:(basis==='abs'?Y_LABEL:('ΔTemp ('+Y_LABEL+')')),towardFail:towardFail,exportFnName:'saveDistSitePopCsv'};
+    _distLastSiteRows=rows; _distLastSiteMeta=meta;
+    el.innerHTML=_spRender(rows,meta);
+  }catch(e){ el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>'; }
+}
+function saveDistSitePopCsv(outsideOnly){
+  if(!_distLastSiteRows||!_distLastSiteRows.length){alert('Open Site Population Check first -- nothing to export yet.');return;}
+  var rows=outsideOnly?_distLastSiteRows.filter(function(r){return r.verdict==='OUTSIDE';}):_distLastSiteRows;
+  if(!rows.length){alert('No OUTSIDE points in the current selection.');return;}
+  _spDownload(_spCsv(rows,_distLastSiteMeta),(TITLE+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv');
+}
+"""
+
+
+# env_coverage view's own point-gathering for the shared Site Population panel.
+# Basis radio: Room baseline value vs ΔEnv drift (per-DUT non-Room minus Room);
+# fence per (non-Site condition dims | freq [| temp for drift]). Uses ENV_DATA's
+# raw conditions (cond_keys carry Site) + getActiveDuts (serial/port/GF filtered).
+_EC_SITE_JS = r"""
+var _ecLastSiteRows=[], _ecLastSiteMeta={};
+function _ecSiteBasis(){ var el=document.querySelector('input[name="ec_site_basis"]:checked'); return el?el.value:'room'; }
+function _ecSiteK(){ var el=document.getElementById('ec_site_k'); var k=el?parseFloat(el.value):1.5; return (isFinite(k)&&k>=0)?k:1.5; }
+function toggleEcSitePanel(){ var p=document.getElementById('ec_site_panel'),b=document.getElementById('ec_site_btn'); if(!p||!b)return;
+  var show=p.style.display==='none'; p.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Site Population Check'; if(show) updateEcSitePanel(); }
+function updateEcSitePanel(){
+  var el=document.getElementById('ec_site_panel'); if(!el||el.style.display==='none') return;
+  try{
+    if(typeof PRIMARY_SITE==='undefined'||!PRIMARY_SITE){ el.innerHTML='<i style="color:#888">No comparison site configured.</i>'; return; }
+    var basis=_ecSiteBasis(), k=_ecSiteK(), fr=getFreqRange(), selTemps=getSelectedTemps();
+    var prim={}, others=[];
+    ENV_DATA.forEach(function(cd){
+      var site=(cd.cond_keys&&cd.cond_keys['Site'])||''; if(!site) return;   // Group-by pooled conds have empty cond_keys -> skipped
+      var bucketBase=Object.keys(cd.cond_keys||{}).filter(function(kk){return kk!=='Site';}).map(function(kk){return cd.cond_keys[kk];}).filter(function(v){return v!=='';}).join(' | ');
+      var duts=getActiveDuts(cd);
+      for(var j=0;j<cd.freqs.length;j++){
+        var f=cd.freqs[j]; if(f<fr.lo||f>fr.hi) continue;
+        var fl=(cd.freq_labels&&cd.freq_labels[j])||String(f);
+        if(basis==='room'){
+          var bucket=(bucketBase?bucketBase+' | ':'')+fl;
+          duts.forEach(function(sd){ var v=sd[1].room[j]; if(v==null) return;
+            if(site===PRIMARY_SITE)(prim[bucket]=prim[bucket]||[]).push(v); else others.push({site:site,serial:sd[1].serial||sd[0],bucket:bucket,value:v}); });
+        } else {
+          selTemps.forEach(function(temp){
+            var bucket=(bucketBase?bucketBase+' | ':'')+temp+' | '+fl;
+            duts.forEach(function(sd){ var dt=sd[1].deltas&&sd[1].deltas[temp]; if(!dt)return; var v=dt[j]; if(v==null) return;
+              if(site===PRIMARY_SITE)(prim[bucket]=prim[bucket]||[]).push(v); else others.push({site:site,serial:sd[1].serial||sd[0],bucket:bucket,value:v}); });
+          });
+        }
+      }
+    });
+    if(!others.length){ el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current selection.</i>'; return; }
+    var towardFail=null;
+    if(basis==='room'){ var anyHi=false,anyLo=false; ENV_DATA.forEach(function(cd){if(cd.spec_hi!=null)anyHi=true;if(cd.spec_lo!=null)anyLo=true;}); towardFail=(anyHi&&!anyLo)?'high':(anyLo&&!anyHi)?'low':null; }
+    var rows=others.map(function(p){ var f=_spFence(prim[p.bucket]||[],k); if(!f) return {p:p,verdict:'n/a',n:(prim[p.bucket]||[]).length};
+      var dir=null,dist=0; if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
+      var sr=(dir&&towardFail)?(dir===towardFail):null;
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:sr}; });
+    var meta={primary:PRIMARY_SITE,k:k,basisLabel:(basis==='room'?'Room baseline':'ΔEnv drift'),
+      bucketLabel:(basis==='room'?'condition | freq':'condition | temp | freq'),
+      valueLabel:(basis==='room'?'Room value':'ΔEnv (dB)'),towardFail:towardFail,exportFnName:'saveEcSitePopCsv'};
+    _ecLastSiteRows=rows; _ecLastSiteMeta=meta;
+    el.innerHTML=_spRender(rows,meta);
+  }catch(e){ el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>'; }
+}
+function saveEcSitePopCsv(outsideOnly){
+  if(!_ecLastSiteRows||!_ecLastSiteRows.length){alert('Open Site Population Check first -- nothing to export yet.');return;}
+  var rows=outsideOnly?_ecLastSiteRows.filter(function(r){return r.verdict==='OUTSIDE';}):_ecLastSiteRows;
+  if(!rows.length){alert('No OUTSIDE points in the current selection.');return;}
+  var t=(typeof TITLE!=='undefined')?TITLE:'env_coverage';
+  _spDownload(_spCsv(rows,_ecLastSiteMeta),(t+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv');
+}
+"""
+
+
 def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     """
     Pre-computed KDE distribution plot.
@@ -3203,6 +3388,23 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
 
+    # Cross-site compare: detect a "Site" tag in the merged Group text (the
+    # compare merge appends "  Site: <name>"). When >=2 sites and a primary_site,
+    # enable the Site Population Check (SR-fence membership over the distribution).
+    _dist_site_vals = set()
+    if "Group" in df.columns:
+        for _g in df["Group"].dropna().astype(str):
+            _m = re.search(r"Site:\s*([^|]+?)(?:\s{2,}|$)", _g)
+            if _m:
+                _dist_site_vals.add(_m.group(1).strip())
+    _dist_site_vals = sorted(_dist_site_vals)
+    dist_primary_site = cfg.get("primary_site") or (_dist_site_vals[0] if len(_dist_site_vals) > 1 else None)
+    dist_site_enabled = len(_dist_site_vals) > 1 and dist_primary_site in _dist_site_vals
+    # NOTE: `html` is a LOCAL result-string variable in this function (shadows the
+    # `html` module), so html.escape() is unavailable here -- pre-escape manually.
+    _ps_disp = (str(dist_primary_site).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                if dist_primary_site else "")
+
     constants = "\n".join([
         f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
         f"var X_UNIT={json.dumps(x_unit)};",
@@ -3213,6 +3415,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var TEMP_COLORS={json.dumps(temp_colors)};",
         f"var SERIALS={json.dumps(all_serials)};",
         f"var PORTS={json.dumps(all_ports)};",
+        f"var PRIMARY_SITE={json.dumps(dist_primary_site if dist_site_enabled else None)};",
         # Categorical box-identity labels (same _freq_label_map the boxplot uses),
         # so a GF key the boxplot stores (keyed on freq_label) matches point-precisely.
         f"var FREQ_LABEL_PAIRS={json.dumps([[float(_f), _l] for _f, _l in _freq_label_map(sorted(df['Frequency_MHz'].dropna().unique()), x_unit).items()])};",
@@ -3262,6 +3465,14 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         "box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:140px;max-height:300px;"
         "overflow-y:auto;padding:5px 7px;}"
         ".dist-filter-panel.open{display:block;}"
+        ".stbl{border-collapse:collapse;font-size:12px;margin-top:4px}"
+        ".stbl th,.stbl td{border:1px solid #ddd;padding:2px 8px;text-align:right}"
+        ".stbl th:first-child,.stbl td:first-child{text-align:left}"
+        ".stbl thead th{background:#f0f4fb}"
+        ".sev-hi{background:#fff0e8;color:#c04000;font-weight:bold}"
+        ".sev-med{background:#fff8e1;color:#6b5a00}.sev-lo{background:#eef3fb;color:#2c5c96}"
+        ".out{color:#c04000;font-weight:bold}"
+        ".csv-btn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;background:#f4f4f4;cursor:pointer}"
         ".dist-fitem{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:12px;}"
         ".dist-fall{padding-bottom:2px;}"
         ".dist-fdiv{margin:3px 0;border:none;border-top:1px solid #eee;}"
@@ -4013,6 +4224,7 @@ function update(){
   updateDeltaTable();
   updateTiTable();
   _recomputeSpecSegments();
+  if(typeof updateDistSitePanel==='function'){ try{updateDistSitePanel();}catch(e){} }  // no-op unless the Site panel is open (compare pages)
   saveState();
 }
 
@@ -4433,8 +4645,22 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
         ' &#8212; <span id="dist_ti_params" style="color:#1565c0;font-weight:700">P=95%, C=90%</span></div>\n'
         '  <div id="dist_ti_tbl"></div>\n'
         "</div>\n"
-        f"<script>{_get_plotlyjs()}</script>\n"
-        f"<script>\n{constants}\n{dist_js}</script>\n"
+        + (
+            '<div style="margin:6px 2px">\n'
+            '  <button class="sel-btn" id="dist_site_btn" onclick="toggleDistSitePanel()">&#9654; Site Population Check</button>\n'
+            '  <label style="font-size:11px;color:#555">&nbsp;Fence basis:'
+            ' <label><input type="radio" name="dist_site_basis" value="abs" checked onchange="updateDistSitePanel()">&nbsp;Absolute</label>'
+            ' <label><input type="radio" name="dist_site_basis" value="delta" onchange="updateDistSitePanel()">&nbsp;&Delta;Temp</label></label>\n'
+            '  <label style="font-size:11px;color:#555" title="Tukey fence multiplier: fence = Q1 - k*IQR .. Q3 + k*IQR. Lower k = stricter.">'
+            '&nbsp;k&times;IQR: <input type="number" id="dist_site_k" value="1.5" min="0" step="0.1" style="width:52px" onchange="updateDistSitePanel()"></label>\n'
+            f'  <span style="color:#888;font-size:11px">(each non-{_ps_disp} point vs the '
+            f'{_ps_disp} k&times;IQR fence)</span>\n'
+            '</div>\n'
+            '<div id="dist_site_panel" style="display:none;padding:0 2px 16px"></div>\n'
+            if dist_site_enabled else ""
+        )
+        + f"<script>{_get_plotlyjs()}</script>\n"
+        + f"<script>\n{constants}\n{dist_js}\n{_SITE_PANEL_SHARED_JS}\n{_DIST_SITE_JS}</script>\n"
         "</body>\n</html>"
     )
     return html
@@ -9036,6 +9262,7 @@ function update(){
   updateStatsTable(selConds);
   updateSummaryBar(selConds);
   _recomputeSpecSegments();
+  if(typeof updateEcSitePanel==='function'){ try{updateEcSitePanel();}catch(e){} }  // no-op unless the Site panel is open (compare pages)
   saveState();
 }
 
@@ -9392,6 +9619,8 @@ def _build_env_coverage_html(
     x_unit: str = "MHz",
     help_panel_html: str = "",
     has_segments: bool = True,
+    primary_site: str = None,
+    site_btn_html: str = "",
 ) -> str:
     css = (
         "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
@@ -9400,6 +9629,14 @@ def _build_env_coverage_html(
         "padding:8px 14px;background:#f0f2f5;border-radius:6px;margin-bottom:4px;font-size:13px;}"
         ".ctrl-bar label{white-space:nowrap;}"
         ".ctrl-bar input[type=range]{vertical-align:middle;width:90px;}"
+        ".stbl{border-collapse:collapse;font-size:12px;margin-top:4px}"
+        ".stbl th,.stbl td{border:1px solid #ddd;padding:2px 8px;text-align:right}"
+        ".stbl th:first-child,.stbl td:first-child{text-align:left}"
+        ".stbl thead th{background:#f0f4fb}"
+        ".sev-hi{background:#fff0e8;color:#c04000;font-weight:bold}"
+        ".sev-med{background:#fff8e1;color:#6b5a00}.sev-lo{background:#eef3fb;color:#2c5c96}"
+        ".out{color:#c04000;font-weight:bold}"
+        ".csv-btn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;background:#f4f4f4;cursor:pointer}"
         ".pc-bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;"
         "padding:5px 14px;border-radius:6px;margin-bottom:4px;font-size:13px;}"
         ".pc-bar.room-bar{background:#edf5ff;}"
@@ -9733,6 +9970,8 @@ def _build_env_coverage_html(
         f"var STATE_KEY='padb_{results_dir}';",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
+        f"var TITLE={json.dumps(title)};",
+        f"var PRIMARY_SITE={json.dumps(primary_site)};",
     ])
 
     return (
@@ -9751,7 +9990,8 @@ def _build_env_coverage_html(
         + '<div id="ec_summary_bar"></div>\n'
         + '<div id="plot"></div>\n'
         + '<div id="ec_stat_panel" style="display:none"></div>\n'
-        + f"<script>\n{constants}\n{_ENV_COVERAGE_JS}</script>\n"
+        + ((site_btn_html + '<div id="ec_site_panel" style="display:none;padding:0 2px 16px"></div>\n') if primary_site else "")
+        + f"<script>\n{constants}\n{_ENV_COVERAGE_JS}\n{_SITE_PANEL_SHARED_JS}\n{_EC_SITE_JS}</script>\n"
         "</body>\n</html>"
     )
 

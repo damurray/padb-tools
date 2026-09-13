@@ -263,6 +263,14 @@ clear-GF-restores; deselect-site (compare) / deselect-serial remove exactly thei
 target and restore; filter-GF-whole-dut (Set filter as GF on one narrowed serial
 removes that serial across ALL frequencies); reset-restores.
 
+**env_coverage / distribution Site Population Check (added 2026-09-13).**
+`runSiteFencePanel` gates the SR-fence panel on those two compare views (selectable
+basis — env_coverage: Room baseline vs ΔEnv drift; distribution: Absolute vs ΔTemp):
+panel produces rows; every OUTSIDE value is truly outside its stated fence and every
+inside truly inside; each fence is a valid Tukey fence (n≥4, lo≤hi); both bases
+render non-blank; the live k is monotonic; and the panel CSV matches on screen.
+Self-skips off a compare env_coverage/distribution page.
+
 **Histogram Site Population Check — SR-fence membership (added 2026-09-13).**
 `runHistogramSite` gates the histogram's cross-site fence panel: it independently
 recomputes the PRIMARY_SITE (SR) 1.5×IQR fence per non-Site dimension combination

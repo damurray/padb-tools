@@ -546,6 +546,33 @@ def render_env_coverage(
 
     title = cfg.get("title", output_html.stem)
 
+    # Cross-site compare: detect a "Site" tag in the Group text; when >=2 sites and
+    # a primary_site, enable the Site Population Check (SR-fence membership over
+    # Room baseline OR ΔEnv drift, selectable in the panel).
+    _ec_site_vals = set()
+    if "Group" in df.columns:
+        for _g in df["Group"].dropna().astype(str):
+            _m = re.search(r"Site:\s*([^|]+?)(?:\s{2,}|$)", _g)
+            if _m:
+                _ec_site_vals.add(_m.group(1).strip())
+    _ec_site_vals = sorted(_ec_site_vals)
+    ec_primary_site = cfg.get("primary_site") or (_ec_site_vals[0] if len(_ec_site_vals) > 1 else None)
+    ec_site_enabled = len(_ec_site_vals) > 1 and ec_primary_site in _ec_site_vals
+    ec_site_btn_html = ""
+    if ec_site_enabled:
+        _ps = str(ec_primary_site).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        ec_site_btn_html = (
+            '<div style="margin:6px 2px">\n'
+            '  <button class="reset-btn" id="ec_site_btn" onclick="toggleEcSitePanel()">&#9654; Site Population Check</button>\n'
+            '  <label style="font-size:11px;color:#555">&nbsp;Fence basis:'
+            ' <label><input type="radio" name="ec_site_basis" value="room" checked onchange="updateEcSitePanel()">&nbsp;Room baseline</label>'
+            ' <label><input type="radio" name="ec_site_basis" value="delta" onchange="updateEcSitePanel()">&nbsp;&Delta;Env drift</label></label>\n'
+            '  <label style="font-size:11px;color:#555" title="Tukey fence multiplier: fence = Q1 - k*IQR .. Q3 + k*IQR. Lower k = stricter.">'
+            '&nbsp;k&times;IQR: <input type="number" id="ec_site_k" value="1.5" min="0" step="0.1" style="width:52px" onchange="updateEcSitePanel()"></label>\n'
+            f'  <span style="color:#888;font-size:11px">(each non-{_ps} DUT vs the {_ps} k&times;IQR fence)</span>\n'
+            '</div>\n'
+        )
+
     palette = [
         "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
         "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
@@ -574,6 +601,8 @@ def render_env_coverage(
         x_unit=cfg.get("x_unit", "MHz"),
         help_panel_html=help_panel_html,
         has_segments=has_segments,
+        primary_site=ec_primary_site if ec_site_enabled else None,
+        site_btn_html=ec_site_btn_html,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")

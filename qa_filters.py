@@ -756,6 +756,63 @@ _HARNESS_JS = r"""
     }
   }
 
+  // ---- env_coverage / distribution Site Population Check (SR-fence membership) ----
+  // These two views share the view-agnostic panel (_spRender/_spFence) and expose a
+  // selectable fence BASIS (env_coverage: Room baseline vs ΔEnv drift; distribution:
+  // Absolute vs ΔTemp) plus a live k. This proves, oracle-free: the panel produces
+  // rows; every OUTSIDE value is truly outside its own stated [lo,hi] and every
+  // inside truly inside; each non-n/a fence is a valid Tukey fence (n>=4, lo<=hi);
+  // BOTH bases render non-blank; the live k is monotonic; and the panel's CSV export
+  // matches what's on screen. Self-skips off a compare env_coverage/distribution.
+  function runSiteFencePanel(R,chk,skip){
+    var cfg=null;
+    if(typeof toggleDistSitePanel==='function' && typeof _distLastSiteRows!=='undefined'){
+      cfg={name:'dist',toggle:toggleDistSitePanel,update:updateDistSitePanel,rows:function(){return _distLastSiteRows;},
+           panelId:'dist_site_panel',kId:'dist_site_k',basisName:'dist_site_basis',save:(typeof saveDistSitePopCsv==='function'?saveDistSitePopCsv:null)};
+    } else if(typeof toggleEcSitePanel==='function' && typeof _ecLastSiteRows!=='undefined'){
+      cfg={name:'ec',toggle:toggleEcSitePanel,update:updateEcSitePanel,rows:function(){return _ecLastSiteRows;},
+           panelId:'ec_site_panel',kId:'ec_site_k',basisName:'ec_site_basis',save:(typeof saveEcSitePopCsv==='function'?saveEcSitePopCsv:null)};
+    }
+    if(!cfg){ skip('site-fence-panel','no env_coverage/distribution site panel in this view'); return; }
+    if(typeof PRIMARY_SITE==='undefined'||!PRIMARY_SITE){ skip('site-fence-panel','not a cross-site compare page (no PRIMARY_SITE)'); return; }
+    var panel=document.getElementById(cfg.panelId);
+    if(panel&&getComputedStyle(panel).display==='none'){ try{cfg.toggle();}catch(e){} } else { try{cfg.update();}catch(e){} }
+    var rows=cfg.rows();
+    chk('site-fence-produced-rows['+cfg.name+']', rows.length>0, 'rows='+rows.length);
+    if(!rows.length) return;
+    var badOut=rows.filter(function(r){return r.verdict==='OUTSIDE'&&!(r.p.value>r.hi||r.p.value<r.lo);}).length;
+    var badIn=rows.filter(function(r){return r.verdict==='inside'&&(r.p.value>r.hi||r.p.value<r.lo);}).length;
+    chk('site-fence-outside-truly-outside['+cfg.name+']', badOut===0, 'badOut='+badOut);
+    chk('site-fence-inside-truly-inside['+cfg.name+']', badIn===0, 'badIn='+badIn);
+    var fbad=rows.filter(function(r){return r.verdict!=='n/a' && !((r.n>=4)&&(r.lo<=r.hi+1e-9));}).length;
+    chk('site-fence-valid-bounds['+cfg.name+']', fbad===0, 'invalid-fence-rows='+fbad);
+    // Both bases must render non-blank.
+    var radios=[].slice.call(document.querySelectorAll('input[name="'+cfg.basisName+'"]'));
+    if(radios.length>=2){
+      var orig=radios.filter(function(r){return r.checked;})[0], counts=[];
+      radios.forEach(function(rb){ rb.checked=true; try{cfg.update();}catch(e){} counts.push(cfg.rows().length); });
+      if(orig){orig.checked=true; try{cfg.update();}catch(e){}}
+      chk('site-fence-both-bases-nonblank['+cfg.name+']', counts.every(function(c){return c>0;}), 'rows per basis: '+counts.join(', '));
+    } else skip('site-fence-both-bases['+cfg.name+']','single basis');
+    // Live k slider monotonic (stricter flags >=, looser <=, with a live effect).
+    var kEl=document.getElementById(cfg.kId);
+    if(kEl){ var kOrig=kEl.value; function _oN(){return cfg.rows().filter(function(r){return r.verdict==='OUTSIDE';}).length;}
+      kEl.value='1.5'; try{cfg.update();}catch(e){} var oM=_oN();
+      kEl.value='0.5'; try{cfg.update();}catch(e){} var oS=_oN();
+      kEl.value='5';   try{cfg.update();}catch(e){} var oL=_oN();
+      chk('site-fence-k-monotonic['+cfg.name+']', oS>=oM&&oM>=oL&&oS!==oL, 'OUTSIDE k=0.5->'+oS+', 1.5->'+oM+', 5->'+oL);
+      kEl.value=kOrig; try{cfg.update();}catch(e){}
+    } else skip('site-fence-k-slider['+cfg.name+']','no k input');
+    // CSV export matches the panel (All + Outside-only).
+    if(cfg.save){ var rr=cfg.rows();
+      var dAll=csvDataRows(captureCsv(function(){cfg.save(false);}));
+      chk('site-fence-csv-matches-panel['+cfg.name+']', dAll!=null&&dAll.length===rr.length, 'csv='+(dAll?dAll.length:'null')+' panel='+rr.length);
+      var nOut=rr.filter(function(r){return r.verdict==='OUTSIDE';}).length;
+      var dOut=csvDataRows(captureCsv(function(){cfg.save(true);}));
+      chk('site-fence-csv-outside-matches['+cfg.name+']', dOut!=null&&dOut.length===nOut, 'csv='+(dOut?dOut.length:'null')+' outside='+nOut);
+    }
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -794,6 +851,9 @@ _HARNESS_JS = r"""
       // would leave SITE_COL_ID stale and the fence panel empty.
       if(_HEAVY){ skip('site-population-check','skipped on heavy page'); }
       else { try{ runHistogramSite(R,chk,skip); }catch(e){ chk('SITE-CHECK-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // env_coverage / distribution SR-fence panel -- self-skips off those compare pages.
+      if(_HEAVY){ skip('site-fence-panel','skipped on heavy page'); }
+      else { try{ runSiteFencePanel(R,chk,skip); }catch(e){ chk('SITE-FENCE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // CSV-export-matches-screen + import round-trip -- same heavy-page skip.
       if(_HEAVY){ skip('csv-export','skipped on heavy page'); }
       else { try{ runCsvExport(R,chk,skip); }catch(e){ chk('CSV-EXPORT-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
