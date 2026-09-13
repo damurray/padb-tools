@@ -42,6 +42,20 @@ issue; the static invariant is the important part.)
 py qa_js_segments.py
 ```
 
+### `qa_stats_recompute.py` — independent statistics recompute (the "uniformly-wrong" blind spot)
+Self-consistency checks (table↔plot, cross-view GF) all agree even when a value is
+*uniformly wrong everywhere* (wrong population fed into a statistic, raw rows instead
+of per-DUT means, an off-by-one tolerance-interval order statistic). This gate is the
+only one that can catch that: it builds a deterministic synthetic dataset whose true
+values are known **analytically** (from `qa_padb._synth_value`), calls the real
+aggregators (`padb_plots._aggregate_stat_data` / `_aggregate_box_data_by_temp`), and
+compares mean / std / Q1–Q3 / whiskers / outliers / Shapiro W,p / NP-TI / delta-env
+field-by-field to an independent recompute. Browser-free and deterministic.
+```bash
+py qa_stats_recompute.py
+```
+Baseline: **43 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
+
 ### `padb_csv_check.py` — pre-flight one CSV (or one job)
 Inspects a single extracted CSV before you build plots: load success, x-axis/value
 auto-detection, serial/temperature/spec detection, Group cardinality, drop rate.
@@ -108,8 +122,11 @@ py qa_view_sweep.py
 ## Running a full QA pass
 
 ```bash
+py qa_selfcheck.py       # Gate 1 : umbrella — compile + qa_padb + qa_viewer +
+                         #          qa_js_segments + qa_stats_recompute vs baseline
 py qa_padb.py            # Gate 1a: regression baseline (expect 37/4)
 py qa_js_segments.py     # Gate 1b: per-view JS drift guard
+py qa_stats_recompute.py # Gate 1c: independent stats recompute (expect 43/0)
 py qa_csv_sweep.py       # Gate 2 : every CSV loads / detects correctly
 py qa_view_sweep.py      # Gate 3 : every representative view builds + renders
 ```
