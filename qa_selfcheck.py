@@ -186,8 +186,9 @@ def main(argv=None) -> None:
     if verdict == "GREEN":
         print("    No known check regressed. (GREEN = nothing verified-correct broke, "
               "NOT a proof of overall correctness -- only as strong as the checks that exist.)")
-    print("    Interactive/render tiers (qa_filters/qa_view_sweep) are separate -- "
-          "run them on affected pages for behavioural changes.")
+    print("    Interactive/render tiers (qa_filters / qa_view_sweep / qa_gf_crossview) are "
+          "separate browser-dependent checks -- run them on affected pages for behavioural "
+          "and cross-view-consistency changes.")
     sys.exit(1 if regressions else (3 if amber else 0))
 
 
