@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 13,
+      "passed": 14,
       "failed": 0
     },
     "qa_padb": {
@@ -22,6 +22,10 @@
     },
     "qa_webapp": {
       "passed": 45,
+      "failed": 0
+    },
+    "qa_regressions": {
+      "passed": 34,
       "failed": 0
     }
   }

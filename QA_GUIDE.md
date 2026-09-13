@@ -92,6 +92,21 @@ issue; the static invariant is the important part.)
 py qa_js_segments.py
 ```
 
+### `qa_regressions.py` — per-fix regression pins (pure Python helpers)
+Pins the *Python-side* helper fixes documented in CLAUDE.md to their exact reported
+failure shapes, so a regression reintroducing the old behaviour fails here
+immediately. Covers: `_floor_dec`/`_ceil_dec` (freq-range clip), `_freq_label_map`
+(adaptive-precision collision), `_snap_pc_opt` (P/C select string), `_short_x_label`,
+`_parse_group_kv` (space-padding), `_extract_group_field`, `_has_segmentable_spec`,
+`_resolve_date_sentinel` (subex dates), `filename_stem_variants`, `_clean_x_axis_label`/
+`_x_col_override`/`_is_non_sweep_x` (non-freq/offset/histogram x-axis), and
+`_csv_to_parquet` (embedded-newline). Browser-free. (The JS-side fixes are covered
+generically by `qa_filters`.)
+```bash
+py qa_regressions.py
+```
+Baseline: **34 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
+
 ### `qa_webapp.py` — hermetic Flask route coverage
 Exercises the web app's routes (`/`, `/api/jobs`, `/api/execute-job`, `/api/schedule`,
 `/api/delete-job`, `/api/generate-job`, `/api/config`, `/api/convert-*`,
