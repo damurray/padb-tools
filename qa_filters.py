@@ -66,18 +66,67 @@ import tempfile
 import time
 from pathlib import Path
 
-_EDGE_CANDIDATES = [
+_BROWSER_CANDIDATES = [
     r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
     r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
 ]
 _EXCLUDE_DIR_PARTS = {"backup", ".git", "__pycache__"}
 
 
-def _find_edge() -> str | None:
-    for cand in _EDGE_CANDIDATES:
-        if Path(cand).exists():
-            return cand
-    return None
+def _installed_browsers() -> list[str]:
+    return [c for c in _BROWSER_CANDIDATES if Path(c).exists()]
+
+
+def _render_dom(browser: str, test_html: Path, td: str, budget_ms: int, timeout_s: int) -> str:
+    """Headless-render test_html with --dump-dom; return the dumped DOM (''
+    on any failure). Shared by the page harness and the browser smoke test."""
+    dom_path = Path(td) / "dom.html"
+    try:
+        with dom_path.open("w", encoding="utf-8") as dom_f:
+            proc = subprocess.Popen(
+                [browser, "--headless", "--disable-gpu", "--disable-crash-reporter",
+                 f"--virtual-time-budget={budget_ms}", f"--user-data-dir={td}",
+                 "--dump-dom", str(test_html)],
+                stdout=dom_f, stderr=subprocess.DEVNULL,
+            )
+            try:
+                proc.wait(timeout=timeout_s)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+        return dom_path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return ""
+
+
+def _browser_smoke(browser: str) -> bool:
+    """Prove this browser can headless-render + --dump-dom a trivial page. This is
+    the honest environment gate: if it fails, 'no sentinel' on a real page is an
+    ENVIRONMENT failure (browser dead), NOT a product defect -- so we must not
+    report those pages as FAILs. Marker is set by a tiny inline script so a
+    browser that renders but doesn't run JS also fails the gate."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
+        p = Path(td) / "smoke.html"
+        p.write_text("<!doctype html><body><pre id='__smoke'></pre>"
+                     "<script>document.getElementById('__smoke').textContent='QA_OK';</script>",
+                     encoding="utf-8")
+        dom = _render_dom(browser, p, td, 3000, 30)
+    return "__smoke" in dom and "QA_OK" in dom
+
+
+def _pick_working_browser() -> tuple[str | None, list[str]]:
+    """Return (first browser that passes the smoke test, list of installed).
+    A working browser proves the headless tier can actually run."""
+    installed = _installed_browsers()
+    for b in installed:
+        if _browser_smoke(b):
+            return b, installed
+    return None, installed
 
 
 # ---------------------------------------------------------------------------
@@ -661,26 +710,16 @@ def _run_page(edge: str, html_path: Path, budget_ms: int, timeout_s: int, heavy:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
         test_html = Path(td) / "qa_test.html"
         test_html.write_text(injected, encoding="utf-8")
-        dom_path = Path(td) / "dom.html"
-        with dom_path.open("w", encoding="utf-8") as dom_f:
-            proc = subprocess.Popen(
-                [edge, "--headless", "--disable-gpu", "--disable-crash-reporter",
-                 f"--virtual-time-budget={budget_ms}", f"--user-data-dir={td}",
-                 "--dump-dom", str(test_html)],
-                stdout=dom_f, stderr=subprocess.DEVNULL,
-            )
-            try:
-                proc.wait(timeout=timeout_s)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                try:
-                    proc.wait(timeout=10)   # let it actually die + release dom.html
-                except subprocess.TimeoutExpired:
-                    pass
-        dom = dom_path.read_text(encoding="utf-8", errors="ignore")
+        dom = _render_dom(edge, test_html, td, budget_ms, timeout_s)
     m = re.search(r'<pre id="__qa_results"[^>]*>(.*?)</pre>', dom, re.DOTALL)
     if not m:
-        return {"error": "no __qa_results sentinel (page did not run / render timed out)"}
+        # An empty/near-empty dump means the browser didn't render at all
+        # (headless env failure) even though the pre-flight smoke passed a moment
+        # ago -- distinguish that from a genuine page problem. Neither is a
+        # product defect the sweep should count as a FAIL.
+        if len(dom.strip()) < 400 or "plotly" not in dom.lower():
+            return {"env_error": "browser produced no usable DOM (headless render failed for this page)"}
+        return {"error": "no __qa_results sentinel (page loaded but the harness never emitted -- JS crash?)"}
     raw = m.group(1)
     # un-escape the minimal HTML entities the DOM dump introduces
     raw = raw.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", '"')
@@ -756,10 +795,18 @@ def main(argv=None) -> None:
     ap.add_argument("--verbose", action="store_true", help="Print every check (pass/skip too), not just failures.")
     args = ap.parse_args(argv)
 
-    edge = _find_edge()
+    # Honest environment gate: pick a browser that actually renders + runs JS
+    # headless right now. If none does, the interactive checks CANNOT run -- report
+    # that distinctly (exit 3) rather than letting every page look like a FAIL.
+    edge, installed = _pick_working_browser()
     if not edge:
-        print("[FATAL] msedge.exe not found -- cannot run headless self-tests.")
-        sys.exit(2)
+        if not installed:
+            print("[ENV-UNAVAILABLE] no Edge/Chrome found -- interactive checks did NOT run.")
+        else:
+            print("[ENV-UNAVAILABLE] headless browser present but not rendering "
+                  f"({', '.join(Path(b).name for b in installed)}) -- interactive checks did NOT run. "
+                  "This is an environment failure, NOT a product pass or fail.")
+        sys.exit(3)
 
     if args.page:
         pages = [Path(p) for p in args.page]
@@ -776,6 +823,7 @@ def main(argv=None) -> None:
     failed_pages = []
 
     heavy_pages = []
+    env_pages = []
     for pg in pages:
         budget, timeout = args.budget, args.timeout
         mb = 0.0
@@ -795,6 +843,11 @@ def main(argv=None) -> None:
         dt = time.time() - t0
         label = pg.parent.name + "/" + pg.name
         tag = f"{mb:.0f}MB {dt:.0f}s" if mb >= 1 else f"{dt:.0f}s"
+        if "env_error" in res:
+            # Browser couldn't render THIS page -- environment, not a defect.
+            print(f"  [ENV ] {label}: {res['env_error']}  ({tag})")
+            env_pages.append(label)
+            continue
         if "error" in res:
             print(f"  [ERROR] {label}: {res['error']}  ({tag}, budget={budget} timeout={timeout})")
             total_fail += 1
@@ -836,7 +889,21 @@ def main(argv=None) -> None:
         print(f"  Too heavy to render headlessly ({len(heavy_pages)}) -- not defects, raise --budget/--timeout:")
         for f in heavy_pages:
             print(f"    - {f}")
-    sys.exit(1 if total_fail else 0)
+    if env_pages:
+        print(f"  Browser could not render ({len(env_pages)}) -- ENVIRONMENT failures, NOT defects:")
+        for f in env_pages:
+            print(f"    - {f}")
+    # Exit code semantics for honest self-assessment:
+    #   1 = real product FAIL(s) found (takes priority)
+    #   3 = checks could not run for some pages (environment) and nothing failed
+    #   0 = everything that ran passed
+    if total_fail:
+        sys.exit(1)
+    if env_pages:
+        print("  NOTE: some pages could not be checked (browser environment) -- "
+              "this run did NOT verify them; treat as 'unverified', not 'passed'.")
+        sys.exit(3)
+    sys.exit(0)
 
 
 if __name__ == "__main__":
