@@ -17021,7 +17021,8 @@ function _hApplyImport(text,fname){
    Mirrors the boxplot Site Population Check's fence + triage + per-point/per-DUT
    tables + CSV export, adapted to the histogram's own data model. */
 function _hTowardFail(){ if(LIMIT_HI!==null&&LIMIT_LO===null) return 'high'; if(LIMIT_LO!==null&&LIMIT_HI===null) return 'low'; return null; }
-function _hSiteFence(vals){ if(vals.length<4) return null; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=_hpct(s,25),q3=_hpct(s,75),iqr=q3-q1; return {lo:q1-1.5*iqr,hi:q3+1.5*iqr,n:vals.length}; }
+function _hSiteK(){ var el=document.getElementById('h_site_k'); var k=el?parseFloat(el.value):1.5; return (isFinite(k)&&k>=0)?k:1.5; }
+function _hSiteFence(vals,k){ if(vals.length<4) return null; if(k===undefined||k===null) k=1.5; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=_hpct(s,25),q3=_hpct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
 function _hSiteTriage(d,towardFail){ if(!d.outside) return null;
   var mostlyShared=d.sharedCount/d.outside>0.5, mostlyHigh=d.high/d.outside>0.5, mostlyLow=d.low/d.outside>0.5;
   var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
@@ -17052,11 +17053,11 @@ function updateSitePanel(){
       else { others.push({site:site,serial:hasSer?SERIAL[i]:'',bucket:bk,value:VALUES[i]}); }
     }
     if(!others.length){ el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current selection.</i>'; return; }
-    var towardFail=_hTowardFail();
+    var towardFail=_hTowardFail(), kFence=_hSiteK();
     var rows=others.map(function(p){
       var pv=primaryBuckets[p.bucket]||[];
       if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
-      var f=_hSiteFence(pv), dir=null,dist=0;
+      var f=_hSiteFence(pv,kFence), dir=null,dist=0;
       if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
       var specRelevant=(dir&&towardFail)?(dir===towardFail):null;
       return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:specRelevant};
@@ -17083,7 +17084,7 @@ function updateSitePanel(){
       ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations, none flagged benign.)';
     var bucketLabel=otherDims.length?otherDims.map(function(d){return d.label;}).join(' | '):'(whole population)';
     var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
-      '</b> non-'+PRIMARY_SITE+' measurement(s) fall outside the '+PRIMARY_SITE+' 1.5&times;IQR fence for their own '+bucketLabel+
+      '</b> non-'+PRIMARY_SITE+' measurement(s) fall outside the '+PRIMARY_SITE+' '+kFence+'&times;IQR fence for their own '+bucketLabel+
       (nBenign?' (<b>'+nBenign+'</b> benign -- away from the spec-fail direction)':'')+
       (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points in that group, fence not meaningful)':'')+'.'+dirNote+'</div>';
     html+='<div style="margin:0 0 8px">'+
@@ -17144,7 +17145,7 @@ function hSaveSitePopulationCSV(outsideOnly){
   var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
   var meta=['# PADB Export','# Plot: '+TITLE+' -- Site Population Check','# Generated: '+ts,
     '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),'# Primary site: '+PRIMARY_SITE,
-    '# Rows: '+rows.length,'# Fence: '+PRIMARY_SITE+' 1.5xIQR per non-Site dimension combination','#'].join('\r\n');
+    '# Rows: '+rows.length,'# Fence: '+PRIMARY_SITE+' '+_hSiteK()+'xIQR per non-Site dimension combination','#'].join('\r\n');
   var blob=new Blob([meta+'\r\n'+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url; a.download=(TITLE+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
@@ -17291,9 +17292,13 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "<div id='h_stats' style='display:none;padding:0 2px 16px'></div>\n"
         + (
             "<div style='margin:6px 2px'><button class='hbtn' id='h_site_btn' onclick='toggleSitePanel()'>"
-            f"&#9654; Site Population Check</button> <span style='color:#888;font-size:11px'>"
-            f"(compares each non-{html.escape(str(primary_site))} measurement against the "
-            f"{html.escape(str(primary_site))} 1.5&times;IQR fence)</span></div>\n"
+            f"&#9654; Site Population Check</button> "
+            "<label style='font-size:11px;color:#555' title='Tukey fence multiplier: fence = Q1 - k*IQR .. Q3 + k*IQR. "
+            "Lower k = stricter (more points flagged OUTSIDE); higher k = looser. 1.5 is the standard Tukey fence.'>"
+            "&nbsp;k&times;IQR: <input type='number' id='h_site_k' value='1.5' min='0' step='0.1' "
+            "style='width:52px' onchange='updateSitePanel()'></label> "
+            f"<span style='color:#888;font-size:11px'>(compares each non-{html.escape(str(primary_site))} "
+            f"measurement against the {html.escape(str(primary_site))} k&times;IQR fence)</span></div>\n"
             "<div id='h_site_panel' style='display:none;padding:0 2px 16px'></div>\n"
             if site_compare_enabled else ""
         )

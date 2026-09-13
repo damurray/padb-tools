@@ -683,9 +683,10 @@ _HARNESS_JS = r"""
       if(!ok) continue;
       if(DIMVALS[SITE_COL_ID][i]===PRIMARY_SITE){ (prim[bk(i)]=prim[bk(i)]||[]).push(VALUES[i]); }
     }
+    var _kEl=document.getElementById('h_site_k'); var _k=_kEl?parseFloat(_kEl.value):1.5; if(!(isFinite(_k)&&_k>=0))_k=1.5;
     var fences={}; Object.keys(prim).forEach(function(b){ var v=prim[b]; if(v.length>=4){
       var s=v.slice().sort(function(a,b){return a-b;}); var q1=_pct(s,25),q3=_pct(s,75),iqr=q3-q1;
-      fences[b]={lo:q1-1.5*iqr,hi:q3+1.5*iqr,n:v.length}; } });
+      fences[b]={lo:q1-_k*iqr,hi:q3+_k*iqr,n:v.length}; } });
     var verdictBad=0, boundBad=0, checked=0;
     rows.forEach(function(r){ checked++;
       var f=fences[r.p.bucket];
@@ -699,6 +700,19 @@ _HARNESS_JS = r"""
     var badIn=rows.filter(function(r){return r.verdict==='inside'&&(r.p.value>r.hi||r.p.value<r.lo);}).length;
     chk('site-outside-truly-outside-its-fence', badOut===0, 'badOut='+badOut);
     chk('site-inside-truly-inside-its-fence', badIn===0, 'badIn='+badIn);
+    // Live k slider: a stricter (smaller) k must flag >= as many OUTSIDE, a looser
+    // (larger) k <= -- monotonic, and it must actually recompute the panel live.
+    var kEl=document.getElementById('h_site_k');
+    if(kEl){
+      var kOrig=kEl.value;
+      function _outN(){ return ((typeof _hLastSiteRows!=='undefined')?_hLastSiteRows:[]).filter(function(r){return r.verdict==='OUTSIDE';}).length; }
+      kEl.value='1.5'; try{updateSitePanel();}catch(e){} var oMid=_outN();
+      kEl.value='0.5'; try{updateSitePanel();}catch(e){} var oStrict=_outN();
+      kEl.value='5';   try{updateSitePanel();}catch(e){} var oLoose=_outN();
+      chk('site-k-slider-monotonic', oStrict>=oMid && oMid>=oLoose && oStrict!==oLoose,
+          'OUTSIDE: k=0.5 -> '+oStrict+', k=1.5 -> '+oMid+', k=5 -> '+oLoose+' (monotonic + live effect)');
+      kEl.value=kOrig; try{updateSitePanel();}catch(e){}   // restore baseline for the CSV checks below
+    } else skip('site-k-slider','no k input on this page');
     // CSV export of the panel must match exactly what's on screen (All + Outside-only).
     if(typeof hSaveSitePopulationCSV==='function'){
       var dAll=csvDataRows(captureCsv(function(){hSaveSitePopulationCSV(false);}));
