@@ -16910,6 +16910,7 @@ function update(){
       {responsive:true,displaylogo:false});
   var nEl=document.getElementById('h_n'); if(nEl) nEl.textContent=vals.length.toLocaleString()+' measurements'+(multi?' in '+keys.length+' conditions':'');
   buildStats(groups,keys,multi);
+  updateSitePanel();   // no-op unless the Site Population Check panel is open (compare pages only)
 }
 function buildStats(groups,keys,multi){
   var el=document.getElementById('h_stats'); if(!el||el.style.display==='none') return;
@@ -16993,12 +16994,161 @@ function _hApplyImport(text,fname){
   if(nhi!==null&&nhi<0) nhi=null; if(nlo!==null&&nlo<0) nlo=null;
   if(hiIdx<0&&loIdx<0){ nhi=LIMIT_HI; nlo=LIMIT_LO; }  // clean export: keep this plot's spec
   VALUES=nv; SERIAL=ns; SERIAL_LIST=Object.keys(serSet).sort(); DIMS=ndims; DIMVALS=ndimvals; LIMIT_HI=nhi; LIMIT_LO=nlo; VLABEL=vname||'Value'; VUNIT=vunit;
+  /* Re-wire the Site Population Check to the re-imported data. Its dims get fresh
+     col_ids on every import, so a stale SITE_COL_ID would leave the fence panel
+     blank. This is what makes the "no GF on the histogram, so export -> edit out
+     bad SR DUTs -> reimport" workflow actually work: the fence recomputes from the
+     cleaned PRIMARY_SITE population after reload. Keeps the existing primary site
+     if it's still present, else falls back to the first site value; disables the
+     panel (null) if the imported CSV has no Site dimension at all. */
+  var _siteDim=DIMS.filter(function(d){return String(d.label).trim().toLowerCase()==='site';})[0];
+  if(_siteDim){ SITE_COL_ID=_siteDim.col_id;
+    if(!PRIMARY_SITE || _siteDim.vals.indexOf(PRIMARY_SITE)<0) PRIMARY_SITE=_siteDim.vals[0];
+  } else { SITE_COL_ID=null; PRIMARY_SITE=null; }
   _hRebuildFilterPanels();
   document.getElementById('h_binmode').value='auto';
   var pf=document.getElementById('h_pf'); if(pf) pf.value='all';
   var hd=document.getElementById('h_hidespec'); if(hd) hd.checked=false;
   update();
   var st=document.getElementById('h_import_status'); if(st) st.textContent='Imported '+fname+' ('+nv.length.toLocaleString()+' rows)';
+}
+/* ---- Site Population Check (cross-site compare) ----
+   Build a Tukey fence (Q1-1.5*IQR .. Q3+1.5*IQR) from the PRIMARY_SITE's value
+   population, per non-Site dimension combination (e.g. per Port), then classify
+   every non-primary ("MY") measurement inside/outside that fence, with a per-DUT
+   triage suggestion. The histogram has no swept x, so the "bucket" the fence is
+   built per is the combination of the OTHER dims, not (temp, freq) as in boxplot.
+   Mirrors the boxplot Site Population Check's fence + triage + per-point/per-DUT
+   tables + CSV export, adapted to the histogram's own data model. */
+function _hTowardFail(){ if(LIMIT_HI!==null&&LIMIT_LO===null) return 'high'; if(LIMIT_LO!==null&&LIMIT_HI===null) return 'low'; return null; }
+function _hSiteFence(vals){ if(vals.length<4) return null; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=_hpct(s,25),q3=_hpct(s,75),iqr=q3-q1; return {lo:q1-1.5*iqr,hi:q3+1.5*iqr,n:vals.length}; }
+function _hSiteTriage(d,towardFail){ if(!d.outside) return null;
+  var mostlyShared=d.sharedCount/d.outside>0.5, mostlyHigh=d.high/d.outside>0.5, mostlyLow=d.low/d.outside>0.5;
+  var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
+  if(mostlyShared) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(badDir===true&&d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
+  if(badDir===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
+  if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
+  return {label:'Ambiguous (two-sided spec)',cls:'sev-med'};
+}
+var _hLastSiteRows=[], _hLastSiteMeta={};
+function toggleSitePanel(){ var p=document.getElementById('h_site_panel'),b=document.getElementById('h_site_btn'); if(!p||!b) return;
+  var show=p.style.display==='none'; p.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Site Population Check'; if(show) updateSitePanel(); }
+function updateSitePanel(){
+  var el=document.getElementById('h_site_panel'); if(!el||el.style.display==='none') return;
+  try{
+    if(!PRIMARY_SITE||!SITE_COL_ID){ el.innerHTML='<i style="color:#888">No comparison site configured for this page.</i>'; return; }
+    var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.length>0;
+    var otherDims=DIMS.filter(function(d){return d.col_id!==SITE_COL_ID;});
+    function bucketKey(i){ return otherDims.length?otherDims.map(function(d){return DIMVALS[d.col_id][i];}).join('  |  '):'All'; }
+    var primaryBuckets={}, others=[];
+    for(var i=0;i<VALUES.length;i++){
+      var ok=true;
+      for(var k=0;k<DIMS.length;k++){ var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;} }
+      if(ok&&hasSer&&!ss.has(SERIAL[i])) ok=false;
+      if(!ok) continue;   // respects dim + serial filters; deliberately NOT the pass/fail filter (the fence must see the whole distribution)
+      var site=DIMVALS[SITE_COL_ID][i], bk=bucketKey(i);
+      if(site===PRIMARY_SITE){ (primaryBuckets[bk]=primaryBuckets[bk]||[]).push(VALUES[i]); }
+      else { others.push({site:site,serial:hasSer?SERIAL[i]:'',bucket:bk,value:VALUES[i]}); }
+    }
+    if(!others.length){ el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current selection.</i>'; return; }
+    var towardFail=_hTowardFail();
+    var rows=others.map(function(p){
+      var pv=primaryBuckets[p.bucket]||[];
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
+      var f=_hSiteFence(pv), dir=null,dist=0;
+      if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
+      var specRelevant=(dir&&towardFail)?(dir===towardFail):null;
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:specRelevant};
+    });
+    // Clusters: >1 distinct DUT OUTSIDE in the same (site, bucket) -> station/systemic, not one DUT.
+    var clus={}; rows.forEach(function(r){ if(r.verdict!=='OUTSIDE')return; var key=r.p.site+'||'+r.p.bucket;
+      (clus[key]=clus[key]||{site:r.p.site,bucket:r.p.bucket,serials:{}}); if(r.p.serial) clus[key].serials[r.p.serial]=1; });
+    // Per-DUT rollup.
+    var dutMap={};
+    rows.forEach(function(r){ var key=r.p.site+'||'+r.p.serial;
+      var d=dutMap[key]||(dutMap[key]={site:r.p.site,serial:r.p.serial,checked:0,outside:0,high:0,low:0,maxDist:0,buckets:[]});
+      d.checked++;
+      if(r.verdict==='OUTSIDE'){ d.outside++; if(r.dir==='high')d.high++; else d.low++; if(r.dist>d.maxDist)d.maxDist=r.dist; d.buckets.push(r.p.bucket); } });
+    Object.keys(dutMap).forEach(function(key){ var d=dutMap[key]; var shared=0;
+      d.buckets.forEach(function(b){ var c=clus[d.site+'||'+b]; if(c&&Object.keys(c.serials).length>1) shared++; });
+      d.sharedCount=shared; d.tag=_hSiteTriage(d,towardFail); });
+    var rank={OUTSIDE:0,inside:1,'n/a':2};
+    rows.sort(function(a,b){ if(rank[a.verdict]!==rank[b.verdict])return rank[a.verdict]-rank[b.verdict]; return (b.dist||0)-(a.dist||0); });
+    _hLastSiteRows=rows; _hLastSiteMeta={hasBucket:otherDims.length>0};
+    var outside=rows.filter(function(r){return r.verdict==='OUTSIDE';});
+    var nOutside=outside.length, nBenign=outside.filter(function(r){return r.specRelevant===false;}).length;
+    var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
+    var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing -- OUTSIDE points moving the other way can\'t fail this spec and are flagged benign below.'):
+      ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations, none flagged benign.)';
+    var bucketLabel=otherDims.length?otherDims.map(function(d){return d.label;}).join(' | '):'(whole population)';
+    var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
+      '</b> non-'+PRIMARY_SITE+' measurement(s) fall outside the '+PRIMARY_SITE+' 1.5&times;IQR fence for their own '+bucketLabel+
+      (nBenign?' (<b>'+nBenign+'</b> benign -- away from the spec-fail direction)':'')+
+      (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points in that group, fence not meaningful)':'')+'.'+dirNote+'</div>';
+    html+='<div style="margin:0 0 8px">'+
+      '<button class="csv-btn" onclick="hSaveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="hSaveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button></div>';
+    var dutRows=Object.keys(dutMap).map(function(k){return dutMap[k];}).filter(function(d){return d.outside>0;})
+      .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
+    if(dutRows.length){
+      html+='<div style="font-weight:600;margin:8px 0 2px">Per-DUT summary (suggested triage, not a verdict -- use judgment)</div>';
+      html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th><th>Outside</th><th>%</th>'+
+        '<th>High</th><th>Low</th><th>Max dist</th><th>Shared w/ other DUTs</th><th>Suggested triage</th></tr></thead><tbody>';
+      dutRows.forEach(function(d){ var pct=(100*d.outside/d.checked).toFixed(0)+'%';
+        var tagTd=d.tag?'<td class="'+d.tag.cls+'">'+d.tag.label+'</td>':'<td>&mdash;</td>';
+        html+='<tr><td>'+d.site+'</td><td>'+d.serial+'</td><td>'+d.checked+'</td><td>'+d.outside+'</td><td>'+pct+'</td>'+
+          '<td>'+d.high+'</td><td>'+d.low+'</td><td>'+d.maxDist.toFixed(4)+'</td>'+
+          '<td>'+(d.sharedCount?d.sharedCount+' of '+d.outside:'&mdash;')+'</td>'+tagTd+'</tr>'; });
+      html+='</tbody></table>';
+    }
+    var clusters=Object.keys(clus).map(function(k){return clus[k];}).filter(function(e){return Object.keys(e.serials).length>1;})
+      .sort(function(a,b){return Object.keys(b.serials).length-Object.keys(a.serials).length;});
+    if(clusters.length){
+      html+='<div style="font-weight:600;margin:8px 0 2px">Groups with multiple DUTs affected (points at a station/fixture/calibration issue, not one DUT)</div>';
+      html+='<table class="stbl"><thead><tr><th>Site</th><th>'+(otherDims.length?bucketLabel:'Group')+'</th><th>DUTs affected</th><th>Serials</th></tr></thead><tbody>';
+      clusters.forEach(function(e){ var ser=Object.keys(e.serials).sort();
+        html+='<tr><td>'+e.site+'</td><td>'+(e.bucket||'All')+'</td><td class="sev-hi">'+ser.length+'</td><td>'+ser.join(', ')+'</td></tr>'; });
+      html+='</tbody></table>';
+    }
+    html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
+    html+='<div style="overflow:auto;max-height:60vh;border:1px solid #eee"><table class="stbl"><thead><tr>'+
+      '<th>Site</th><th>Serial</th>'+(otherDims.length?'<th>'+bucketLabel+'</th>':'')+'<th>Value</th>'+
+      '<th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th>'+
+      '<th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+    rows.forEach(function(r){ var p=r.p;
+      var vTd=r.verdict!=='OUTSIDE'?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>')
+        :r.specRelevant===false?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only, cannot fail this spec.">OUTSIDE (benign)</td>'
+        :'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>';
+      html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td>'+(otherDims.length?'<td>'+p.bucket+'</td>':'')+'<td>'+p.value.toFixed(4)+'</td>'+
+        '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td><td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td><td>'+(r.dir||'&mdash;')+'</td>'+
+        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>'; });
+    html+='</tbody></table></div>';
+    el.innerHTML=html;
+  }catch(e){ el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>'; }
+}
+function hSaveSitePopulationCSV(outsideOnly){
+  if(!_hLastSiteRows||!_hLastSiteRows.length){ alert('Open Site Population Check first -- nothing to export yet.'); return; }
+  var rows=outsideOnly?_hLastSiteRows.filter(function(r){return r.verdict==='OUTSIDE';}):_hLastSiteRows;
+  if(!rows.length){ alert('No OUTSIDE points in the current selection.'); return; }
+  function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var hdrs=['Site','Serial','Group',VLABEL+(VUNIT?' ('+VUNIT+')':''),
+    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n','Dir','Dist','Verdict','Spec_relevant'];
+  var out=[hdrs.join(',')];
+  rows.forEach(function(r){ var p=r.p;
+    out.push([esc(p.site),esc(p.serial),esc(p.bucket),p.value.toFixed(6),
+      r.lo!==undefined?r.lo.toFixed(6):'',r.hi!==undefined?r.hi.toFixed(6):'',r.n!==undefined?r.n:'',
+      r.dir||'',r.dist?r.dist.toFixed(6):'',r.verdict,
+      r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown'].join(',')); });
+  var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
+  var meta=['# PADB Export','# Plot: '+TITLE+' -- Site Population Check','# Generated: '+ts,
+    '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),'# Primary site: '+PRIMARY_SITE,
+    '# Rows: '+rows.length,'# Fence: '+PRIMARY_SITE+' 1.5xIQR per non-Site dimension combination','#'].join('\r\n');
+  var blob=new Blob([meta+'\r\n'+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
+  var url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url; a.download=(TITLE+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
+  document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 window.addEventListener('DOMContentLoaded',function(){ update(); });
 """
@@ -17034,6 +17184,15 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
 
     dims = payload["dims"]
 
+    # Cross-site compare: a "Site" dimension (the compare merge tags Site: <name>
+    # into the Group text, so _load_histogram_csv picks it up as a normal dim).
+    # When present with >=2 sites and a primary_site, enable the Site Population
+    # Check -- an SR-fence membership panel over the value distribution.
+    site_dim = next((d for d in dims if str(d["label"]).strip().lower() == "site"), None)
+    all_sites = site_dim["vals"] if site_dim else []
+    primary_site = cfg.get("primary_site") or (all_sites[0] if len(all_sites) > 1 else None)
+    site_compare_enabled = bool(site_dim) and len(all_sites) > 1 and primary_site in all_sites
+
     def _chk_group(cls_prefix, label, vals):
         items = "".join(
             f'<label class="hfitem"><input type="checkbox" class="fchk_h {cls_prefix}" '
@@ -17058,6 +17217,8 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"var LIMIT_LO={json.dumps(payload['limit_lo'])};\n"
         f"var VLABEL={json.dumps(payload['vlabel'])};\n"
         f"var VUNIT={json.dumps(payload['vunit'])};\n"
+        f"var PRIMARY_SITE={json.dumps(primary_site if site_compare_enabled else None)};\n"
+        f"var SITE_COL_ID={json.dumps(site_dim['col_id'] if site_compare_enabled else None)};\n"
     )
     css = (
         "body{font-family:Segoe UI,Arial,sans-serif;margin:10px;font-size:13px}"
@@ -17071,6 +17232,14 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         ".htbl th:first-child,.htbl td:first-child{text-align:left}"
         ".htbl thead th{background:#f0f4fb}"
         "button.hbtn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;background:#f4f4f4;cursor:pointer}"
+        ".stbl{border-collapse:collapse;font-size:12px;margin-top:4px}"
+        ".stbl th,.stbl td{border:1px solid #ddd;padding:2px 8px;text-align:right}"
+        ".stbl th:first-child,.stbl td:first-child{text-align:left}"
+        ".stbl thead th{background:#f0f4fb}"
+        ".sev-hi{background:#fff0e8;color:#c04000;font-weight:bold}"
+        ".sev-med{background:#fff8e1;color:#6b5a00}.sev-lo{background:#eef3fb;color:#2c5c96}"
+        ".out{color:#c04000;font-weight:bold}"
+        ".csv-btn{font-size:12px;padding:2px 9px;border:1px solid #bbb;border-radius:3px;background:#f4f4f4;cursor:pointer}"
     )
     has_spec = payload["limit_hi"] is not None or payload["limit_lo"] is not None
     spec_note = ""
@@ -17120,6 +17289,14 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "<div style='margin:6px 2px'><button class='hbtn' id='h_stats_btn' onclick='toggleStats()'>"
         "&#9654; Statistics</button></div>\n"
         "<div id='h_stats' style='display:none;padding:0 2px 16px'></div>\n"
+        + (
+            "<div style='margin:6px 2px'><button class='hbtn' id='h_site_btn' onclick='toggleSitePanel()'>"
+            f"&#9654; Site Population Check</button> <span style='color:#888;font-size:11px'>"
+            f"(compares each non-{html.escape(str(primary_site))} measurement against the "
+            f"{html.escape(str(primary_site))} 1.5&times;IQR fence)</span></div>\n"
+            "<div id='h_site_panel' style='display:none;padding:0 2px 16px'></div>\n"
+            if site_compare_enabled else ""
+        )
     )
 
     html_doc = (

@@ -263,6 +263,17 @@ clear-GF-restores; deselect-site (compare) / deselect-serial remove exactly thei
 target and restore; filter-GF-whole-dut (Set filter as GF on one narrowed serial
 removes that serial across ALL frequencies); reset-restores.
 
+**Histogram Site Population Check — SR-fence membership (added 2026-09-13).**
+`runHistogramSite` gates the histogram's cross-site fence panel: it independently
+recomputes the PRIMARY_SITE (SR) 1.5×IQR fence per non-Site dimension combination
+and the inside/outside classification from the raw data, compares to the panel's
+rows (catches wrong bucketing / a uniformly-wrong fence), checks every OUTSIDE
+value is truly outside its stated fence, the panel CSV matches on screen, and
+drives the full **edit-reimport workflow** the histogram needs *because it has no
+Global Filter* — export → delete a bad SR DUT's rows → reimport → assert the fence
+re-wires and recomputes from the cleaned SR population. Self-skips off a compare
+histogram.
+
 **CSV-export-matches-screen + import round-trip (added 2026-09-13).** For every
 view with an export, `runCsvExport` proves the exported CSV is *what you see*, not
 the whole dataset. It captures the download by intercepting the `Blob` constructor

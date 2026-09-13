@@ -648,6 +648,100 @@ _HARNESS_JS = r"""
     if(rf){ try{eval(rf+'()');}catch(e){} }
   }
 
+  // ---- histogram Site Population Check (SR-fence membership) ----
+  // The histogram's cross-site fence panel builds a 1.5xIQR fence from the
+  // PRIMARY_SITE's value population PER non-Site dimension combination, then
+  // classifies each non-primary ("MY") measurement inside/outside. This proves it
+  // by INDEPENDENTLY recomputing the fence + classification from the raw VALUES/
+  // DIMVALS and comparing to the panel's own rows (catches wrong bucketing, wrong
+  // primary/non-primary split, or a uniformly-wrong fence), plus the internal
+  // invariant that every OUTSIDE value is truly outside its stated fence, plus the
+  // panel's CSV export matching what's on screen. Skips cleanly on any page that
+  // isn't a compare histogram.
+  function runHistogramSite(R,chk,skip){
+    if(typeof PRIMARY_SITE==='undefined'||!PRIMARY_SITE||typeof SITE_COL_ID==='undefined'||!SITE_COL_ID){
+      skip('site-population-check','not a cross-site compare histogram (no PRIMARY_SITE)'); return; }
+    if(typeof updateSitePanel!=='function'||typeof DIMS==='undefined'){ skip('site-population-check','no site panel in this view'); return; }
+    var panel=document.getElementById('h_site_panel');
+    if(panel && getComputedStyle(panel).display==='none' && typeof toggleSitePanel==='function'){ try{toggleSitePanel();}catch(e){} }
+    else { try{updateSitePanel();}catch(e){} }
+    var rows=(typeof _hLastSiteRows!=='undefined')?_hLastSiteRows:[];
+    chk('site-check-produced-rows', rows.length>0, 'rows='+rows.length);
+    if(!rows.length) return;
+    // Independent recompute (mirrors the panel's data selection: dim + serial
+    // filters, NOT pass/fail; primary-site values bucketed by the non-Site dims).
+    function _pct(s,p){ var i=(p/100)*(s.length-1),lo=Math.floor(i); return lo+1<s.length?s[lo]+(s[lo+1]-s[lo])*(i-lo):s[lo]; }
+    var otherDims=DIMS.filter(function(d){return d.col_id!==SITE_COL_ID;});
+    function bk(i){ return otherDims.length?otherDims.map(function(d){return DIMVALS[d.col_id][i];}).join('  |  '):'All'; }
+    var ds={}, ss={}; var hasSer=SERIAL_LIST.length>0;
+    DIMS.forEach(function(d){ var s={}; document.querySelectorAll('.hf_'+d.col_id).forEach(function(c){ if(c.checked)s[c.value]=1; }); ds[d.col_id]=s; });
+    document.querySelectorAll('.hf_serial').forEach(function(c){ if(c.checked)ss[c.value]=1; });
+    var prim={};
+    for(var i=0;i<VALUES.length;i++){ var ok=true;
+      for(var k=0;k<DIMS.length;k++){ var d=DIMS[k]; if(!ds[d.col_id][DIMVALS[d.col_id][i]]){ok=false;break;} }
+      if(ok&&hasSer&&!ss[SERIAL[i]]) ok=false;
+      if(!ok) continue;
+      if(DIMVALS[SITE_COL_ID][i]===PRIMARY_SITE){ (prim[bk(i)]=prim[bk(i)]||[]).push(VALUES[i]); }
+    }
+    var fences={}; Object.keys(prim).forEach(function(b){ var v=prim[b]; if(v.length>=4){
+      var s=v.slice().sort(function(a,b){return a-b;}); var q1=_pct(s,25),q3=_pct(s,75),iqr=q3-q1;
+      fences[b]={lo:q1-1.5*iqr,hi:q3+1.5*iqr,n:v.length}; } });
+    var verdictBad=0, boundBad=0, checked=0;
+    rows.forEach(function(r){ checked++;
+      var f=fences[r.p.bucket];
+      var expV=!f?'n/a':((r.p.value>f.hi||r.p.value<f.lo)?'OUTSIDE':'inside');
+      if(expV!==r.verdict) verdictBad++;
+      if(f && r.verdict!=='n/a'){ if(Math.abs(f.lo-r.lo)>1e-6||Math.abs(f.hi-r.hi)>1e-6||f.n!==r.n) boundBad++; }
+    });
+    chk('site-fence-classification-matches-independent-recompute', verdictBad===0, 'mismatched='+verdictBad+'/'+checked);
+    chk('site-fence-bounds-match-independent-recompute', boundBad===0, 'bound-mismatch='+boundBad+'/'+checked);
+    var badOut=rows.filter(function(r){return r.verdict==='OUTSIDE'&&!(r.p.value>r.hi||r.p.value<r.lo);}).length;
+    var badIn=rows.filter(function(r){return r.verdict==='inside'&&(r.p.value>r.hi||r.p.value<r.lo);}).length;
+    chk('site-outside-truly-outside-its-fence', badOut===0, 'badOut='+badOut);
+    chk('site-inside-truly-inside-its-fence', badIn===0, 'badIn='+badIn);
+    // CSV export of the panel must match exactly what's on screen (All + Outside-only).
+    if(typeof hSaveSitePopulationCSV==='function'){
+      var dAll=csvDataRows(captureCsv(function(){hSaveSitePopulationCSV(false);}));
+      chk('site-csv-export-matches-panel', dAll!=null && dAll.length===rows.length, 'csv_rows='+(dAll?dAll.length:'null')+' panel_rows='+rows.length);
+      var nOut=rows.filter(function(r){return r.verdict==='OUTSIDE';}).length;
+      var dOut=csvDataRows(captureCsv(function(){hSaveSitePopulationCSV(true);}));
+      chk('site-csv-outside-only-matches-panel', dOut!=null && dOut.length===nOut, 'csv_out='+(dOut?dOut.length:'null')+' outside='+nOut);
+    }
+    // Edit-reimport workflow (the histogram has no GF): export -> delete a bad SR
+    // DUT's rows -> reimport must re-wire the fence panel AND recompute the fence
+    // from the cleaned PRIMARY_SITE population (the removed DUT's values gone).
+    // This MUST be the last thing runHistogramSite does -- it replaces the data
+    // globals. (Simple comma split -- the synthetic Site/Serial cells have no
+    // embedded commas; a real page's Site/Serial values likewise won't.)
+    if(typeof _hApplyImport==='function' && typeof hExportCsv==='function' && SERIAL_LIST.length>0){
+      var full=captureCsv(function(){hExportCsv();});
+      if(full && String(full).indexOf('__THREW__')!==0){
+        var lines=String(full).split(/\r\n|\n/).filter(function(l){return l.length;});
+        var hdr=lines[0].split(','), siteI=-1, serI=-1;
+        for(var ci=0;ci<hdr.length;ci++){ var h=hdr[ci].trim().toLowerCase(); if(h==='site')siteI=ci; if(h==='serial')serI=ci; }
+        if(siteI>=0 && serI>=0){
+          var chosen=null;
+          for(var li=1;li<lines.length&&!chosen;li++){ var c=lines[li].split(','); if(c[siteI]===PRIMARY_SITE) chosen=c[serI]; }
+          if(chosen){
+            var beforeSR=0, chosenRows=0;
+            for(var i=0;i<VALUES.length;i++){ if(DIMVALS[SITE_COL_ID][i]===PRIMARY_SITE){ beforeSR++; if(SERIAL[i]===chosen) chosenRows++; } }
+            var kept=[lines[0]];
+            for(var li=1;li<lines.length;li++){ var c=lines[li].split(','); if(c[siteI]===PRIMARY_SITE&&c[serI]===chosen) continue; kept.push(lines[li]); }
+            var okImp=true; try{ _hApplyImport(kept.join('\r\n'),'__qa_edited.csv'); }catch(e){ okImp=false; chk('site-edited-reimport-runs',false,String(e)); }
+            if(okImp){
+              try{updateSitePanel();}catch(e){}
+              var rows3=(typeof _hLastSiteRows!=='undefined')?_hLastSiteRows:[];
+              chk('site-reimport-rewires-fence-panel', rows3.length>0 && !!SITE_COL_ID, 'rows='+rows3.length+' siteCol='+SITE_COL_ID);
+              var afterSR=0; for(var i=0;i<VALUES.length;i++){ if(SITE_COL_ID&&DIMVALS[SITE_COL_ID]&&DIMVALS[SITE_COL_ID][i]===PRIMARY_SITE) afterSR++; }
+              chk('site-edited-reimport-drops-SR-DUT-from-fence', chosenRows>0 && afterSR===beforeSR-chosenRows,
+                  PRIMARY_SITE+' pop '+beforeSR+' -> '+afterSR+' (removed '+chosen+' = '+chosenRows+' rows)');
+            }
+          } else skip('site-edited-reimport','no '+PRIMARY_SITE+' serial found in the export to edit');
+        } else skip('site-edited-reimport','export has no Site/Serial columns');
+      } else skip('site-edited-reimport','baseline export failed');
+    }
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -680,6 +774,12 @@ _HARNESS_JS = r"""
       // Filter/plot/table coordination (freq range + drag-zoom) -- same heavy-page skip.
       if(_HEAVY){ skip('coordination','skipped on heavy page'); }
       else { try{ runCoordination(R,chk,skip); }catch(e){ chk('COORD-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // Histogram Site Population Check (SR-fence membership) -- self-skips off a
+      // compare histogram. MUST run before runCsvExport: that check's histogram
+      // import round-trip replaces the data globals (DIMS col_ids change), which
+      // would leave SITE_COL_ID stale and the fence panel empty.
+      if(_HEAVY){ skip('site-population-check','skipped on heavy page'); }
+      else { try{ runHistogramSite(R,chk,skip); }catch(e){ chk('SITE-CHECK-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // CSV-export-matches-screen + import round-trip -- same heavy-page skip.
       if(_HEAVY){ skip('csv-export','skipped on heavy page'); }
       else { try{ runCsvExport(R,chk,skip); }catch(e){ chk('CSV-EXPORT-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
