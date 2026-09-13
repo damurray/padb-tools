@@ -1,0 +1,20 @@
+{
+  "suites": {
+    "compile": {
+      "passed": 11,
+      "failed": 0
+    },
+    "qa_padb": {
+      "passed": 37,
+      "failed": 4
+    },
+    "qa_viewer": {
+      "passed": 33,
+      "failed": 0
+    },
+    "qa_js_segments": {
+      "passed": 3,
+      "failed": 0
+    }
+  }
+}
