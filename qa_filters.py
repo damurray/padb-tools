@@ -301,12 +301,25 @@ _HARNESS_JS = r"""
       // the table legitimately adds without its own trace: "All / 20°C" (boxplot
       // non-Room breakdown), "Serial: X" / "Port: X" (Group-by rows). Strip those
       // affixes and re-check against the trace names.
-      var _base=function(c){ return _norm(c.replace(/^(Serial|Port|Temp|Site|[A-Za-z ()<>=+.-]+)\s*:\s*/,'').replace(/\s*\/\s*[^/]+$/,'')); };
+      // A boxplot non-Room breakdown row is "cond / temp" while its own plotted
+      // box trace is "cond (temp)" -- same box, different affix. Strip a trailing
+      // temp affix ("/ x" OR "(x)") for a base-equality test, and also directly
+      // test the "/ x" -> " (x)" transform. Only strip a leading Serial:/Port:/
+      // Temp:/Site: prefix for genuine Group-by rows -- NOT an arbitrary "Key:",
+      // which would eat a fragmented condition's own first dimension (e.g.
+      // "HarmonicNumber: 2  Upper Spec (<=): ...") and false-flag it as phantom.
+      var _stripTemp=function(c){ return _norm(String(c).replace(/\s*\/\s*[^/]+$/,'').replace(/\s*\([^()]*\)\s*$/,'')); };
+      var _slashToParen=function(c){ return _norm(String(c).replace(/\s*\/\s*([^/]+)$/,' ($1)')); };
+      var _grpBase=function(c){ return _norm(String(c).replace(/^(Serial|Port|Temp|Site)\s*:\s*/,'')); };
       var phantom=Object.keys(tc).filter(function(c){
         if(c==='All') return false;
         if(names.indexOf(c)>=0 || names.some(function(n){return n.indexOf(c)===0;})) return false;
-        var b=_base(c);
-        return !(names.indexOf(b)>=0 || names.some(function(n){return n.indexOf(b)===0 || b.indexOf(n)===0;}));
+        var cp=_slashToParen(c);   // "cond / temp" -> "cond (temp)" == a real box trace name
+        if(names.indexOf(cp)>=0 || names.some(function(n){return n.indexOf(cp)===0;})) return false;
+        var b=_stripTemp(c);       // temp-affix-stripped base equality, both sides
+        if(names.indexOf(b)>=0 || names.some(function(n){return _stripTemp(n)===b || n.indexOf(b)===0 || b.indexOf(n)===0;})) return false;
+        var g=_grpBase(b);         // Group-by Serial:/Port: row fallback
+        return !(names.indexOf(g)>=0 || names.some(function(n){return n.indexOf(g)===0 || g.indexOf(n)===0;}));
       });
       chk('table-conds-are-plotted', phantom.length===0, phantom.length?('not plotted: '+phantom.slice(0,4).join(' | ')):('conds='+Object.keys(tc).length));
     } else skip('table-conds-are-plotted','no Condition column');
