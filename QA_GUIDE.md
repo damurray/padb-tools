@@ -6,6 +6,56 @@ portable — point it at your own data with `--root` / `--job` / a manifest.
 
 ---
 
+## Getting started with no data yet (new user, few or no run jobs)
+
+You do **not** need to collect a backlog of run jobs before you can self-QA.
+Most of the QA is synthetic and needs zero real data.
+
+**1. Run the deterministic core immediately — it generates its own data.**
+```bash
+py qa_selfcheck.py
+```
+This umbrella runs compile + `qa_padb` + `qa_viewer` + `qa_js_segments` +
+`qa_stats_recompute`, all on internally-generated synthetic datasets, and prints a
+GREEN/RED/AMBER verdict against a saved baseline. A brand-new user with an empty
+results folder still gets a real verdict covering the pipeline, every statistical
+aggregation, and per-view JS drift. This is ~80% of self-QA and needs nothing
+collected.
+
+**2. For the render/behavior tiers, collect *variety*, not *volume*.** Only
+`qa_csv_sweep` / `qa_view_sweep` / `qa_filters` need real CSVs — and plot builds
+reuse existing CSVs with no re-extraction, so one good extraction is reusable
+forever. Cheapest ways to get enough, in order:
+
+- **Maximize samples per extraction, not number of jobs.** Widen the date range and
+  pull all runs so one run job yields a large multi-DUT, multi-temp sample:
+  ```json
+  "subex": { "Device_MinDate": "8 weeks ago", "Device_MaxDate": "today",
+             "TestRun_RunStatus": "{All}" }
+  ```
+- **Cover the variety matrix with ~5 pods, then stop.** One multi-temp statistical
+  pod, one Room-only, one cross-site `compare_csv`, one no-spec/one-sided pod, and
+  one non-frequency-x-axis pod (e.g. a `Rate (kHz)` sweep or a switching-speed
+  histogram). Five extractions exercise nearly every rendering branch; more of the
+  same *shape* adds little.
+- **Point the sweeps at data that already exists** rather than generating your own:
+  ```bash
+  py qa_csv_sweep.py --root C:\path\to\any\results
+  py qa_view_sweep.py --root C:\path\to\any\results
+  ```
+- **Register your own coverage set once** so re-runs are one command:
+  ```bash
+  py qa_view_sweep.py --write-manifest   # edit qa_view_sweep.json to your pod/job names
+  py qa_view_sweep.py
+  ```
+
+Summary: run `qa_selfcheck` on day one (needs nothing); do **one broad extraction**
+(wide date range + `{All}` runs) to seed the data-dependent sweeps; add
+representative pods only to fill the variety matrix — reusing existing CSVs
+throughout.
+
+---
+
 ## The idea: test each layer at its cheapest point
 
 | Layer | What it covers | Cost | How to test |
