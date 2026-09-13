@@ -1404,6 +1404,16 @@ Real gap found by the user: `stat_summary` was the one view where the Statistics
 
 ---
 
+## scatter: drag-zoom now narrows the freq sliders + data-rows table (added 2026-09-12)
+
+Reported by the user against a real compare scatter (`Analog_mod_AM1_Accuracy_and_Distortion_compare_scatter.html`): "the table view does not change when the plot is zoomed." This is the same drag-zoom→slider sync that `stat_summary`/`env_coverage`/`boxplot` already had — the zoom-persistence section (2026-08-18) explicitly deferred it for scatter ("Scope: stat_summary only ... before considering it for scatter/env_coverage/summary"), so a scatter drag-zoom only changed the Plotly viewport, never the `freq_lo`/`freq_hi` sliders, and the data-rows table (`updateScatterTable`, driven by those sliders via `update()`) stayed full-range.
+
+**Fix** (`_AV_FREQ_JS`): added `_onPlotRelayout(ed)` (attached once with `.on('plotly_relayout',...)` right after the init `Plotly.newPlot` — scatter uses `Plotly.react()` in place, so it survives every later render, like env_coverage) that maps a drag-zoom's `xaxis.range` (log-aware) to the freq filter, and `xaxis.autorange` (double-click / Reset axes) back to `FREQ_MIN`/`FREQ_MAX`. **Crucially it does NOT route through scatter's own `setFreqBand()`** — that one calls `Plotly.relayout('xaxis.range')`, which would re-fire `plotly_relayout` and loop; instead a dedicated `_zoomSyncFreq(lo,hi)` just sets the sliders + text boxes and calls `update()` (the user's drag already applied the visual zoom, and `update()`→`buildLayout()`→`_liveAxisRange()` preserves it — no relayout needed). Mirrors stat_summary/env_coverage's no-relayout `setFreqBand`.
+
+Verified end-to-end in a real browser (served over http, simulated `plotly_relayout` to a mid-band): freq boxes synced `0.9/18000 → 8100.5/9900.4`, data-rows table narrowed `2001 → 151` rows. `qa_padb.py` 37/4, `qa_js_segments.py` structural checks pass. (Committed on `develop`; `summary` is now the only view still without this sync.)
+
+---
+
 ## "Copy PADB Filter" rewritten to real PADB syntax + three-mode dropdown; faithful GF scope (2026-09-01)
 
 Supersedes the 2026-08-19 "reflect the current view" rewrite above. Two commits (`84b6c46` real-syntax, `c33e3c0` three-mode + inspect banner, `6273de4` faithful GF scope):

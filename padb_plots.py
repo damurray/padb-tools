@@ -1094,10 +1094,40 @@ function _recomputeSpecSegments(){
   document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
 }
 
+/* Drag-zoom -> frequency-slider sync (added 2026-09-12): a Plotly drag-zoom on
+   the scatter now narrows the freq_lo/freq_hi filter (and thus the data-rows
+   table and the plotted data), matching stat_summary/env_coverage/boxplot.
+   Deliberately does NOT route through setFreqBand() -- that one calls
+   Plotly.relayout('xaxis.range'), which would re-fire plotly_relayout and loop
+   here. The user's drag has already applied the visual zoom, and
+   update()->buildLayout()->_liveAxisRange() preserves it, so this only needs to
+   set the sliders + re-filter. A double-click / "Reset axes" (xaxis.autorange)
+   widens back to the full range. */
+function _zoomSyncFreq(lo,hi){
+  var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+  var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
+  s1.value=loV;s2.value=hiV;
+  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
+  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+  update();
+}
+function _onPlotRelayout(ed){
+  if(!ed) return;
+  if(ed['xaxis.autorange']){ _zoomSyncFreq(FREQ_MIN,FREQ_MAX); return; }
+  var lo=ed['xaxis.range[0]'],hi=ed['xaxis.range[1]'];
+  if(Array.isArray(ed['xaxis.range'])){lo=ed['xaxis.range'][0];hi=ed['xaxis.range'][1];}
+  if(lo===undefined||hi===undefined) return;
+  var log=isLogX();
+  var loV=log?Math.pow(10,lo):lo,hiV=log?Math.pow(10,hi):hi;
+  _zoomSyncFreq(loV,hiV);
+}
 _loadGlobalFilter();
 loadState();
 var _initData=applyFilters(DATA);
 Plotly.newPlot('plot',buildTraces(_initData),buildLayout(_initData));
+/* Attach once after the initial newPlot -- scatter's update() uses Plotly.react()
+   in place (never purge/newPlot), so this listener survives every later render. */
+document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
 _recomputeSpecSegments();
 document.getElementById('n_points').textContent=_initData.length.toLocaleString()+' pts';
 """
