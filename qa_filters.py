@@ -361,6 +361,81 @@ _HARNESS_JS = r"""
     chk('group-by-reversible', plotSig()===S0, 'restored='+(plotSig()===S0));
   }
 
+  // ---- filter <-> plot <-> table coordination (frequency range + drag-zoom) ----
+  // The existing table-updates-on-filter check exercises a CONDITION CHECKBOX.
+  // This one exercises the OTHER input class -- the frequency range and a Plotly
+  // drag-zoom -- and asserts BOTH the plotted data AND the on-page table respond
+  // together (and restore). This is exactly the coordination that broke on the
+  // scatter view (drag-zoom moved the plot but not the freq sliders/table), and
+  // that readTable() alone can't cover because scatter's data-rows table isn't a
+  // stats table.
+  function _coordDigest(){ // digest of whatever table this view shows (stats OR scatter data-rows)
+    var T=readTable();
+    if(T){ var rs=T.rows,n=rs.length,s=[]; [0,1,2,n-3,n-2,n-1].forEach(function(i){if(i>=0&&i<n)s.push(rs[i].join(''));}); return 'T'+n+'|'+s.join(''); }
+    var sp=document.getElementById('scatter_table_panel');
+    if(sp){ return 'S'+sp.querySelectorAll('tr').length; }
+    return null;
+  }
+  function _openAnyTable(){
+    var sp=document.getElementById('scatter_table_panel');
+    if(sp){ if(getComputedStyle(sp).display==='none'){ try{ if(typeof toggleScatterTable==='function') toggleScatterTable(); }catch(e){} } return; }
+    openTable();
+  }
+  function _freqPair(){
+    var pairs=[['freq_lo_txt','freq_hi_txt'],['ec_freq_lo_txt','ec_freq_hi_txt'],
+               ['box_freq_lo','box_freq_hi'],['dist_freq_lo_txt','dist_freq_hi_txt']];
+    for(var i=0;i<pairs.length;i++){var lo=document.getElementById(pairs[i][0]),hi=document.getElementById(pairs[i][1]); if(lo&&hi) return {lo:lo,hi:hi};}
+    return null;
+  }
+  function _setFreq(p,lo,hi){
+    p.lo.value=String(lo); p.hi.value=String(hi);
+    ['input','change'].forEach(function(ev){ p.lo.dispatchEvent(new Event(ev,{bubbles:true})); p.hi.dispatchEvent(new Event(ev,{bubbles:true})); });
+    try{ if(typeof update==='function') update(); }catch(e){}
+  }
+  function runCoordination(R,chk,skip){
+    var p=_freqPair();
+    if(!p){ skip('coordination','no frequency-range input in this view'); return; }
+    _openAnyTable();
+    var lo0=parseFloat(p.lo.value), hi0=parseFloat(p.hi.value);
+    if(!(hi0>lo0)){ skip('coordination','freq range not readable ('+p.lo.value+'..'+p.hi.value+')'); return; }
+    var S0=plotSig(), D0=_coordDigest();
+    // (A) narrow the frequency-range INPUT -> plot and table must both narrow
+    _setFreq(p, lo0+(hi0-lo0)*0.40, lo0+(hi0-lo0)*0.60);
+    var S1=plotSig(), D1=_coordDigest();
+    if(S1===S0){ skip('freq-range-coordinates','narrowing the freq range did not change the plot (few distinct freqs?)'); }
+    else{
+      chk('freq-range-narrows-plot', true, 'plot responded to the freq-range input');
+      if(D0!==null) chk('freq-range-narrows-table', D1!==D0, (D1!==D0)?'table tracked the freq range':'STALE: plot narrowed but table did not');
+      else skip('freq-range-narrows-table','no table in this view');
+    }
+    _setFreq(p, lo0, hi0);
+    var S2=plotSig(), D2=_coordDigest();
+    chk('freq-range-restores', S2===S0 && (D0===null||D2===D0), 'plot='+(S2===S0)+' table='+(D0===null?'n/a':(D2===D0)));
+    // (B) drag-zoom (Plotly relayout) -> freq inputs + plot + table must all respond.
+    // Sub-range the axis in its OWN current units (numeric freq / log-freq / box
+    // category indices), so _onPlotRelayout interprets it the same way a real drag
+    // would, for every view type.
+    var gd=document.getElementById('plot');
+    var xr=(gd&&gd.layout&&gd.layout.xaxis)?gd.layout.xaxis.range:null;
+    if(gd && typeof _onPlotRelayout==='function' && gd.emit && xr && xr.length===2 && xr[1]>xr[0]){
+      var a=xr[0], b=xr[1], ev={};
+      ev['xaxis.range[0]']=a+(b-a)*0.40; ev['xaxis.range[1]']=a+(b-a)*0.60;
+      try{ gd.emit('plotly_relayout',ev); }catch(e){}
+      var moved=(Math.abs(parseFloat(p.lo.value)-lo0)>1e-6)||(Math.abs(parseFloat(p.hi.value)-hi0)>1e-6);
+      var Sz=plotSig(), Dz=_coordDigest();
+      if(Sz===S0){ skip('drag-zoom-coordinates','drag-zoom did not change the plot (few distinct freqs?)'); }
+      else{
+        chk('drag-zoom-syncs-freq-inputs', moved, moved?'freq inputs moved with the zoom':'zoom moved the plot but NOT the freq inputs');
+        chk('drag-zoom-narrows-plot', true, 'plot responded to drag-zoom');
+        if(D0!==null) chk('drag-zoom-narrows-table', Dz!==D0, (Dz!==D0)?'table tracked the drag-zoom':'STALE: zoom moved the plot but not the table');
+      }
+      try{ gd.emit('plotly_relayout',{'xaxis.autorange':true}); }catch(e){}
+    } else {
+      skip('drag-zoom-coordination','view has no _onPlotRelayout / numeric x-range (drag-zoom not wired to filters)');
+    }
+    var rf=firstResetFn(); if(rf){ try{eval(rf+'()');}catch(e){} }
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -390,6 +465,9 @@ _HARNESS_JS = r"""
       // Group-by robustness -- skipped on heavy pages (cycles every mode = many updates).
       if(_HEAVY){ skip('group-by','skipped on heavy page'); }
       else { try{ runGroupBy(R,chk,skip); }catch(e){ chk('GROUPBY-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // Filter/plot/table coordination (freq range + drag-zoom) -- same heavy-page skip.
+      if(_HEAVY){ skip('coordination','skipped on heavy page'); }
+      else { try{ runCoordination(R,chk,skip); }catch(e){ chk('COORD-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');
