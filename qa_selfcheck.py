@@ -49,8 +49,8 @@ BASELINE_PATH = HERE / "qa_baseline.json"
 _COMPILE_TARGETS = [
     "padb_plots.py", "padb_v2.py", "padb_run.py", "padb_config.py",
     "padb_viewer.py", "build_viewer.py", "qa_padb.py", "qa_viewer.py",
-    "qa_js_segments.py", "qa_stats_recompute.py", "qa_filters.py",
-    "webapp/padb_web.py",
+    "qa_js_segments.py", "qa_stats_recompute.py", "qa_webapp.py",
+    "qa_filters.py", "webapp/padb_web.py",
 ]
 
 
@@ -98,6 +98,7 @@ def run_suites() -> list[dict]:
         _suite("qa_viewer", ["qa_viewer.py"], r"PASS=(\d+)\s+FAIL=(\d+)"),
         _suite("qa_js_segments", ["qa_js_segments.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_stats_recompute", ["qa_stats_recompute.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
+        _suite("qa_webapp", ["qa_webapp.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
     ]
 
 

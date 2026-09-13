@@ -92,6 +92,22 @@ issue; the static invariant is the important part.)
 py qa_js_segments.py
 ```
 
+### `qa_webapp.py` — hermetic Flask route coverage
+Exercises the web app's routes (`/`, `/api/jobs`, `/api/execute-job`, `/api/schedule`,
+`/api/delete-job`, `/api/generate-job`, `/api/config`, `/api/convert-*`,
+`/api/orphaned-padb`, results-token serving, …) with the Flask **test client** — no
+running dev server. Every real side effect is neutralized: `DATA_DIR` is redirected
+to a temp dir (patched *before* importing `padb_web`), and the worker's subprocess
+launcher (`_stream`), schtasks (`create_task`/`delete_task`), `taskkill`,
+`padb_config.save_config`, and the process-table probes are all stubbed. So it tests
+the **route logic** — where the real bugs were (sibling-glob collisions, wrong
+Results link, deleting a shared `results_dir`, publish-flag precedence, run/plot
+dispatch) — without PADB-R, a Scheduled Task, a killed process, or a written config.
+```bash
+py qa_webapp.py
+```
+Baseline: **45 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
+
 ### `qa_stats_recompute.py` — independent statistics recompute (the "uniformly-wrong" blind spot)
 Self-consistency checks (table↔plot, cross-view GF) all agree even when a value is
 *uniformly wrong everywhere* (wrong population fed into a statistic, raw rows instead
