@@ -482,6 +482,34 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
   }
 });
 
+document.getElementById("generatePdfBtn").addEventListener("click", async () => {
+  const paths = selectedJobPaths();
+  if (!paths.length) {
+    alert("Select at least one job to generate a PDF report for");
+    return;
+  }
+  const btn = document.getElementById("generatePdfBtn");
+  const faEl = document.getElementById("pdfFilterAwareCheckbox");
+  const applyFilter = faEl ? faEl.checked : false;
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/generate-pdf", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths, apply_filter: applyFilter }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Generate PDF failed: " + data.error);
+      return;
+    }
+    for (const jobId of data.job_ids) startPolling(jobId);
+    if (data.job_ids.length) scrollJobStatusIntoView(data.job_ids[0]);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Scheduler add/remove
 // ---------------------------------------------------------------------------

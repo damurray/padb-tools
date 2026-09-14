@@ -519,6 +519,57 @@ def _resume_incomplete_v2_chains() -> None:
         threading.Thread(target=_do_resume, daemon=True).start()
 
 
+def _pdf_targets(job_path: Path, cfg: dict) -> list[tuple[Path, Path]]:
+    """Resolve [(view-prefix path, out .pdf path)] for on-demand PDF generation.
+    A plot job -> its own analytic; a run job -> each sibling plot analytic (their
+    views live in the shared v2 results dir, one prefix each)."""
+    targets: list[tuple[Path, Path]] = []
+
+    def _one(jp: Path, c: dict):
+        rd = _resolve_results_dir(jp, c)
+        if not rd or not rd.exists():
+            return None
+        san = re.sub(r"[^\w]+", "_", c.get("title_prefix") or jp.stem)
+        return (rd / san, rd / (san + "_report.pdf"))
+
+    if "pod" in cfg:  # run job -> its interactive plot siblings
+        for sib in _find_v2_siblings(job_path, cfg):
+            try:
+                sc = json.loads(sib.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            t = _one(sib, sc)
+            if t:
+                targets.append(t)
+    else:
+        t = _one(job_path, cfg)
+        if t:
+            targets.append(t)
+    return targets
+
+
+def _generate_pdf_task(job_path: Path, cfg: dict, job_id: str,
+                       apply_filter: bool) -> tuple[bool, str | None]:
+    """Run padb_pdf_report.py on already-built results (no plot rebuild)."""
+    targets = _pdf_targets(job_path, cfg)
+    if not targets:
+        _append_log(job_id, "No built results found to generate a PDF from "
+                            "(build the plots first).")
+        return False, None
+    ok_all = True
+    for prefix_path, out_pdf in targets:
+        _append_log(job_id, f"\n--- PDF report: {prefix_path.name} "
+                            f"{'(filter-aware)' if apply_filter else ''} ---")
+        cmd = [sys.executable, str(TOOLS_DIR / "padb_pdf_report.py"),
+               str(prefix_path), "--out", str(out_pdf)]
+        if apply_filter:
+            cmd.append("--apply-filter")
+        rc = _stream(cmd, job_id)
+        ok_all = ok_all and rc == 0
+    idx = _job_result_index_path(job_path, cfg)
+    return ok_all, (str(idx) if idx else None)
+
+
 def _worker() -> None:
     while True:
         job_id = _job_queue.get()
@@ -539,6 +590,19 @@ def _worker() -> None:
         cfg = {}
         try:
             cfg = json.loads(job_path.read_text(encoding="utf-8"))
+            # On-demand PDF report generation (no plot rebuild) -- lets a user
+            # defer the (minutes-long) PDF cost and generate it later, optionally
+            # filter-aware, from already-built results.
+            if job.get("action") == "pdf":
+                ok, result_index = _generate_pdf_task(
+                    job_path, cfg, job_id, bool(job.get("pdf_apply_filter")))
+                with _jobs_lock:
+                    job["status"] = "done" if ok else "failed"
+                    job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
+                    job["result_index"] = result_index
+                _persist_console_log(job_id, job_path, cfg)
+                _job_queue.task_done()
+                continue
             # Publishing is opt-in per run (default off) -- a runtime override
             # only, so the job file's own publish_to is left untouched on disk
             # ("let existing objects keep their settings"). When off, we force
@@ -1339,6 +1403,44 @@ def execute_job():
                 "status": "queued", "path": str(job_path), "name": job_path.name,
                 "log": [], "started": None, "elapsed_s": 0, "dry_run": dry_run,
                 "publish": publish, "pdf_report": pdf_report,
+                "result_index": None, "proc": None, "cancel_requested": False,
+            }
+        _job_queue.put(job_id)
+        job_ids.append(job_id)
+    return jsonify(job_ids=job_ids)
+
+
+@app.route("/api/generate-pdf", methods=["POST"])
+def generate_pdf():
+    """On-demand comprehensive PDF report from already-built results (no plot
+    rebuild) -- lets a user defer the report and optionally make it filter-aware
+    (auto-filter recommended exclusions applied to the stats views)."""
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths") or []
+    apply_filter = bool(body.get("apply_filter"))
+    if not paths:
+        return jsonify(error="paths must be a non-empty list"), 400
+    job_ids = []
+    for p in paths:
+        job_path = Path(p)
+        if not job_path.exists():
+            return jsonify(error=f"job not found: {p}"), 400
+        existing_id = None
+        with _jobs_lock:
+            for jid, j in _jobs.items():
+                if (j["path"] == str(job_path) and j.get("action") == "pdf"
+                        and j["status"] in ("queued", "running")):
+                    existing_id = jid
+                    break
+        if existing_id is not None:
+            job_ids.append(existing_id)
+            continue
+        job_id = _new_job_id()
+        with _jobs_lock:
+            _jobs[job_id] = {
+                "status": "queued", "path": str(job_path), "name": job_path.name,
+                "action": "pdf", "pdf_apply_filter": apply_filter,
+                "log": [], "started": None, "elapsed_s": 0,
                 "result_index": None, "proc": None, "cancel_requested": False,
             }
         _job_queue.put(job_id)

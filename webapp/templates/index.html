@@ -131,6 +131,10 @@
       <label title="Off by default. Check to also build a comprehensive multi-view PDF report (cover + every view with its stats table) alongside the HTML, saved as &lt;prefix&gt;_report.pdf in the results folder. Interactive plot jobs only. Requires Playwright + Chromium (py -m pip install playwright pypdf && py -m playwright install chromium); if missing, it's skipped with a note and the build still succeeds."><input type="checkbox" id="pdfReportCheckbox"> Build PDF report</label>
     </div>
     <div class="toolbar">
+      <button id="generatePdfBtn" title="Generate the comprehensive multi-view PDF report NOW from the checked jobs' already-built results -- no plot rebuild. Use this to defer the (minutes-long) PDF cost until you actually want it, e.g. after reviewing/filtering. Saved as &lt;prefix&gt;_report.pdf and linked from the results index.">Generate PDF report (on demand)</button>
+      <label title="When generating the PDF, run each stats view's auto-filter recommended workflow first, so the box/stat/summary/env/histogram views show the CLEANED (bad-DUT-excluded) population. Raw scatter/distribution still show the full collected data; the cover documents both what was collected and what was excluded."><input type="checkbox" id="pdfFilterAwareCheckbox"> Apply auto-filter (cleaned views)</label>
+    </div>
+    <div class="toolbar">
       <label title="Weekly runs on the checked days below; Daily runs every day.">Schedule
         <select id="scheduleType">
           <option value="WEEKLY" selected>Weekly</option>
