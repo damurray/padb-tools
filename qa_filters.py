@@ -924,6 +924,29 @@ _HARNESS_JS = r"""
     } else skip('auto-apply-precise','no DUT qualifies for auto at dist/aggressive on this data');
     levelEl.value='off'; statAutoFilterPreview();
     if(typeof clearStatGlobalFilter==='function') clearStatGlobalFilter();
+    // ---- Workflow & Recommendations: recommendation is valid + data-dependent,
+    // and one-click Run applies EXACTLY the recommended auto set + is reversible.
+    if(typeof _afRecommend==='function' && typeof _afRunWorkflow==='function'
+       && typeof STAT_AF!=='undefined' && document.getElementById('stat_wf_panel')){
+      clearStatGlobalFilter();
+      var wa=_afAnalyze(STAT_AF), rec=_afRecommend(wa);
+      chk('workflow-recommends-valid',
+          ['dist','iqr','dmad','spec','tll'].indexOf(rec.basis)>=0
+          && ['conservative','moderate','aggressive'].indexOf(rec.level)>=0
+          && rec.why && rec.why.length>0,
+          'basis='+rec.basis+' level='+rec.level+' reasons='+(rec.why?rec.why.length:0));
+      // expected auto-key count at the recommended settings
+      basisEl.value=rec.basis; levelEl.value=rec.level;
+      var expR=STAT_AF.compute(rec.basis,rec.level), expKeys=0;
+      expR.auto.forEach(function(d){expKeys+=d.keys.length;});
+      clearStatGlobalFilter();
+      statRunWorkflow();
+      chk('workflow-run-applies-recommended-auto', gfN()===expKeys, 'gf='+gfN()+' expected='+expKeys);
+      var au=document.getElementById('stat_wf_panel_audit');
+      chk('workflow-run-writes-audit', !!au && au.textContent.indexOf('Ran recommended workflow')>=0, 'audit='+(au?'present':'missing'));
+      clearStatGlobalFilter();
+      chk('workflow-run-reversible', gfN()===0, 'gf='+gfN());
+    } else skip('workflow','no workflow panel in this view');
   }
 
   function run(){
@@ -1172,6 +1195,28 @@ _HARNESS_JS = r"""
         } else skip('auto-apply-precise','no DUT qualifies for auto at dist/aggressive on this data');
         alevel.value='off'; if(typeof autoFilterPreview==='function') autoFilterPreview();
         reset();
+        // ---- Workflow & Recommendations (boxplot) ----
+        if(typeof _afRecommend==='function' && typeof _afRunWorkflow==='function'
+           && typeof BOX_AF!=='undefined' && document.getElementById('box_wf_panel')){
+          function _gfN(){try{return (JSON.parse(localStorage.getItem(GF_KEY)||'{"excluded":[]}').excluded||[]).length;}catch(e){return -1;}}
+          if(typeof clearGlobalFilter!=='undefined') clearGlobalFilter();
+          var wa=_afAnalyze(BOX_AF), rec=_afRecommend(wa);
+          chk('workflow-recommends-valid',
+              ['dist','iqr','dmad','spec','tll'].indexOf(rec.basis)>=0
+              && ['conservative','moderate','aggressive'].indexOf(rec.level)>=0
+              && rec.why && rec.why.length>0,
+              'basis='+rec.basis+' level='+rec.level+' reasons='+(rec.why?rec.why.length:0));
+          var expR=BOX_AF.compute(rec.basis,rec.level), expKeys=0;
+          expR.auto.forEach(function(d){expKeys+=d.keys.length;});
+          if(typeof clearGlobalFilter!=='undefined') clearGlobalFilter();
+          boxRunWorkflow();
+          chk('workflow-run-applies-recommended-auto', _gfN()===expKeys, 'gf='+_gfN()+' expected='+expKeys);
+          var au=document.getElementById('box_wf_panel_audit');
+          chk('workflow-run-writes-audit', !!au && au.textContent.indexOf('Ran recommended workflow')>=0, 'audit='+(au?'present':'missing'));
+          if(typeof clearGlobalFilter!=='undefined') clearGlobalFilter();
+          chk('workflow-run-reversible', _gfN()===0, 'gf='+_gfN());
+          reset();
+        } else skip('workflow','no workflow panel in this view');
       } else skip('auto-filter','no auto-filter controls in this view');
 
       // ---- reset-restores ----

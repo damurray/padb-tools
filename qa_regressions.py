@@ -314,6 +314,9 @@ def test_auto_filter_boxplot():
         # Risk gate + compare scoping present.
         check("auto-filter risk gate + compare scoping present",
               "_autoRisk" in h and "d.risk<0.05" in h and "PRIMARY_SITE" in h)
+        check("boxplot Workflow & Recommendations present (button/panel/ctx/engine)",
+              all(s in h for s in ('id="box_wf_btn"', 'id="box_wf_panel"', "BOX_AF", "boxRunWorkflow",
+                                   "_afAnalyze", "_afRecommend", "_afRunWorkflow")))
 
 
 def test_auto_filter_stat_summary():
@@ -350,6 +353,9 @@ def test_auto_filter_stat_summary():
               "_statBaseSerial(d.s)+'||'+_condKeyForStat" in h)
         check("stat Clear-global-filter button rendered",
               "clearStatGlobalFilter()" in h and "Clear global filter" in h)
+        check("stat_summary Workflow & Recommendations present (button/panel/ctx/adapters)",
+              all(s in h for s in ('id="stat_wf_btn"', 'id="stat_wf_panel"', "statRunWorkflow",
+                                   "toggleStatWorkflow", "buckets:function", "_afRenderWorkflow")))
 
 
 def main() -> None:

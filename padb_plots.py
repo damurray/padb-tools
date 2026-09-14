@@ -3220,6 +3220,108 @@ function _afAffirm(ctx){
   if(!keys.length){alert('No marginal DUTs checked.');return;}
   ctx.merge(keys); _afPreview(ctx);
 }
+/* ============================================================================
+   Workflow & Recommendations -- pre-analyze the LOADED dataset and recommend
+   auto-filter settings, describe a tailored workflow, and (one deliberate click)
+   auto-execute the CONSERVATIVE part of that workflow with a full audit. The
+   recommendation is a heuristic STARTING POINT, never a substitute for judgment,
+   and auto-execute applies ONLY the `auto` set (systemic/benign/risky/marginal/
+   onboarding-site are never in it), is page-local, and is fully reversible.
+   ctx additionally supplies: buckets()->[{vals:[...]}], nDuts()/nConds()/nFreqs(),
+   multiTemp(), hasSpec(), wfPanel (element id), previewFn(), compute(basis,level),
+   runFn/applyRecFn (names for onclick). ============================================================================ */
+function _afAnalyze(ctx){
+  var bs=ctx.buckets(), skew=0,considered=0,nsum=0,nb=0;
+  bs.forEach(function(b){ var v=b.vals; if(!v||v.length<4)return; nb++; nsum+=v.length;
+    var med=_afMedian(v),below=[],above=[];
+    v.forEach(function(x){if(x<=med)below.push(med-x);if(x>=med)above.push(x-med);});
+    var mLo=_afMedian(below),mHi=_afMedian(above),mx=Math.max(mLo,mHi);
+    if(mx>0){considered++; if(Math.abs(mLo-mHi)/mx>0.5)skew++;}
+  });
+  return {nDuts:ctx.nDuts(),nConds:ctx.nConds(),nFreqs:ctx.nFreqs(),multiTemp:ctx.multiTemp(),
+          compare:!!ctx.primarySite,primarySite:ctx.primarySite||null,hasSpec:!!ctx.hasSpec(),
+          skewFrac:considered?skew/considered:0,avgBucketN:nb?nsum/nb:0};
+}
+function _afRecommend(a){
+  var basis,level='conservative',why=[];
+  var skewed=a.skewFrac>0.3;
+  if(a.compare){ basis=skewed?'dmad':'dist';
+    why.push('Cross-site compare: auto-clean is scoped to the reference site “'+a.primarySite+'”; onboarding-site DUTs are left for manual review.');
+    why.push('No trusted cross-site spec is assumed → a peer-relative basis ('+(skewed?'Double-MAD, spread is skewed':'Distribution')+').');
+  } else if(!a.hasSpec){ basis=skewed?'dmad':'dist';
+    why.push('No spec limits in this data (NPI / spec not set yet) → peer-relative, not spec-relative.');
+    why.push(skewed?('Skewed spread in ~'+Math.round(a.skewFrac*100)+'% of buckets → Double-MAD (separate left/right spread) avoids over-flagging the long tail.'):'Spread looks roughly symmetric → Distribution (MAD).');
+  } else { basis='spec';
+    why.push('Real spec limits are present → Spec-relative flags true fails. If you are still SETTING the spec (NPI), switch to a peer-relative basis (Distribution / IQR / Double-MAD).');
+    if(skewed) why.push('Note: spread is skewed → if you use a peer-relative basis, prefer Double-MAD.');
+  }
+  if(a.avgBucketN<8) why.push('Small populations (~'+a.avgBucketN.toFixed(0)+' DUTs/bucket) → Conservative level, to avoid removing points a small sample cannot justify.');
+  else why.push('Starting at Conservative (only the unambiguous 6σ / 3-point tail); step up to Moderate once you have reviewed what Conservative flags.');
+  return {basis:basis,level:level,why:why};
+}
+function _afWorkflowSteps(a,rec){
+  var s=[],i=1;
+  s.push((i++)+'. Look at the '+(a.compare?'compare ':'')+'boxplot/table first to get a feel for the population and any obvious outliers.');
+  if(a.compare) s.push((i++)+'. Auto-filter cleans ONLY the reference site (“'+a.primarySite+'”); the onboarding site is listed for you to filter manually.');
+  s.push((i++)+'. Set basis <b>'+rec.basis.toUpperCase()+'</b> / level <b>'+rec.level+'</b> (or click <b>Apply recommendation</b>), then <b>Preview</b>.');
+  s.push((i++)+'. Review each flagged DUT’s reason + false-removal risk; <b>Affirm</b> any marginals you agree with.');
+  s.push((i++)+'. <b>Apply</b> → the exclusion is written to the shared Global Filter, so every view (scatter, summary, …) reflects it. Reversible via <b>Clear global filter</b>.');
+  if(a.compare) s.push((i++)+'. Export the cleaned CSV to hand the reference-site clean to the onboarding site (the Global Filter is browser-local and does not travel).');
+  s.push((i++)+'. Re-check the tables / stats / tolerance intervals on the cleaned data.');
+  s.push('<b>Or</b> click <b>Run recommended workflow</b> to auto-execute steps '+(a.compare?'2–5':'2–4')+' at the Conservative level in one go (applies only the unambiguous auto set; marginals still left for you; fully reversible).');
+  return s;
+}
+function _afRenderWorkflow(ctx){
+  var panel=document.getElementById(ctx.wfPanel); if(!panel)return;
+  var a=_afAnalyze(ctx), rec=_afRecommend(a); window[ctx.resultVar+'_wf']={a:a,rec:rec};
+  var h='<div style="font-size:12px;line-height:1.5">';
+  h+='<div style="font-weight:600;margin-bottom:3px">This dataset</div>';
+  h+='<div>'+a.nDuts+' DUT'+(a.nDuts!==1?'s':'')+', '+a.nConds+' condition'+(a.nConds!==1?'s':'')+', '+a.nFreqs+' frequenc'+(a.nFreqs!==1?'ies':'y')+
+     ' &middot; '+(a.multiTemp?'multi-temperature':'Room only')+' &middot; '+(a.compare?('cross-site compare (reference: <b>'+a.primarySite+'</b>)'):'single site')+
+     ' &middot; spec limits '+(a.hasSpec?'present':'absent')+' &middot; ~'+a.avgBucketN.toFixed(0)+' DUTs/bucket &middot; skew in '+Math.round(a.skewFrac*100)+'% of buckets.</div>';
+  h+='<div style="font-weight:600;margin:8px 0 2px">Recommended auto-filter</div>';
+  h+='<div>basis <b>'+rec.basis.toUpperCase()+'</b>, level <b>'+rec.level+'</b> &nbsp;'+
+     '<button class="toggle-btn" style="background:#eef5ff;border-color:#6a9" onclick="'+ctx.applyRecFn+'()">Apply recommendation</button>'+
+     '<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.runFn+'()">Run recommended workflow</button></div>';
+  h+='<ul style="margin:4px 0 4px 16px;padding:0">'+rec.why.map(function(w){return '<li>'+w+'</li>';}).join('')+'</ul>';
+  h+='<div style="font-weight:600;margin:8px 0 2px">Suggested workflow</div>';
+  h+='<ol style="margin:2px 0 2px 16px;padding:0;list-style:none">'+_afWorkflowSteps(a,rec).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
+  h+='<div style="margin-top:6px;color:#a05000">These are heuristic starting points from the data shape, not a substitute for engineering judgment. Nothing is excluded until you click Apply or Run, and everything is reversible via Clear global filter.</div>';
+  h+='<div id="'+ctx.wfPanel+'_audit"></div></div>';
+  panel.innerHTML=h; panel.style.display='';
+}
+function _afApplyRec(ctx){
+  var st=window[ctx.resultVar+'_wf']; var rec=st?st.rec:_afRecommend(_afAnalyze(ctx));
+  var be=document.getElementById(ctx.basisSel),le=document.getElementById(ctx.levelSel);
+  if(be)be.value=rec.basis; if(le)le.value=rec.level;
+  ctx.previewFn();
+}
+function _afRunWorkflow(ctx){
+  // Ensure the workflow panel (and its audit slot) exists -- Run is normally a
+  // button inside the rendered panel, but make it self-sufficient if called
+  // programmatically or before the panel was opened.
+  if(!document.getElementById(ctx.wfPanel+'_audit')) _afRenderWorkflow(ctx);
+  var a=_afAnalyze(ctx), rec=_afRecommend(a);
+  var be=document.getElementById(ctx.basisSel),le=document.getElementById(ctx.levelSel);
+  if(be)be.value=rec.basis; if(le)le.value=rec.level;
+  var r=ctx.compute(rec.basis,rec.level); window[ctx.resultVar]=r;
+  var keys=[]; r.auto.forEach(function(d){keys=keys.concat(d.keys);});
+  var pts=r.auto.reduce(function(x,d){return x+d.pts.length;},0);
+  if(keys.length) ctx.merge(keys);      // shared GF -> every view inherits; reversible
+  ctx.previewFn();                       // refresh the auto-filter preview panel too
+  var au=document.getElementById(ctx.wfPanel+'_audit');
+  if(au){
+    var h='<div style="margin-top:8px;padding:6px 8px;background:#f0fff0;border:1px solid #8c8;border-radius:4px;font-size:12px">';
+    h+='<b>✓ Ran recommended workflow</b> — basis <b>'+rec.basis.toUpperCase()+'</b>, level <b>'+rec.level+'</b>. ';
+    h+='Auto-excluded <b>'+r.auto.length+'</b> DUT'+(r.auto.length!==1?'s':'')+' ('+pts+' point'+(pts!==1?'s':'')+') to the shared Global Filter — every view now reflects it. Reversible via <b>Clear global filter</b>.';
+    if(r.marginal.length) h+=' <b>'+r.marginal.length+'</b> marginal DUT'+(r.marginal.length!==1?'s':'')+' left for your review (see the Auto-filter panel → <i>Also filter checked</i>).';
+    if(a.compare) h+=' Only the reference site was cleaned; onboarding-site DUTs are left for manual review — export the cleaned CSV to hand off.';
+    h+='</div>';
+    if(r.auto.length) h+='<table class="stbl" style="margin-top:4px"><thead><tr><th>Auto-excluded serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>Reason</th></tr></thead><tbody>'+
+      r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td class="out">'+d.maxMag.toFixed(1)+'</td><td>'+_afRiskLabel(d.risk)+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
+    au.innerHTML=h;
+  }
+}
 """
 
 # Distribution view's own point-gathering for the shared Site Population panel.
@@ -7671,10 +7773,25 @@ var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_a
     if(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null&&(typeof HI_SPEC==='undefined'||HI_SPEC===null))return 'lo';
     return (typeof SPEC_DIRECTION!=='undefined'&&SPEC_DIRECTION)?SPEC_DIRECTION:'both';
   },
-  baseSerial:_statBaseSerial,primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null)};
+  baseSerial:_statBaseSerial,primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
+  /* Workflow & Recommendations adapters (pre-analysis of the loaded data) */
+  wfPanel:'stat_wf_panel', previewFn:function(){statAutoFilterPreview();},
+  applyRecFn:'statApplyRec', runFn:'statRunWorkflow',
+  buckets:function(){var out=[];getActiveConditions().forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){out.push({vals:(fs.dut_vals||[]).map(function(d){return d.v;})});});});return out;},
+  nDuts:function(){var s={};STAT_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.dut_vals||[]).forEach(function(d){s[_statBaseSerial(d.s)]=1;});});});return Object.keys(s).length;},
+  nConds:function(){return getActiveConditions().length;},
+  nFreqs:function(){var s={};STAT_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){s[f.freq]=1;});});return Object.keys(s).length;},
+  multiTemp:function(){return (typeof TEMPS_PRESENT!=='undefined')&&TEMPS_PRESENT.length>1;},
+  /* hasSpec must reflect what the SPEC basis actually uses (HI_SPEC/LO_SPEC),
+     so the recommendation never points at a basis that would flag nothing. */
+  hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);},
+  compute:function(basis,level){return _afCompute(_statAutoBadPoints(basis),STAT_AF);}};
 function statAutoFilterPreview(){_afPreview(STAT_AF);}
 function statAutoFilterApply(){_afApply(STAT_AF);}
 function statAutoFilterAffirm(){_afAffirm(STAT_AF);}
+function statApplyRec(){_afApplyRec(STAT_AF);}
+function statRunWorkflow(){_afRunWorkflow(STAT_AF);}
+function toggleStatWorkflow(){var p=document.getElementById('stat_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(STAT_AF);}else{p.style.display='none';}}
 /* END */
 
 """
@@ -8284,6 +8401,11 @@ def _build_stat_summary_html(
         + coverage_gap_html
         + '<div id="plot"></div>\n'
         + '<div style="padding:4px 8px 2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + '<button class="toggle-btn" id="stat_wf_btn" onclick="toggleStatWorkflow()"'
+        + ' title="Pre-analyzes this dataset (DUTs / conditions / temps / compare / spec presence / skew /'
+        + ' population size) and recommends auto-filter settings + a tailored workflow. Includes a one-click,'
+        + ' fully-reversible, audited Run that auto-executes the conservative part of the workflow.">'
+        + '&#9432; Workflow &amp; Recommendations</button>'
         + '<button class="toggle-btn" id="stat_toggle_btn" onclick="toggleStatPanel()">'
         + '&#9658; Statistics Table</button>'
         + '<button id="stat_refresh_table_btn" class="reset-btn"'
@@ -8294,6 +8416,7 @@ def _build_stat_summary_html(
         + 'Refresh&nbsp;table</button>'
         + site_btn_html
         + '</div>\n'
+        + '<div id="stat_wf_panel" style="display:none;overflow-x:auto;padding:8px 12px;background:#f7faff;border:1px solid #cdd6e6;border-radius:4px;margin:4px 0"></div>\n'
         + '<div id="stat_auto_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="stat_panel" style="display:none;padding:0 4px 16px"></div>\n'
         + '<div id="stat_site_panel" style="display:none;overflow-x:auto;padding:0 8px 16px"></div>\n'
@@ -13533,6 +13656,22 @@ function autoFilterAffirm(){
   if(!keys.length){alert('No marginal DUTs checked.');return;}
   _mergeGf(keys); autoFilterPreview();
 }
+/* Workflow & Recommendations ctx for the boxplot (shared engine in
+   _AUTO_FILTER_SHARED_JS; boxplot keeps its bespoke preview/compute). */
+var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoResult',
+  wfPanel:'box_wf_panel', previewFn:function(){autoFilterPreview();},
+  applyRecFn:'boxApplyRec', runFn:'boxRunWorkflow',
+  merge:_mergeGf, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
+  compute:function(basis,level){return _autoFilterCompute(basis,level);},
+  buckets:function(){var out=[];BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){out.push({vals:(fs.vals_detail||[]).map(function(d){return d.v;})});});});return out;},
+  nDuts:function(){var s={};BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.vals_detail||[]).forEach(function(d){s[_boxBaseSerial(d.s)]=1;});});});return Object.keys(s).length;},
+  nConds:function(){var s={};BOX_DATA.forEach(function(cd){s[cd.condition]=1;});return Object.keys(s).length;},
+  nFreqs:function(){var s={};BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){s[f.freq]=1;});});return Object.keys(s).length;},
+  multiTemp:function(){var s={};BOX_DATA.forEach(function(cd){s[cd.temp]=1;});return Object.keys(s).length>1;},
+  hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);}};
+function boxApplyRec(){_afApplyRec(BOX_AF);}
+function boxRunWorkflow(){_afRunWorkflow(BOX_AF);}
+function toggleBoxWorkflow(){var p=document.getElementById('box_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(BOX_AF);}else{p.style.display='none';}}
 function csvTempToTestStep(t){
   /* Convert CSV temp string (e.g. "30°C", "-40°C") to PADB Test Step label
      (e.g. "30.0 Deg C", "-40.0 Deg C"). Leading minus supported -- an
@@ -14783,6 +14922,11 @@ def _build_box_interactive_html(
            '<b>Clear everything</b> to reset.</div>\n')
         + '<div id="plot"></div>\n'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
+        + '  <button class="toggle-btn" id="box_wf_btn" onclick="toggleBoxWorkflow()"'
+        + ' title="Pre-analyzes this dataset (DUTs / conditions / temps / compare / spec presence / skew /'
+        + ' population size) and recommends auto-filter settings + a tailored workflow. Includes a one-click,'
+        + ' fully-reversible, audited Run that auto-executes the conservative part of the workflow.">'
+        + '&#9432; Workflow &amp; Recommendations</button>\n'
         + '  <button class="toggle-btn" id="box_stat_toggle_btn"'
         ' onclick="toggleStatPanel()">&#9658; Statistics Table</button>\n'
         + '  <button id="box_refresh_table_btn" class="reset-btn"'
@@ -14884,6 +15028,7 @@ def _build_box_interactive_html(
         + '<div id="box_outlier_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_delta_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_site_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
+        + '<div id="box_wf_panel" style="display:none;overflow-x:auto;padding:8px 12px;background:#f7faff;border:1px solid #cdd6e6;border-radius:4px;margin:4px 0"></div>\n'
         + '<div id="auto_gf_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
