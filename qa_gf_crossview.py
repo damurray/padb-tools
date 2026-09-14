@@ -95,6 +95,8 @@ _CROSSVIEW_JS = r"""
     try{ if(typeof STAT_DATA!=='undefined')STAT_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.dut_vals||[]).forEach(function(d){cands.push(String(d.s));});});}); }catch(e){}
     try{ if(typeof BOX_DATA!=='undefined')BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.vals_detail||[]).forEach(function(d){cands.push(String(d.s));});});}); }catch(e){}
     try{ if(typeof DATA!=='undefined'&&typeof _rowSerial==='function')DATA.slice(0,500).forEach(function(r){cands.push(String(_rowSerial(r)));}); }catch(e){}
+    try{ if(typeof DATA!=='undefined')DATA.forEach(function(cd){((cd&&cd.dut_info)||[]).forEach(function(di){cands.push(String(di.s));});}); }catch(e){}  /* summary: per-DUT dut_info */
+    try{ if(typeof RAW_ABS!=='undefined')RAW_ABS.forEach(function(col){(col||[]).forEach(function(raw){((raw&&raw.s)||[]).forEach(function(s){cands.push(String(s));});});}); }catch(e){}  /* distribution: RAW_ABS per-point serials */
     try{ if(typeof ENV_DATA!=='undefined')ENV_DATA.forEach(function(cd){Object.keys(cd.duts||{}).forEach(function(k){cands.push(k);});}); }catch(e){}
     var bases=cands.map(function(s){return s.split('_')[0];}).filter(Boolean).sort();
     return bases.length?bases[0]:null;
@@ -106,15 +108,20 @@ _CROSSVIEW_JS = r"""
     var ser=firstSerial();
     if(!ser){emit({view:view,err:'no serial found'});return;}
     // whole-DUT GF for that serial across a couple of plausible conditions
-    var VAL=JSON.stringify({v:1,excluded:[
-      ser+'||HarmonicNumber=2|Port=RF1||manual||0', ser+'||HarmonicNumber=3|Port=RF1||manual||0',
-      ser+'||HarmonicNumber=2|Port=RF2||manual||0', ser+'||HarmonicNumber=3|Port=RF2||manual||0']});
+    var WD=[ser+'||HarmonicNumber=2|Port=RF1||manual||0', ser+'||HarmonicNumber=3|Port=RF1||manual||0',
+            ser+'||HarmonicNumber=2|Port=RF2||manual||0', ser+'||HarmonicNumber=3|Port=RF2||manual||0'];
+    // point-precise GF: one (serial, cond dims, Room, single freq box). Every view
+    // must honor it at THAT freq only and must NOT silently widen it to the whole
+    // DUT -- the single-datapoint case (a lone bad point is the common real defect).
+    var PP=[ser+'||HarmonicNumber=2|Port=RF1||Room||200 MHz'];
     if(typeof GF_MODE_KEY!=='undefined')localStorage.setItem(GF_MODE_KEY,'exclude');
-    localStorage.removeItem(GF_KEY); loader(); update(); var off=sig();
-    localStorage.setItem(GF_KEY,VAL); loader(); update(); var on=sig();
-    localStorage.removeItem(GF_KEY); loader(); update(); var back=sig();
-    emit({view:view, serial:ser, off:off, on:on, back:back,
-          responded:(off!==on), restored:(off===back)});
+    function setk(arr){ if(arr===null)localStorage.removeItem(GF_KEY); else localStorage.setItem(GF_KEY,JSON.stringify({v:1,excluded:arr})); loader(); update(); return sig(); }
+    var off=setk(null);
+    var on=setk(WD); var back=setk(null);
+    var ppOn=setk(PP); var ppBack=setk(null);
+    emit({view:view, serial:ser, off:off, on:on, back:back, ppOn:ppOn, ppBack:ppBack,
+          responded:(off!==on), restored:(off===back),
+          pp_responded:(off!==ppOn), pp_restored:(off===ppBack), pp_differs_from_wd:(ppOn!==on)});
   }catch(e){emit({err:String(e)});}
 })();
 """
@@ -146,6 +153,17 @@ def _run_one(browser: str, page: Path) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError as e:
         return {"error": f"bad JSON: {e}"}
+
+
+def _parse_sig(s):
+    """Parse a view signature 'sum/n|dDUT' into (sum, n, dut) floats/ints.
+    Returns None if unparseable."""
+    try:
+        fp, _, dut = str(s).partition("|d")
+        num, _, n = fp.partition("/")
+        return (float(num), int(n), int(dut))
+    except Exception:
+        return None
 
 
 def main(argv=None) -> None:
@@ -180,9 +198,38 @@ def main(argv=None) -> None:
             print(f"  [FAIL] {vname}: {r.get('err') or r.get('error')}"); fails.append(vname); continue
         ok = r.get("responded") and r.get("restored")
         serials.add(r.get("serial"))
+        # ---- point-precise arm: a single-datapoint key must be honored AND must
+        # NOT widen to the whole DUT. Universal checks: it restores, and its effect
+        # DIFFERS from the whole-DUT key (pp==wd would mean the view over-excluded a
+        # single point into the whole DUT). Plus a directional check by view type:
+        #   fp-sensitive views (scatter/boxplot/stat_summary/summary/distribution):
+        #     the point-precise key must move the plotted values (responded) and by
+        #     LESS than the whole-DUT key (narrower -- genuinely one point).
+        #   fp-insensitive views (env_coverage: bands don't move on exclusion):
+        #     the point-precise key must RETAIN the DUT in the active set while the
+        #     whole-DUT key DROPS it -- proven via the active-DUT count.
+        b, w, p = _parse_sig(r.get("off")), _parse_sig(r.get("on")), _parse_sig(r.get("ppOn"))
+        pp_ok = bool(r.get("pp_restored")) and bool(r.get("pp_differs_from_wd"))
+        pp_why = ""
+        if not r.get("pp_restored"):
+            pp_ok = False; pp_why = " pp did NOT restore"
+        elif not r.get("pp_differs_from_wd"):
+            pp_ok = False; pp_why = " pp effect == whole-DUT effect (single point widened to whole DUT!)"
+        elif b and w and p:
+            fp_sensitive = (w[0] != b[0])
+            if fp_sensitive:
+                if not (p[0] != b[0] and abs(p[0] - b[0]) < abs(w[0] - b[0])):
+                    pp_ok = False; pp_why = f" pp not honored/narrower (fp base={b[0]} pp={p[0]} wd={w[0]})"
+            else:
+                # fp-insensitive: distinguish via active-DUT count
+                if not (p[2] == b[2] and w[2] < b[2]):
+                    pp_ok = False; pp_why = f" pp did not retain DUT / wd did not drop it (dut base={b[2]} pp={p[2]} wd={w[2]})"
+        ok = ok and pp_ok
         status = "PASS" if ok else "FAIL"
-        why = "" if ok else f"  responded={r.get('responded')} restored={r.get('restored')} off={r.get('off')} on={r.get('on')} back={r.get('back')}"
-        print(f"  [{status}] {vname}  serial={r.get('serial')}  off={r.get('off')} on={r.get('on')}{why}")
+        why = "" if ok else (
+            (f"  responded={r.get('responded')} restored={r.get('restored')}" if not (r.get('responded') and r.get('restored')) else "")
+            + pp_why)
+        print(f"  [{status}] {vname}  serial={r.get('serial')}  wd off={r.get('off')} on={r.get('on')}  pp on={r.get('ppOn')}{why}")
         if not ok:
             fails.append(vname)
         results.append(r)
@@ -211,7 +258,8 @@ def main(argv=None) -> None:
     if envs:
         print("  NOTE: some views UNVERIFIED (browser env).")
         sys.exit(3)
-    print("  VERDICT: GREEN -- every view honors the shared GF key and restores.")
+    print("  VERDICT: GREEN -- every view honors the shared GF key (whole-DUT AND"
+          " single-point), restores, and does not widen a single point to the whole DUT.")
     sys.exit(0)
 
 
