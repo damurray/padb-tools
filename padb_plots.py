@@ -13073,6 +13073,181 @@ function clearGlobalFilter(){
   try{localStorage.removeItem(GF_KEY);}catch(e){}
   _loadBoxGlobalFilter();_updateBoxGfStatus();update();
 }
+/* ---- Auto-filter bad DUTs (selectable basis x level) ----
+   Adds clearly-bad DUTs' points to the Global Filter, tiered by a confidence
+   LEVEL and a BASIS (what "bad" means). Magnitude is unified to sigma so the
+   level bar means the same across bases: Distribution = |sigma| from the box's
+   own peers (mean/std); Spec/TLL = how many sigma a fail-side point sits PAST
+   the limit (spec, or the guard-banded TLL/override). Systemic (one frequency,
+   >1 DUT) and benign (away from a one-sided spec) are never auto -- always left
+   for the user. Nothing is applied until Apply; every DUT carries a reason. */
+var _AUTO_LEVELS={
+  conservative:{minSigma:6,minPts:3,label:'Conservative'},
+  moderate:{minSigma:4,minPts:2,label:'Moderate'},
+  aggressive:{minSigma:3,minPts:1,label:'Aggressive'}
+};
+function _autoLevel(){var e=document.getElementById('auto_gf_level');return e?e.value:'off';}
+function _autoBasis(){var e=document.getElementById('auto_gf_basis');return e?e.value:'dist';}
+function _autoSiteOf(cond){var m=String(cond||'').match(/Site:\s*([^|]+?)(?:\s{2,}|$)/i);return m?m[1].trim():'';}
+function _autoMedian(a){var s=a.slice().sort(function(x,y){return x-y;});var n=s.length;return n?(n%2?s[(n-1)/2]:0.5*(s[n/2-1]+s[n/2])):0;}
+/* Robust badness magnitude via the MEDIAN and MAD (median absolute deviation),
+   NOT mean/std. Mean/std saturate for small per-box n -- with 10 points a single
+   gross outlier can't exceed ~2.85 sigma because it inflates the very std in its
+   own denominator, so a sigma bar of 3-6 is unreachable and two bad units look
+   "systemic". median/MAD have a 50% breakdown point: the median and MAD are set
+   by the clean majority, so a bad point's modified z-score (0.6745*(x-med)/MAD,
+   Iglewicz-Hoaglin) grows without bound with how bad it is. Distribution basis
+   flags points past the 3.5 modZ cutoff; Spec/TLL basis measures fail-side
+   exceedance in the same MAD-scaled units, so the level bar means the same thing. */
+function _autoBadPoints(basis){
+  var selConds=getSelectedConds(),selTemps=getSelectedTemps(),yFlt=getYFilter(),selBoxSers=getSelectedBoxSerials();
+  var allSers=getAllBoxSerials();
+  var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
+  var fr=getBoxFreqRange();
+  var hiOv=(yFlt&&yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined)?yFlt.tll_hi:null;
+  var loOv=(yFlt&&yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined)?yFlt.tll_lo:null;
+  var out=[];
+  BOX_DATA.forEach(function(cd){
+    if(selConds.indexOf(cd.condition)<0)return; if(selTemps.indexOf(cd.temp)<0)return;
+    (cd.freq_stats||[]).forEach(function(f){
+      if(f.freq<fr.lo||f.freq>fr.hi)return;
+      var det=(f.vals_detail||[]).filter(function(d){return !serActive||selBoxSers.indexOf(d.s)>=0;});
+      if(det.length<4)return;   // MAD needs a small clean majority to be meaningful
+      var fv=det.map(function(d){return d.v;});
+      var med=_autoMedian(fv);
+      var mad=_autoMedian(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;  // ->sigma-equivalent
+      var hi=basis==='tll'?(hiOv!==null?hiOv:HI_SPEC):HI_SPEC;
+      var lo=basis==='tll'?(loOv!==null?loOv:LO_SPEC):LO_SPEC;
+      det.forEach(function(d){
+        var mag=null,dir=(d.v>=med)?'high':'low';
+        if(basis==='dist'){
+          var mz=Math.abs(d.v-med)/mad;
+          if(mz>=3.5) mag=mz;   // Iglewicz-Hoaglin robust-outlier cutoff
+        } else {
+          var exc=null;
+          if(hi!==null&&d.v>hi){exc=d.v-hi;dir='high';}
+          else if(lo!==null&&d.v<lo){exc=lo-d.v;dir='low';}
+          if(exc!==null&&exc>0) mag=exc/mad;
+        }
+        if(mag!==null) out.push({serial:d.s,port:d.p||'',cond:cd.condition,temp:cd.temp,freq:f.freq,
+          freqLabel:f.freq_label,value:d.v,mag:mag,dir:dir,site:_autoSiteOf(cd.condition),
+          key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||'+cd.temp+'||'+_gfFreqKey(f)});
+      });
+    });
+  });
+  return out;
+}
+/* Normal survival function (one-sided tail) via an erf approximation
+   (Abramowitz & Stegun 7.1.26) -- for the risk metric below. */
+function _normSf(z){ z=Math.abs(z);
+  var t=1/(1+0.3275911*z);
+  var erf=1-(((((1.061405429*t-1.453152027)*t)+1.421413741)*t-0.284496736)*t+0.254829592)*t*Math.exp(-z*z);
+  return 0.5*(1-erf);   // P(X > z) for standard normal
+}
+/* Per-DUT false-removal RISK: probability that a genuinely in-family unit would,
+   by chance under a normal model, read as extreme as this DUT's worst point.
+   Distribution basis is two-sided (outlier either way); Spec/TLL is one-sided
+   (only the fail direction). Bonferroni-scaled by the number of points examined
+   so "worst of many" isn't mistaken for a single-draw tail -- a conservative
+   guard against auto-removing a DUT that's only extreme because we looked at a
+   lot of points. Lower risk = more confident the removal is real. */
+function _autoRisk(maxMag,basis,nExamined){
+  var pOne=_normSf(maxMag);
+  var pPoint=(basis==='dist')?2*pOne:pOne;
+  var p=1-Math.pow(1-Math.min(1,pPoint),Math.max(1,nExamined||1));
+  return Math.min(1,p);
+}
+function _riskLabel(p){ return p<1e-4?'very low':p<1e-2?'low':p<0.05?'moderate':'HIGH'; }
+function _autoFilterCompute(basis,level){
+  var pts=_autoBadPoints(basis), dir=getTllDirection();
+  var nExamined=pts.length;   // for the Bonferroni scale on the risk metric
+  var byDut={},spot={};
+  pts.forEach(function(o){
+    var bs=_boxBaseSerial(o.serial);
+    var d=byDut[bs]||(byDut[bs]={serial:bs,site:o.site||'',pts:[],high:0,low:0,maxMag:0,keys:[]});
+    d.pts.push(o); d.keys.push(o.key); if(o.dir==='high')d.high++;else d.low++; if(o.mag>d.maxMag)d.maxMag=o.mag;
+    // Systemic sharing is per-DIRECTION: several DUTs failing the SAME way at one
+    // frequency is a station/fixture signature; a high outlier and a low outlier
+    // at the same frequency are independent, not shared.
+    var sp=o.temp+'|'+o.freqLabel+'|'+o.dir; (spot[sp]=spot[sp]||{})[bs]=1;
+  });
+  var thr=_AUTO_LEVELS[level]||_AUTO_LEVELS.conservative;
+  var unit=basis==='dist'?'σ from peers':'σ past '+(basis==='tll'?'TLL/limit':'spec');
+  var compare=(typeof PRIMARY_SITE!=='undefined')&&!!PRIMARY_SITE;
+  var auto=[],marginal=[],review=[];
+  Object.keys(byDut).forEach(function(bs){
+    var d=byDut[bs], sh=0;
+    d.pts.forEach(function(o){if(Object.keys(spot[o.temp+'|'+o.freqLabel+'|'+o.dir]).length>1)sh++;});
+    d.shared=d.pts.length?sh/d.pts.length:0;
+    d.risk=_autoRisk(d.maxMag,basis,Math.max(nExamined,d.pts.length));
+    var riskTxt=' (false-removal risk '+_riskLabel(d.risk)+', p≈'+d.risk.toExponential(1)+')';
+    // Compare: auto-clean only the REFERENCE (primary) site; the onboarding site
+    // is the population under evaluation -- never auto-touch it, leave it to the user.
+    if(compare && d.site && d.site!==PRIMARY_SITE){
+      d.reason='onboarding site “'+d.site+'”: '+d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — filter manually (auto-clean is scoped to the reference site '+PRIMARY_SITE+')'+riskTxt; review.push(d); return;
+    }
+    if(basis==='dist'&&(dir==='hi'&&d.high===0||dir==='lo'&&d.low===0)){
+      d.reason=d.pts.length+' peer-outlier pt(s), all AWAY from the '+(dir==='hi'?'upper':'lower')+' spec — can’t fail spec (benign)'+riskTxt; review.push(d); return;
+    }
+    if(d.shared>0.5){
+      d.reason=d.pts.length+' pt(s), most shared with other DUTs at the same frequency — likely station/systemic, not one bad DUT'+riskTxt; review.push(d); return;
+    }
+    // A high false-removal risk blocks auto even if the level bar is met -- the
+    // whole point of the risk metric is to not auto-remove a shaky call.
+    if(d.maxMag>=thr.minSigma&&d.pts.length>=thr.minPts&&d.risk<0.05){
+      d.reason=d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+', not shared → auto ('+thr.label+')'+riskTxt; auto.push(d);
+    } else {
+      d.reason=d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — '+(d.risk>=0.05?'risk too high to auto':'below the '+thr.label+' bar ('+thr.minSigma+'σ / '+thr.minPts+' pts)')+riskTxt; marginal.push(d);
+    }
+  });
+  auto.sort(function(a,b){return a.risk-b.risk;}); marginal.sort(function(a,b){return b.maxMag-a.maxMag;});
+  return {auto:auto,marginal:marginal,review:review,thr:thr,basis:basis,unit:unit,compare:compare};
+}
+function autoFilterPreview(){
+  var panel=document.getElementById('auto_gf_panel'); if(!panel)return;
+  var level=_autoLevel(), basis=_autoBasis();
+  if(level==='off'){ panel.style.display='none'; panel.innerHTML=''; return; }
+  panel.style.display='';
+  if(basis!=='dist'&&HI_SPEC===null&&LO_SPEC===null){
+    panel.innerHTML='<div style="padding:6px;color:#a05000;font-size:12px">No spec configured on this dataset — the Spec/TLL basis has nothing to measure against. Use the <b>Distribution (σ)</b> basis (the right one for an NPI dataset with no trusted spec yet).</div>';
+    window._autoResult=null; return;
+  }
+  var r=_autoFilterCompute(basis,level); window._autoResult=r;
+  var basisName=basis==='dist'?'Distribution (σ from peers)':basis==='tll'?'TLL/limit-relative':'Spec-relative';
+  var autoPts=r.auto.reduce(function(a,d){return a+d.pts.length;},0);
+  var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare: auto-clean is scoped to the reference site <b>'+PRIMARY_SITE+'</b>; onboarding-site DUTs are listed for manual review.</span>':'';
+  var h='<div style="font-size:12px;margin:4px 0">⚙ <b>Auto-filter preview</b> — basis <b>'+basisName+'</b>, level <b>'+r.thr.label+
+    '</b> (bar '+r.thr.minSigma+'σ / '+r.thr.minPts+' pts, false-removal risk &lt; 5%). Nothing is applied until you click <b>Apply</b>; the Global Filter is reversible via <b>Clear global filter</b>.'+siteNote+'</div>';
+  h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
+    (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="autoFilterApply()">Apply → add to Global Filter</button>':'')+'</div>';
+  if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
+    r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td class="out">'+d.maxMag.toFixed(1)+'</td><td title="false-removal risk, p≈'+d.risk.toExponential(1)+'">'+_riskLabel(d.risk)+'</td><td>'+d.high+'</td><td>'+d.low+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
+  h+='<div style="font-weight:600;margin:8px 0 2px;color:#6b5a00">Marginal — review &amp; affirm: '+r.marginal.length+
+    (r.marginal.length?' &nbsp;<button class="toggle-btn" style="background:#fff8e1;border-color:#e0c05a;color:#6b5a00" onclick="autoFilterAffirm()">Also filter checked</button>':'')+'</div>';
+  if(r.marginal.length) h+='<table class="stbl"><thead><tr><th></th><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>Reason</th></tr></thead><tbody>'+
+    r.marginal.map(function(d,i){return '<tr><td><input type="checkbox" class="auto_marg_chk" data-i="'+i+'"></td><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td>'+d.maxMag.toFixed(1)+'</td><td title="p≈'+d.risk.toExponential(1)+'">'+_riskLabel(d.risk)+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
+  if(r.review.length){
+    h+='<div style="font-weight:600;margin:8px 0 2px;color:#2c5c96">Left for you — never auto-filtered: '+r.review.length+'</div>';
+    h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Reason</th></tr></thead><tbody>'+
+      r.review.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td style="white-space:normal;max-width:560px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
+  }
+  panel.innerHTML=h;
+}
+function autoFilterApply(){
+  var r=window._autoResult; if(!r||!r.auto.length){alert('Nothing to auto-filter at this basis/level.');return;}
+  var keys=[]; r.auto.forEach(function(d){keys=keys.concat(d.keys);});
+  _mergeGf(keys);          // merges into the GF + reloads + update()
+  autoFilterPreview();     // refresh the preview against the now-filtered view
+}
+function autoFilterAffirm(){
+  var r=window._autoResult; if(!r)return;
+  var keys=[];
+  document.querySelectorAll('.auto_marg_chk:checked').forEach(function(c){
+    var d=r.marginal[parseInt(c.getAttribute('data-i'),10)]; if(d)keys=keys.concat(d.keys);
+  });
+  if(!keys.length){alert('No marginal DUTs checked.');return;}
+  _mergeGf(keys); autoFilterPreview();
+}
 function csvTempToTestStep(t){
   /* Convert CSV temp string (e.g. "30°C", "-40°C") to PADB Test Step label
      (e.g. "30.0 Deg C", "-40.0 Deg C"). Leading minus supported -- an
@@ -14348,6 +14523,26 @@ def _build_box_interactive_html(
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
         ' title="Set delta-outlier points as the global exclusion filter -- adds to the existing filter, doesn\'t replace it"'
         ' onclick="applyDeltaGlobalFilter()">Set delta outliers as GF</button>\n'
+        + '  <span class="sep"></span>\n'
+        + '  <label class="toggle-btn" style="background:#fff7e8;border-color:#e0905a;color:#a05000"'
+        ' title="Auto-add clearly-bad DUTs to the Global Filter. BASIS = what &quot;bad&quot; means: '
+        'Distribution (how many sigma a point sits from its box peers -- for NPI, before a trusted spec); '
+        'Spec (how many sigma past the datasheet Spec Hi/Lo, fail-direction only); '
+        'TLL/limit (past the guard-banded limit / manual TLL override, else Spec). '
+        'LEVEL = how aggressive: Conservative filters only the unambiguous tail, Aggressive lowers the bar. '
+        'Systemic (multi-DUT, same frequency) and benign (away-from-fail) cases are NEVER auto-filtered -- '
+        'always left for you. Preview lists every DUT with a reason before anything is applied.">'
+        'Auto-filter bad DUTs &mdash; basis '
+        '<select id="auto_gf_basis" onchange="autoFilterPreview()">'
+        '<option value="dist" selected>Distribution (&sigma;)</option>'
+        '<option value="spec">Spec</option>'
+        '<option value="tll">TLL/limit</option></select>'
+        ' level '
+        '<select id="auto_gf_level" onchange="autoFilterPreview()">'
+        '<option value="off" selected>Off</option>'
+        '<option value="conservative">Conservative</option>'
+        '<option value="moderate">Moderate</option>'
+        '<option value="aggressive">Aggressive</option></select></label>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' onclick="clearGlobalFilter()">Clear global filter</button>\n'
@@ -14398,6 +14593,7 @@ def _build_box_interactive_html(
         + '<div id="box_outlier_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_delta_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_site_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
+        + '<div id="auto_gf_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + f"<script>\n{constants}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
     )

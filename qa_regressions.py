@@ -274,6 +274,46 @@ def test_scatter_decimate_toggle():
               f"toggle_rows={nrows(html_tog)} default_rows={nrows(html_def)}")
 
 
+def test_auto_filter_boxplot():
+    """Server contract for the boxplot 'Auto-filter bad DUTs' feature: the controls
+    render, and the JS carries the MAD-robust magnitude (not sigma-from-mean) and
+    the per-direction systemic guard -- the two correctness fixes this feature
+    depends on. Pins the shape so a refactor can't silently drop either."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "box.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(12):
+                    w.writerow(["Room", freq, round(10.0 + 0.05 * (i % 5), 4),
+                                f"HarmonicNumber: 2  Serial Number: D{i:02d}", 20, -20])
+        out = Path(td) / "box.html"
+        pp.stat_boxplot(p, {"y_label": "P", "title_prefix": "T"}, out)
+        h = out.read_text(encoding="utf-8")
+        check("auto-filter renders basis + level selects",
+              'id="auto_gf_basis"' in h and 'id="auto_gf_level"' in h)
+        check("auto-filter basis options dist/spec/tll present",
+              'value="dist"' in h and 'value="spec"' in h and 'value="tll"' in h)
+        check("auto-filter level options off/conservative/moderate/aggressive present",
+              all(f'value="{v}"' in h for v in ("off", "conservative", "moderate", "aggressive")))
+        check("auto-filter panel div rendered", 'id="auto_gf_panel"' in h)
+        check("auto-filter JS present (_autoBadPoints/_autoFilterCompute/autoFilterApply/_AUTO_LEVELS)",
+              all(s in h for s in ("_autoBadPoints", "_autoFilterCompute", "autoFilterApply", "_AUTO_LEVELS")))
+        # Magnitude is MAD-robust (median/MAD, 1.4826 scale, Iglewicz 3.5 cutoff) --
+        # NOT sigma-from-mean, which saturates and masks the bad DUT.
+        check("auto-filter magnitude is MAD-robust (1.4826 + 3.5 cutoff)",
+              "1.4826" in h and "3.5" in h and "_autoMedian" in h)
+        # Systemic 'shared' guard keys on direction too, so a high outlier and a low
+        # outlier at one frequency aren't mistaken for one systemic event.
+        check("auto-filter systemic guard is per-direction (keys include o.dir)",
+              "o.freqLabel+'|'+o.dir" in h)
+        # Risk gate + compare scoping present.
+        check("auto-filter risk gate + compare scoping present",
+              "_autoRisk" in h and "d.risk<0.05" in h and "PRIMARY_SITE" in h)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -284,7 +324,8 @@ def main() -> None:
                test_short_x_label, test_parse_group_kv, test_extract_group_field,
                test_has_segmentable_spec, test_resolve_date_sentinel,
                test_filename_stem_variants, test_x_axis_detection,
-               test_csv_to_parquet_newlines, test_scatter_decimate_toggle):
+               test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
+               test_auto_filter_boxplot):
         try:
             fn()
         except Exception as exc:

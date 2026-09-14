@@ -1014,6 +1014,67 @@ _HARNESS_JS = r"""
         } else skip('deselect-serial','serial checkbox not settable');
       } else skip('deselect-serial','no serial checkboxes / single serial');
 
+      // ---- auto-filter bad DUTs (robust MAD) ----
+      // Oracle-free: (a) OFF produces no result; (b) the dist-basis bad-point set
+      // matches a fully INDEPENDENT median/MAD modified-z recompute from BOX_DATA
+      // (catches a uniformly-wrong magnitude -- the whole reason this basis is
+      // MAD-robust rather than sigma-from-mean); (c) auto count is monotonic in
+      // level; (d) no auto DUT is systemic (shared>0.5) or risky (>=5%); (e) Apply
+      // removes ONLY auto DUTs' points (point-precise, no clean DUT), and Clear
+      // restores. Skips (e) cleanly when nothing qualifies (clean real data).
+      if(typeof _autoBadPoints==='function' && typeof _autoFilterCompute==='function'
+         && document.getElementById('auto_gf_basis') && document.getElementById('auto_gf_level')){
+        reset();
+        var abasis=document.getElementById('auto_gf_basis'), alevel=document.getElementById('auto_gf_level');
+        abasis.value='dist';
+        alevel.value='off'; if(typeof autoFilterPreview==='function') autoFilterPreview();
+        var aPanel=document.getElementById('auto_gf_panel');
+        chk('auto-off-produces-nothing', !window._autoResult && (!aPanel||getComputedStyle(aPanel).display==='none'),
+            'result='+(window._autoResult?'set':'null')+' panel='+(aPanel?getComputedStyle(aPanel).display:'none'));
+        // (b) independent MAD recompute of the distribution-basis bad points.
+        function _med(a){var s=a.slice().sort(function(x,y){return x-y;});var n=s.length;return n?(n%2?s[(n-1)/2]:0.5*(s[n/2-1]+s[n/2])):0;}
+        var _abs=function(s){return (typeof _boxBaseSerial!=='undefined')?_boxBaseSerial(s):s;};
+        var selC=getSelectedConds(), selT=getSelectedTemps(), fr=getBoxFreqRange();
+        var expKeys={};
+        BOX_DATA.forEach(function(cd){
+          if(selC.indexOf(cd.condition)<0)return; if(selT.indexOf(cd.temp)<0)return;
+          (cd.freq_stats||[]).forEach(function(f){
+            if(f.freq<fr.lo||f.freq>fr.hi)return;
+            var det=(f.vals_detail||[]); if(det.length<4)return;
+            var fv=det.map(function(d){return d.v;});
+            var med=_med(fv), mad=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+            det.forEach(function(d){ if(Math.abs(d.v-med)/mad>=3.5) expKeys[_abs(d.s)+'||'+cd.condition+'||'+cd.temp+'||'+f.freq_label]=1; });
+          });
+        });
+        var got={}; _autoBadPoints('dist').forEach(function(o){ got[_abs(o.serial)+'||'+o.cond+'||'+o.temp+'||'+o.freqLabel]=1; });
+        var miss=Object.keys(expKeys).filter(function(k){return !got[k];});
+        var xtra=Object.keys(got).filter(function(k){return !expKeys[k];});
+        chk('auto-badpoints-matches-independent-MAD', miss.length===0&&xtra.length===0,
+            'flagged='+Object.keys(got).length+' expected='+Object.keys(expKeys).length+' missing='+miss.length+' extra='+xtra.length);
+        // (c) level monotonicity
+        function autoN(lv){ alevel.value=lv; autoFilterPreview(); return window._autoResult?window._autoResult.auto.length:0; }
+        var nC=autoN('conservative'), nM=autoN('moderate'), nA=autoN('aggressive');
+        chk('auto-level-monotonic', nA>=nM && nM>=nC, 'conservative='+nC+' moderate='+nM+' aggressive='+nA);
+        // (d) classification invariants on the aggressive auto set
+        var ar=window._autoResult;
+        var badCls=(ar?ar.auto:[]).filter(function(d){ return d.shared>0.5 || d.risk>=0.05; });
+        chk('auto-never-systemic-or-risky', badCls.length===0, 'violations='+badCls.length+' auto='+(ar?ar.auto.length:0));
+        // (e) apply point-precise + clear restores (skip when nothing qualifies)
+        if(ar && ar.auto.length && typeof autoFilterApply==='function'){
+          var autoSers={}; ar.auto.forEach(function(d){autoSers[d.serial]=1;});
+          ensurePts(); var ab=ppPts();
+          autoFilterApply(); ensurePts();
+          var rem=removedBetween(ab,ppPts());
+          var outsideAuto=rem.filter(function(k){var p=k.split('||'); return !autoSers[_abs(p[1])];});
+          chk('auto-apply-only-removes-auto-DUTs', outsideAuto.length===0, 'removed='+rem.length+' outside-auto='+outsideAuto.length);
+          chk('auto-apply-removed-something', rem.length>0, 'removed='+rem.length);
+          if(typeof clearGlobalFilter!=='undefined'){ clearGlobalFilter(); ensurePts();
+            chk('auto-clear-restores', cnt()===P0, 'after='+cnt()+' P0='+P0); }
+        } else skip('auto-apply-precise','no DUT qualifies for auto at dist/aggressive on this data');
+        alevel.value='off'; if(typeof autoFilterPreview==='function') autoFilterPreview();
+        reset();
+      } else skip('auto-filter','no auto-filter controls in this view');
+
       // ---- reset-restores ----
       reset();
       chk('reset-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);
