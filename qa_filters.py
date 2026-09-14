@@ -944,6 +944,17 @@ _HARNESS_JS = r"""
       chk('workflow-run-applies-recommended-auto', gfN()===expKeys, 'gf='+gfN()+' expected='+expKeys);
       var au=document.getElementById('stat_wf_panel_audit');
       chk('workflow-run-writes-audit', !!au && au.textContent.indexOf('Ran recommended workflow')>=0, 'audit='+(au?'present':'missing'));
+      // print-to-PDF report: suppress the actual print (async image fetch would
+      // otherwise fire a real dialog), generate, assert report content.
+      if(typeof statGenReport==='function'){
+        window._afNoPrint=true;
+        try{ statGenReport(); }catch(e){}
+        window._afNoPrint=false;
+        var rep=document.getElementById('af_report');
+        chk('workflow-report-generated', !!rep && rep.textContent.indexOf('Auto-filter Workflow Report')>=0
+            && rep.textContent.indexOf('Recommendation')>=0 && rep.textContent.indexOf('Auto-excluded')>=0,
+            'report='+(rep?'present':'missing'));
+      }
       clearStatGlobalFilter();
       chk('workflow-run-reversible', gfN()===0, 'gf='+gfN());
     } else skip('workflow','no workflow panel in this view');
@@ -1213,6 +1224,15 @@ _HARNESS_JS = r"""
           chk('workflow-run-applies-recommended-auto', _gfN()===expKeys, 'gf='+_gfN()+' expected='+expKeys);
           var au=document.getElementById('box_wf_panel_audit');
           chk('workflow-run-writes-audit', !!au && au.textContent.indexOf('Ran recommended workflow')>=0, 'audit='+(au?'present':'missing'));
+          if(typeof boxGenReport==='function'){
+            window._afNoPrint=true;
+            try{ boxGenReport(); }catch(e){}
+            window._afNoPrint=false;
+            var rep=document.getElementById('af_report');
+            chk('workflow-report-generated', !!rep && rep.textContent.indexOf('Auto-filter Workflow Report')>=0
+                && rep.textContent.indexOf('Recommendation')>=0 && rep.textContent.indexOf('Auto-excluded')>=0,
+                'report='+(rep?'present':'missing'));
+          }
           if(typeof clearGlobalFilter!=='undefined') clearGlobalFilter();
           chk('workflow-run-reversible', _gfN()===0, 'gf='+_gfN());
           reset();

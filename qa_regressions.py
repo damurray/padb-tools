@@ -317,6 +317,8 @@ def test_auto_filter_boxplot():
         check("boxplot Workflow & Recommendations present (button/panel/ctx/engine)",
               all(s in h for s in ('id="box_wf_btn"', 'id="box_wf_panel"', "BOX_AF", "boxRunWorkflow",
                                    "_afAnalyze", "_afRecommend", "_afRunWorkflow")))
+        check("boxplot print-to-PDF report present (_afGenerateReport/boxGenReport)",
+              "_afGenerateReport" in h and "boxGenReport" in h and "Generate PDF report" in h and "Plotly.toImage" in h)
 
 
 def test_auto_filter_stat_summary():
@@ -356,6 +358,8 @@ def test_auto_filter_stat_summary():
         check("stat_summary Workflow & Recommendations present (button/panel/ctx/adapters)",
               all(s in h for s in ('id="stat_wf_btn"', 'id="stat_wf_panel"', "statRunWorkflow",
                                    "toggleStatWorkflow", "buckets:function", "_afRenderWorkflow")))
+        check("stat_summary print-to-PDF report present (statGenReport)",
+              "statGenReport" in h and "_afGenerateReport" in h and "Generate PDF report" in h)
 
 
 def main() -> None:

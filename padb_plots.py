@@ -3282,7 +3282,8 @@ function _afRenderWorkflow(ctx){
   h+='<div style="font-weight:600;margin:8px 0 2px">Recommended auto-filter</div>';
   h+='<div>basis <b>'+rec.basis.toUpperCase()+'</b>, level <b>'+rec.level+'</b> &nbsp;'+
      '<button class="toggle-btn" style="background:#eef5ff;border-color:#6a9" onclick="'+ctx.applyRecFn+'()">Apply recommendation</button>'+
-     '<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.runFn+'()">Run recommended workflow</button></div>';
+     '<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.runFn+'()">Run recommended workflow</button>'+
+     '<button class="toggle-btn" style="background:#eef7ee;border-color:#8c8" onclick="'+ctx.reportFn+'()" title="Assemble a printable report (dataset, recommendation + justification, workflow steps, outcome + audit table, and a snapshot of the current plot) and open the browser Save-as-PDF dialog. Offline; no server needed.">Generate PDF report</button></div>';
   h+='<ul style="margin:4px 0 4px 16px;padding:0">'+rec.why.map(function(w){return '<li>'+w+'</li>';}).join('')+'</ul>';
   h+='<div style="font-weight:600;margin:8px 0 2px">Suggested workflow</div>';
   h+='<ol style="margin:2px 0 2px 16px;padding:0;list-style:none">'+_afWorkflowSteps(a,rec).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
@@ -3321,6 +3322,57 @@ function _afRunWorkflow(ctx){
       r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td class="out">'+d.maxMag.toFixed(1)+'</td><td>'+_afRiskLabel(d.risk)+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
     au.innerHTML=h;
   }
+}
+/* Offline print-to-PDF workflow report: assembles dataset + recommendation +
+   justification + workflow steps + outcome/audit + a plot snapshot (Plotly.toImage)
+   into a hidden #af_report div, then window.print() -> the browser's Save-as-PDF.
+   No server, no bundled PDF lib. Text is built synchronously (so it's present
+   immediately, incl. for QA); the plot image is inserted async, then print fires. */
+function _afGenerateReport(ctx){
+  if(!document.getElementById('af_report_style')){
+    var s=document.createElement('style'); s.id='af_report_style';
+    s.textContent='#af_report{display:none;} @media print{ body>*:not(#af_report){display:none!important;} #af_report{display:block!important;} }';
+    document.head.appendChild(s);
+  }
+  var st=window[ctx.resultVar+'_wf']; if(!st){ _afRenderWorkflow(ctx); st=window[ctx.resultVar+'_wf']; }
+  var a=st.a, rec=st.rec, r=window[ctx.resultVar];
+  var rep=document.getElementById('af_report');
+  if(!rep){ rep=document.createElement('div'); rep.id='af_report'; document.body.appendChild(rep); }
+  var h='<div style="font-family:Arial,sans-serif;padding:16px;max-width:900px;color:#111">';
+  h+='<h2 style="margin:0 0 2px">Auto-filter Workflow Report</h2>';
+  h+='<div style="color:#555;font-size:12px">'+((document.title||'').replace(/</g,'&lt;'))+' &middot; '+new Date().toLocaleString()+'</div>';
+  h+='<h3 style="margin:12px 0 2px">Dataset</h3><div style="font-size:13px">'+a.nDuts+' DUTs, '+a.nConds+' conditions, '+a.nFreqs+' frequencies &middot; '+
+     (a.multiTemp?'multi-temperature':'Room only')+' &middot; '+(a.compare?('cross-site compare (reference '+a.primarySite+')'):'single site')+
+     ' &middot; spec limits '+(a.hasSpec?'present':'absent')+' &middot; ~'+a.avgBucketN.toFixed(0)+' DUTs/bucket &middot; skew in '+Math.round(a.skewFrac*100)+'% of buckets.</div>';
+  h+='<h3 style="margin:12px 0 2px">Recommendation &amp; justification</h3><div style="font-size:13px">basis <b>'+rec.basis.toUpperCase()+'</b>, level <b>'+rec.level+'</b></div>';
+  h+='<ul style="font-size:13px;margin:3px 0 0 18px">'+rec.why.map(function(w){return '<li>'+w+'</li>';}).join('')+'</ul>';
+  h+='<h3 style="margin:12px 0 2px">Workflow</h3><ol style="font-size:13px;margin:2px 0 0 4px;list-style:none;padding:0">'+_afWorkflowSteps(a,rec).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
+  if(r){ var pts=r.auto.reduce(function(x,d){return x+d.pts.length;},0);
+    h+='<h3 style="margin:12px 0 2px">Outcome</h3><div style="font-size:13px">Auto-excluded <b>'+r.auto.length+'</b> DUT'+(r.auto.length!==1?'s':'')+' ('+pts+' point'+(pts!==1?'s':'')+'); <b>'+r.marginal.length+'</b> marginal left for review; <b>'+r.review.length+'</b> left for you (systemic / benign'+(a.compare?' / onboarding-site':'')+'). Reversible via Clear global filter.</div>';
+    if(r.auto.length) h+='<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:12px;margin-top:6px"><thead><tr><th>Excluded serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>Reason</th></tr></thead><tbody>'+
+      r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td>'+d.maxMag.toFixed(1)+'</td><td>'+_afRiskLabel(d.risk)+'</td><td>'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
+  } else h+='<h3 style="margin:12px 0 2px">Outcome</h3><div style="font-size:13px">No auto-execute has been run yet (this is the recommendation only). Click <b>Run recommended workflow</b> first for an outcome + audit.</div>';
+  h+='<h3 style="margin:12px 0 2px">Plot</h3><div id="af_report_img" style="font-size:12px;color:#888">generating plot image…</div>';
+  var tbl=ctx.tablePanel?document.getElementById(ctx.tablePanel):null;
+  if(tbl && tbl.innerHTML.replace(/\s/g,'')) h+='<h3 style="margin:12px 0 2px">Statistics table</h3><div style="font-size:10px;overflow:auto">'+tbl.innerHTML+'</div>';
+  h+='<div style="margin-top:12px;color:#888;font-size:11px">Recommendations are heuristic starting points from the data shape, not a substitute for engineering judgment. All exclusions are reversible via Clear global filter.</div></div>';
+  rep.innerHTML=h;
+  var gd=document.getElementById('plot')||document.querySelector('.js-plotly-plot');
+  /* window._afNoPrint suppresses the actual print (QA sets it, since the image
+     fetch is async and would otherwise fire a real dialog after a stub is restored). */
+  function done(inner){
+    var im=document.getElementById('af_report_img'); if(im)im.innerHTML=inner;
+    if(window._afNoPrint) return;
+    // Wait for the embedded plot <img> to actually decode before printing, or the
+    // PDF captures an empty image box (the base64 data URL paints asynchronously).
+    var did=false; function go(){ if(did)return; did=true; try{window.print();}catch(e){} }
+    var img=im?im.querySelector('img'):null;
+    if(img && !img.complete){ img.onload=go; img.onerror=go; setTimeout(go,2500); }
+    else go();
+  }
+  if(gd && window.Plotly && Plotly.toImage){
+    Plotly.toImage(gd,{format:'png',width:1000,height:560}).then(function(url){ done('<img src="'+url+'" style="max-width:100%;border:1px solid #ccc"/>'); }).catch(function(){ done('<i>(plot image unavailable)</i>'); });
+  } else done('<i>(plot image unavailable)</i>');
 }
 """
 
@@ -7776,7 +7828,7 @@ var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_a
   baseSerial:_statBaseSerial,primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   /* Workflow & Recommendations adapters (pre-analysis of the loaded data) */
   wfPanel:'stat_wf_panel', previewFn:function(){statAutoFilterPreview();},
-  applyRecFn:'statApplyRec', runFn:'statRunWorkflow',
+  applyRecFn:'statApplyRec', runFn:'statRunWorkflow', reportFn:'statGenReport', tablePanel:'stat_panel',
   buckets:function(){var out=[];getActiveConditions().forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){out.push({vals:(fs.dut_vals||[]).map(function(d){return d.v;})});});});return out;},
   nDuts:function(){var s={};STAT_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.dut_vals||[]).forEach(function(d){s[_statBaseSerial(d.s)]=1;});});});return Object.keys(s).length;},
   nConds:function(){return getActiveConditions().length;},
@@ -7791,6 +7843,7 @@ function statAutoFilterApply(){_afApply(STAT_AF);}
 function statAutoFilterAffirm(){_afAffirm(STAT_AF);}
 function statApplyRec(){_afApplyRec(STAT_AF);}
 function statRunWorkflow(){_afRunWorkflow(STAT_AF);}
+function statGenReport(){_afGenerateReport(STAT_AF);}
 function toggleStatWorkflow(){var p=document.getElementById('stat_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(STAT_AF);}else{p.style.display='none';}}
 /* END */
 
@@ -13660,7 +13713,7 @@ function autoFilterAffirm(){
    _AUTO_FILTER_SHARED_JS; boxplot keeps its bespoke preview/compute). */
 var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoResult',
   wfPanel:'box_wf_panel', previewFn:function(){autoFilterPreview();},
-  applyRecFn:'boxApplyRec', runFn:'boxRunWorkflow',
+  applyRecFn:'boxApplyRec', runFn:'boxRunWorkflow', reportFn:'boxGenReport', tablePanel:'box_stat_panel',
   merge:_mergeGf, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   compute:function(basis,level){return _autoFilterCompute(basis,level);},
   buckets:function(){var out=[];BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){out.push({vals:(fs.vals_detail||[]).map(function(d){return d.v;})});});});return out;},
@@ -13671,6 +13724,7 @@ var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoRe
   hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);}};
 function boxApplyRec(){_afApplyRec(BOX_AF);}
 function boxRunWorkflow(){_afRunWorkflow(BOX_AF);}
+function boxGenReport(){_afGenerateReport(BOX_AF);}
 function toggleBoxWorkflow(){var p=document.getElementById('box_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(BOX_AF);}else{p.style.display='none';}}
 function csvTempToTestStep(t){
   /* Convert CSV temp string (e.g. "30°C", "-40°C") to PADB Test Step label
