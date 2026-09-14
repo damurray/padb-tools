@@ -362,6 +362,43 @@ def test_auto_filter_stat_summary():
               "statGenReport" in h and "_afGenerateReport" in h and "Generate PDF report" in h)
 
 
+def test_auto_filter_rollout_summary_envcov():
+    """Server contract: the auto-filter engine + Workflow + PDF report rolled out to
+    summary and env_coverage (shared _AUTO_FILTER_SHARED_JS via SUM_AF / EC_AF)."""
+    import csv as _csv
+    import padb_v2 as _v2
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "mt.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group"])
+            for temp, off in (("Room", 0.0), ("0.0 Deg C", -1.5), ("55.0 Deg C", 2.0)):
+                for freq in (100.0, 200.0):
+                    for i in range(12):
+                        w.writerow([temp, freq, round(10.0 + 0.05 * (i % 5) + off, 4),
+                                    f"HarmonicNumber: 2  Serial Number: D{i:02d}"])
+        df = _v2.load_scatter(p, {})
+        for label, render, prefix, ctx in (
+            ("summary", _v2.render_summary, "sum", "SUM_AF"),
+            ("env_coverage", _v2.render_env_coverage, "ec", "EC_AF"),
+        ):
+            out = Path(td) / (label + ".html")
+            render(df.copy(), {"y_label": "P", "title_prefix": "T", "results_dir": label}, out)
+            h = out.read_text(encoding="utf-8")
+            check(f"{label} auto-filter control + options present",
+                  all(s in h for s in (f'id="{prefix}_auto_basis"', f'id="{prefix}_auto_level"',
+                                       'value="iqr"', 'value="dmad"')))
+            check(f"{label} shared engine + ctx + wrappers present",
+                  all(s in h for s in ("_AF_LEVELS", "_afScorer", "_afRunWorkflow", ctx,
+                                       f"{prefix}RunWorkflow", f"{prefix}GenReport")))
+            check(f"{label} workflow button + panels present",
+                  all(s in h for s in (f'id="{prefix}_wf_btn"', f'id="{prefix}_wf_panel"', f'id="{prefix}_auto_panel"')))
+            check(f"{label} print-to-PDF report present",
+                  "_afGenerateReport" in h and "Generate PDF report" in h)
+            check(f"{label} clear-global-filter present",
+                  f"clear{prefix.capitalize()}GlobalFilter" in h or ("clearSumGlobalFilter" if prefix == "sum" else "clearEcGlobalFilter") in h)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -373,7 +410,8 @@ def main() -> None:
                test_has_segmentable_spec, test_resolve_date_sentinel,
                test_filename_stem_variants, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
-               test_auto_filter_boxplot, test_auto_filter_stat_summary):
+               test_auto_filter_boxplot, test_auto_filter_stat_summary,
+               test_auto_filter_rollout_summary_envcov):
         try:
             fn()
         except Exception as exc:

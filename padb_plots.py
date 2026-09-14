@@ -1570,6 +1570,59 @@ def _segment_by_html(has_segments: bool) -> str:
     )
 
 
+def _af_control_html(prefix: str, preview_fn: str, clear_fn: str) -> str:
+    """Auto-filter basis/level control + Clear-global-filter button for a view's
+    control bar. Element ids are <prefix>_auto_basis / <prefix>_auto_level; the
+    view's JS ctx must use the same ids. Shared across the population views."""
+    return (
+        '  <span class="sep"></span>\n'
+        '  <label class="toggle-btn" style="background:#fff7e8;border-color:#e0905a;color:#a05000"'
+        ' title="Auto-add clearly-bad DUTs to the shared Global Filter (every view inherits the clean).'
+        ' BASIS: Distribution (robust median/MAD &sigma; from peers -- for NPI/no trusted spec); IQR fence'
+        ' (Tukey 1.5&times;IQR -- what the boxplot whiskers draw); Double-MAD (skew-aware, separate left/right'
+        ' spread); Spec (past datasheet Spec Hi/Lo, fail direction only); TLL/limit. LEVEL: Conservative /'
+        ' Moderate / Aggressive. A per-DUT false-removal RISK under 5% is required to auto-filter; systemic'
+        ' (multi-DUT same freq/direction) and benign (away-from-fail) cases are NEVER auto-filtered. A Preview'
+        ' lists every DUT with a reason before anything is applied; reversible via Clear global filter.">'
+        'Auto-filter bad DUTs &mdash; basis '
+        f'<select id="{prefix}_auto_basis" onchange="{preview_fn}()">'
+        '<option value="dist" selected>Distribution (&sigma;)</option>'
+        '<option value="iqr">IQR fence</option>'
+        '<option value="dmad">Double-MAD (skew)</option>'
+        '<option value="spec">Spec</option>'
+        '<option value="tll">TLL/limit</option></select>'
+        ' level '
+        f'<select id="{prefix}_auto_level" onchange="{preview_fn}()">'
+        '<option value="off" selected>Off</option>'
+        '<option value="conservative">Conservative</option>'
+        '<option value="moderate">Moderate</option>'
+        '<option value="aggressive">Aggressive</option></select></label>\n'
+        '  <button class="toggle-btn" style="background:#fff0f0;border-color:#c00;color:#c00"'
+        ' title="Remove every Global Filter exclusion (browser-wide, shared across all views) -- the one-click undo."'
+        f' onclick="{clear_fn}()">Clear global filter</button>\n'
+    )
+
+
+def _af_workflow_button_html(prefix: str, toggle_fn: str) -> str:
+    """The 'Workflow & Recommendations' toggle button for a view's button row."""
+    return (
+        f'  <button class="toggle-btn" id="{prefix}_wf_btn" onclick="{toggle_fn}()"'
+        ' title="Pre-analyzes this dataset (DUTs / conditions / temps / compare / spec / skew / population'
+        ' size) and recommends auto-filter settings + a tailored workflow. Includes a one-click, reversible,'
+        ' audited Run and an offline print-to-PDF report.">'
+        '&#9432; Workflow &amp; Recommendations</button>\n'
+    )
+
+
+def _af_panels_html(prefix: str) -> str:
+    """The workflow + auto-filter preview panel divs for a view (place near the plot)."""
+    return (
+        f'<div id="{prefix}_wf_panel" style="display:none;overflow-x:auto;padding:8px 12px;'
+        'background:#f7faff;border:1px solid #cdd6e6;border-radius:4px;margin:4px 0"></div>\n'
+        f'<div id="{prefix}_auto_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
+    )
+
+
 def _checkbox_panel(col: str, label: str, vals: list[str]) -> str:
     """Build a collapsible checkbox-dropdown filter widget for one dimension."""
     items = "".join(
@@ -9976,6 +10029,67 @@ Plotly.newPlot('plot',_ir.traces,buildLayout(_ir.yRange),{responsive:true,scroll
 document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
 updateSummaryBar(getSelectedConds());
 _recomputeSpecSegments();
+/* ---- Auto-filter bad DUTs + Workflow (population view: env_coverage) ----
+   Peer population per (condition, frequency) = the active DUTs' ROOM values at
+   that freq (the same Room baseline the Room TI uses); env_coverage has no page
+   spec constant, so the peer bases (dist/iqr/dmad) are the meaningful ones. Writes
+   point-precise keys to the shared Global Filter (every view inherits). */
+function _ecFr(){var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt');
+  var lo=lt&&lt.value!==''?parseFloat(lt.value):parseFloat(document.getElementById('ec_freq_lo').value);
+  var hi=ht&&ht.value!==''?parseFloat(ht.value):parseFloat(document.getElementById('ec_freq_hi').value);
+  return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};}
+function _ecAutoBadPoints(basis){
+  var conds=getSelectedConds(), fr=_ecFr(), out=[];
+  conds.forEach(function(cd){
+    var duts=getActiveDuts(cd), lbls=cd.freq_labels||[];
+    (cd.freqs||[]).forEach(function(f,j){
+      if(f<fr.lo||f>fr.hi) return;
+      var det=[];
+      duts.forEach(function(sd){ var v=sd[1].room[j]; if(v==null)return; det.push({s:(sd[1].serial||sd[0]),gf:sd[1].gf_key,v:v}); });
+      if(det.length<4) return;
+      var lbl=(lbls[j]!=null)?lbls[j]:String(f);
+      var score=_afScorer(basis, det.map(function(d){return d.v;}), null, null);
+      det.forEach(function(d){ var r=score(d.v); if(!r)return; out.push({serial:d.s,port:'',cond:cd.condition,temp:'Room',freq:f,freqLabel:lbl,value:d.v,mag:r.mag,dir:r.dir,site:_afSiteOf(cd.condition),
+        key:d.s+'||'+d.gf+'||Room||'+lbl}); });
+    });
+  });
+  return out;
+}
+function _ecMergeGf(keys){
+  try{var raw=localStorage.getItem(GF_KEY);var m=new Set(raw?JSON.parse(raw).excluded||[]:[]);
+    keys.forEach(function(k){m.add(k);});
+    localStorage.setItem(GF_KEY,JSON.stringify({v:1,excluded:Array.from(m)}));
+    _ecGfEnabled=true; _loadEcGlobalFilter(); update();}catch(e){alert('localStorage write failed: '+e.message);}
+}
+function clearEcGlobalFilter(){ try{localStorage.removeItem(GF_KEY);}catch(e){} _loadEcGlobalFilter(); update(); }
+var EC_AF={basisSel:'ec_auto_basis',levelSel:'ec_auto_level',panel:'ec_auto_panel',
+  applyFn:'ecAutoFilterApply',affirmFn:'ecAutoFilterAffirm',margChkClass:'ec_auto_marg_chk',
+  resultVar:'_ecAutoResult',badPoints:_ecAutoBadPoints,merge:_ecMergeGf,
+  hiSpec:function(){return (typeof HI_SPEC!=='undefined')?HI_SPEC:null;},
+  loSpec:function(){return (typeof LO_SPEC!=='undefined')?LO_SPEC:null;},
+  tllDir:function(){return (typeof SPEC_DIRECTION!=='undefined'&&SPEC_DIRECTION)?SPEC_DIRECTION:'both';},
+  baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
+  wfPanel:'ec_wf_panel', previewFn:function(){ecAutoFilterPreview();},
+  applyRecFn:'ecApplyRec', runFn:'ecRunWorkflow', reportFn:'ecGenReport', tablePanel:'ec_stat_panel',
+  buckets:function(){var out=[];getSelectedConds().forEach(function(cd){var duts=getActiveDuts(cd);(cd.freqs||[]).forEach(function(f,j){var vals=[];duts.forEach(function(sd){var v=sd[1].room[j];if(v!=null)vals.push(v);});out.push({vals:vals});});});return out;},
+  nDuts:function(){var s={};ENV_DATA.forEach(function(cd){Object.keys(cd.duts||{}).forEach(function(k){s[cd.duts[k].serial||k]=1;});});return Object.keys(s).length;},
+  nConds:function(){return getSelectedConds().length;},
+  nFreqs:function(){var s={};ENV_DATA.forEach(function(cd){(cd.freqs||[]).forEach(function(f){s[f]=1;});});return Object.keys(s).length;},
+  multiTemp:function(){return true;},
+  hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);},
+  compute:function(basis,level){return _afCompute(_ecAutoBadPoints(basis),EC_AF);},
+  getFreq:function(){return _ecFr();},
+  setFreq:function(lo,hi){var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt'),ls=document.getElementById('ec_freq_lo'),hs=document.getElementById('ec_freq_hi');if(lt)lt.value=(''+lo);if(ht)ht.value=(''+hi);if(ls)ls.value=lo;if(hs)hs.value=hi;update();},
+  getSerials:function(){return getSelectedSerials();},
+  setSerials:function(list){document.querySelectorAll('.ec_ser_chk').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0;});update();},
+  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];}};
+function ecAutoFilterPreview(){_afPreview(EC_AF);}
+function ecAutoFilterApply(){_afApply(EC_AF);}
+function ecAutoFilterAffirm(){_afAffirm(EC_AF);}
+function ecApplyRec(){_afApplyRec(EC_AF);}
+function ecRunWorkflow(){_afRunWorkflow(EC_AF);}
+function ecGenReport(){_afGenerateReport(EC_AF);}
+function toggleEcWorkflow(){var p=document.getElementById('ec_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(EC_AF);}else{p.style.display='none';}}
 """
 
 
@@ -10432,6 +10546,7 @@ def _build_env_coverage_html(
         + f'  <label title="Show non-selected conditions as dim gray bands">'
         + f'<input type="checkbox" id="ec_show_excl" onchange="update()">'
         + f'&nbsp;Show&nbsp;excluded</label>\n'
+        + _af_control_html('ec', 'ecAutoFilterPreview', 'clearEcGlobalFilter')
         + f'  {help_panel_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + f'  <button class="stat-btn" id="ec_stat_btn" onclick="toggleStatsPanel()">&#9658;&nbsp;Statistics</button>\n'
@@ -10599,9 +10714,13 @@ def _build_env_coverage_html(
         + footnote
         + '<div id="ec_summary_bar"></div>\n'
         + '<div id="plot"></div>\n'
+        + '<div style="padding:2px 8px">\n'
+        + _af_workflow_button_html('ec', 'toggleEcWorkflow')
+        + '</div>\n'
+        + _af_panels_html('ec')
         + '<div id="ec_stat_panel" style="display:none"></div>\n'
         + ((site_btn_html + '<div id="ec_site_panel" style="display:none;padding:0 2px 16px"></div>\n') if primary_site else "")
-        + f"<script>\n{constants}\n{_ENV_COVERAGE_JS}\n{_SITE_PANEL_SHARED_JS}\n{_EC_SITE_JS}</script>\n"
+        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_ENV_COVERAGE_JS}\n{_SITE_PANEL_SHARED_JS}\n{_EC_SITE_JS}</script>\n"
         "</body>\n</html>"
     )
 
@@ -17234,6 +17353,80 @@ if(_sumInitActive.length<=STATS_TABLE_AUTO_THRESHOLD){
   _setTableBtnStale(_rb0,true);
 }
 _recomputeSpecSegments();
+/* ---- Auto-filter bad DUTs + Workflow (population view: summary) ----
+   Per-(condition, frequency) DUT population = each DUT's cross-temperature mean
+   at that freq (dut_vals[fi][dutIdx]); summary is temp/port-agnostic. Writes
+   point-precise keys to the shared Global Filter (every view inherits). */
+function _sumAutoBadPoints(basis){
+  var conds=_getFilteredActive(false);
+  var allS=Array.prototype.slice.call(document.querySelectorAll('.sum_ser_chk')).map(function(c){return c.value;});
+  var selS=getSumSelectedSerials();
+  var serActive=selS.length>0 && allS.length>1 && selS.length<allS.length;
+  var fr=_sumFreqRange();
+  var out=[];
+  conds.forEach(function(cd){
+    var lbls=cd.freq_labels||[];
+    (cd.freqs||[]).forEach(function(f,fi){
+      if(f<fr.lo||f>fr.hi) return;
+      var row=cd.dut_vals[fi]||[], det=[];
+      (cd.dut_info||[]).forEach(function(di,idx){
+        var v=row[idx]; if(v==null) return;
+        if(serActive&&selS.indexOf(di.s)<0) return;
+        det.push({s:di.s,v:v});
+      });
+      if(det.length<4) return;
+      var lbl=(lbls[fi]!=null)?lbls[fi]:String(f);
+      var hi=(basis==='spec'||basis==='tll')?(((cd.spec_hi_list||[])[fi]!=null)?cd.spec_hi_list[fi]:HI_SPEC):HI_SPEC;
+      var lo=(basis==='spec'||basis==='tll')?(((cd.spec_lo_list||[])[fi]!=null)?cd.spec_lo_list[fi]:LO_SPEC):LO_SPEC;
+      var score=_afScorer(basis,det.map(function(d){return d.v;}),hi,lo);
+      det.forEach(function(d){
+        var r=score(d.v); if(!r) return;
+        out.push({serial:d.s,port:'',cond:cd.condition,temp:'Room',freq:f,freqLabel:lbl,value:d.v,mag:r.mag,dir:r.dir,site:_afSiteOf(cd.condition),
+          key:d.s+'||'+_sumCoarseCondKey(cd.condition)+'||Room||'+lbl});
+      });
+    });
+  });
+  return out;
+}
+function _sumMergeGf(keys){
+  try{var raw=localStorage.getItem(GF_KEY);var m=new Set(raw?JSON.parse(raw).excluded||[]:[]);
+    keys.forEach(function(k){m.add(k);});
+    localStorage.setItem(GF_KEY,JSON.stringify({v:1,excluded:Array.from(m)}));
+    _loadSumGlobalFilter(); update();}catch(e){alert('localStorage write failed: '+e.message);}
+}
+function clearSumGlobalFilter(){ try{localStorage.removeItem(GF_KEY);}catch(e){} _loadSumGlobalFilter(); update(); }
+var SUM_AF={basisSel:'sum_auto_basis',levelSel:'sum_auto_level',panel:'sum_auto_panel',
+  applyFn:'sumAutoFilterApply',affirmFn:'sumAutoFilterAffirm',margChkClass:'sum_auto_marg_chk',
+  resultVar:'_sumAutoResult',badPoints:_sumAutoBadPoints,merge:_sumMergeGf,
+  hiSpec:function(){return (typeof HI_SPEC!=='undefined')?HI_SPEC:null;},
+  loSpec:function(){return (typeof LO_SPEC!=='undefined')?LO_SPEC:null;},
+  tllDir:function(){
+    if(typeof HI_SPEC!=='undefined'&&HI_SPEC!==null&&(typeof LO_SPEC==='undefined'||LO_SPEC===null))return 'hi';
+    if(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null&&(typeof HI_SPEC==='undefined'||HI_SPEC===null))return 'lo';
+    return (typeof SPEC_DIRECTION!=='undefined'&&SPEC_DIRECTION)?SPEC_DIRECTION:'both';
+  },
+  baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
+  wfPanel:'sum_wf_panel', previewFn:function(){sumAutoFilterPreview();},
+  applyRecFn:'sumApplyRec', runFn:'sumRunWorkflow', reportFn:'sumGenReport', tablePanel:'sum_table_wrap',
+  buckets:function(){var out=[];_getFilteredActive(false).forEach(function(cd){(cd.freqs||[]).forEach(function(f,fi){out.push({vals:(cd.dut_vals[fi]||[]).filter(function(v){return v!=null;})});});});return out;},
+  nDuts:function(){var s={};DATA.forEach(function(cd){(cd.dut_info||[]).forEach(function(di){s[di.s]=1;});});return Object.keys(s).length;},
+  nConds:function(){return _getFilteredActive(false).length;},
+  nFreqs:function(){var s={};DATA.forEach(function(cd){(cd.freqs||[]).forEach(function(f){s[f]=1;});});return Object.keys(s).length;},
+  multiTemp:function(){return (typeof TEMPS_PRESENT!=='undefined')&&TEMPS_PRESENT.length>1;},
+  hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);},
+  compute:function(basis,level){return _afCompute(_sumAutoBadPoints(basis),SUM_AF);},
+  getFreq:function(){return _sumFreqRange();},
+  setFreq:function(lo,hi){var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt'),ls=document.getElementById('freq_lo'),hs=document.getElementById('freq_hi');if(lt)lt.value=(''+lo);if(ht)ht.value=(''+hi);if(ls)ls.value=lo;if(hs)hs.value=hi;update();},
+  getSerials:function(){return getSumSelectedSerials();},
+  setSerials:function(list){document.querySelectorAll('.sum_ser_chk').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0;});update();},
+  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];}};
+function sumAutoFilterPreview(){_afPreview(SUM_AF);}
+function sumAutoFilterApply(){_afApply(SUM_AF);}
+function sumAutoFilterAffirm(){_afAffirm(SUM_AF);}
+function sumApplyRec(){_afApplyRec(SUM_AF);}
+function sumRunWorkflow(){_afRunWorkflow(SUM_AF);}
+function sumGenReport(){_afGenerateReport(SUM_AF);}
+function toggleSumWorkflow(){var p=document.getElementById('sum_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(SUM_AF);}else{p.style.display='none';}}
 """
 
 
@@ -17603,6 +17796,7 @@ def _build_summary_html(
         + '  <span id="sum_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
         + 'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
         + 'margin-left:4px"></span>\n'
+        + _af_control_html('sum', 'sumAutoFilterPreview', 'clearSumGlobalFilter')
         + site_btn_html
         + f'  {_csv_btn("saveCSV")}\n'
         + '</div>\n'
@@ -17610,6 +17804,10 @@ def _build_summary_html(
         + 'Shaded band&nbsp;=&nbsp;Min–Max &nbsp;|&nbsp; Solid&nbsp;=&nbsp;Mean'
         + ' &nbsp;|&nbsp; Dashed&nbsp;=&nbsp;TTL estimate'
         + ' &nbsp;|&nbsp; Red dashed&nbsp;=&nbsp;Spec limit</p>\n'
+        + '<div style="padding:2px 8px">\n'
+        + _af_workflow_button_html('sum', 'toggleSumWorkflow')
+        + '</div>\n'
+        + _af_panels_html('sum')
         + '<div id="sum_site_panel" style="display:none;overflow-x:auto;padding:0 8px 16px"></div>\n'
         + coverage_gap_html
         + '<div id="plot"></div>\n'
@@ -17628,6 +17826,7 @@ def _build_summary_html(
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"
+        + _AUTO_FILTER_SHARED_JS + "\n"
         + _SUMPLOT_JS
         + "</script>\n</body>\n</html>"
     )

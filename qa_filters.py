@@ -960,6 +960,67 @@ _HARNESS_JS = r"""
     } else skip('workflow','no workflow panel in this view');
   }
 
+  // Generic, ctx-driven auto-filter + workflow self-QA for the population views
+  // that use the shared engine (summary/env_coverage/histogram; boxplot and
+  // stat_summary have their own key-precise checks). Oracle-free: independent
+  // COUNT recompute of each peer basis from ctx.buckets() (catches a uniformly-
+  // wrong magnitude), off-produces-nothing, level monotonicity, classification
+  // invariants, Apply adds exactly the auto keys + Clear restores, and the
+  // Workflow recommendation + one-click Run + PDF report.
+  function runAutoFilterCtx(R,chk,skip,CTX,tag){
+    if(!CTX||typeof _afRecommend!=='function'||typeof CTX.badPoints!=='function'
+       ||!document.getElementById(CTX.basisSel)||typeof CTX.buckets!=='function'){
+      skip('auto-filter['+tag+']','no auto-filter ctx in this view'); return; }
+    function gfN(){try{return (JSON.parse(localStorage.getItem(GF_KEY)||'{"excluded":[]}').excluded||[]).length;}catch(e){return -1;}}
+    function clr(){ try{localStorage.removeItem(GF_KEY);}catch(e){} try{CTX.merge([]);}catch(e){} }
+    function _med(a){var s=a.slice().sort(function(x,y){return x-y;});var n=s.length;return n?(n%2?s[(n-1)/2]:0.5*(s[n/2-1]+s[n/2])):0;}
+    function _cnt(basis){ var n=0;
+      (CTX.buckets()||[]).forEach(function(b){ var fv=(b.vals||[]).filter(function(v){return v!=null;}); if(fv.length<4)return;
+        var med=_med(fv), flag;
+        if(basis==='iqr'){ var s=fv.slice().sort(function(a,b){return a-b;}),m=s.length;
+          function pc(p){var i=(p/100)*(m-1),li=Math.floor(i);return li+1<m?s[li]+(s[li+1]-s[li])*(i-li):s[li];}
+          var q1=pc(25),q3=pc(75),iqr=q3-q1,loF=q1-1.5*iqr,hiF=q3+1.5*iqr; flag=function(v){return v>hiF||v<loF;}; }
+        else if(basis==='dmad'){ var bl=[],ab=[]; fv.forEach(function(v){if(v<=med)bl.push(med-v);if(v>=med)ab.push(v-med);});
+          var sym=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+          var mLo=_med(bl)*1.4826||sym, mHi=_med(ab)*1.4826||sym; flag=function(v){var mz=(v>=med)?(v-med)/mHi:(med-v)/mLo; return mz>=3.5;}; }
+        else { var mad=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9; flag=function(v){return Math.abs(v-med)/mad>=3.5;}; }
+        fv.forEach(function(v){if(flag(v))n++;});
+      });
+      return n; }
+    var basisEl=document.getElementById(CTX.basisSel), levelEl=document.getElementById(CTX.levelSel);
+    clr(); basisEl.value='dist';
+    levelEl.value='off'; CTX.previewFn(); var panel=document.getElementById(CTX.panel);
+    chk('auto-off-produces-nothing['+tag+']', !window[CTX.resultVar]&&(!panel||getComputedStyle(panel).display==='none'), 'result='+(window[CTX.resultVar]?'set':'null'));
+    ['dist','iqr','dmad'].forEach(function(basis){
+      var exp=_cnt(basis), got=CTX.badPoints(basis).length;
+      chk('auto-badpoints-count-matches-independent-'+basis+'['+tag+']', exp===got, 'flagged='+got+' expected='+exp);
+    });
+    function autoN(lv){levelEl.value=lv;CTX.previewFn();return window[CTX.resultVar]?window[CTX.resultVar].auto.length:0;}
+    var nC=autoN('conservative'),nM=autoN('moderate'),nA=autoN('aggressive');
+    chk('auto-level-monotonic['+tag+']', nA>=nM&&nM>=nC, 'c='+nC+' m='+nM+' a='+nA);
+    var ar=window[CTX.resultVar];
+    var bad=(ar?ar.auto:[]).filter(function(d){return d.shared>0.5||d.risk>=0.05;});
+    chk('auto-never-systemic-or-risky['+tag+']', bad.length===0, 'violations='+bad.length+' auto='+(ar?ar.auto.length:0));
+    if(ar&&ar.auto.length){
+      var keys=0; ar.auto.forEach(function(d){keys+=d.keys.length;});
+      _afApply(CTX);
+      chk('auto-apply-adds-keys['+tag+']', gfN()===keys, 'gf='+gfN()+' keys='+keys);
+      clr(); chk('auto-clear-restores['+tag+']', gfN()===0, 'gf='+gfN());
+    } else skip('auto-apply['+tag+']','no auto DUT at dist/aggressive on this data');
+    clr(); var wa=_afAnalyze(CTX), rec=_afRecommend(wa);
+    chk('workflow-recommends-valid['+tag+']',
+        ['dist','iqr','dmad','spec','tll'].indexOf(rec.basis)>=0 && ['conservative','moderate','aggressive'].indexOf(rec.level)>=0 && rec.why&&rec.why.length>0,
+        'basis='+rec.basis+' level='+rec.level);
+    basisEl.value=rec.basis; levelEl.value=rec.level;
+    var expR=CTX.compute(rec.basis,rec.level), ek=0; expR.auto.forEach(function(d){ek+=d.keys.length;});
+    clr(); _afRunWorkflow(CTX);
+    chk('workflow-run-applies-recommended-auto['+tag+']', gfN()===ek, 'gf='+gfN()+' expected='+ek);
+    window._afNoPrint=true; window._afNoCapture=true; try{_afGenerateReport(CTX);}catch(e){} window._afNoPrint=false; window._afNoCapture=false;
+    var rep=document.getElementById('af_report');
+    chk('workflow-report-generated['+tag+']', !!rep&&rep.textContent.indexOf('Auto-filter Workflow Report')>=0&&rep.textContent.indexOf('Recommendation')>=0, 'report='+(rep?'present':'missing'));
+    clr(); levelEl.value='off'; CTX.previewFn();
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -1007,6 +1068,13 @@ _HARNESS_JS = r"""
       // Auto-filter bad DUTs (population views) -- self-skips off a view without it.
       if(_HEAVY){ skip('auto-filter','skipped on heavy page'); }
       else { try{ runAutoFilterStat(R,chk,skip); }catch(e){ chk('AUTOFILTER-STAT-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // Generic ctx-driven auto-filter + workflow for summary/env_coverage/histogram
+      // (boxplot + stat_summary have their own key-precise checks above).
+      if(_HEAVY){ skip('auto-filter-ctx','skipped on heavy page'); }
+      else { ['SUM_AF','EC_AF','HIST_AF'].forEach(function(nm){
+        try{ if(typeof window[nm]==='object'&&window[nm]) runAutoFilterCtx(R,chk,skip,window[nm],nm.replace('_AF','').toLowerCase()); }
+        catch(e){ chk('AUTOFILTER-CTX-HARNESS-ERROR['+nm+']',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
+      }); }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');
