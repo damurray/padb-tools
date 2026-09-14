@@ -358,7 +358,7 @@ def _save_v2_chain_state(state_path: Path | None, done: set[str],
 
 
 def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = True,
-                     publish: bool = False) -> tuple[bool, str | None]:
+                     publish: bool = False, pdf_report: bool = False) -> tuple[bool, str | None]:
     """After a V2 extraction job (*_run_job.json) succeeds, auto-run every
     sibling *_v2_job.json plot job -- completes the full V2 flow instead of
     leaving the plot-build step to be run by hand. Returns (ok, index_path)
@@ -412,6 +412,8 @@ def _run_v2_siblings(job_path: Path, job_id: str, run_cfg: dict, fresh: bool = T
             _append_log(job_id, f"\n--- Building plots: {plot_job.name} ---")
             sib_cmd = [sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(plot_job)]
             sib_cmd.append("--publish" if publish else "--no-publish")
+            if pdf_report:
+                sib_cmd.append("--pdf-report")
             rc = _stream(sib_cmd, job_id)
             if rc != 0:
                 ok = False
@@ -548,6 +550,11 @@ def _worker() -> None:
             # its interactive plot siblings go through _run_v2_siblings below,
             # which does force --publish.)
             publish = bool(job.get("publish"))
+            # Comprehensive multi-view PDF report is opt-in per run (default off),
+            # a runtime override like publish -- the job file is left untouched.
+            # padb_v2.py builds it (padb_run.py has no --pdf-report), so it rides
+            # the plot-job command and the interactive sibling chain.
+            pdf_report = bool(job.get("pdf_report"))
             if "pod" in cfg:
                 cmd = [sys.executable, str(TOOLS_DIR / "padb_run.py"), str(job_path)]
                 if job.get("dry_run"):
@@ -557,13 +564,16 @@ def _worker() -> None:
                 rc = _stream(cmd, job_id)
                 ok = rc == 0
                 if ok and cfg.get("mode") == "interactive" and not job.get("dry_run"):
-                    ok, result_index = _run_v2_siblings(job_path, job_id, cfg, publish=publish)
+                    ok, result_index = _run_v2_siblings(
+                        job_path, job_id, cfg, publish=publish, pdf_report=pdf_report)
             else:
                 # V2 plot job (csv_path/analytic key, no pod) -- rebuilds HTML from an
                 # already-extracted CSV via padb_v2.py directly. No PADB-R.exe involved,
                 # so --dry-run has no equivalent here and is simply ignored.
                 plot_cmd = [sys.executable, str(TOOLS_DIR / "padb_v2.py"), str(job_path)]
                 plot_cmd.append("--publish" if publish else "--no-publish")
+                if pdf_report:
+                    plot_cmd.append("--pdf-report")
                 rc = _stream(plot_cmd, job_id)
                 ok = rc == 0
             if result_index is None:
@@ -1278,6 +1288,9 @@ def execute_job():
     # Publishing is opt-in per run and defaults off -- see the worker for why
     # (runtime-only override, job files are never rewritten).
     publish = bool(body.get("publish"))
+    # Comprehensive multi-view PDF report -- opt-in per run, default off, same
+    # runtime-only-override semantics as publish (never rewrites the job file).
+    pdf_report = bool(body.get("pdf_report"))
     if not paths:
         return jsonify(error="paths must be a non-empty list"), 400
 
@@ -1325,7 +1338,7 @@ def execute_job():
             _jobs[job_id] = {
                 "status": "queued", "path": str(job_path), "name": job_path.name,
                 "log": [], "started": None, "elapsed_s": 0, "dry_run": dry_run,
-                "publish": publish,
+                "publish": publish, "pdf_report": pdf_report,
                 "result_index": None, "proc": None, "cancel_requested": False,
             }
         _job_queue.put(job_id)

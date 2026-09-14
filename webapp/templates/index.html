@@ -128,6 +128,7 @@
       <button id="selectFilteredBtn" class="secondary" title="Checks every job matching the current Mode/Kind/Name filters (all rows shown in the table), Run and Plot alike, and unchecks everything else.">Select Filtered</button>
       <button id="runSelectedBtn" title="Queues every checked job. PADB-R.exe runs are strictly serialized (one at a time, others wait as queued); Run jobs are always queued ahead of Plot jobs regardless of selection order, since a Plot job may read a CSV its own Run job just produced.">Run Selected</button>
       <label title="Off by default: builds locally only (--no-publish). Check to also publish results to each job's own configured publish_to on the network share. Never rewrites the job file -- it's a per-run choice."><input type="checkbox" id="publishCheckbox"> Publish to share after run</label>
+      <label title="Off by default. Check to also build a comprehensive multi-view PDF report (cover + every view with its stats table) alongside the HTML, saved as &lt;prefix&gt;_report.pdf in the results folder. Interactive plot jobs only. Requires Playwright + Chromium (py -m pip install playwright pypdf && py -m playwright install chromium); if missing, it's skipped with a note and the build still succeeds."><input type="checkbox" id="pdfReportCheckbox"> Build PDF report</label>
     </div>
     <div class="toolbar">
       <label title="Weekly runs on the checked days below; Daily runs every day.">Schedule

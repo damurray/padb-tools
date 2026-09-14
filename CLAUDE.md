@@ -1720,3 +1720,81 @@ A statistically-principled, self-QA'd feature set for finding and excluding bad 
 **Self-QA (all features must self-QA):** `qa_filters.py` — key-precise `runAutoFilterStat` (stat) + the inline boxplot block (independent MAD/IQR/dMAD key-set recompute, point-precise apply, workflow, report), and a **generic** `runAutoFilterCtx(CTX)` for SUM_AF/EC_AF/HIST_AF (independent COUNT recompute per basis from `ctx.buckets()`, off/monotonic/invariants/apply/clear/workflow/report; `ctx.exclCount`/`ctx.clear` let it work for histogram's non-GF vehicle). `window._afNoPrint`/`_afNoCapture` keep QA from firing a real print or racing later checks. `qa_regressions.py` server pins for all views (`test_auto_filter_boxplot`/`_stat_summary`/`_rollout_summary_envcov`/`_histogram`, 73/0). Verified in the in-app browser (Edge dead): every view's auto + workflow + report checks pass (e.g. boxplot 49/0, summary/env_coverage/histogram 11/11 each). `qa_padb` 37/4, `qa_selfcheck` GREEN.
 
 **Statistical methodology note (for future extension):** beyond MAD/IQR/double-MAD, candidates are Grubbs/Generalized-ESD (p-value based; the risk metric already approximates a Bonferroni tail), Mahalanobis (multivariate — needs a per-DUT feature vector the current univariate model lacks), and Nelson/WE run rules (systematic drift vs point outliers). Transparent robust stats were chosen over black-box ML for traceability.
+
+---
+
+## Comprehensive build-time multi-view PDF report (`padb_pdf_report.py`, added 2026-09-14, develop)
+
+Opt-in server-side PDF that gathers **every view for an analytic** (cover page +
+scatter/stat_summary/boxplot/distribution/env_coverage/summary as applicable,
+each with its Statistics/Results table expanded) into one document, generated at
+build time. Distinct from the pre-existing client-side per-view print-to-PDF
+report (the auto-filter workflow `_afGenerateReport`, on-demand in one open page):
+this one is multi-view, runs during `padb_v2.py`, and needs no manual clicking.
+
+**Approach: headless-Chromium print of the real pages** (chosen over static
+Plotly image export via AskUserQuestion). It never re-plots -- it loads the same
+self-contained view HTML padb_v2 already wrote and prints it, so the PDF matches
+the live pages exactly and can't drift from view rendering logic. Driven by
+**Playwright + its bundled Chromium** (NOT the system Edge -- Edge headless is
+dead on this box for print-to-pdf too, confirmed 2026-09-14: `--headless
+--print-to-pdf` exits 0 and writes nothing). Merged with **pypdf**.
+
+Enable the engine once (heavyweight, ~150 MB Chromium -- that's why it's opt-in
+and not a core dependency):
+```
+py -m pip install playwright pypdf
+py -m playwright install chromium
+```
+
+**How each view page is prepped for print (all from outside -- no padb_plots.py
+edits):** `PRINT_PROFILES[slug]` gives each view's plot div id, the stats/results
+panel id(s) to reveal, the toggle function that builds+shows the table, and
+(where the table is size-gated) a `refresh` button id. `_prepare_and_print`:
+goto -> wait for the Plotly div to actually have traces -> call the toggle to
+build+show the table -> **click the Refresh button to force a full build past the
+"large dataset -- click Refresh table" size gate** (stat_summary/env_coverage/
+summary/boxplot; without this a >150-condition analytic prints just the 92-char
+placeholder) -> force-show the panel if still hidden -> inject `_REPORT_HIDE_CSS`
+(hides `.ctrl-bar`/`.filter-bar`/`.flt-bar`/all buttons/inputs + the interactive
+auto-filter/workflow/GF/site panels; stats panels are plain divs and the Plotly
+legend is inside the SVG, so both survive) -> `emulate_media("print")` ->
+`page.pdf()` landscape 11x8.5. distribution's stats are the always-visible ΔEnv
+TI tables (`delta_tbl`/`dist_ti_tbl`), no toggle. scatter's data-rows table
+(`scatter_table_panel`/`toggleScatterTable`, added 2026-09-12) is present on fresh
+builds only -- older pages have no scatter table and the profile no-ops
+gracefully (typeof/getElementById guards).
+
+**Crash-hardened for large data (the real failure mode).** Reusing one page
+across all gotos accumulates memory until the single renderer OOMs -- on a fresh
+non-decimated ClockSpurs build the browser crashed at the 2nd view and every
+later view failed. Fixed: a **fresh page per view** (closed after, releasing
+memory), hardened launch args (`--disable-dev-shm-usage --disable-gpu --no-sandbox
+--js-flags=--max-old-space-size=4096`), and **browser relaunch on crash** so one
+bad/huge view is skipped (logged `! <view>: ... (skipped)`) without sinking the
+rest. A truly giant view (e.g. a 500 MB per-offset phase-noise boxplot) just gets
+skipped -- ship its parquet + viewer instead.
+
+**Fail-safe, never breaks the build.** `check_environment()` returns (ok, reason);
+if Playwright/Chromium/pypdf is missing, `generate_multiview_pdf` logs a NOTE and
+returns None. `_maybe_build_pdf_report` in `padb_v2.py` wraps everything in
+try/except -> `_log_note`, so a PDF failure can't fail extraction/plot/publish.
+
+**Wiring:**
+- `padb_v2.py` `generate_report()` collects `gen_pairs=[(view, html_path)]` in the
+  view loop and, when `cfg["build_pdf_report"]` is set, calls
+  `_maybe_build_pdf_report(...)` right before `_finish_report` -> writes
+  `<prefix>_report.pdf` in the results dir. Cover meta (rows/DUTs/conds/temps/spec)
+  is computed best-effort from the loaded df.
+- **`--pdf-report`** CLI flag on `padb_v2.py` (runtime override for
+  `build_pdf_report`, leaves the job file untouched -- mirrors `--no-publish`).
+- **Webapp**: a "Build PDF report" checkbox by Run Selected (`pdfReportCheckbox`
+  -> `pdf_report` in the execute-job body -> job dict -> `_worker` appends
+  `--pdf-report` to the plot-job command and threads it into `_run_v2_siblings`
+  for the interactive chain; padb_run.py has no such flag since padb_v2 builds
+  the PDF).
+- **Histogram-only jobs** (`views==["histogram"]`) go through a separate branch
+  and are not (yet) covered -- comprehensive report is the 6-view path.
+- Self-QA: `qa_regressions.py::test_pdf_report_contract` (browser-free: profile
+  covers every `_VIEW_FN` view, filename->view recovery incl. longest-match,
+  cover HTML builds, `check_environment` returns a reason). 91/0.

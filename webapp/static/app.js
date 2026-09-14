@@ -461,12 +461,14 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
   const btn = document.getElementById("runSelectedBtn");
   const publishEl = document.getElementById("publishCheckbox");
   const doPublish = publishEl ? publishEl.checked : false;
+  const pdfEl = document.getElementById("pdfReportCheckbox");
+  const doPdf = pdfEl ? pdfEl.checked : false;
   btn.disabled = true;
   try {
     const res = await fetch("/api/execute-job", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths, dry_run: false, publish: doPublish }),
+      body: JSON.stringify({ paths, dry_run: false, publish: doPublish, pdf_report: doPdf }),
     });
     const data = await res.json();
     if (!res.ok) {

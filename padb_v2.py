@@ -1140,6 +1140,7 @@ def generate_report(
         else:
             views = list(_VIEW_FN.keys())
     generated: list[Path] = []
+    gen_pairs: list[tuple[str, Path]] = []
 
     def _view_label(view: str) -> str:
         # "Scatter"/"Summary" default to "(All Temps)" -- correct for the common
@@ -1171,12 +1172,66 @@ def generate_report(
         try:
             fn(use_df, view_cfg, out_html)
             generated.append(out_html)
+            gen_pairs.append((view, out_html))
             _warn_if_view_too_large(out_html, view, cfg, output_dir)
         except Exception as exc:
             print(f"    [ERROR] {exc}", flush=True)
             _write_placeholder(out_html, view_cfg["title"], f"Error: {exc}")
 
+    if cfg.get("build_pdf_report", False) and gen_pairs:
+        _maybe_build_pdf_report(df, cfg, prefix, csv_path, output_dir, gen_pairs, _view_label)
+
     return _finish_report(output_dir, prefix, generated, cfg, is_room_only=is_room_only)
+
+
+def _maybe_build_pdf_report(df, cfg, prefix, csv_path, output_dir, gen_pairs, view_label_fn):
+    """Build the opt-in comprehensive multi-view PDF (headless-Chromium print).
+
+    Fully guarded: any failure (module missing, browser not installed, a bad view)
+    logs a NOTE and returns without disturbing the surrounding build.
+    """
+    try:
+        import padb_pdf_report
+    except Exception as exc:
+        _log_note(output_dir, f"build-time PDF report skipped -- padb_pdf_report unavailable ({exc}).")
+        return
+    try:
+        # Dataset summary for the cover page (all best-effort).
+        rows = int(len(df))
+        try:
+            n_duts = int(df["Serial"].replace("", pd.NA).nunique(dropna=True)) if "Serial" in df.columns else None
+        except Exception:
+            n_duts = None
+        try:
+            grp_cols = [c for c in df.columns if c.startswith("_grp_") and df[c].nunique(dropna=True) >= 2]
+            n_conds = int(df.groupby(grp_cols).ngroups) if grp_cols else 1
+        except Exception:
+            n_conds = None
+        try:
+            temps = ", ".join(sorted(str(t) for t in df["Temperature"].dropna().unique()))
+        except Exception:
+            temps = None
+        hi = df["Upper_Limit"].notna().any() if "Upper_Limit" in df.columns else False
+        lo = df["Lower_Limit"].notna().any() if "Lower_Limit" in df.columns else False
+        spec = {(True, True): "Upper + Lower", (True, False): "Upper only",
+                (False, True): "Lower only", (False, False): "none in CSV"}[(bool(hi), bool(lo))]
+
+        meta = {
+            "title": cfg.get("title", prefix),
+            "csv_name": Path(csv_path).name,
+            "rows": rows,
+            "n_duts": n_duts,
+            "n_conds": n_conds,
+            "temps": temps,
+            "spec": spec,
+            "generated": datetime.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "view_labels": {v: view_label_fn(v) for (v, _p) in gen_pairs},
+        }
+        out_pdf = output_dir / (re.sub(r"[^\w]+", "_", prefix) + "_report.pdf")
+        print(f"  Building comprehensive PDF report -> {out_pdf.name}", flush=True)
+        padb_pdf_report.generate_multiview_pdf(gen_pairs, out_pdf, meta)
+    except Exception as exc:
+        _log_note(output_dir, f"build-time PDF report failed ({exc}).")
 
 
 # ===========================================================================
@@ -1528,6 +1583,15 @@ def main(argv: list[str] | None = None) -> None:
              "jobs, DEFAULT_PUBLISH_ROOT\\<dir> otherwise. Leaves the job "
              "file itself untouched. --no-publish wins if both are given.",
     )
+    parser.add_argument(
+        "--pdf-report",
+        action="store_true",
+        help="Build a comprehensive multi-view PDF report (cover + every view "
+             "with its stats table, headless-Chromium print) after the HTML "
+             "views. Runtime override for the job's build_pdf_report key; leaves "
+             "the job file untouched. Requires: py -m pip install playwright "
+             "pypdf && py -m playwright install chromium.",
+    )
     args = parser.parse_args(argv)
 
     job_path = Path(args.job).resolve()
@@ -1548,6 +1612,9 @@ def main(argv: list[str] | None = None) -> None:
         cfg["publish_to"] = ""
     elif args.publish and not cfg.get("publish_to"):
         cfg.pop("publish_to", None)
+
+    if args.pdf_report:
+        cfg["build_pdf_report"] = True
 
     job_dir = job_path.parent
 

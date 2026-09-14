@@ -427,6 +427,41 @@ def test_auto_filter_histogram():
               "applyNoun:'the auto-exclusion'" in h and "undoHint:'Clear auto-exclusion'" in h)
 
 
+# ---------------------------------------------------------------------------
+# Build-time multi-view PDF report -- padb_pdf_report (2026-09-14)
+# Browser-free pins: every 6-view analytic view has a print profile, filenames
+# map back to the right view, the cover page builds, and the env check reports a
+# reason string rather than raising. The actual headless-print path is exercised
+# separately (needs Playwright + Chromium), not in this pure-Python gate.
+# ---------------------------------------------------------------------------
+def test_pdf_report_contract():
+    import padb_pdf_report as R
+    import padb_v2 as v2
+    # Every view padb_v2 renders in the 6-view suite must have a print profile.
+    for view in v2._VIEW_FN:
+        check(f"pdf report: print profile exists for '{view}'",
+              view in R.PRINT_PROFILES, f"missing {view}")
+    # Each profile names a plot div and (for table views) a panel to reveal.
+    for slug, prof in R.PRINT_PROFILES.items():
+        check(f"pdf report: profile '{slug}' has a plot id",
+              bool(prof.get("plot")))
+    # Filename -> view recovery, incl. longest-match (env_coverage vs summary).
+    check("pdf report: _view_of recovers env_coverage",
+          R._view_of(Path("SG6311A_Foo_env_coverage.html")) == "env_coverage")
+    check("pdf report: _view_of recovers stat_summary (not summary)",
+          R._view_of(Path("SG6311A_Foo_stat_summary.html")) == "stat_summary")
+    check("pdf report: _view_of returns None for a non-view file",
+          R._view_of(Path("index.html")) is None)
+    # Cover page builds non-trivial HTML from meta.
+    cov = R._cover_html({"title": "T", "rows": 100, "generated": "now"}, ["Scatter", "Box Plots"])
+    check("pdf report: cover HTML includes title + contents",
+          "<h1>T</h1>" in cov and "Box Plots" in cov and "Methodology" in cov)
+    # Environment check returns a (bool, str) tuple and never raises.
+    ok, reason = R.check_environment()
+    check("pdf report: check_environment returns (bool, reason)",
+          isinstance(ok, bool) and isinstance(reason, str) and reason != "")
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -439,7 +474,8 @@ def main() -> None:
                test_filename_stem_variants, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
-               test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram):
+               test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
+               test_pdf_report_contract):
         try:
             fn()
         except Exception as exc:
