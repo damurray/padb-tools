@@ -1085,6 +1085,9 @@ def generate_report(
             _write_placeholder(out_html, title, f"Error: {exc}")
             generated = []
         _maybe_export_parquet(cfg, csv_path, output_dir)
+        if cfg.get("build_pdf_report", False) and generated:
+            _maybe_build_pdf_report(None, cfg, prefix, csv_path, output_dir,
+                                    [("histogram", out_html)], lambda v: "Histogram")
         return _finish_report(output_dir, prefix, generated, cfg)
 
     print(f"  Loading scatter CSV: {csv_path.name}", flush=True)
@@ -1196,25 +1199,29 @@ def _maybe_build_pdf_report(df, cfg, prefix, csv_path, output_dir, gen_pairs, vi
         _log_note(output_dir, f"build-time PDF report skipped -- padb_pdf_report unavailable ({exc}).")
         return
     try:
-        # Dataset summary for the cover page (all best-effort).
-        rows = int(len(df))
-        try:
-            n_duts = int(df["Serial"].replace("", pd.NA).nunique(dropna=True)) if "Serial" in df.columns else None
-        except Exception:
-            n_duts = None
-        try:
-            grp_cols = [c for c in df.columns if c.startswith("_grp_") and df[c].nunique(dropna=True) >= 2]
-            n_conds = int(df.groupby(grp_cols).ngroups) if grp_cols else 1
-        except Exception:
-            n_conds = None
-        try:
-            temps = ", ".join(sorted(str(t) for t in df["Temperature"].dropna().unique()))
-        except Exception:
-            temps = None
-        hi = df["Upper_Limit"].notna().any() if "Upper_Limit" in df.columns else False
-        lo = df["Lower_Limit"].notna().any() if "Lower_Limit" in df.columns else False
-        spec = {(True, True): "Upper + Lower", (True, False): "Upper only",
-                (False, True): "Lower only", (False, False): "none in CSV"}[(bool(hi), bool(lo))]
+        # Dataset summary for the cover page (all best-effort). df is None for a
+        # histogram-only job (that branch never loads the scatter df).
+        rows = n_duts = n_conds = temps = None
+        spec = None
+        if df is not None:
+            rows = int(len(df))
+            try:
+                n_duts = int(df["Serial"].replace("", pd.NA).nunique(dropna=True)) if "Serial" in df.columns else None
+            except Exception:
+                n_duts = None
+            try:
+                grp_cols = [c for c in df.columns if c.startswith("_grp_") and df[c].nunique(dropna=True) >= 2]
+                n_conds = int(df.groupby(grp_cols).ngroups) if grp_cols else 1
+            except Exception:
+                n_conds = None
+            try:
+                temps = ", ".join(sorted(str(t) for t in df["Temperature"].dropna().unique()))
+            except Exception:
+                temps = None
+            hi = df["Upper_Limit"].notna().any() if "Upper_Limit" in df.columns else False
+            lo = df["Lower_Limit"].notna().any() if "Lower_Limit" in df.columns else False
+            spec = {(True, True): "Upper + Lower", (True, False): "Upper only",
+                    (False, True): "Lower only", (False, False): "none in CSV"}[(bool(hi), bool(lo))]
 
         meta = {
             "title": cfg.get("title", prefix),
@@ -1276,6 +1283,21 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
         group_key, view = _index_group_key(p.stem)
         groups.setdefault(group_key, []).append((p, view))
 
+    # Comprehensive build-time PDF report(s), if any -- named
+    # "<sanitized-analytic-prefix>_report.pdf" (see _maybe_build_pdf_report),
+    # so a report's stem-without-"_report" equals that analytic's group_key.
+    pdf_reports = {
+        p.name[: -len("_report.pdf")]: p
+        for p in sorted(output_dir.glob("*_report.pdf"))
+    }
+
+    def _pdf_link_for(group_key: str) -> str:
+        p = pdf_reports.get(group_key)
+        if not p:
+            return ""
+        return (f'<li><a class="pdf" href="{p.name}">&#128196; '
+                f'Comprehensive PDF report</a></li>')
+
     if len(groups) > 1:
         def _view_rank(view: str | None) -> int:
             return _VIEW_ORDER.index(view) if view in _VIEW_ORDER else len(_VIEW_ORDER)
@@ -1299,6 +1321,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
                 f'<li><a href="{p.name}">{_index_label(p, view)}</a></li>'
                 for p, view in entries
             )
+            items += _pdf_link_for(group_key)
             sections.append(f'<h3>{group_key.replace("_", " ")}</h3>\n<ul>{items}</ul>')
         items_html = "\n".join(sections)
     else:
@@ -1306,6 +1329,8 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
             f'<li><a href="{p.name}">{p.stem.replace("_", " ")}</a></li>'
             for p in all_files
         )
+        # A single-analytic dir: append its report link(s) (usually one).
+        items += "".join(_pdf_link_for(k) for k in sorted(pdf_reports))
         items_html = f"<ul>{items}</ul>"
 
     title = cfg.get("index_title", prefix)
@@ -1319,6 +1344,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
   h1{{font-size:1.4em;}} h3{{font-size:1.05em;margin:18px 0 4px;color:#444;}}
   li{{margin:6px 0;}}
   a{{color:#1f77b4;text-decoration:none;}} a:hover{{text-decoration:underline;}}
+  a.pdf{{color:#b02a37;font-weight:600;}}
 </style>
 </head>
 <body>
@@ -1340,6 +1366,11 @@ def _publish(source_dir: Path, dest_dir: Path) -> None:
         dest_dir.mkdir(parents=True, exist_ok=True)
         copied = 0
         for f in source_dir.glob("*.html"):
+            shutil.copy2(f, dest_dir / f.name)
+            copied += 1
+        # Also publish any comprehensive PDF report(s) so the index link works
+        # on the share, not just locally.
+        for f in source_dir.glob("*_report.pdf"):
             shutil.copy2(f, dest_dir / f.name)
             copied += 1
         print(f"  Published {copied} file(s) -> {dest_dir}", flush=True)

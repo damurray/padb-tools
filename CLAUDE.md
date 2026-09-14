@@ -1793,8 +1793,23 @@ try/except -> `_log_note`, so a PDF failure can't fail extraction/plot/publish.
   `--pdf-report` to the plot-job command and threads it into `_run_v2_siblings`
   for the interactive chain; padb_run.py has no such flag since padb_v2 builds
   the PDF).
-- **Histogram-only jobs** (`views==["histogram"]`) go through a separate branch
-  and are not (yet) covered -- comprehensive report is the 6-view path.
+- **Histogram-only jobs** (`views==["histogram"]`) are covered too (added
+  2026-09-14): the histogram branch calls `_maybe_build_pdf_report(None, ...)`
+  with `[("histogram", out_html)]`. `_maybe_build_pdf_report` tolerates `df=None`
+  (that branch never loads the scatter df) -- cover meta fields it can't compute
+  are just omitted. The histogram print profile is `panels:["h_stats"]`,
+  `toggles:["toggleStats"]` (the stats panel is `h_stats`, collapsed by default,
+  built on toggle -- NOT `h_stats_panel`).
+- **Index link + publish** (added 2026-09-14): `_write_index()` links any
+  `<analytic-prefix>_report.pdf` present in the results dir as a red "&#128196;
+  Comprehensive PDF report" `<li>` -- under the matching analytic's group header
+  in a multi-analytic dir, appended to the flat list otherwise (the report's
+  stem-without-`_report` equals that analytic's `_index_group_key`). `_publish()`
+  now also copies `*_report.pdf` alongside the HTML so the link works on the
+  share, not just locally.
 - Self-QA: `qa_regressions.py::test_pdf_report_contract` (browser-free: profile
   covers every `_VIEW_FN` view, filename->view recovery incl. longest-match,
-  cover HTML builds, `check_environment` returns a reason). 91/0.
+  cover HTML builds, `check_environment` returns a reason, and `_write_index`
+  emits/omits the PDF link correctly). 93/0. The histogram-only report and the
+  full 6-view report were both verified end-to-end in the in-app browser (Edge
+  headless is dead).

@@ -63,7 +63,7 @@ PRINT_PROFILES: dict[str, dict[str, Any]] = {
     "distribution": {"plot": "kde_plot", "panels": ["delta_tbl", "dist_ti_tbl"], "toggles": []},
     "env_coverage": {"plot": "plot",     "panels": ["ec_stat_panel"],        "toggles": ["toggleStatsPanel"], "refresh": "ec_refresh_table_btn"},
     "summary":      {"plot": "plot",     "panels": ["sum_table_wrap"],       "toggles": ["buildTable"],       "refresh": "sum_refresh_table_btn"},
-    "histogram":    {"plot": "plot",     "panels": ["h_stats_panel"],        "toggles": []},
+    "histogram":    {"plot": "plot",     "panels": ["h_stats"],              "toggles": ["toggleStats"]},
 }
 
 # Known view slugs, longest-first, so a filename like

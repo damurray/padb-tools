@@ -461,6 +461,21 @@ def test_pdf_report_contract():
     check("pdf report: check_environment returns (bool, reason)",
           isinstance(ok, bool) and isinstance(reason, str) and reason != "")
 
+    # _write_index links a "<prefix>_report.pdf" when present, and omits it when not.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "Foo_scatter.html").write_text("x", encoding="utf-8")
+        (d / "Foo_boxplot.html").write_text("x", encoding="utf-8")
+        v2._write_index(d, "Foo", [d / "Foo_scatter.html", d / "Foo_boxplot.html"], {"index_title": "Foo"})
+        idx_no = (d / "index.html").read_text(encoding="utf-8")
+        check("pdf report: index has no PDF link when no report file exists",
+              "_report.pdf" not in idx_no)
+        (d / "Foo_report.pdf").write_text("%PDF-1.4", encoding="utf-8")
+        v2._write_index(d, "Foo", [d / "Foo_scatter.html", d / "Foo_boxplot.html"], {"index_title": "Foo"})
+        idx_yes = (d / "index.html").read_text(encoding="utf-8")
+        check("pdf report: index links <prefix>_report.pdf when present",
+              'href="Foo_report.pdf"' in idx_yes and 'class="pdf"' in idx_yes)
+
 
 def main() -> None:
     try:
