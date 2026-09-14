@@ -947,9 +947,9 @@ _HARNESS_JS = r"""
       // print-to-PDF report: suppress the actual print (async image fetch would
       // otherwise fire a real dialog), generate, assert report content.
       if(typeof statGenReport==='function'){
-        window._afNoPrint=true;
+        window._afNoPrint=true; window._afNoCapture=true;
         try{ statGenReport(); }catch(e){}
-        window._afNoPrint=false;
+        window._afNoPrint=false; window._afNoCapture=false;
         var rep=document.getElementById('af_report');
         chk('workflow-report-generated', !!rep && rep.textContent.indexOf('Auto-filter Workflow Report')>=0
             && rep.textContent.indexOf('Recommendation')>=0 && rep.textContent.indexOf('Auto-excluded')>=0,
@@ -1225,9 +1225,9 @@ _HARNESS_JS = r"""
           var au=document.getElementById('box_wf_panel_audit');
           chk('workflow-run-writes-audit', !!au && au.textContent.indexOf('Ran recommended workflow')>=0, 'audit='+(au?'present':'missing'));
           if(typeof boxGenReport==='function'){
-            window._afNoPrint=true;
+            window._afNoPrint=true; window._afNoCapture=true;
             try{ boxGenReport(); }catch(e){}
-            window._afNoPrint=false;
+            window._afNoPrint=false; window._afNoCapture=false;
             var rep=document.getElementById('af_report');
             chk('workflow-report-generated', !!rep && rep.textContent.indexOf('Auto-filter Workflow Report')>=0
                 && rep.textContent.indexOf('Recommendation')>=0 && rep.textContent.indexOf('Auto-excluded')>=0,

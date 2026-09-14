@@ -317,8 +317,8 @@ def test_auto_filter_boxplot():
         check("boxplot Workflow & Recommendations present (button/panel/ctx/engine)",
               all(s in h for s in ('id="box_wf_btn"', 'id="box_wf_panel"', "BOX_AF", "boxRunWorkflow",
                                    "_afAnalyze", "_afRecommend", "_afRunWorkflow")))
-        check("boxplot print-to-PDF report present (_afGenerateReport/boxGenReport)",
-              "_afGenerateReport" in h and "boxGenReport" in h and "Generate PDF report" in h and "Plotly.toImage" in h)
+        check("boxplot print-to-PDF report present (_afGenerateReport/boxGenReport/_afCapture multi-shot)",
+              all(s in h for s in ("_afGenerateReport", "boxGenReport", "Generate PDF report", "Plotly.toImage", "_afCapture")))
 
 
 def test_auto_filter_stat_summary():

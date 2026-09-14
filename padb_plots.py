@@ -3352,27 +3352,64 @@ function _afGenerateReport(ctx){
     if(r.auto.length) h+='<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:12px;margin-top:6px"><thead><tr><th>Excluded serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>Reason</th></tr></thead><tbody>'+
       r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td>'+d.maxMag.toFixed(1)+'</td><td>'+_afRiskLabel(d.risk)+'</td><td>'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
   } else h+='<h3 style="margin:12px 0 2px">Outcome</h3><div style="font-size:13px">No auto-execute has been run yet (this is the recommendation only). Click <b>Run recommended workflow</b> first for an outcome + audit.</div>';
-  h+='<h3 style="margin:12px 0 2px">Plot</h3><div id="af_report_img" style="font-size:12px;color:#888">generating plot image…</div>';
+  h+='<h3 style="margin:12px 0 2px">Plots</h3><div id="af_report_shots" style="font-size:12px;color:#888">capturing plots…</div>';
   var tbl=ctx.tablePanel?document.getElementById(ctx.tablePanel):null;
   if(tbl && tbl.innerHTML.replace(/\s/g,'')) h+='<h3 style="margin:12px 0 2px">Statistics table</h3><div style="font-size:10px;overflow:auto">'+tbl.innerHTML+'</div>';
   h+='<div style="margin-top:12px;color:#888;font-size:11px">Recommendations are heuristic starting points from the data shape, not a substitute for engineering judgment. All exclusions are reversible via Clear global filter.</div></div>';
   rep.innerHTML=h;
-  var gd=document.getElementById('plot')||document.querySelector('.js-plotly-plot');
-  /* window._afNoPrint suppresses the actual print (QA sets it, since the image
-     fetch is async and would otherwise fire a real dialog after a stub is restored). */
-  function done(inner){
-    var im=document.getElementById('af_report_img'); if(im)im.innerHTML=inner;
+  // QA hook: _afNoCapture builds the report text only (no async, view-mutating
+  // plot capture), so a synchronous harness check can read the report without the
+  // capture racing later checks.
+  if(window._afNoCapture){ if(!window._afNoPrint){ try{window.print();}catch(e){} } return; }
+  // Capture the workflow-relevant snapshots (current view + per-band + marginal-
+  // reveal), then print once every image has decoded.
+  _afCapture(ctx, r, function(shots){
+    var box=document.getElementById('af_report_shots');
+    if(box){ box.innerHTML = shots.length? shots.map(function(s){
+        return '<div style="margin-bottom:10px"><div style="font-weight:600;font-size:12px;margin-bottom:2px">'+s.label+'</div>'+
+               (s.url?'<img src="'+s.url+'" style="max-width:100%;border:1px solid #ccc"/>':'<i>(image unavailable)</i>')+'</div>';
+      }).join('') : '<i>(no plot captured)</i>'; }
     if(window._afNoPrint) return;
-    // Wait for the embedded plot <img> to actually decode before printing, or the
-    // PDF captures an empty image box (the base64 data URL paints asynchronously).
+    // print once all imgs in the report are decoded (data URLs paint async)
     var did=false; function go(){ if(did)return; did=true; try{window.print();}catch(e){} }
-    var img=im?im.querySelector('img'):null;
-    if(img && !img.complete){ img.onload=go; img.onerror=go; setTimeout(go,2500); }
-    else go();
+    var imgs=rep.querySelectorAll('img'), pend=0;
+    for(var i=0;i<imgs.length;i++){ if(!imgs[i].complete){ pend++; imgs[i].onload=function(){ if(--pend<=0) go(); }; imgs[i].onerror=function(){ if(--pend<=0) go(); }; } }
+    if(pend===0) go(); else setTimeout(go, 3000);
+  });
+}
+/* Capture the report's plot snapshots by briefly re-configuring the live view and
+   restoring it afterward (guaranteed restore). Shots are workflow-driven:
+   - the current view (as configured);
+   - one per spec/limit band when the segment structure exists (the "by band/spec"
+     Room stat/box plot the user asked for);
+   - a marginal-reveal shot isolating the marginal DUTs the run left for review.
+   Each view supplies the primitives via ctx: getFreq/setFreq, getSerials/setSerials
+   (base serials), segments(). Sequential + async (Plotly.toImage per shot). */
+function _afCapture(ctx, runResult, cb){
+  var gd=document.getElementById('plot')||document.querySelector('.js-plotly-plot');
+  if(!gd||!window.Plotly||!Plotly.toImage||!ctx.getFreq){ cb([{label:'Current view',url:null}]); return; }
+  var shots=[{label:'Current view'}];
+  var segs=(ctx.segments?ctx.segments():[])||[];
+  if(segs.length>=2 && segs.length<=12) segs.forEach(function(s,i){ shots.push({label:'Band '+(i+1)+' ('+s.label+')', freq:[s.lo,s.hi]}); });
+  var marg=(runResult&&runResult.marginal)?runResult.marginal.map(function(d){return d.serial;}):[];
+  if(marg.length) shots.push({label:'Marginal DUTs left for review ('+marg.length+')', sers:marg});
+  var orig={f:ctx.getFreq(), s:(ctx.getSerials?ctx.getSerials():null)};
+  var out=[], i=0;
+  function restore(){ try{ ctx.setFreq(orig.f.lo,orig.f.hi); if(ctx.setSerials) ctx.setSerials(orig.s); }catch(e){} }
+  function next(){
+    if(i>=shots.length){ restore(); cb(out); return; }
+    var sh=shots[i++], mutated=false;
+    try{
+      if(sh.freq){ ctx.setFreq(sh.freq[0],sh.freq[1]); mutated=true; }
+      if(sh.sers && ctx.setSerials){ ctx.setSerials(sh.sers); mutated=true; }
+    }catch(e){}
+    setTimeout(function(){
+      Plotly.toImage(gd,{format:'png',width:1000,height:520})
+        .then(function(url){ out.push({label:sh.label,url:url}); next(); })
+        .catch(function(){ out.push({label:sh.label,url:null}); next(); });
+    }, mutated?300:60);
   }
-  if(gd && window.Plotly && Plotly.toImage){
-    Plotly.toImage(gd,{format:'png',width:1000,height:560}).then(function(url){ done('<img src="'+url+'" style="max-width:100%;border:1px solid #ccc"/>'); }).catch(function(){ done('<i>(plot image unavailable)</i>'); });
-  } else done('<i>(plot image unavailable)</i>');
+  next();
 }
 """
 
@@ -7837,7 +7874,13 @@ var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_a
   /* hasSpec must reflect what the SPEC basis actually uses (HI_SPEC/LO_SPEC),
      so the recommendation never points at a basis that would flag nothing. */
   hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);},
-  compute:function(basis,level){return _afCompute(_statAutoBadPoints(basis),STAT_AF);}};
+  compute:function(basis,level){return _afCompute(_statAutoBadPoints(basis),STAT_AF);},
+  /* report-snapshot primitives (briefly re-configure the view, then restore) */
+  getFreq:function(){return {lo:parseFloat(document.getElementById('freq_lo_txt').value),hi:parseFloat(document.getElementById('freq_hi_txt').value)};},
+  setFreq:function(lo,hi){var a=document.getElementById('freq_lo_txt'),b=document.getElementById('freq_hi_txt');if(a)a.value=(''+lo);if(b)b.value=(''+hi);update();},
+  getSerials:function(){return Array.prototype.slice.call(document.querySelectorAll('.ser_chk:checked')).map(function(c){return c.value;});},
+  setSerials:function(list){document.querySelectorAll('.ser_chk').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0||list.indexOf(_statBaseSerial(c.value))>=0;});update();},
+  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];}};
 function statAutoFilterPreview(){_afPreview(STAT_AF);}
 function statAutoFilterApply(){_afApply(STAT_AF);}
 function statAutoFilterAffirm(){_afAffirm(STAT_AF);}
@@ -13721,7 +13764,13 @@ var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoRe
   nConds:function(){var s={};BOX_DATA.forEach(function(cd){s[cd.condition]=1;});return Object.keys(s).length;},
   nFreqs:function(){var s={};BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){s[f.freq]=1;});});return Object.keys(s).length;},
   multiTemp:function(){var s={};BOX_DATA.forEach(function(cd){s[cd.temp]=1;});return Object.keys(s).length>1;},
-  hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);}};
+  hasSpec:function(){return (typeof HI_SPEC!=='undefined'&&HI_SPEC!==null)||(typeof LO_SPEC!=='undefined'&&LO_SPEC!==null);},
+  /* report-snapshot primitives (briefly re-configure the view, then restore) */
+  getFreq:function(){return {lo:parseFloat(document.getElementById('box_freq_lo').value),hi:parseFloat(document.getElementById('box_freq_hi').value)};},
+  setFreq:function(lo,hi){var a=document.getElementById('box_freq_lo'),b=document.getElementById('box_freq_hi');if(a)a.value=lo;if(b)b.value=hi;update();},
+  getSerials:function(){return Array.prototype.slice.call(document.querySelectorAll('.box_ser_chk:checked')).map(function(c){return c.value;});},
+  setSerials:function(list){document.querySelectorAll('.box_ser_chk').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0||list.indexOf(_boxBaseSerial(c.value))>=0;});update();},
+  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];}};
 function boxApplyRec(){_afApplyRec(BOX_AF);}
 function boxRunWorkflow(){_afRunWorkflow(BOX_AF);}
 function boxGenReport(){_afGenerateReport(BOX_AF);}
