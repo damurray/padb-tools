@@ -583,7 +583,11 @@ def render_env_coverage(
         env_data=env_data,
         cond_dims=cond_dims,
         title=title,
-        y_label="ΔEnv (dB)",
+        # ΔEnv is always the right label for this view's actual data, so the
+        # default is unchanged for every existing pod; the env_coverage_y_label
+        # job.json key exists only for a pod whose delta axis needs a different
+        # unit/wording (documented but previously unwired -- CLAUDE.md).
+        y_label=cfg.get("env_coverage_y_label", "ΔEnv (dB)"),
         y_lim=None,          # auto-scale; delta values are much smaller than absolute power range
         log_x=log_x,
         freq_min=freq_min,

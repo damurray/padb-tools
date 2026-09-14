@@ -3049,7 +3049,7 @@ function updateEcSitePanel(){
       return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:sr}; });
     var meta={primary:PRIMARY_SITE,k:k,basisLabel:(basis==='room'?'Room baseline':'ΔEnv drift'),
       bucketLabel:(basis==='room'?'condition | freq':'condition | temp | freq'),
-      valueLabel:(basis==='room'?'Room value':'ΔEnv (dB)'),towardFail:towardFail,exportFnName:'saveEcSitePopCsv'};
+      valueLabel:(basis==='room'?'Room value':(typeof EC_Y_LABEL!=='undefined'&&EC_Y_LABEL?EC_Y_LABEL:'ΔEnv (dB)')),towardFail:towardFail,exportFnName:'saveEcSitePopCsv'};
     _ecLastSiteRows=rows; _ecLastSiteMeta=meta;
     el.innerHTML=_spRender(rows,meta);
   }catch(e){ el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>'; }
