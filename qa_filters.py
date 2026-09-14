@@ -848,6 +848,64 @@ _HARNESS_JS = r"""
     }
   }
 
+  // ---- Auto-filter bad DUTs -- population views (stat_summary; extends to
+  // summary/env_coverage/histogram as they gain the shared engine). Oracle-free:
+  // (a) OFF produces no result; (b) the dist-basis bad-point set matches a fully
+  // INDEPENDENT median/MAD modified-z recompute from this view's own per-DUT data
+  // (the uniformly-wrong-magnitude guard); (c) auto count monotonic in level;
+  // (d) no auto DUT is systemic/risky; (e) Apply adds EXACTLY the auto keys to the
+  // shared GF and every auto DUT's points read as GF-excluded, Clear restores.
+  // Self-skips off a view without the shared auto-filter controls.
+  function runAutoFilterStat(R,chk,skip){
+    if(typeof STAT_DATA==='undefined'||typeof _statAutoBadPoints!=='function'
+       ||!document.getElementById('stat_auto_basis')||typeof getActiveConditions!=='function'){
+      skip('auto-filter','no stat_summary auto-filter in this view'); return; }
+    var basisEl=document.getElementById('stat_auto_basis'), levelEl=document.getElementById('stat_auto_level');
+    function gfN(){try{return (JSON.parse(localStorage.getItem(GF_KEY)||'{"excluded":[]}').excluded||[]).length;}catch(e){return -1;}}
+    if(typeof clearStatGlobalFilter==='function') clearStatGlobalFilter();
+    basisEl.value='dist';
+    levelEl.value='off'; statAutoFilterPreview();
+    var panel=document.getElementById('stat_auto_panel');
+    chk('auto-off-produces-nothing', !window._statAutoResult && (!panel||getComputedStyle(panel).display==='none'),
+        'result='+(window._statAutoResult?'set':'null'));
+    function _med(a){var s=a.slice().sort(function(x,y){return x-y;});var n=s.length;return n?(n%2?s[(n-1)/2]:0.5*(s[n/2-1]+s[n/2])):0;}
+    var _abs=function(s){return (typeof _statBaseSerial!=='undefined')?_statBaseSerial(s):s;};
+    var conds=getActiveConditions();
+    var fLo=parseFloat(document.getElementById('freq_lo_txt').value); if(isNaN(fLo))fLo=-Infinity;
+    var fHi=parseFloat(document.getElementById('freq_hi_txt').value); if(isNaN(fHi))fHi=Infinity;
+    var expKeys={};
+    conds.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){
+      if(fs.freq<fLo||fs.freq>fHi)return;
+      var det=(fs.dut_vals||[]); if(det.length<4)return;
+      var fv=det.map(function(d){return d.v;});
+      var med=_med(fv), mad=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+      det.forEach(function(d){ if(Math.abs(d.v-med)/mad>=3.5) expKeys[_abs(d.s)+'||'+cd.condition+'||'+(d.p||'')+'||'+fs.freq_label]=1; });
+    });});
+    var got={}; _statAutoBadPoints('dist').forEach(function(o){ got[_abs(o.serial)+'||'+o.cond+'||'+(o.port||'')+'||'+o.freqLabel]=1; });
+    var miss=Object.keys(expKeys).filter(function(k){return !got[k];});
+    var xtra=Object.keys(got).filter(function(k){return !expKeys[k];});
+    chk('auto-badpoints-matches-independent-MAD', miss.length===0&&xtra.length===0,
+        'flagged='+Object.keys(got).length+' expected='+Object.keys(expKeys).length+' missing='+miss.length+' extra='+xtra.length);
+    function autoN(lv){ levelEl.value=lv; statAutoFilterPreview(); return window._statAutoResult?window._statAutoResult.auto.length:0; }
+    var nC=autoN('conservative'), nM=autoN('moderate'), nA=autoN('aggressive');
+    chk('auto-level-monotonic', nA>=nM&&nM>=nC, 'conservative='+nC+' moderate='+nM+' aggressive='+nA);
+    var ar=window._statAutoResult;
+    var bad=(ar?ar.auto:[]).filter(function(d){return d.shared>0.5||d.risk>=0.05;});
+    chk('auto-never-systemic-or-risky', bad.length===0, 'violations='+bad.length+' auto='+(ar?ar.auto.length:0));
+    if(ar && ar.auto.length && typeof statAutoFilterApply==='function'){
+      var autoKeyCount=0; ar.auto.forEach(function(d){autoKeyCount+=d.keys.length;});
+      statAutoFilterApply();
+      chk('auto-apply-adds-exactly-auto-keys', gfN()===autoKeyCount, 'gf='+gfN()+' autoKeys='+autoKeyCount);
+      var allExcl=true; (window._statAutoResult?window._statAutoResult.auto:ar.auto).forEach(function(d){
+        d.pts.forEach(function(p){ if(!_isStatGfExcl(p.serial,p.cond,'Room',p.freqLabel,p.port)) allExcl=false; }); });
+      chk('auto-apply-excludes-auto-DUTs', allExcl, 'all auto points GF-excluded='+allExcl);
+      if(typeof clearStatGlobalFilter==='function'){ clearStatGlobalFilter();
+        chk('auto-clear-restores', gfN()===0, 'gf='+gfN()); }
+    } else skip('auto-apply-precise','no DUT qualifies for auto at dist/aggressive on this data');
+    levelEl.value='off'; statAutoFilterPreview();
+    if(typeof clearStatGlobalFilter==='function') clearStatGlobalFilter();
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -892,6 +950,9 @@ _HARNESS_JS = r"""
       // CSV-export-matches-screen + import round-trip -- same heavy-page skip.
       if(_HEAVY){ skip('csv-export','skipped on heavy page'); }
       else { try{ runCsvExport(R,chk,skip); }catch(e){ chk('CSV-EXPORT-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // Auto-filter bad DUTs (population views) -- self-skips off a view without it.
+      if(_HEAVY){ skip('auto-filter','skipped on heavy page'); }
+      else { try{ runAutoFilterStat(R,chk,skip); }catch(e){ chk('AUTOFILTER-STAT-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');

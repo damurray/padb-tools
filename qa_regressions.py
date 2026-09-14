@@ -314,6 +314,42 @@ def test_auto_filter_boxplot():
               "_autoRisk" in h and "d.risk<0.05" in h and "PRIMARY_SITE" in h)
 
 
+def test_auto_filter_stat_summary():
+    """Server contract for the stat_summary 'Auto-filter bad DUTs' feature (the
+    first population view on the shared engine). Pins the controls, the shared
+    _AUTO_FILTER_SHARED_JS engine, the per-view gathering + GF write, and the
+    Clear-global-filter undo."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "ss.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(12):
+                    w.writerow(["Room", freq, round(10.0 + 0.05 * (i % 5), 4),
+                                f"HarmonicNumber: 2  Serial Number: D{i:02d}", 20, -20])
+        out = Path(td) / "ss.html"
+        pp.stat_summary(p, {"y_label": "P", "title_prefix": "T"}, out)
+        h = out.read_text(encoding="utf-8")
+        check("stat auto-filter renders basis + level selects + panel",
+              all(s in h for s in ('id="stat_auto_basis"', 'id="stat_auto_level"', 'id="stat_auto_panel"')))
+        check("stat auto-filter basis/level options present",
+              all(f'value="{v}"' in h for v in ("dist", "spec", "tll", "off", "conservative", "moderate", "aggressive")))
+        check("shared auto-filter engine present (_AF_LEVELS/_afCompute/_afRisk/_afMedian/_afPreview)",
+              all(s in h for s in ("_AF_LEVELS", "_afCompute", "_afRisk", "_afMedian", "_afPreview")))
+        check("stat per-view gathering + GF write + clear present",
+              all(s in h for s in ("_statAutoBadPoints", "_statMergeGf", "clearStatGlobalFilter", "STAT_AF")))
+        check("stat auto-filter magnitude is MAD-robust (1.4826 + 3.5 cutoff)",
+              "1.4826" in h and "3.5" in h)
+        check("shared systemic guard is per-direction (keys include o.dir)",
+              "o.freqLabel+'|'+o.dir" in h)
+        check("stat auto-filter writes point-precise GF keys (base serial + condKey + Room + freq_label)",
+              "_statBaseSerial(d.s)+'||'+_condKeyForStat" in h)
+        check("stat Clear-global-filter button rendered",
+              "clearStatGlobalFilter()" in h and "Clear global filter" in h)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -325,7 +361,7 @@ def main() -> None:
                test_has_segmentable_spec, test_resolve_date_sentinel,
                test_filename_stem_variants, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
-               test_auto_filter_boxplot):
+               test_auto_filter_boxplot, test_auto_filter_stat_summary):
         try:
             fn()
         except Exception as exc:
