@@ -294,8 +294,10 @@ def test_auto_filter_boxplot():
         h = out.read_text(encoding="utf-8")
         check("auto-filter renders basis + level selects",
               'id="auto_gf_basis"' in h and 'id="auto_gf_level"' in h)
-        check("auto-filter basis options dist/spec/tll present",
-              'value="dist"' in h and 'value="spec"' in h and 'value="tll"' in h)
+        check("auto-filter basis options dist/iqr/dmad/spec/tll present",
+              all(f'value="{v}"' in h for v in ("dist", "iqr", "dmad", "spec", "tll")))
+        check("auto-filter shared scorer present (_afScorer/_afPeerBasis, all 5 bases)",
+              "_afScorer" in h and "_afPeerBasis" in h and "Double-MAD" in h and "IQR fence" in h)
         check("auto-filter level options off/conservative/moderate/aggressive present",
               all(f'value="{v}"' in h for v in ("off", "conservative", "moderate", "aggressive")))
         check("auto-filter panel div rendered", 'id="auto_gf_panel"' in h)
@@ -334,10 +336,10 @@ def test_auto_filter_stat_summary():
         h = out.read_text(encoding="utf-8")
         check("stat auto-filter renders basis + level selects + panel",
               all(s in h for s in ('id="stat_auto_basis"', 'id="stat_auto_level"', 'id="stat_auto_panel"')))
-        check("stat auto-filter basis/level options present",
-              all(f'value="{v}"' in h for v in ("dist", "spec", "tll", "off", "conservative", "moderate", "aggressive")))
-        check("shared auto-filter engine present (_AF_LEVELS/_afCompute/_afRisk/_afMedian/_afPreview)",
-              all(s in h for s in ("_AF_LEVELS", "_afCompute", "_afRisk", "_afMedian", "_afPreview")))
+        check("stat auto-filter basis/level options present (incl iqr/dmad)",
+              all(f'value="{v}"' in h for v in ("dist", "iqr", "dmad", "spec", "tll", "off", "conservative", "moderate", "aggressive")))
+        check("shared auto-filter engine present (_AF_LEVELS/_afCompute/_afRisk/_afMedian/_afPreview/_afScorer)",
+              all(s in h for s in ("_AF_LEVELS", "_afCompute", "_afRisk", "_afMedian", "_afPreview", "_afScorer", "_afPeerBasis")))
         check("stat per-view gathering + GF write + clear present",
               all(s in h for s in ("_statAutoBadPoints", "_statMergeGf", "clearStatGlobalFilter", "STAT_AF")))
         check("stat auto-filter magnitude is MAD-robust (1.4826 + 3.5 cutoff)",

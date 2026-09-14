@@ -873,19 +873,39 @@ _HARNESS_JS = r"""
     var conds=getActiveConditions();
     var fLo=parseFloat(document.getElementById('freq_lo_txt').value); if(isNaN(fLo))fLo=-Infinity;
     var fHi=parseFloat(document.getElementById('freq_hi_txt').value); if(isNaN(fHi))fHi=Infinity;
-    var expKeys={};
-    conds.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){
-      if(fs.freq<fLo||fs.freq>fHi)return;
-      var det=(fs.dut_vals||[]); if(det.length<4)return;
-      var fv=det.map(function(d){return d.v;});
-      var med=_med(fv), mad=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
-      det.forEach(function(d){ if(Math.abs(d.v-med)/mad>=3.5) expKeys[_abs(d.s)+'||'+cd.condition+'||'+(d.p||'')+'||'+fs.freq_label]=1; });
-    });});
-    var got={}; _statAutoBadPoints('dist').forEach(function(o){ got[_abs(o.serial)+'||'+o.cond+'||'+(o.port||'')+'||'+o.freqLabel]=1; });
-    var miss=Object.keys(expKeys).filter(function(k){return !got[k];});
-    var xtra=Object.keys(got).filter(function(k){return !expKeys[k];});
-    chk('auto-badpoints-matches-independent-MAD', miss.length===0&&xtra.length===0,
-        'flagged='+Object.keys(got).length+' expected='+Object.keys(expKeys).length+' missing='+miss.length+' extra='+xtra.length);
+    // Independent re-derivation of EACH peer-relative basis (fully separate code
+    // from _afScorer -- the whole point is a second implementation catching a bug
+    // in the first). dist=MAD modZ>=3.5; iqr=outside Tukey 1.5xIQR fence;
+    // dmad=double-MAD (left/right) modZ>=3.5.
+    function _flagFor(basis, fv){
+      var med=_med(fv);
+      if(basis==='iqr'){ var s=fv.slice().sort(function(a,b){return a-b;}),n=s.length;
+        function pc(p){var i=(p/100)*(n-1),li=Math.floor(i);return li+1<n?s[li]+(s[li+1]-s[li])*(i-li):s[li];}
+        var q1=pc(25),q3=pc(75),iqr=q3-q1,loF=q1-1.5*iqr,hiF=q3+1.5*iqr;
+        return function(v){return v>hiF||v<loF;}; }
+      if(basis==='dmad'){ var below=[],above=[]; fv.forEach(function(v){if(v<=med)below.push(med-v);if(v>=med)above.push(v-med);});
+        var sym=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+        var mLo=_med(below)*1.4826||sym, mHi=_med(above)*1.4826||sym;
+        return function(v){var mz=(v>=med)?(v-med)/mHi:(med-v)/mLo; return mz>=3.5;}; }
+      var mad=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+      return function(v){return Math.abs(v-med)/mad>=3.5;};
+    }
+    function _expKeys(basis){ var e={};
+      conds.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){
+        if(fs.freq<fLo||fs.freq>fHi)return;
+        var det=(fs.dut_vals||[]); if(det.length<4)return;
+        var flag=_flagFor(basis, det.map(function(d){return d.v;}));
+        det.forEach(function(d){ if(flag(d.v)) e[_abs(d.s)+'||'+cd.condition+'||'+(d.p||'')+'||'+fs.freq_label]=1; });
+      });});
+      return e; }
+    function _gotKeys(basis){ var g={}; _statAutoBadPoints(basis).forEach(function(o){ g[_abs(o.serial)+'||'+o.cond+'||'+(o.port||'')+'||'+o.freqLabel]=1; }); return g; }
+    ['dist','iqr','dmad'].forEach(function(basis){
+      var exp=_expKeys(basis), got=_gotKeys(basis);
+      var miss=Object.keys(exp).filter(function(k){return !got[k];});
+      var xtra=Object.keys(got).filter(function(k){return !exp[k];});
+      chk('auto-badpoints-matches-independent-'+basis, miss.length===0&&xtra.length===0,
+          'flagged='+Object.keys(got).length+' expected='+Object.keys(exp).length+' missing='+miss.length+' extra='+xtra.length);
+    });
     function autoN(lv){ levelEl.value=lv; statAutoFilterPreview(); return window._statAutoResult?window._statAutoResult.auto.length:0; }
     var nC=autoN('conservative'), nM=autoN('moderate'), nA=autoN('aggressive');
     chk('auto-level-monotonic', nA>=nM&&nM>=nC, 'conservative='+nC+' moderate='+nM+' aggressive='+nA);
@@ -1092,26 +1112,44 @@ _HARNESS_JS = r"""
         var aPanel=document.getElementById('auto_gf_panel');
         chk('auto-off-produces-nothing', !window._autoResult && (!aPanel||getComputedStyle(aPanel).display==='none'),
             'result='+(window._autoResult?'set':'null')+' panel='+(aPanel?getComputedStyle(aPanel).display:'none'));
-        // (b) independent MAD recompute of the distribution-basis bad points.
+        // (b) independent re-derivation of EACH peer-relative basis (dist / iqr /
+        // dmad), fully separate code from _afScorer -- a second implementation
+        // catching a bug in the first.
         function _med(a){var s=a.slice().sort(function(x,y){return x-y;});var n=s.length;return n?(n%2?s[(n-1)/2]:0.5*(s[n/2-1]+s[n/2])):0;}
         var _abs=function(s){return (typeof _boxBaseSerial!=='undefined')?_boxBaseSerial(s):s;};
         var selC=getSelectedConds(), selT=getSelectedTemps(), fr=getBoxFreqRange();
-        var expKeys={};
-        BOX_DATA.forEach(function(cd){
-          if(selC.indexOf(cd.condition)<0)return; if(selT.indexOf(cd.temp)<0)return;
-          (cd.freq_stats||[]).forEach(function(f){
-            if(f.freq<fr.lo||f.freq>fr.hi)return;
-            var det=(f.vals_detail||[]); if(det.length<4)return;
-            var fv=det.map(function(d){return d.v;});
-            var med=_med(fv), mad=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
-            det.forEach(function(d){ if(Math.abs(d.v-med)/mad>=3.5) expKeys[_abs(d.s)+'||'+cd.condition+'||'+cd.temp+'||'+f.freq_label]=1; });
+        function _flagFor(basis, fv){
+          var med=_med(fv);
+          if(basis==='iqr'){ var s=fv.slice().sort(function(a,b){return a-b;}),n=s.length;
+            function pc(p){var i=(p/100)*(n-1),li=Math.floor(i);return li+1<n?s[li]+(s[li+1]-s[li])*(i-li):s[li];}
+            var q1=pc(25),q3=pc(75),iqr=q3-q1,loF=q1-1.5*iqr,hiF=q3+1.5*iqr; return function(v){return v>hiF||v<loF;}; }
+          if(basis==='dmad'){ var below=[],above=[]; fv.forEach(function(v){if(v<=med)below.push(med-v);if(v>=med)above.push(v-med);});
+            var sym=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+            var mLo=_med(below)*1.4826||sym, mHi=_med(above)*1.4826||sym;
+            return function(v){var mz=(v>=med)?(v-med)/mHi:(med-v)/mLo; return mz>=3.5;}; }
+          var mad=_med(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+          return function(v){return Math.abs(v-med)/mad>=3.5;};
+        }
+        function _expKeys(basis){ var e={};
+          BOX_DATA.forEach(function(cd){
+            if(selC.indexOf(cd.condition)<0)return; if(selT.indexOf(cd.temp)<0)return;
+            (cd.freq_stats||[]).forEach(function(f){
+              if(f.freq<fr.lo||f.freq>fr.hi)return;
+              var det=(f.vals_detail||[]); if(det.length<4)return;
+              var flag=_flagFor(basis, det.map(function(d){return d.v;}));
+              det.forEach(function(d){ if(flag(d.v)) e[_abs(d.s)+'||'+cd.condition+'||'+cd.temp+'||'+f.freq_label]=1; });
+            });
           });
+          return e; }
+        function _gotKeys(basis){ var g={}; _autoBadPoints(basis).forEach(function(o){ g[_abs(o.serial)+'||'+o.cond+'||'+o.temp+'||'+o.freqLabel]=1; }); return g; }
+        ['dist','iqr','dmad'].forEach(function(basis){
+          var exp=_expKeys(basis), got=_gotKeys(basis);
+          var miss=Object.keys(exp).filter(function(k){return !got[k];});
+          var xtra=Object.keys(got).filter(function(k){return !exp[k];});
+          chk('auto-badpoints-matches-independent-'+basis, miss.length===0&&xtra.length===0,
+              'flagged='+Object.keys(got).length+' expected='+Object.keys(exp).length+' missing='+miss.length+' extra='+xtra.length);
         });
-        var got={}; _autoBadPoints('dist').forEach(function(o){ got[_abs(o.serial)+'||'+o.cond+'||'+o.temp+'||'+o.freqLabel]=1; });
-        var miss=Object.keys(expKeys).filter(function(k){return !got[k];});
-        var xtra=Object.keys(got).filter(function(k){return !expKeys[k];});
-        chk('auto-badpoints-matches-independent-MAD', miss.length===0&&xtra.length===0,
-            'flagged='+Object.keys(got).length+' expected='+Object.keys(expKeys).length+' missing='+miss.length+' extra='+xtra.length);
+        abasis.value='dist';
         // (c) level monotonicity
         function autoN(lv){ alevel.value=lv; autoFilterPreview(); return window._autoResult?window._autoResult.auto.length:0; }
         var nC=autoN('conservative'), nM=autoN('moderate'), nA=autoN('aggressive');

@@ -3061,6 +3061,51 @@ var _AF_LEVELS={
 };
 function _afSiteOf(cond){var m=String(cond||'').match(/Site:\s*([^|]+?)(?:\s{2,}|$)/i);return m?m[1].trim():'';}
 function _afMedian(a){var s=a.slice().sort(function(x,y){return x-y;});var n=s.length;return n?(n%2?s[(n-1)/2]:0.5*(s[n/2-1]+s[n/2])):0;}
+/* Peer-relative bases (dist/iqr/dmad) measure a point against its own peer
+   population and need NO spec; spec/tll measure against a datasheet/limit value. */
+function _afPeerBasis(basis){ return basis==='dist'||basis==='iqr'||basis==='dmad'; }
+/* Single source of the per-bucket badness magnitude for EVERY basis. Given a
+   bucket's values `fv` (and effective spec hi/lo), returns score(v) -> {mag,dir}
+   or null (not bad). Magnitude is a sigma-equivalent in every case so the LEVEL
+   bar (minSigma) means the same thing across bases. Both boxplot and the shared
+   population views call this, and each QA harness independently re-derives it.
+     dist  -- MAD modified z (median/MAD*1.4826), Iglewicz-Hoaglin 3.5 cutoff.
+              Robust, symmetric, 50% breakdown. Default for NPI/no-trusted-spec.
+     iqr   -- flags points OUTSIDE the Tukey 1.5xIQR fence (exactly what the
+              boxplot whiskers draw); magnitude = |v-median|/(IQR/1.349), a
+              sigma-equivalent robust z. Quartile-based, matches the plot.
+     dmad  -- DOUBLE MAD: separate left/right MAD about the median, so a genuinely
+              SKEWED-but-fine population (long one-sided RF/PN tail) isn't
+              over-flagged on its long side. Asymmetric modified z, 3.5 cutoff.
+     spec  -- fail-side exceedance past Spec Hi/Lo, scaled by MAD (sigma-equiv).
+     tll   -- same, past the guard-banded TLL/limit (override) else Spec. */
+function _afScorer(basis, fv, hi, lo){
+  var med=_afMedian(fv);
+  if(basis==='iqr'){
+    var s=fv.slice().sort(function(a,b){return a-b;}),n=s.length;
+    function _pc(p){var i=(p/100)*(n-1),li=Math.floor(i);return li+1<n?s[li]+(s[li+1]-s[li])*(i-li):s[li];}
+    var q1=_pc(25),q3=_pc(75),iqr=q3-q1,loF=q1-1.5*iqr,hiF=q3+1.5*iqr,scale=(iqr/1.349)||1e-9;
+    return function(v){ return (v>hiF||v<loF)?{mag:Math.abs(v-med)/scale,dir:(v>=med)?'high':'low'}:null; };
+  }
+  if(basis==='dmad'){
+    var below=[],above=[]; fv.forEach(function(v){if(v<=med)below.push(med-v);if(v>=med)above.push(v-med);});
+    var sym=_afMedian(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+    var madLo=_afMedian(below)*1.4826||sym, madHi=_afMedian(above)*1.4826||sym;
+    return function(v){var mz=(v>=med)?(v-med)/madHi:(med-v)/madLo; return mz>=3.5?{mag:mz,dir:(v>=med)?'high':'low'}:null;};
+  }
+  if(basis==='dist'){
+    var mad=_afMedian(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+    return function(v){var mz=Math.abs(v-med)/mad; return mz>=3.5?{mag:mz,dir:(v>=med)?'high':'low'}:null;};
+  }
+  /* spec / tll */
+  var madS=_afMedian(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+  return function(v){
+    var exc=null,dir=(v>=med)?'high':'low';
+    if(hi!==null&&hi!==undefined&&v>hi){exc=v-hi;dir='high';}
+    else if(lo!==null&&lo!==undefined&&v<lo){exc=lo-v;dir='low';}
+    return (exc!==null&&exc>0)?{mag:exc/madS,dir:dir}:null;
+  };
+}
 /* Robust badness magnitude via the MEDIAN and MAD, NOT mean/std -- mean/std
    saturate for small per-box n (a lone gross outlier can't exceed ~2.85 sigma at
    n=10 because it inflates the std in its own denominator), so a 3-6 sigma bar is
@@ -3100,7 +3145,7 @@ function _afCompute(pts,ctx){
     var sp=o.temp+'|'+o.freqLabel+'|'+o.dir; (spot[sp]=spot[sp]||{})[bs]=1;
   });
   var thr=_AF_LEVELS[level]||_AF_LEVELS.conservative;
-  var unit=basis==='dist'?'σ from peers':'σ past '+(basis==='tll'?'TLL/limit':'spec');
+  var unit=_afPeerBasis(basis)?'σ from peers':'σ past '+(basis==='tll'?'TLL/limit':'spec');
   var compare=!!primarySite;
   var auto=[],marginal=[],review=[];
   Object.keys(byDut).forEach(function(bs){
@@ -3112,7 +3157,7 @@ function _afCompute(pts,ctx){
     if(compare && d.site && d.site!==primarySite){
       d.reason='onboarding site “'+d.site+'”: '+d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — filter manually (auto-clean is scoped to the reference site '+primarySite+')'+riskTxt; review.push(d); return;
     }
-    if(basis==='dist'&&(dir==='hi'&&d.high===0||dir==='lo'&&d.low===0)){
+    if(_afPeerBasis(basis)&&(dir==='hi'&&d.high===0||dir==='lo'&&d.low===0)){
       d.reason=d.pts.length+' peer-outlier pt(s), all AWAY from the '+(dir==='hi'?'upper':'lower')+' spec — can’t fail spec (benign)'+riskTxt; review.push(d); return;
     }
     if(d.shared>0.5){
@@ -3135,13 +3180,13 @@ function _afPreview(ctx){
   if(level==='off'){ panel.style.display='none'; panel.innerHTML=''; return; }
   panel.style.display='';
   var hi=ctx.hiSpec?ctx.hiSpec():null, lo=ctx.loSpec?ctx.loSpec():null;
-  if(basis!=='dist'&&hi===null&&lo===null){
-    panel.innerHTML='<div style="padding:6px;color:#a05000;font-size:12px">No spec configured on this dataset — the Spec/TLL basis has nothing to measure against. Use the <b>Distribution (σ)</b> basis (the right one for an NPI dataset with no trusted spec yet).</div>';
+  if(!_afPeerBasis(basis)&&hi===null&&lo===null){
+    panel.innerHTML='<div style="padding:6px;color:#a05000;font-size:12px">No spec configured on this dataset — the Spec/TLL basis has nothing to measure against. Use a peer-relative basis (<b>Distribution</b>, <b>IQR fence</b>, or <b>Double-MAD</b>) — the right kind for NPI data with no trusted spec yet.</div>';
     return;
   }
   var pts=ctx.badPoints(basis);
   var r=_afCompute(pts,ctx); window[ctx.resultVar]=r;
-  var basisName=basis==='dist'?'Distribution (σ from peers)':basis==='tll'?'TLL/limit-relative':'Spec-relative';
+  var basisName=basis==='dist'?'Distribution (MAD σ)':basis==='iqr'?'IQR fence (Tukey)':basis==='dmad'?'Double-MAD (skew-aware)':basis==='tll'?'TLL/limit-relative':'Spec-relative';
   var autoPts=r.auto.reduce(function(a,d){return a+d.pts.length;},0);
   var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare: auto-clean is scoped to the reference site <b>'+r.primarySite+'</b>; onboarding-site DUTs are listed for manual review.</span>':'';
   var h='<div style="font-size:12px;margin:4px 0">⚙ <b>Auto-filter preview</b> — basis <b>'+basisName+'</b>, level <b>'+r.thr.label+
@@ -7591,18 +7636,11 @@ function _statAutoBadPoints(basis){
       });
       if(det.length<4) return;
       var fv=det.map(function(d){return d.v;});
-      var med=_afMedian(fv);
-      var mad=_afMedian(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;
+      var score=_afScorer(basis,fv,hi,lo);
       det.forEach(function(d){
-        var mag=null,dir=(d.v>=med)?'high':'low';
-        if(basis==='dist'){ var mz=Math.abs(d.v-med)/mad; if(mz>=3.5) mag=mz; }
-        else { var exc=null;
-          if(hi!==null&&d.v>hi){exc=d.v-hi;dir='high';}
-          else if(lo!==null&&d.v<lo){exc=lo-d.v;dir='low';}
-          if(exc!==null&&exc>0) mag=exc/mad;
-        }
-        if(mag!==null) out.push({serial:d.s,port:d.p||'',cond:cd.condition,temp:'Room',freq:fs.freq,
-          freqLabel:fs.freq_label,value:d.v,mag:mag,dir:dir,site:_afSiteOf(cd.condition),
+        var r=score(d.v); if(!r) return;
+        out.push({serial:d.s,port:d.p||'',cond:cd.condition,temp:'Room',freq:fs.freq,
+          freqLabel:fs.freq_label,value:d.v,mag:r.mag,dir:r.dir,site:_afSiteOf(cd.condition),
           key:_statBaseSerial(d.s)+'||'+_condKeyForStat(cd.condition)+(d.p?'|Port='+d.p:'')+'||Room||'+fs.freq_label});
       });
     });
@@ -8166,6 +8204,11 @@ def _build_stat_summary_html(
         '  BASIS = what &quot;bad&quot; means:  Distribution (&sigma;) flags a point far from its peer'
         ' DUTs at the same frequency, using a robust median/MAD score (does NOT saturate the way'
         ' mean/&sigma; does on small n) -- the right choice for NPI data with no trusted spec yet;'
+        '  IQR fence flags points outside the Tukey 1.5&times;IQR fence -- exactly what the boxplot'
+        ' whiskers draw, quartile-based (no distribution assumption);'
+        '  Double-MAD uses separate left/right spread about the median, so a genuinely SKEWED-but-fine'
+        ' population (a long one-sided tail, common in spurs/phase-noise) is not over-flagged on its'
+        ' long side;'
         '  Spec flags a point past the datasheet Spec Hi/Lo (fail direction only);'
         '  TLL/limit flags past the guard-banded limit / manual TLL override, else Spec.'
         '  LEVEL = how aggressive:  Conservative (6&sigma; / 3+ pts) filters only the unambiguous tail,'
@@ -8180,6 +8223,8 @@ def _build_stat_summary_html(
         'Auto-filter bad DUTs &mdash; basis '
         '<select id="stat_auto_basis" onchange="statAutoFilterPreview()">'
         '<option value="dist" selected>Distribution (&sigma;)</option>'
+        '<option value="iqr">IQR fence</option>'
+        '<option value="dmad">Double-MAD (skew)</option>'
         '<option value="spec">Spec</option>'
         '<option value="tll">TLL/limit</option></select>'
         ' level '
@@ -13361,25 +13406,16 @@ function _autoBadPoints(basis){
     (cd.freq_stats||[]).forEach(function(f){
       if(f.freq<fr.lo||f.freq>fr.hi)return;
       var det=(f.vals_detail||[]).filter(function(d){return !serActive||selBoxSers.indexOf(d.s)>=0;});
-      if(det.length<4)return;   // MAD needs a small clean majority to be meaningful
+      if(det.length<4)return;   // a robust scale needs a small clean majority to be meaningful
       var fv=det.map(function(d){return d.v;});
-      var med=_autoMedian(fv);
-      var mad=_autoMedian(fv.map(function(v){return Math.abs(v-med);}))*1.4826||1e-9;  // ->sigma-equivalent
       var hi=basis==='tll'?(hiOv!==null?hiOv:HI_SPEC):HI_SPEC;
       var lo=basis==='tll'?(loOv!==null?loOv:LO_SPEC):LO_SPEC;
+      // Shared scorer (dist / iqr / dmad / spec / tll). See _AUTO_FILTER_SHARED_JS.
+      var score=_afScorer(basis,fv,hi,lo);
       det.forEach(function(d){
-        var mag=null,dir=(d.v>=med)?'high':'low';
-        if(basis==='dist'){
-          var mz=Math.abs(d.v-med)/mad;
-          if(mz>=3.5) mag=mz;   // Iglewicz-Hoaglin robust-outlier cutoff
-        } else {
-          var exc=null;
-          if(hi!==null&&d.v>hi){exc=d.v-hi;dir='high';}
-          else if(lo!==null&&d.v<lo){exc=lo-d.v;dir='low';}
-          if(exc!==null&&exc>0) mag=exc/mad;
-        }
-        if(mag!==null) out.push({serial:d.s,port:d.p||'',cond:cd.condition,temp:cd.temp,freq:f.freq,
-          freqLabel:f.freq_label,value:d.v,mag:mag,dir:dir,site:_autoSiteOf(cd.condition),
+        var r=score(d.v); if(!r) return;
+        out.push({serial:d.s,port:d.p||'',cond:cd.condition,temp:cd.temp,freq:f.freq,
+          freqLabel:f.freq_label,value:d.v,mag:r.mag,dir:r.dir,site:_autoSiteOf(cd.condition),
           key:_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||'+cd.temp+'||'+_gfFreqKey(f)});
       });
     });
@@ -13421,7 +13457,7 @@ function _autoFilterCompute(basis,level){
     var sp=o.temp+'|'+o.freqLabel+'|'+o.dir; (spot[sp]=spot[sp]||{})[bs]=1;
   });
   var thr=_AUTO_LEVELS[level]||_AUTO_LEVELS.conservative;
-  var unit=basis==='dist'?'σ from peers':'σ past '+(basis==='tll'?'TLL/limit':'spec');
+  var unit=_afPeerBasis(basis)?'σ from peers':'σ past '+(basis==='tll'?'TLL/limit':'spec');
   var compare=(typeof PRIMARY_SITE!=='undefined')&&!!PRIMARY_SITE;
   var auto=[],marginal=[],review=[];
   Object.keys(byDut).forEach(function(bs){
@@ -13435,7 +13471,7 @@ function _autoFilterCompute(basis,level){
     if(compare && d.site && d.site!==PRIMARY_SITE){
       d.reason='onboarding site “'+d.site+'”: '+d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — filter manually (auto-clean is scoped to the reference site '+PRIMARY_SITE+')'+riskTxt; review.push(d); return;
     }
-    if(basis==='dist'&&(dir==='hi'&&d.high===0||dir==='lo'&&d.low===0)){
+    if(_afPeerBasis(basis)&&(dir==='hi'&&d.high===0||dir==='lo'&&d.low===0)){
       d.reason=d.pts.length+' peer-outlier pt(s), all AWAY from the '+(dir==='hi'?'upper':'lower')+' spec — can’t fail spec (benign)'+riskTxt; review.push(d); return;
     }
     if(d.shared>0.5){
@@ -13457,12 +13493,12 @@ function autoFilterPreview(){
   var level=_autoLevel(), basis=_autoBasis();
   if(level==='off'){ panel.style.display='none'; panel.innerHTML=''; return; }
   panel.style.display='';
-  if(basis!=='dist'&&HI_SPEC===null&&LO_SPEC===null){
-    panel.innerHTML='<div style="padding:6px;color:#a05000;font-size:12px">No spec configured on this dataset — the Spec/TLL basis has nothing to measure against. Use the <b>Distribution (σ)</b> basis (the right one for an NPI dataset with no trusted spec yet).</div>';
+  if(!_afPeerBasis(basis)&&HI_SPEC===null&&LO_SPEC===null){
+    panel.innerHTML='<div style="padding:6px;color:#a05000;font-size:12px">No spec configured on this dataset — the Spec/TLL basis has nothing to measure against. Use a peer-relative basis (<b>Distribution</b>, <b>IQR fence</b>, or <b>Double-MAD</b>) — the right kind for NPI data with no trusted spec yet.</div>';
     window._autoResult=null; return;
   }
   var r=_autoFilterCompute(basis,level); window._autoResult=r;
-  var basisName=basis==='dist'?'Distribution (σ from peers)':basis==='tll'?'TLL/limit-relative':'Spec-relative';
+  var basisName=basis==='dist'?'Distribution (MAD σ)':basis==='iqr'?'IQR fence (Tukey)':basis==='dmad'?'Double-MAD (skew-aware)':basis==='tll'?'TLL/limit-relative':'Spec-relative';
   var autoPts=r.auto.reduce(function(a,d){return a+d.pts.length;},0);
   var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare: auto-clean is scoped to the reference site <b>'+PRIMARY_SITE+'</b>; onboarding-site DUTs are listed for manual review.</span>':'';
   var h='<div style="font-size:12px;margin:4px 0">⚙ <b>Auto-filter preview</b> — basis <b>'+basisName+'</b>, level <b>'+r.thr.label+
@@ -14774,16 +14810,22 @@ def _build_box_interactive_html(
         ' onclick="applyDeltaGlobalFilter()">Set delta outliers as GF</button>\n'
         + '  <span class="sep"></span>\n'
         + '  <label class="toggle-btn" style="background:#fff7e8;border-color:#e0905a;color:#a05000"'
-        ' title="Auto-add clearly-bad DUTs to the Global Filter. BASIS = what &quot;bad&quot; means: '
-        'Distribution (how many sigma a point sits from its box peers -- for NPI, before a trusted spec); '
+        ' title="Auto-add clearly-bad DUTs to the Global Filter (shared across every view, so the clean'
+        ' is inherited everywhere). BASIS = what &quot;bad&quot; means: '
+        'Distribution (how many sigma a point sits from its box peers via a robust median/MAD score -- for NPI, before a trusted spec); '
+        'IQR fence (outside the Tukey 1.5xIQR fence -- exactly what the boxplot whiskers draw, quartile-based); '
+        'Double-MAD (separate left/right spread, so a genuinely SKEWED-but-fine tail is not over-flagged on its long side); '
         'Spec (how many sigma past the datasheet Spec Hi/Lo, fail-direction only); '
         'TLL/limit (past the guard-banded limit / manual TLL override, else Spec). '
         'LEVEL = how aggressive: Conservative filters only the unambiguous tail, Aggressive lowers the bar. '
-        'Systemic (multi-DUT, same frequency) and benign (away-from-fail) cases are NEVER auto-filtered -- '
-        'always left for you. Preview lists every DUT with a reason before anything is applied.">'
+        'A per-DUT false-removal RISK under 5% is required to auto-filter. '
+        'Systemic (multi-DUT, same frequency, same direction) and benign (away-from-fail) cases are NEVER auto-filtered -- '
+        'always left for you. Preview lists every DUT with a reason before anything is applied; reversible via Clear global filter.">'
         'Auto-filter bad DUTs &mdash; basis '
         '<select id="auto_gf_basis" onchange="autoFilterPreview()">'
         '<option value="dist" selected>Distribution (&sigma;)</option>'
+        '<option value="iqr">IQR fence</option>'
+        '<option value="dmad">Double-MAD (skew)</option>'
         '<option value="spec">Spec</option>'
         '<option value="tll">TLL/limit</option></select>'
         ' level '
@@ -14843,7 +14885,7 @@ def _build_box_interactive_html(
         + '<div id="box_delta_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_site_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="auto_gf_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
-        + f"<script>\n{constants}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
+        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
     )
 
