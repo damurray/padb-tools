@@ -399,6 +399,34 @@ def test_auto_filter_rollout_summary_envcov():
                   f"clear{prefix.capitalize()}GlobalFilter" in h or ("clearSumGlobalFilter" if prefix == "sum" else "clearEcGlobalFilter") in h)
 
 
+def test_auto_filter_histogram():
+    """Server contract: auto-filter engine on histogram, which has NO Global Filter
+    -- it uses a per-measurement-index exclusion (_hAutoExcl) consulted by
+    _hFilteredIdx, with ctx text overridden away from 'Global Filter'."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "h.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Group", "Switching Speed (us)", "Upper Limit"])
+            for _ in range(3):
+                for i in range(12):
+                    w.writerow([f"Port: RF1  Serial Number: D{i:02d}", round(10.0 + 0.05 * (i % 5), 4), 20.0])
+        out = Path(td) / "h.html"
+        pp.histogram(p, {"title_prefix": "T", "results_dir": "h"}, out)
+        h = out.read_text(encoding="utf-8")
+        check("histogram auto-filter control + options present",
+              all(s in h for s in ('id="h_auto_basis"', 'id="h_auto_level"', 'value="iqr"', 'value="dmad"')))
+        check("histogram uses measurement-index exclusion (_hAutoExcl in _hFilteredIdx)",
+              "_hAutoExcl" in h and "_hAutoExcl.has(i)" in h)
+        check("histogram engine + ctx + wrappers present",
+              all(s in h for s in ("_afScorer", "_afRunWorkflow", "HIST_AF", "histRunWorkflow", "histGenReport", "clearHistAuto")))
+        check("histogram workflow button + panels + report present",
+              all(s in h for s in ('id="h_wf_btn"', 'id="h_wf_panel"', 'id="h_auto_panel"', "_afGenerateReport")))
+        check("histogram ctx text overridden away from Global Filter (no-GF view)",
+              "applyNoun:'the auto-exclusion'" in h and "undoHint:'Clear auto-exclusion'" in h)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -411,7 +439,7 @@ def main() -> None:
                test_filename_stem_variants, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
-               test_auto_filter_rollout_summary_envcov):
+               test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram):
         try:
             fn()
         except Exception as exc:

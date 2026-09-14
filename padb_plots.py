@@ -3241,11 +3241,13 @@ function _afPreview(ctx){
   var r=_afCompute(pts,ctx); window[ctx.resultVar]=r;
   var basisName=basis==='dist'?'Distribution (MAD σ)':basis==='iqr'?'IQR fence (Tukey)':basis==='dmad'?'Double-MAD (skew-aware)':basis==='tll'?'TLL/limit-relative':'Spec-relative';
   var autoPts=r.auto.reduce(function(a,d){return a+d.pts.length;},0);
+  var _an=ctx.applyNoun||'Global Filter', _undo=ctx.undoHint||'Clear global filter',
+      _inh=(ctx.inheritNote!=null)?ctx.inheritNote:' Cleaning here writes the shared Global Filter, so every view inherits it.';
   var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare: auto-clean is scoped to the reference site <b>'+r.primarySite+'</b>; onboarding-site DUTs are listed for manual review.</span>':'';
   var h='<div style="font-size:12px;margin:4px 0">⚙ <b>Auto-filter preview</b> — basis <b>'+basisName+'</b>, level <b>'+r.thr.label+
-    '</b> (bar '+r.thr.minSigma+'σ / '+r.thr.minPts+' pts, false-removal risk &lt; 5%). Nothing is applied until you click <b>Apply</b>; reversible via <b>Clear global filter</b>. Cleaning here writes the shared Global Filter, so every view inherits it.'+siteNote+'</div>';
+    '</b> (bar '+r.thr.minSigma+'σ / '+r.thr.minPts+' pts, false-removal risk &lt; 5%). Nothing is applied until you click <b>Apply</b>; reversible via <b>'+_undo+'</b>.'+_inh+siteNote+'</div>';
   h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
-    (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.applyFn+'()">Apply → add to Global Filter</button>':'')+'</div>';
+    (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.applyFn+'()">Apply → add to '+_an+'</button>':'')+'</div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
     r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td class="out">'+d.maxMag.toFixed(1)+'</td><td title="false-removal risk, p≈'+d.risk.toExponential(1)+'">'+_afRiskLabel(d.risk)+'</td><td>'+d.high+'</td><td>'+d.low+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
   h+='<div style="font-weight:600;margin:8px 0 2px;color:#6b5a00">Marginal — review &amp; affirm: '+r.marginal.length+
@@ -3312,13 +3314,17 @@ function _afRecommend(a){
   else why.push('Starting at Conservative (only the unambiguous 6σ / 3-point tail); step up to Moderate once you have reviewed what Conservative flags.');
   return {basis:basis,level:level,why:why};
 }
-function _afWorkflowSteps(a,rec){
+function _afWorkflowSteps(a,rec,ctx){
+  ctx=ctx||{}; var _undo=ctx.undoHint||'Clear global filter';
+  var _applyStep=(ctx.inheritNote!=null)
+    ? ('. <b>Apply</b> → the exclusion is applied to this view. Reversible via <b>'+_undo+'</b>.')
+    : ('. <b>Apply</b> → the exclusion is written to the shared Global Filter, so every view (scatter, summary, …) reflects it. Reversible via <b>'+_undo+'</b>.');
   var s=[],i=1;
   s.push((i++)+'. Look at the '+(a.compare?'compare ':'')+'boxplot/table first to get a feel for the population and any obvious outliers.');
   if(a.compare) s.push((i++)+'. Auto-filter cleans ONLY the reference site (“'+a.primarySite+'”); the onboarding site is listed for you to filter manually.');
   s.push((i++)+'. Set basis <b>'+rec.basis.toUpperCase()+'</b> / level <b>'+rec.level+'</b> (or click <b>Apply recommendation</b>), then <b>Preview</b>.');
   s.push((i++)+'. Review each flagged DUT’s reason + false-removal risk; <b>Affirm</b> any marginals you agree with.');
-  s.push((i++)+'. <b>Apply</b> → the exclusion is written to the shared Global Filter, so every view (scatter, summary, …) reflects it. Reversible via <b>Clear global filter</b>.');
+  s.push((i++)+_applyStep);
   if(a.compare) s.push((i++)+'. Export the cleaned CSV to hand the reference-site clean to the onboarding site (the Global Filter is browser-local and does not travel).');
   s.push((i++)+'. Re-check the tables / stats / tolerance intervals on the cleaned data.');
   s.push('<b>Or</b> click <b>Run recommended workflow</b> to auto-execute steps '+(a.compare?'2–5':'2–4')+' at the Conservative level in one go (applies only the unambiguous auto set; marginals still left for you; fully reversible).');
@@ -3339,7 +3345,7 @@ function _afRenderWorkflow(ctx){
      '<button class="toggle-btn" style="background:#eef7ee;border-color:#8c8" onclick="'+ctx.reportFn+'()" title="Assemble a printable report (dataset, recommendation + justification, workflow steps, outcome + audit table, and a snapshot of the current plot) and open the browser Save-as-PDF dialog. Offline; no server needed.">Generate PDF report</button></div>';
   h+='<ul style="margin:4px 0 4px 16px;padding:0">'+rec.why.map(function(w){return '<li>'+w+'</li>';}).join('')+'</ul>';
   h+='<div style="font-weight:600;margin:8px 0 2px">Suggested workflow</div>';
-  h+='<ol style="margin:2px 0 2px 16px;padding:0;list-style:none">'+_afWorkflowSteps(a,rec).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
+  h+='<ol style="margin:2px 0 2px 16px;padding:0;list-style:none">'+_afWorkflowSteps(a,rec,ctx).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
   h+='<div style="margin-top:6px;color:#a05000">These are heuristic starting points from the data shape, not a substitute for engineering judgment. Nothing is excluded until you click Apply or Run, and everything is reversible via Clear global filter.</div>';
   h+='<div id="'+ctx.wfPanel+'_audit"></div></div>';
   panel.innerHTML=h; panel.style.display='';
@@ -3367,7 +3373,9 @@ function _afRunWorkflow(ctx){
   if(au){
     var h='<div style="margin-top:8px;padding:6px 8px;background:#f0fff0;border:1px solid #8c8;border-radius:4px;font-size:12px">';
     h+='<b>✓ Ran recommended workflow</b> — basis <b>'+rec.basis.toUpperCase()+'</b>, level <b>'+rec.level+'</b>. ';
-    h+='Auto-excluded <b>'+r.auto.length+'</b> DUT'+(r.auto.length!==1?'s':'')+' ('+pts+' point'+(pts!==1?'s':'')+') to the shared Global Filter — every view now reflects it. Reversible via <b>Clear global filter</b>.';
+    var _undoA=ctx.undoHint||'Clear global filter';
+    var _dest=(ctx.inheritNote!=null)?' from this view':' to the shared Global Filter — every view now reflects it';
+    h+='Auto-excluded <b>'+r.auto.length+'</b> DUT'+(r.auto.length!==1?'s':'')+' ('+pts+' point'+(pts!==1?'s':'')+')'+_dest+'. Reversible via <b>'+_undoA+'</b>.';
     if(r.marginal.length) h+=' <b>'+r.marginal.length+'</b> marginal DUT'+(r.marginal.length!==1?'s':'')+' left for your review (see the Auto-filter panel → <i>Also filter checked</i>).';
     if(a.compare) h+=' Only the reference site was cleaned; onboarding-site DUTs are left for manual review — export the cleaned CSV to hand off.';
     h+='</div>';
@@ -3399,7 +3407,7 @@ function _afGenerateReport(ctx){
      ' &middot; spec limits '+(a.hasSpec?'present':'absent')+' &middot; ~'+a.avgBucketN.toFixed(0)+' DUTs/bucket &middot; skew in '+Math.round(a.skewFrac*100)+'% of buckets.</div>';
   h+='<h3 style="margin:12px 0 2px">Recommendation &amp; justification</h3><div style="font-size:13px">basis <b>'+rec.basis.toUpperCase()+'</b>, level <b>'+rec.level+'</b></div>';
   h+='<ul style="font-size:13px;margin:3px 0 0 18px">'+rec.why.map(function(w){return '<li>'+w+'</li>';}).join('')+'</ul>';
-  h+='<h3 style="margin:12px 0 2px">Workflow</h3><ol style="font-size:13px;margin:2px 0 0 4px;list-style:none;padding:0">'+_afWorkflowSteps(a,rec).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
+  h+='<h3 style="margin:12px 0 2px">Workflow</h3><ol style="font-size:13px;margin:2px 0 0 4px;list-style:none;padding:0">'+_afWorkflowSteps(a,rec,ctx).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
   if(r){ var pts=r.auto.reduce(function(x,d){return x+d.pts.length;},0);
     h+='<h3 style="margin:12px 0 2px">Outcome</h3><div style="font-size:13px">Auto-excluded <b>'+r.auto.length+'</b> DUT'+(r.auto.length!==1?'s':'')+' ('+pts+' point'+(pts!==1?'s':'')+'); <b>'+r.marginal.length+'</b> marginal left for review; <b>'+r.review.length+'</b> left for you (systemic / benign'+(a.compare?' / onboarding-site':'')+'). Reversible via Clear global filter.</div>';
     if(r.auto.length) h+='<table border="1" cellspacing="0" cellpadding="4" style="border-collapse:collapse;font-size:12px;margin-top:6px"><thead><tr><th>Excluded serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>Reason</th></tr></thead><tbody>'+
@@ -18138,6 +18146,10 @@ def _load_histogram_csv(csv_path: Path) -> dict:
 
 
 _HISTOGRAM_JS = r"""
+/* Auto-filter exclusion: histogram has NO Global Filter, so bad measurements are
+   held in a per-measurement-index Set consulted by _hFilteredIdx (reversible,
+   non-destructive). This is the histogram's equivalent of the shared GF. */
+var _hAutoExcl=new Set();
 function _hpct(sorted,p){ if(!sorted.length) return NaN; var i=(p/100)*(sorted.length-1),lo=Math.floor(i); return lo+1<sorted.length?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo]; }
 function _hSelDims(){ var out={}; DIMS.forEach(function(d){ var sel=new Set(); document.querySelectorAll('.hf_'+d.col_id).forEach(function(c){ if(c.checked) sel.add(c.value); }); out[d.col_id]=sel; }); return out; }
 function _hSelSer(){ var s=new Set(); document.querySelectorAll('.hf_serial').forEach(function(c){ if(c.checked) s.add(c.value); }); return s; }
@@ -18145,6 +18157,7 @@ function _hIsFail(v){ return (LIMIT_HI!==null&&v>LIMIT_HI)||(LIMIT_LO!==null&&v<
 function _hPfMode(){ var el=document.getElementById('h_pf'); return el?el.value:'all'; }
 function _hFilteredIdx(){ var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.length>0, pf=_hPfMode(), out=[];
   for(var i=0;i<VALUES.length;i++){ var ok=true;
+    if(_hAutoExcl.has(i)) continue;   // auto-filter exclusion (this view's GF equivalent)
     for(var k=0;k<DIMS.length;k++){ var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;} }
     if(ok&&hasSer&&!ss.has(SERIAL[i])) ok=false;
     if(ok&&pf!=='all'){ var f=_hIsFail(VALUES[i]); if((pf==='fail')!==f) ok=false; }
@@ -18423,6 +18436,65 @@ function hSaveSitePopulationCSV(outsideOnly){
   document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);
 }
 window.addEventListener('DOMContentLoaded',function(){ update(); });
+/* ---- Auto-filter bad DUTs + Workflow (population view: histogram) ----
+   Histogram has NO Global Filter (its exclusion vehicle is CSV edit-reimport /
+   the serial filter), so auto-filter flags per-MEASUREMENT outliers within each
+   dim-combination bucket and applies them to _hAutoExcl (a measurement-index Set
+   consulted by _hFilteredIdx) -- reversible, non-destructive, standalone (not the
+   shared GF). ctx text is overridden accordingly. */
+function _histAutoBadPoints(basis){
+  var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.length>0, buckets={};
+  for(var i=0;i<VALUES.length;i++){
+    if(_hAutoExcl.has(i)) continue;
+    var ok=true;
+    for(var k=0;k<DIMS.length;k++){var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;}}
+    if(ok&&hasSer&&!ss.has(SERIAL[i])) ok=false;
+    if(!ok) continue;
+    var bk=_hCond(i); (buckets[bk]=buckets[bk]||[]).push(i);
+  }
+  var out=[];
+  Object.keys(buckets).forEach(function(bk){
+    var idxs=buckets[bk]; if(idxs.length<4) return;
+    var score=_afScorer(basis, idxs.map(function(i){return VALUES[i];}),
+      (typeof LIMIT_HI!=='undefined'?LIMIT_HI:null), (typeof LIMIT_LO!=='undefined'?LIMIT_LO:null));
+    idxs.forEach(function(i){ var r=score(VALUES[i]); if(!r)return;
+      out.push({serial:(hasSer?SERIAL[i]:'(all)'),port:'',cond:bk,temp:'All',freq:0,freqLabel:bk,value:VALUES[i],mag:r.mag,dir:r.dir,site:'',key:String(i)});
+    });
+  });
+  return out;
+}
+function _hMergeAuto(keys){ keys.forEach(function(k){var n=parseInt(k,10); if(!isNaN(n))_hAutoExcl.add(n);}); update(); }
+function clearHistAuto(){ _hAutoExcl.clear(); update(); }
+var HIST_AF={basisSel:'h_auto_basis',levelSel:'h_auto_level',panel:'h_auto_panel',
+  applyFn:'histAutoFilterApply',affirmFn:'histAutoFilterAffirm',margChkClass:'h_auto_marg_chk',
+  resultVar:'_histAutoResult',badPoints:_histAutoBadPoints,merge:_hMergeAuto,
+  applyNoun:'the auto-exclusion',undoHint:'Clear auto-exclusion',inheritNote:'',
+  exclCount:function(){return _hAutoExcl.size;}, clear:clearHistAuto,
+  hiSpec:function(){return (typeof LIMIT_HI!=='undefined')?LIMIT_HI:null;},
+  loSpec:function(){return (typeof LIMIT_LO!=='undefined')?LIMIT_LO:null;},
+  tllDir:function(){return (typeof _hTowardFail==='function')?(_hTowardFail()==='high'?'hi':_hTowardFail()==='low'?'lo':'both'):'both';},
+  baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
+  wfPanel:'h_wf_panel', previewFn:function(){hAutoFilterPreview();},
+  applyRecFn:'histApplyRec', runFn:'histRunWorkflow', reportFn:'histGenReport', tablePanel:'h_stats',
+  buckets:function(){ var ds=_hSelDims(),ss=_hSelSer(),hasSer=SERIAL_LIST.length>0,b={};
+    for(var i=0;i<VALUES.length;i++){ if(_hAutoExcl.has(i))continue; var ok=true; for(var k=0;k<DIMS.length;k++){var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;}} if(ok&&hasSer&&!ss.has(SERIAL[i]))ok=false; if(!ok)continue; var bk=_hCond(i);(b[bk]=b[bk]||[]).push(VALUES[i]); }
+    return Object.keys(b).map(function(k){return {vals:b[k]};}); },
+  nDuts:function(){return SERIAL_LIST.length||1;},
+  nConds:function(){var s={};for(var i=0;i<VALUES.length;i++)s[_hCond(i)]=1;return Object.keys(s).length;},
+  nFreqs:function(){return 1;}, multiTemp:function(){return false;},
+  hasSpec:function(){return (typeof LIMIT_HI!=='undefined'&&LIMIT_HI!==null)||(typeof LIMIT_LO!=='undefined'&&LIMIT_LO!==null);},
+  compute:function(basis,level){return _afCompute(_histAutoBadPoints(basis),HIST_AF);},
+  getFreq:function(){return {lo:-Infinity,hi:Infinity};}, setFreq:function(){},
+  getSerials:function(){return Array.prototype.slice.call(document.querySelectorAll('.hf_serial:checked')).map(function(c){return c.value;});},
+  setSerials:function(list){document.querySelectorAll('.hf_serial').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0;});update();},
+  segments:function(){return [];}};
+function hAutoFilterPreview(){_afPreview(HIST_AF);}
+function histAutoFilterApply(){_afApply(HIST_AF);}
+function histAutoFilterAffirm(){_afAffirm(HIST_AF);}
+function histApplyRec(){_afApplyRec(HIST_AF);}
+function histRunWorkflow(){_afRunWorkflow(HIST_AF);}
+function histGenReport(){_afGenerateReport(HIST_AF);}
+function toggleHistWorkflow(){var p=document.getElementById('h_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(HIST_AF);}else{p.style.display='none';}}
 """
 
 
@@ -18554,10 +18626,13 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "onchange='hImportCsvFile(this)'>\n"
         "  <span id='h_import_status' style='color:#080'></span>\n"
         "  <span id='h_n' style='color:#555'></span>\n"
-        "  <input type='hidden' id='h_binmode' value='auto'>\n"
+        + _af_control_html('h', 'hAutoFilterPreview', 'clearHistAuto')
+        + "  <input type='hidden' id='h_binmode' value='auto'>\n"
         "</div>\n"
         f"<div class='ctrl-bar' id='h_filterbar'>{filt_html}</div>\n"
-        "<div id='plot'></div>\n"
+        + "<div style='margin:6px 2px'>" + _af_workflow_button_html('h', 'toggleHistWorkflow') + "</div>\n"
+        + _af_panels_html('h')
+        + "<div id='plot'></div>\n"
         "<div style='margin:6px 2px'><button class='hbtn' id='h_stats_btn' onclick='toggleStats()'>"
         "&#9654; Statistics</button></div>\n"
         "<div id='h_stats' style='display:none;padding:0 2px 16px'></div>\n"
@@ -18581,7 +18656,7 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"<script>{_get_plotlyjs()}</script>\n"
         f"<style>{css}</style>\n"
         + body
-        + f"<script>\n{constants}\n{_HISTOGRAM_JS}</script>\n</body>\n</html>\n"
+        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_HISTOGRAM_JS}</script>\n</body>\n</html>\n"
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html_doc, encoding="utf-8")

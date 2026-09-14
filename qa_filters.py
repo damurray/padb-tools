@@ -971,8 +971,10 @@ _HARNESS_JS = r"""
     if(!CTX||typeof _afRecommend!=='function'||typeof CTX.badPoints!=='function'
        ||!document.getElementById(CTX.basisSel)||typeof CTX.buckets!=='function'){
       skip('auto-filter['+tag+']','no auto-filter ctx in this view'); return; }
-    function gfN(){try{return (JSON.parse(localStorage.getItem(GF_KEY)||'{"excluded":[]}').excluded||[]).length;}catch(e){return -1;}}
-    function clr(){ try{localStorage.removeItem(GF_KEY);}catch(e){} try{CTX.merge([]);}catch(e){} }
+    // Exclusion count/clear come from the ctx when it defines its own vehicle
+    // (histogram uses a measurement-index Set, not the GF); GF views fall back.
+    function gfN(){ if(CTX.exclCount) return CTX.exclCount(); try{return (JSON.parse(localStorage.getItem(GF_KEY)||'{"excluded":[]}').excluded||[]).length;}catch(e){return -1;} }
+    function clr(){ if(CTX.clear){ try{CTX.clear();}catch(e){} return; } try{localStorage.removeItem(GF_KEY);}catch(e){} try{CTX.merge([]);}catch(e){} }
     function _med(a){var s=a.slice().sort(function(x,y){return x-y;});var n=s.length;return n?(n%2?s[(n-1)/2]:0.5*(s[n/2-1]+s[n/2])):0;}
     function _cnt(basis){ var n=0;
       (CTX.buckets()||[]).forEach(function(b){ var fv=(b.vals||[]).filter(function(v){return v!=null;}); if(fv.length<4)return;
