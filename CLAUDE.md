@@ -1819,3 +1819,48 @@ try/except -> `_log_note`, so a PDF failure can't fail extraction/plot/publish.
   emits/omits the PDF link correctly). 93/0. The histogram-only report and the
   full 6-view report were both verified end-to-end in the in-app browser (Edge
   headless is dead).
+
+### Filter-aware + on-demand PDF report (added 2026-09-14)
+
+Follow-up to the build-time PDF above, from the user's point that "the filtered
+output is the more useful report, though a summary of what was collected is still
+useful" and "allow a delay in pdf generation... so we don't have an unnecessary
+time hit when it isn't required."
+
+- **Filter-aware mode** (`generate_multiview_pdf(..., apply_filter=True)`): before
+  printing each engine view (boxplot/stat_summary/summary/env_coverage/histogram)
+  it runs that view's one-click auto-filter workflow (`boxRunWorkflow`, etc. --
+  the risk-gated "auto" set, reversible/audited), so the plot + stats table show
+  the **cleaned** population. Raw **scatter/distribution stay the full collected
+  cloud** (you want every point there). Views are printed first (capturing each
+  view's exclusion tally), then the cover is printed last and merged first; the
+  cover now has a **"Dataset (as collected)"** section AND a **"Filtering applied"**
+  section listing what each view auto-excluded (DUTs/points) -- one document shows
+  both what was collected and what cleaning removed. Unfiltered runs say "None".
+  Per-view profiles gained `workflow`/`ctx` keys (`BOX_AF`/`STAT_AF`/`SUM_AF`/
+  `EC_AF`/`HIST_AF`); the exclusion count is read from `window[ctx.resultVar].auto`.
+- **On-demand, to avoid the build-time hit**: `padb_pdf_report.py <prefix|folder>
+  --apply-filter` builds a (filtered) report from already-built results any time;
+  `padb_v2.py --pdf-apply-filter` (implies `--pdf-report`; honors
+  `cfg["pdf_report_apply_filter"]`) for the build-time path. **Webapp**: a
+  "Generate PDF report (on demand)" button + "Apply auto-filter (cleaned views)"
+  checkbox (`POST /api/generate-pdf {paths, apply_filter}` -> action="pdf" job on
+  the existing worker -> `_generate_pdf_task`/`_pdf_targets`: a plot job -> its own
+  analytic, a run job -> each sibling plot analytic). No plot rebuild.
+- **qa_filters `--browser PATH`** (added same day): the interactive tier's Edge
+  auto-pick is dead on this box; `--browser` points it at a Playwright
+  `chrome-headless-shell.exe` (the full chrome.exe delegates to a running instance
+  and dumps nothing -- use the headless-shell). Falls back to auto-pick; a bad
+  path still exits 3 (honest env gate). The histogram Site-Population-Check
+  `site-k-slider-monotonic` check was made robust to genuinely disjoint sites
+  (OUTSIDE count saturates -- e.g. non-overlapping SR/AMC switching-speed
+  distributions, 126/126 until k~20): it now proves the live k effect by the fence
+  **widening**, not by a count delta.
+- **Validation (2026-09-14)**: PDF report verified 10/10 across a broad sample
+  (freq scatter/box, non-freq Rate x-axis, histogram-only, compare->scatter,
+  compare->histogram, multi-temp env, amplitude, max-power lo-spec, compare
+  distortion, full 6-view) -- every report built with the right section count and
+  every index links its PDF. Auto-filter mechanism verified across every engine
+  view type on the fresh sample (boxplot 28/0, stat_summary 31/0, summary 33/0,
+  env_coverage 26/0, histogram 32/0, compare boxplot 46/0) = 241/0 after the
+  k-slider check fix. Filter-aware + on-demand verified live via the webapp button.
