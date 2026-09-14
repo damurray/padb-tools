@@ -1,7 +1,29 @@
 #!/usr/bin/env python3
 """
-qa_filters.py -- automated filter / Global-Filter self-consistency gate for the
-interactive boxplot pages (single-site AND cross-site compare).
+qa_filters.py -- filter/plot/table/statistics COUPLING + Global-Filter
+self-consistency gate for EVERY interactive view (scatter, stat_summary, boxplot,
+distribution, env_coverage, summary, histogram), single-site AND cross-site
+compare.
+
+Coupling coverage per plot type (view-agnostic, so every view above is checked):
+  * filter -> plot   : toggling a condition/serial/temp filter changes the plotted
+                       set and is exactly reversible (runGeneric).
+  * filter -> table  : the stats/results table updates on a filter change and is
+                       not stale (runTableChecks table-updates-on-filter).
+  * plot <-> table   : every table row is actually plotted and vice-versa
+                       (table-conds-are-plotted / plotted-groups-in-table).
+  * statistics sanity: Q1<=median<=Q3, min<=mean<=max, %oos in [0,100], TI lo<=hi,
+                       margin sign matches pass/fail (table-stats-sane).
+  * range/zoom coupling: narrowing the frequency range AND a Plotly drag-zoom move
+                       BOTH the plot and the table together, and restore
+                       (runCoordination; histogram uses its Pass/Fail filter).
+  * group-by         : every group-by mode renders non-blank and reverts
+                       (runGroupBy).
+  * CSV export       : matches what's on screen + histogram import round-trip
+                       (runCsvExport); Site-fence panels (runHistogramSite /
+                       runSiteFencePanel) on compare pages.
+The view-specific blocks (boxplot deep-GF, env_cov/distribution/histogram site
+fence) self-detect and self-skip on views they don't apply to.
 
 WHY THIS EXISTS
 ---------------
@@ -1087,12 +1109,17 @@ def _discover(root: Path, glob: str, include_single: bool) -> list[Path]:
     for p in root.rglob(glob):
         if _EXCLUDE_DIR_PARTS & set(p.parts):
             continue
-        # Cover both interactive views the harness has view-specific logic for:
-        # boxplot (deep GF block) and histogram (switching-speed value dists --
-        # table-n-matches-plotted-points is histogram-exact, and the coordination
-        # check exercises the pass/fail filter). Other views (scatter/summary/...)
-        # are still reachable via --page but aren't swept by default.
-        if not any(k in p.name.lower() for k in ("boxplot", "histogram")):
+        # Cover EVERY interactive view type -- the filter/plot/table/statistics
+        # coupling checks (runGeneric + runTableChecks + runGroupBy +
+        # runCoordination) are view-agnostic and apply to all of them; the
+        # view-specific blocks (boxplot deep-GF, env_cov/distribution/histogram
+        # site fence) self-detect and self-skip. So a sweep verifies the couplings
+        # for scatter/stat_summary/boxplot/distribution/env_coverage/summary/
+        # histogram alike, not just boxplot+histogram. ("summary" matches both
+        # summary and stat_summary.) Use --limit to scope a large root.
+        _VIEW_TOKENS = ("scatter", "boxplot", "histogram", "distribution",
+                        "env_coverage", "summary")
+        if not any(k in p.name.lower() for k in _VIEW_TOKENS):
             continue
         is_compare = "compare" in str(p).lower()
         if is_compare or include_single:
@@ -1139,14 +1166,15 @@ def main(argv=None) -> None:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
-    ap = argparse.ArgumentParser(description="Filter/GF self-consistency gate for boxplot pages.")
+    ap = argparse.ArgumentParser(description="Filter/plot/table/statistics coupling + GF self-consistency gate for every interactive view.")
     ap.add_argument("--root", default=r"C:\temp\data", help="Data root to scan (default C:\\temp\\data).")
     ap.add_argument("--glob", default="*.html",
-                    help="Filename glob (default *.html; the discovery then keeps only "
-                         "*boxplot* and *histogram* pages).")
+                    help="Filename glob (default *.html; discovery then keeps every "
+                         "interactive view: scatter/stat_summary/boxplot/distribution/"
+                         "env_coverage/summary/histogram).")
     ap.add_argument("--page", action="append", default=[], help="Test a specific HTML page (repeatable).")
     ap.add_argument("--include-single-site", action="store_true",
-                    help="Also test non-compare boxplots (default: compare pages only).")
+                    help="Also test non-compare pages (default: compare pages only).")
     ap.add_argument("--budget", type=int, default=_DEFAULT_BUDGET, help=f"Edge --virtual-time-budget ms (default {_DEFAULT_BUDGET}; auto-scaled up by file size unless set).")
     ap.add_argument("--timeout", type=int, default=_DEFAULT_TIMEOUT, help=f"Per-page headless kill timeout s (default {_DEFAULT_TIMEOUT}; auto-scaled up by file size unless set).")
     ap.add_argument("--no-scale", action="store_true", help="Disable file-size auto-scaling of budget/timeout.")
@@ -1175,7 +1203,7 @@ def main(argv=None) -> None:
     if args.limit:
         pages = pages[: args.limit]
     if not pages:
-        print("No boxplot pages found to test.")
+        print("No interactive view pages found to test.")
         sys.exit(0)
 
     print(f"qa_filters: {len(pages)} page(s), edge={Path(edge).name}\n")

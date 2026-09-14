@@ -274,8 +274,17 @@ pages OK + one real extraction completes clean.
 Where `qa_view_sweep.py` proves a page *renders*, `qa_filters.py` proves its
 **filters are self-consistent** — the recurring bug class (a filter, especially
 the Global Filter, that doesn't do exactly what it says, or a plot/table that
-drift apart on a filter change). Boxplot-focused, **compare-aware** (the priority
-for cross-site production-ramp comparisons).
+drift apart on a filter change). **Covers every interactive view** (2026-09-14) —
+scatter, stat_summary, boxplot, distribution, env_coverage, summary, histogram —
+since the coupling checks are view-agnostic; the default sweep discovers all of
+them (compare pages by default; `--include-single-site` for the rest). **The
+filter/plot/table/statistics couplings verified per plot type:** filter→plot
+(reversible), filter→table (updates, not stale), plot↔table (every row plotted &
+vice-versa), statistics sanity (Q1≤med≤Q3, min≤mean≤max, %oos∈[0,100], TI lo≤hi,
+margin sign ↔ pass/fail), frequency-range + drag-zoom coordination (both plot AND
+table move together and restore), group-by robustness, and CSV-export-matches-
+screen. Compare-aware (cross-site Site-fence panels on top). Verified in-app-
+browser: 0 coupling failures across all 7 view types.
 
 **Mechanism:** injects a self-test harness into each boxplot HTML that drives the
 page's OWN controls headlessly — it turns on "Show Points" so every plotted point
