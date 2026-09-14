@@ -1476,12 +1476,24 @@ def main(argv=None) -> None:
     ap.add_argument("--no-heavy-mode", action="store_true", help=f"Run the full suite even on large pages (>= {_HEAVY_MB:.0f} MB) instead of the reduced deterministic one.")
     ap.add_argument("--limit", type=int, default=0, help="Test at most N pages (0 = all).")
     ap.add_argument("--verbose", action="store_true", help="Print every check (pass/skip too), not just failures.")
+    ap.add_argument("--browser", default="",
+                    help="Explicit headless-Chromium exe to use (e.g. a Playwright "
+                         "chromium chrome.exe) when the system Edge/Chrome is dead. "
+                         "Must pass the same --dump-dom smoke test; else exit 3.")
     args = ap.parse_args(argv)
 
     # Honest environment gate: pick a browser that actually renders + runs JS
     # headless right now. If none does, the interactive checks CANNOT run -- report
     # that distinctly (exit 3) rather than letting every page look like a FAIL.
-    edge, installed = _pick_working_browser()
+    if args.browser:
+        if Path(args.browser).exists() and _browser_smoke(args.browser):
+            edge, installed = args.browser, [args.browser]
+        else:
+            print(f"[ENV-UNAVAILABLE] --browser {args.browser} not found or failed the "
+                  "headless --dump-dom smoke test -- interactive checks did NOT run.")
+            sys.exit(3)
+    else:
+        edge, installed = _pick_working_browser()
     if not edge:
         if not installed:
             print("[ENV-UNAVAILABLE] no Edge/Chrome found -- interactive checks did NOT run.")
