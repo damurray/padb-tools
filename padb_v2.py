@@ -959,6 +959,7 @@ _VIEW_LABELS = {
     "distribution": "Distribution (Delta-Env)",
     "env_coverage": "Environmental Coverage",
     "summary":      "Summary (All Temps)",
+    "histogram":    "Histogram",
 }
 
 
@@ -1246,6 +1247,12 @@ def _maybe_build_pdf_report(df, cfg, prefix, csv_path, output_dir, gen_pairs, vi
 # ===========================================================================
 
 _VIEW_ORDER = list(_VIEW_FN.keys())
+# View suffixes recognized when grouping the index. "histogram" isn't in
+# _VIEW_FN (it's routed via a separate branch, not the 6-view dispatch table),
+# but its files are still named "<prefix>_histogram.html" -- so it must be
+# stripped here too, or a histogram analytic's group key keeps the "_histogram"
+# suffix and the report link (named "<prefix>_report.pdf") never matches it.
+_INDEX_VIEW_SUFFIXES = _VIEW_ORDER + ["histogram"]
 
 
 def _index_group_key(stem: str) -> tuple[str, str | None]:
@@ -1255,7 +1262,7 @@ def _index_group_key(stem: str) -> tuple[str, str | None]:
     for a file that doesn't end in any known view suffix (not written by
     generate_report(), e.g. a stray file someone dropped in the output dir),
     so it falls back to being its own single-item group in _write_index()."""
-    for view in _VIEW_ORDER:
+    for view in _INDEX_VIEW_SUFFIXES:
         suffix = "_" + view
         if stem.endswith(suffix) and len(stem) > len(suffix):
             return stem[: -len(suffix)], view

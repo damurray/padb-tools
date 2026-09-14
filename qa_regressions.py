@@ -475,6 +475,23 @@ def test_pdf_report_contract():
         idx_yes = (d / "index.html").read_text(encoding="utf-8")
         check("pdf report: index links <prefix>_report.pdf when present",
               'href="Foo_report.pdf"' in idx_yes and 'class="pdf"' in idx_yes)
+    # Histogram-only dir: the "_histogram" suffix must be stripped for the group
+    # key so the "<prefix>_report.pdf" link matches (regression -- histogram
+    # isn't in _VIEW_FN, so it was missed by _index_group_key).
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "Bar_A_histogram.html").write_text("x", encoding="utf-8")
+        (d / "Bar_B_histogram.html").write_text("x", encoding="utf-8")
+        (d / "Bar_A_report.pdf").write_text("%PDF-1.4", encoding="utf-8")
+        v2._write_index(d, "Bar", [d / "Bar_A_histogram.html", d / "Bar_B_histogram.html"],
+                        {"index_title": "Bar"})
+        idx = (d / "index.html").read_text(encoding="utf-8")
+        check("pdf report: histogram group key strips _histogram (no suffix in header)",
+              "<h3>Bar A</h3>" in idx and "Bar A histogram" not in idx)
+        check("pdf report: histogram job links its report.pdf",
+              'href="Bar_A_report.pdf"' in idx)
+        check("pdf report: histogram analytic without a report has no PDF link",
+              'href="Bar_B_report.pdf"' not in idx)
 
 
 def main() -> None:

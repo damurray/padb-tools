@@ -1806,7 +1806,13 @@ try/except -> `_log_note`, so a PDF failure can't fail extraction/plot/publish.
   in a multi-analytic dir, appended to the flat list otherwise (the report's
   stem-without-`_report` equals that analytic's `_index_group_key`). `_publish()`
   now also copies `*_report.pdf` alongside the HTML so the link works on the
-  share, not just locally.
+  share, not just locally. **`_index_group_key` recognizes `histogram` via
+  `_INDEX_VIEW_SUFFIXES` (= `_VIEW_ORDER + ["histogram"]`)** -- histogram isn't
+  in `_VIEW_FN` (separate branch), so without this its group key kept the
+  `_histogram` suffix and the report link never matched (found + fixed while
+  driving the webapp checkbox on a real `SwitchingSpeed_AMC2` histogram job:
+  the report built and published but the index didn't link it). `histogram`
+  also added to `_VIEW_LABELS` ("Histogram") for a clean link label.
 - Self-QA: `qa_regressions.py::test_pdf_report_contract` (browser-free: profile
   covers every `_VIEW_FN` view, filename->view recovery incl. longest-match,
   cover HTML builds, `check_environment` returns a reason, and `_write_index`
