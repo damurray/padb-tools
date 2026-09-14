@@ -467,6 +467,55 @@ function getSpecSegments(hiPoints,loPoints){
   });
   return segs;
 }
+/* Client-side min/max-envelope decimation -- a JS port of _decimate_dense_series
+   (padb_plots.py). Only used when the "scatter_decimate_toggle" job.json key
+   embedded the FULL point set; the "Show all points" checkbox chooses which to
+   draw. Partitions by the SERVER's own series cols (DEC_PARTITION_COLS -- one
+   DUT/condition), buckets each dense series along Frequency_MHz (log-spaced when
+   Log X is on), and keeps each bucket's min & max Value plus the series' own
+   first/last-x rows. Spikes/outliers are never dropped; only the boring middle
+   of a bucket is. */
+function _decimateClient(rows){
+  if(!rows||rows.length<=DEC_THRESHOLD) return rows;
+  var logEl=document.getElementById('log_x_chk');
+  var useLog=(logEl?logEl.checked:DEC_LOG_X_DEFAULT);
+  var parts={};
+  rows.forEach(function(r){
+    var k=DEC_PARTITION_COLS.length?DEC_PARTITION_COLS.map(function(c){var v=r[c];return String(v===null||v===undefined?'':v);}).join(''):'';
+    (parts[k]=parts[k]||[]).push(r);
+  });
+  var out=[], nb=Math.max(1,Math.floor(DEC_TARGET/2));
+  Object.keys(parts).forEach(function(k){
+    var sub=parts[k];
+    if(sub.length<=DEC_THRESHOLD){ out=out.concat(sub); return; }
+    var iMin=0,iMax=0;
+    for(var i=1;i<sub.length;i++){ if(sub[i].Frequency_MHz<sub[iMin].Frequency_MHz)iMin=i; if(sub[i].Frequency_MHz>sub[iMax].Frequency_MHz)iMax=i; }
+    var xmin=sub[iMin].Frequency_MHz, xmax=sub[iMax].Frequency_MHz;
+    var keep={};
+    if(xmax>xmin){
+      var lo=useLog&&xmin>0?Math.log10(xmin):xmin, hi=useLog&&xmin>0?Math.log10(xmax):xmax, span=hi-lo;
+      var buckets={};
+      for(var i=0;i<sub.length;i++){
+        var xx=sub[i].Frequency_MHz, xv=(useLog&&xmin>0&&xx>0)?Math.log10(xx):xx;
+        var b=Math.floor((xv-lo)/span*nb); if(b<0)b=0; if(b>=nb)b=nb-1;
+        (buckets[b]=buckets[b]||[]).push(i);
+      }
+      Object.keys(buckets).forEach(function(b){
+        var idxs=buckets[b], mn=idxs[0], mx=idxs[0];
+        idxs.forEach(function(i){ if(sub[i].Value<sub[mn].Value)mn=i; if(sub[i].Value>sub[mx].Value)mx=i; });
+        keep[mn]=1; keep[mx]=1;
+      });
+    } else { keep[0]=1; }
+    keep[iMin]=1; keep[iMax]=1;
+    Object.keys(keep).map(Number).sort(function(a,b){return a-b;}).forEach(function(i){ out.push(sub[i]); });
+  });
+  return out;
+}
+function _scatDecimateActive(){
+  if(typeof SCATTER_DECIMATE_TOGGLE==='undefined'||!SCATTER_DECIMATE_TOGGLE) return false;
+  var sa=document.getElementById('show_all_pts_chk');
+  return !(sa&&sa.checked);   // decimate unless "Show all points" is ticked
+}
 function buildTraces(filtered){
   /* Group by is a MULTI-select (2026-09-02): split/color traces by any
      combination of parameters (Ctrl/Cmd-click). None selected = one combined
@@ -474,8 +523,12 @@ function buildTraces(filtered){
   var groupSel=document.getElementById('groupby');
   var groupCols=Array.from(groupSel.selectedOptions||[]).map(function(o){return o.value;}).filter(function(v){return v;});
   var sortBy=document.getElementById('sortby').value;
+  /* Envelope-decimate the POINT set only (when the toggle is on and "Show all
+     points" is off) -- `filtered` itself is left intact so the spec mask and the
+     data-rows table still see every filtered row. */
+  var _ptRows=_scatDecimateActive()?_decimateClient(filtered):filtered;
   var groups={};
-  filtered.forEach(function(r){
+  _ptRows.forEach(function(r){
     var key=groupCols.length?groupCols.map(function(gc){var v=r[gc];return String(v===null||v===undefined?'(none)':v);}).join('  |  '):'(all)';
     if(!groups[key]) groups[key]=[];
     groups[key].push(r);
@@ -861,6 +914,7 @@ function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
   _stSet('hide_spec',document.getElementById('hide_spec_chk').checked?'1':'0');
+  var _sap=document.getElementById('show_all_pts_chk'); if(_sap) _stSet('show_all_pts',_sap.checked?'1':'0');
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -872,6 +926,7 @@ function loadState(){
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
   var hs=_stGet('hide_spec');if(hs!==null)document.getElementById('hide_spec_chk').checked=(hs==='1');
+  var sap=_stGet('show_all_pts');var sapEl=document.getElementById('show_all_pts_chk');if(sap!==null&&sapEl)sapEl.checked=(sap==='1');
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -1918,6 +1973,26 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
 
     group_cols = _detect_group_cols(df)
 
+    # Live "Show all points" toggle (opt-in "scatter_decimate_toggle": true).
+    # DISTINCT from the build-time "scatter_decimate" below: that one embeds ONLY
+    # the min/max envelope to shrink the file (dropped points are gone). This one
+    # embeds the FULL point set and decimates CLIENT-SIDE, so a checkbox switches
+    # between the fast envelope (default) and every raw point live, no rebuild --
+    # for the "page size is fine, I just want faster default rendering with an
+    # on-demand full view" case. When it's on we deliberately do NOT server-
+    # decimate (both renderings must be available), so it's mutually exclusive
+    # with the size-shrinking build-time decimation.
+    scatter_toggle = bool(cfg.get("scatter_decimate_toggle", False))
+    _tog_threshold = int(cfg.get("scatter_decimate_threshold", 2000))
+    _tog_target = int(cfg.get("scatter_decimate_target", 3000))
+    _tog_partition_cols = [c for c, _ in group_cols]
+    _tog_log_x_default = bool(
+        log_x_cfg if log_x_cfg is not None
+        else ("Frequency_MHz" in df.columns and len(df)
+              and float(df["Frequency_MHz"].min()) > 0
+              and float(df["Frequency_MHz"].max()) / max(float(df["Frequency_MHz"].min()), 1e-9) >= 100)
+    )
+
     # Dense continuous-sweep decimation: a genuinely swept x-axis (e.g. a
     # phase-noise offset-frequency trace with thousands of raw points per
     # DUT/condition) embeds every one of those points into the page today --
@@ -1928,7 +2003,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     # condition), not a total across the whole file.
     decimate_mode = cfg.get("scatter_decimate", "auto")
     decimation_banner_html = ""
-    if decimate_mode != "off" and "Frequency_MHz" in df.columns and "Value" in df.columns:
+    if decimate_mode != "off" and not scatter_toggle and "Frequency_MHz" in df.columns and "Value" in df.columns:
         _dec_threshold = int(cfg.get("scatter_decimate_threshold", 2000))
         _dec_target = int(cfg.get("scatter_decimate_target", 3000))
         _dec_freq_min = float(df["Frequency_MHz"].min())
@@ -1961,6 +2036,17 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
                 f'{len(df):,} embedded. Full-resolution data is still in the '
                 'source CSV / Simple-mode native render.</div>'
             )
+
+    if scatter_toggle:
+        decimation_banner_html = (
+            '<div style="background:#eef5ff;border:1px solid #9ec1e8;'
+            'border-radius:4px;padding:6px 12px;margin:4px 0;font-size:12px;'
+            'color:#25507f">'
+            '<b>Fast render:</b> dense traces are drawn as a min/max envelope '
+            f'(&gt;{_tog_threshold:,} pts/trace reduced to ~{_tog_target:,}, spikes '
+            'preserved). Every raw point is embedded &mdash; tick '
+            '<b>Show&nbsp;all&nbsp;points</b> to draw them all.</div>'
+        )
 
     # Temperature env_bar: if Test_Step has >1 unique value, show it as an inline
     # env_bar (green bar) rather than as a collapsible filter-panel dropdown.
@@ -2111,6 +2197,11 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in filter_cols])};",
         f"var HOVER_COLS={json.dumps([[c, l] for c, l in hover_col_list])};",
         f"var TRACE_MODE={json.dumps(cfg.get('mode', 'lines+markers'))};",
+        f"var SCATTER_DECIMATE_TOGGLE={json.dumps(scatter_toggle)};",
+        f"var DEC_THRESHOLD={_tog_threshold};",
+        f"var DEC_TARGET={_tog_target};",
+        f"var DEC_PARTITION_COLS={json.dumps(_tog_partition_cols)};",
+        f"var DEC_LOG_X_DEFAULT={json.dumps(_tog_log_x_default)};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
@@ -2215,7 +2306,13 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
         '  <label><input type="checkbox" id="hide_spec_chk" onchange="toggleHideSpec()">'
         ' Hide&nbsp;spec&nbsp;lines</label>\n'
-        f'{band_section_html}'
+        + (
+            '  <label id="show_all_pts_label" title="This dataset embeds every raw point. '
+            'Unchecked draws a fast min/max envelope (spikes preserved); check to draw every point.">'
+            '<input type="checkbox" id="show_all_pts_chk" onchange="update()"> Show&nbsp;all&nbsp;points</label>\n'
+            if scatter_toggle else ""
+        )
+        + f'{band_section_html}'
         f'{_segment_by_html(has_segments)}'
         '  <div class="sep"></div>\n'
         f'  {hover_panel_html}\n'

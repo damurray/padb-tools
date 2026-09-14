@@ -237,6 +237,43 @@ def test_csv_to_parquet_newlines():
               ok, detail)
 
 
+# ---------------------------------------------------------------------------
+# Live "Show all points" toggle -- scatter_decimate_toggle (2026-09-14)
+# When set, the FULL point set must be embedded (no server decimation) plus the
+# toggle constant + checkbox; the default build stays server-decimated with no
+# checkbox. (The client-side _decimateClient envelope itself is browser-tier;
+# verified via the in-app browser -- this pins the server contract.)
+# ---------------------------------------------------------------------------
+def test_scatter_decimate_toggle():
+    import csv as _csv
+    import math as _m
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "dense.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for i in range(6000):   # one dense series > the 2000 threshold, > 3000 target
+                w.writerow(["Room", round(100.0 + i * 0.1, 3), round(-80 + _m.sin(i / 300.0), 4),
+                            "Serial Number: D1", -50, -110])
+        df = pp._load_scatter_csv(p)
+        base = {"y_label": "P", "views": ["scatter"]}
+        html_tog = pp._build_av_freq_html(df.copy(), {**base, "scatter_decimate_toggle": True}, "T")
+        html_def = pp._build_av_freq_html(df.copy(), dict(base), "D")   # default (auto server-decimate)
+
+        def nrows(h):
+            return h.count('"Frequency_MHz":')
+
+        # The JS always *references* show_all_pts_chk (getElementById), so test for
+        # the rendered <input id="show_all_pts_chk"> ELEMENT, not the bare string.
+        check("scatter toggle emits SCATTER_DECIMATE_TOGGLE=true + renders the Show-all-points checkbox",
+              "SCATTER_DECIMATE_TOGGLE=true" in html_tog and 'id="show_all_pts_chk"' in html_tog)
+        check("scatter default build has no toggle (SCATTER_DECIMATE_TOGGLE=false, checkbox not rendered)",
+              "SCATTER_DECIMATE_TOGGLE=false" in html_def and 'id="show_all_pts_chk"' not in html_def)
+        check("scatter toggle embeds the FULL series while default server-decimates it",
+              nrows(html_tog) == 6000 and nrows(html_def) < 6000,
+              f"toggle_rows={nrows(html_tog)} default_rows={nrows(html_def)}")
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -247,7 +284,7 @@ def main() -> None:
                test_short_x_label, test_parse_group_kv, test_extract_group_field,
                test_has_segmentable_spec, test_resolve_date_sentinel,
                test_filename_stem_variants, test_x_axis_detection,
-               test_csv_to_parquet_newlines):
+               test_csv_to_parquet_newlines, test_scatter_decimate_toggle):
         try:
             fn()
         except Exception as exc:
