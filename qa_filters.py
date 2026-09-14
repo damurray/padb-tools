@@ -741,11 +741,20 @@ _HARNESS_JS = r"""
     if(kEl){
       var kOrig=kEl.value;
       function _outN(){ return ((typeof _hLastSiteRows!=='undefined')?_hLastSiteRows:[]).filter(function(r){return r.verdict==='OUTSIDE';}).length; }
+      function _fence(){ var rs=(typeof _hLastSiteRows!=='undefined')?_hLastSiteRows:[]; for(var i=0;i<rs.length;i++){ if(rs[i].lo!=null&&rs[i].hi!=null) return [rs[i].lo,rs[i].hi]; } return null; }
       kEl.value='1.5'; try{updateSitePanel();}catch(e){} var oMid=_outN();
-      kEl.value='0.5'; try{updateSitePanel();}catch(e){} var oStrict=_outN();
-      kEl.value='5';   try{updateSitePanel();}catch(e){} var oLoose=_outN();
-      chk('site-k-slider-monotonic', oStrict>=oMid && oMid>=oLoose && oStrict!==oLoose,
-          'OUTSIDE: k=0.5 -> '+oStrict+', k=1.5 -> '+oMid+', k=5 -> '+oLoose+' (monotonic + live effect)');
+      kEl.value='0.5'; try{updateSitePanel();}catch(e){} var oStrict=_outN(); var fS=_fence();
+      kEl.value='5';   try{updateSitePanel();}catch(e){} var oLoose=_outN(); var fL=_fence();
+      // Live effect: k must actually change the result. On genuinely disjoint
+      // sites the OUTSIDE *count* saturates (every non-primary point is outside
+      // at every practical k -- e.g. two sites whose switching-speed
+      // distributions don't overlap), so prove k is wired by the fence widening
+      // (looser k -> wider [lo,hi]), not by requiring a count delta.
+      var widened = (fS&&fL) ? (fL[0]<fS[0]-1e-9 || fL[1]>fS[1]+1e-9) : (oStrict!==oLoose);
+      chk('site-k-slider-monotonic', oStrict>=oMid && oMid>=oLoose && widened,
+          'OUTSIDE: k=0.5 -> '+oStrict+', k=1.5 -> '+oMid+', k=5 -> '+oLoose+
+          '; fence k=0.5 '+(fS?('['+fS[0].toFixed(1)+','+fS[1].toFixed(1)+']'):'n/a')+
+          ' -> k=5 '+(fL?('['+fL[0].toFixed(1)+','+fL[1].toFixed(1)+']'):'n/a')+' (monotonic + live fence effect)');
       kEl.value=kOrig; try{updateSitePanel();}catch(e){}   // restore baseline for the CSV checks below
     } else skip('site-k-slider','no k input on this page');
     // CSV export of the panel must match exactly what's on screen (All + Outside-only).

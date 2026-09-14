@@ -1236,8 +1236,10 @@ def _maybe_build_pdf_report(df, cfg, prefix, csv_path, output_dir, gen_pairs, vi
             "view_labels": {v: view_label_fn(v) for (v, _p) in gen_pairs},
         }
         out_pdf = output_dir / (re.sub(r"[^\w]+", "_", prefix) + "_report.pdf")
-        print(f"  Building comprehensive PDF report -> {out_pdf.name}", flush=True)
-        padb_pdf_report.generate_multiview_pdf(gen_pairs, out_pdf, meta)
+        apply_filter = bool(cfg.get("pdf_report_apply_filter", False))
+        print(f"  Building comprehensive PDF report -> {out_pdf.name}"
+              f"{' (filter-aware)' if apply_filter else ''}", flush=True)
+        padb_pdf_report.generate_multiview_pdf(gen_pairs, out_pdf, meta, apply_filter=apply_filter)
     except Exception as exc:
         _log_note(output_dir, f"build-time PDF report failed ({exc}).")
 
@@ -1630,6 +1632,14 @@ def main(argv: list[str] | None = None) -> None:
              "the job file untouched. Requires: py -m pip install playwright "
              "pypdf && py -m playwright install chromium.",
     )
+    parser.add_argument(
+        "--pdf-apply-filter",
+        action="store_true",
+        help="Build the PDF report filter-aware: run each engine view's "
+             "auto-filter recommended workflow before printing, so the stats "
+             "views show the cleaned population (raw scatter/distribution stay "
+             "full). Implies --pdf-report.",
+    )
     args = parser.parse_args(argv)
 
     job_path = Path(args.job).resolve()
@@ -1653,6 +1663,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.pdf_report:
         cfg["build_pdf_report"] = True
+    if args.pdf_apply_filter:
+        cfg["build_pdf_report"] = True
+        cfg["pdf_report_apply_filter"] = True
 
     job_dir = job_path.parent
 

@@ -56,14 +56,20 @@ from typing import Any, Callable, Optional
 # a full build past each view's "large dataset -- click Refresh table" size gate
 # (Statistics/Results tables auto-refresh only below ~150 conditions). A report
 # always wants the real table, so we force it.
+# `workflow`/`ctx` (optional): the one-click auto-filter workflow fn and its ctx
+# global. In filter-aware mode we call the workflow before printing so the plot +
+# stats table reflect the recommended exclusions (the shared Global Filter for the
+# GF views -- inherited across them -- or the in-memory _hAutoExcl for histogram).
+# scatter/distribution have no engine: they deliberately stay the full collected
+# population (you want to *see* every point in a raw scatter / KDE).
 PRINT_PROFILES: dict[str, dict[str, Any]] = {
     "scatter":      {"plot": "plot",     "panels": ["scatter_table_panel"], "toggles": ["toggleScatterTable"]},
-    "stat_summary": {"plot": "plot",     "panels": ["stat_panel"],          "toggles": ["toggleStatPanel"],  "refresh": "stat_refresh_table_btn"},
-    "boxplot":      {"plot": "plot",     "panels": ["box_stat_panel"],       "toggles": ["toggleStatPanel"],  "refresh": "box_refresh_table_btn"},
+    "stat_summary": {"plot": "plot",     "panels": ["stat_panel"],          "toggles": ["toggleStatPanel"],  "refresh": "stat_refresh_table_btn", "workflow": "statRunWorkflow", "ctx": "STAT_AF"},
+    "boxplot":      {"plot": "plot",     "panels": ["box_stat_panel"],       "toggles": ["toggleStatPanel"],  "refresh": "box_refresh_table_btn", "workflow": "boxRunWorkflow", "ctx": "BOX_AF"},
     "distribution": {"plot": "kde_plot", "panels": ["delta_tbl", "dist_ti_tbl"], "toggles": []},
-    "env_coverage": {"plot": "plot",     "panels": ["ec_stat_panel"],        "toggles": ["toggleStatsPanel"], "refresh": "ec_refresh_table_btn"},
-    "summary":      {"plot": "plot",     "panels": ["sum_table_wrap"],       "toggles": ["buildTable"],       "refresh": "sum_refresh_table_btn"},
-    "histogram":    {"plot": "plot",     "panels": ["h_stats"],              "toggles": ["toggleStats"]},
+    "env_coverage": {"plot": "plot",     "panels": ["ec_stat_panel"],        "toggles": ["toggleStatsPanel"], "refresh": "ec_refresh_table_btn", "workflow": "ecRunWorkflow", "ctx": "EC_AF"},
+    "summary":      {"plot": "plot",     "panels": ["sum_table_wrap"],       "toggles": ["buildTable"],       "refresh": "sum_refresh_table_btn", "workflow": "sumRunWorkflow", "ctx": "SUM_AF"},
+    "histogram":    {"plot": "plot",     "panels": ["h_stats"],              "toggles": ["toggleStats"],      "workflow": "histRunWorkflow", "ctx": "HIST_AF"},
 }
 
 # Known view slugs, longest-first, so a filename like
@@ -141,7 +147,9 @@ def check_environment() -> tuple[bool, str]:
 # --------------------------------------------------------------------------
 # Cover page
 # --------------------------------------------------------------------------
-def _cover_html(meta: dict[str, Any], view_labels: list[str]) -> str:
+def _cover_html(meta: dict[str, Any], view_labels: list[str],
+                apply_filter: bool = False,
+                exclusions: Optional[list] = None) -> str:
     esc = _html.escape
     title = esc(str(meta.get("title", "Multi-View Analysis Report")))
     rows = []
@@ -164,6 +172,40 @@ def _cover_html(meta: dict[str, Any], view_labels: list[str]) -> str:
 
     contents = "".join(f"<li>{esc(l)}</li>" for l in view_labels)
 
+    # Filtering section: what (if anything) was auto-filtered out of the stats
+    # views. The Dataset table above is always the full *collected* population.
+    if apply_filter:
+        total_duts = sum(e.get("duts", 0) for _l, e in (exclusions or []))
+        total_pts = sum(e.get("pts", 0) for _l, e in (exclusions or []))
+        if exclusions:
+            excl_rows = "".join(
+                f'<li>{esc(lbl)}: auto-excluded <b>{e.get("duts",0)}</b> DUT'
+                f'{"" if e.get("duts",0)==1 else "s"} '
+                f'({e.get("pts",0)} point{"" if e.get("pts",0)==1 else "s"})</li>'
+                for lbl, e in exclusions
+            )
+        else:
+            excl_rows = "<li>No engine views in this report.</li>"
+        filter_html = (
+            '<div class="sect">Filtering applied</div>'
+            '<p class="note">The statistical views below reflect the auto-filter '
+            "<b>recommended exclusions</b> (the risk-gated &ldquo;auto&rdquo; set, "
+            "the same as the in-page &ldquo;Run recommended workflow&rdquo; button) "
+            "&mdash; reversible and audited. The raw Scatter / Distribution views "
+            "(where present) still show the <b>full collected population</b>, so "
+            "this report shows both what was collected (Dataset, above) and what "
+            f"the cleaning removed. Total auto-excluded across views: "
+            f"<b>{total_duts}</b> DUT-instances / <b>{total_pts}</b> points.</p>"
+            f"<ul>{excl_rows}</ul>"
+        )
+    else:
+        filter_html = (
+            '<div class="sect">Filtering applied</div>'
+            '<p class="note">None &mdash; every view shows the <b>full collected '
+            "population</b> as measured. (Generate with the filter-aware option to "
+            "apply the auto-filter recommended exclusions to the statistical views.)</p>"
+        )
+
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>
 <style>
   body {{ font-family: Segoe UI, Arial, sans-serif; color:#222; margin:0; padding:48px 56px; }}
@@ -178,8 +220,9 @@ def _cover_html(meta: dict[str, Any], view_labels: list[str]) -> str:
 </style></head><body>
   <h1>{title}</h1>
   <h2>Comprehensive multi-view analysis report</h2>
-  <div class="sect">Dataset</div>
+  <div class="sect">Dataset (as collected)</div>
   <table>{''.join(rows)}</table>
+  {filter_html}
   <div class="sect">Contents</div>
   <ul>{contents}</ul>
   <div class="sect">Methodology &amp; caveats</div>
@@ -191,8 +234,10 @@ def _cover_html(meta: dict[str, Any], view_labels: list[str]) -> str:
 # Printing
 # --------------------------------------------------------------------------
 def _prepare_and_print(page, url: str, out_pdf: Path, profile: Optional[dict],
-                       log: Callable[[str], None]) -> bool:
-    """Load one page, open its table, hide chrome, print to out_pdf. Returns ok."""
+                       log: Callable[[str], None], apply_filter: bool = False) -> tuple[bool, Optional[dict]]:
+    """Load one page, (optionally) apply the auto-filter, open its table, hide
+    chrome, print to out_pdf. Returns (ok, exclusion_info) -- exclusion_info is
+    {"duts": n, "pts": m} when filtering ran on this view, else None."""
     page.goto(url, wait_until="load", timeout=60000)
     plot_id = (profile or {}).get("plot", "plot")
     # Wait for Plotly to actually have traces (the page renders via JS on load).
@@ -205,6 +250,29 @@ def _prepare_and_print(page, url: str, out_pdf: Path, profile: Optional[dict],
         # A cover page or a placeholder has no plot -- that's fine, keep going.
         pass
     page.wait_for_timeout(600)
+
+    excl = None
+    if profile and apply_filter and profile.get("workflow"):
+        # Run the one-click auto-filter workflow, then read how much it excluded.
+        # This applies the conservative "auto" set only (the risk-gated
+        # recommendation) -- the same thing the in-page "Run recommended
+        # workflow" button does -- and re-renders the plot + table against it.
+        try:
+            page.evaluate(
+                "(fn)=>{ if(typeof window[fn]==='function'){ try{ window[fn](); }catch(e){} } }",
+                profile["workflow"],
+            )
+            page.wait_for_timeout(1200)
+            ctxname = profile.get("ctx")
+            if ctxname:
+                excl = page.evaluate(
+                    "(cn)=>{var c=window[cn]; if(!c) return null;"
+                    " var r=window[c.resultVar]; if(!r||!r.auto) return {duts:0,pts:0};"
+                    " return {duts:r.auto.length, pts:r.auto.reduce(function(x,d){return x+(d.pts?d.pts.length:0);},0)};}",
+                    ctxname,
+                )
+        except Exception:
+            excl = None
 
     if profile:
         # Open the stats/results table (build + show).
@@ -253,7 +321,7 @@ def _prepare_and_print(page, url: str, out_pdf: Path, profile: Optional[dict],
         height="8.5in",
         margin={"top": "0.3in", "bottom": "0.3in", "left": "0.3in", "right": "0.3in"},
     )
-    return out_pdf.exists() and out_pdf.stat().st_size > 0
+    return (out_pdf.exists() and out_pdf.stat().st_size > 0), excl
 
 
 def generate_multiview_pdf(
@@ -261,8 +329,15 @@ def generate_multiview_pdf(
     out_pdf: Path,
     meta: dict[str, Any],
     log: Optional[Callable[[str], None]] = None,
+    apply_filter: bool = False,
 ) -> Optional[Path]:
     """Build one comprehensive PDF from the given (view_slug, html_path) pairs.
+
+    apply_filter=True runs each engine view's one-click auto-filter workflow
+    before printing, so the stats views (boxplot/stat_summary/summary/env_coverage
+    /histogram) show the recommended-exclusion (cleaned) population; the raw
+    scatter/distribution still show the full collected data. The cover documents
+    both what was collected and what was excluded.
 
     Returns the output path on success, or None if the environment is unavailable
     or nothing could be printed. Never raises into the caller.
@@ -296,20 +371,20 @@ def generate_multiview_pdf(
     tmpdir = Path(tempfile.mkdtemp(prefix="padb_pdf_"))
     part_pdfs: list[Path] = []
 
-    def _print_one(browser, url: str, part: Path, profile) -> tuple[bool, Any]:
-        """Print one page on a throwaway page; return (ok, browser) relaunching
-        the browser if it crashed so the caller can continue with the rest."""
+    def _print_one(browser, url: str, part: Path, profile, do_filter: bool) -> tuple[bool, Any, Optional[dict]]:
+        """Print one page on a throwaway page; return (ok, browser, excl)
+        relaunching the browser if it crashed so the caller can continue."""
         for attempt in range(2):
             try:
                 page = browser.new_page(viewport={"width": 1000, "height": 1400})
                 try:
-                    ok = _prepare_and_print(page, url, part, profile, log)
+                    ok, excl = _prepare_and_print(page, url, part, profile, log, do_filter)
                 finally:
                     try:
                         page.close()
                     except Exception:
                         pass
-                return ok, browser
+                return ok, browser, excl
             except Exception as exc:
                 msg = str(exc)
                 crashed = ("crash" in msg.lower() or "closed" in msg.lower()
@@ -322,38 +397,50 @@ def generate_multiview_pdf(
                     browser = pw.chromium.launch(args=launch_args)
                     continue
                 raise
-        return False, browser
+        return False, browser, None
 
+    view_parts: list[Path] = []
+    exclusions: list[tuple[str, dict]] = []  # (view_label, {duts,pts}) when filtered
     try:
         with sync_playwright() as pw:
             browser = pw.chromium.launch(args=launch_args)
 
-            # Cover page
-            cover_html = tmpdir / "_cover.html"
-            cover_html.write_text(_cover_html(meta, view_labels), encoding="utf-8")
-            cover_pdf = tmpdir / "00_cover.pdf"
-            try:
-                ok, browser = _print_one(browser, cover_html.resolve().as_uri(), cover_pdf, None)
-                if ok:
-                    part_pdfs.append(cover_pdf)
-            except Exception as exc:
-                log(f"  NOTE: PDF cover page failed ({exc}); continuing without it.")
-
-            # One page-set per view
+            # Views first (so the cover, printed after, can summarize what each
+            # view's auto-filter excluded), then merged cover-first below.
             for i, (slug, html_path) in enumerate(pairs, 1):
                 profile = PRINT_PROFILES.get(slug)
                 part = tmpdir / f"{i:02d}_{slug}.pdf"
                 label = meta.get("view_labels", {}).get(slug, slug)
                 try:
-                    ok, browser = _print_one(
-                        browser, Path(html_path).resolve().as_uri(), part, profile)
+                    ok, browser, excl = _print_one(
+                        browser, Path(html_path).resolve().as_uri(), part, profile, apply_filter)
                     if ok:
-                        part_pdfs.append(part)
-                        log(f"    + {label}")
+                        view_parts.append(part)
+                        if excl is not None:
+                            exclusions.append((label, excl))
+                            log(f"    + {label}  (auto-filter: -{excl.get('duts',0)} DUT/"
+                                f"{excl.get('pts',0)} pts)")
+                        else:
+                            log(f"    + {label}")
                     else:
                         log(f"    ! {label}: produced no PDF page (skipped)")
                 except Exception as exc:
                     log(f"    ! {label}: {str(exc).splitlines()[0]} (skipped)")
+
+            # Cover page last (needs the exclusion tallies), merged first.
+            cover_html = tmpdir / "_cover.html"
+            cover_html.write_text(
+                _cover_html(meta, view_labels, apply_filter=apply_filter, exclusions=exclusions),
+                encoding="utf-8")
+            cover_pdf = tmpdir / "00_cover.pdf"
+            try:
+                ok, browser, _ = _print_one(browser, cover_html.resolve().as_uri(), cover_pdf, None, False)
+                if ok:
+                    part_pdfs.append(cover_pdf)
+            except Exception as exc:
+                log(f"  NOTE: PDF cover page failed ({exc}); continuing without it.")
+
+            part_pdfs.extend(view_parts)
 
             try:
                 browser.close()
@@ -401,6 +488,11 @@ def _cli(argv: list[str]) -> int:
     ap.add_argument("target", help="A results folder (uses all *_<view>.html) or a filename prefix.")
     ap.add_argument("--out", help="Output PDF path (default <folder>/<prefix>_report.pdf).")
     ap.add_argument("--title", help="Report title (default derived from the files).")
+    ap.add_argument("--apply-filter", action="store_true",
+                    help="Filter-aware report: run each engine view's auto-filter "
+                         "recommended workflow before printing, so the stats views "
+                         "show the cleaned population (raw scatter/distribution stay "
+                         "full). Best run on demand, after the plots exist.")
     args = ap.parse_args(argv)
 
     target = Path(args.target)
@@ -437,7 +529,7 @@ def _cli(argv: list[str]) -> int:
             "histogram": "Histogram",
         },
     }
-    res = generate_multiview_pdf(pairs, out, meta)
+    res = generate_multiview_pdf(pairs, out, meta, apply_filter=args.apply_filter)
     return 0 if res else 1
 
 
