@@ -35,11 +35,22 @@ Enable once with:
 from __future__ import annotations
 
 import html as _html
+import logging as _logging
 import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+# Playwright's sync driver leaves a greenlet event loop that, during interpreter
+# shutdown -- AFTER the report has already been written -- logs benign
+# "Task was destroyed but it is pending! / Future exception was never retrieved
+# (TargetClosedError: ... browser has been closed)" noise through Python's asyncio
+# logger. It's harmless (the connection is simply being torn down) but clutters
+# the build / webapp console logs. Silence just that logger; real Playwright
+# failures surface as raised exceptions we catch and report via our own log(),
+# not through this channel.
+_logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
 
 
 # --------------------------------------------------------------------------
