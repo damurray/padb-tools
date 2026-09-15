@@ -7538,9 +7538,9 @@ function saveSitePopulationCSV(outsideOnly){
     var p=r.p;
     out.push([esc(p.site),esc(p.serial),esc(p.port||''),p.freq,
       p.value.toFixed(6),
-      r.lo!==undefined?r.lo.toFixed(6):'',
-      r.hi!==undefined?r.hi.toFixed(6):'',
-      r.n!==undefined?r.n:'',
+      r.lo!==undefined&&r.lo!==null?r.lo.toFixed(6):'',
+      r.hi!==undefined&&r.hi!==null?r.hi.toFixed(6):'',
+      r.n!==undefined&&r.n!==null?r.n:'',
       r.dir||'',
       r.dist?r.dist.toFixed(6):'',
       r.verdict].join(','));
@@ -13507,8 +13507,28 @@ function _fenceQualityHint(pvItems,k){
   }
   return hints.join(' | ');
 }
+function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
+/* Comparison basis: classify a non-primary point against its OWN datasheet
+   Spec/Limit (not the primary fence). Prefer the derived Limit (PADB's go/no-go
+   incl. M.U./DEnv) and fall back to the raw Spec; apply only the side that's
+   present so a one-sided spec fails only on the side that exists. verdict
+   'OUTSIDE' == fails spec, reusing the fence path's downstream triage verbatim. */
+function _siteSpecClass(p){
+  /* Per-point limit if the payload carries it (frequency-varying pods), else the
+     page-level HI_SPEC/LO_SPEC (the same spec the boxplot's own pass/fail uses). */
+  var pgHi=(typeof HI_SPEC!=='undefined')?_siteNum(HI_SPEC):null;
+  var pgLo=(typeof LO_SPEC!=='undefined')?_siteNum(LO_SPEC):null;
+  var hi=(p.limHi!=null?p.limHi:(p.specHi!=null?p.specHi:pgHi));
+  var lo=(p.limLo!=null?p.limLo:(p.specLo!=null?p.specLo:pgLo));
+  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
+  var dir=null,dist=0;
+  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
+  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
+  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+}
 function updateSitePanel(){
   var el=document.getElementById('box_site_panel');
+  var siteBasis=(document.getElementById('box_site_basis')||{}).value||'fence';
   if(!el||el.style.display==='none') return;
   try{
     if(!PRIMARY_SITE){el.innerHTML='<i style="color:#888">No comparison site configured for this page.</i>';return;}
@@ -13558,7 +13578,8 @@ function updateSitePanel(){
                SpurTypes/ports would be misread as a repeat test run. */
             (primaryBuckets[bk]=primaryBuckets[bk]||[]).push({s:d.s,v:d.v,cond:cd.condition,p:d.p});
           } else {
-            otherPoints.push({site:cd.site,serial:d.s,port:d.p,cond:cd.condition,temp:cd.temp,freq:fs.freq,freqLabel:fs.freq_label,value:d.v});
+            otherPoints.push({site:cd.site,serial:d.s,port:d.p,cond:cd.condition,temp:cd.temp,freq:fs.freq,freqLabel:fs.freq_label,value:d.v,
+              limHi:_siteNum(d.upper_limit),limLo:_siteNum(d.lower_limit),specHi:_siteNum(d.spec_hi),specLo:_siteNum(d.spec_lo)});
           }
         });
       });
@@ -13625,7 +13646,18 @@ function updateSitePanel(){
         return s+'×'+e.maxN+(e.conds>1?' ('+e.conds+' conds)':''); });
       var otherKey=p.site+'|'+p.serial+'|'+(p.port||'')+'|'+p.cond+'|'+p.temp+'|'+p.freq;
       var otherDup=Math.max(0,(otherDupCounts[otherKey]||1)-1);
-      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,pvDup:pvDup,fenceHint:'',otherDup:otherDup};
+      /* Spec/Limit verdict for this point (basis 'spec'/'both'); PASS/FAIL/n-a
+         string is shown in the 'both' extra column. */
+      var sc=_siteSpecClass(p);
+      var specPF=sc.verdict==='n/a'?'n/a':(sc.dir?'FAIL':'PASS');
+      if(siteBasis==='spec'){
+        /* Judge against the point's own spec/limit -- no primary population
+           needed, so the <4-primary-points 'n/a' gate does not apply. */
+        var srS=(sc.dir&&towardFail)?(sc.dir===towardFail):null;
+        return {p:p,verdict:sc.verdict,dir:sc.dir,dist:sc.dist,lo:sc.lo,hi:sc.hi,n:undefined,
+                pvDup:pvDup,fenceHint:'',specRelevant:srS,otherDup:otherDup,specPF:specPF};
+      }
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,pvDup:pvDup,fenceHint:'',otherDup:otherDup,specPF:specPF};
       var s=computeBoxStats(pv,k);
       var dir=null,dist=0;
       if(p.value>s.hi_w){dir='high';dist=p.value-s.hi_w;}
@@ -13638,7 +13670,7 @@ function updateSitePanel(){
          unconfigured spec) means this can't be determined -- treated as
          spec-relevant so a real risk is never silently hidden when unsure. */
       var specRelevant=(dir&&towardFail)?(dir===towardFail):null;
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:s.lo_w,hi:s.hi_w,n:pv.length,pvDup:pvDup,fenceHint:fenceHint,specRelevant:specRelevant,otherDup:otherDup};
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:s.lo_w,hi:s.hi_w,n:pv.length,pvDup:pvDup,fenceHint:fenceHint,specRelevant:specRelevant,otherDup:otherDup,specPF:specPF};
     });
 
     /* Per-frequency clusters: how many distinct DUTs are OUTSIDE at the
@@ -13725,10 +13757,17 @@ function updateSitePanel(){
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing -- OUTSIDE points moving the other way can\'t fail this spec and are flagged benign below.'):
       ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations, none flagged benign.)';
     var winNote=freqWindowed?' Scoped to the current frequency window ('+fr.lo.toFixed(3)+'–'+fr.hi.toFixed(3)+' '+X_UNIT+') -- reset/zoom out to check the full range.':'';
-    var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
-      '</b> non-'+PRIMARY_SITE+' point(s) fall outside the '+PRIMARY_SITE+' k×IQR fence at their own frequency/temperature'+
+    var isSpecBasis=(siteBasis==='spec');
+    var basisPhrase=isSpecBasis
+      ?'fail their own datasheet Spec/Limit'
+      :'fall outside the '+PRIMARY_SITE+' k×IQR fence at their own frequency/temperature';
+    var basisPre=isSpecBasis?'Comparison: each non-'+PRIMARY_SITE+' point vs its own Spec/Limit (the primary-site fence is not used).':
+      (siteBasis==='both'?'Comparison: outside = '+PRIMARY_SITE+' fence (drives triage below); a separate Spec/Limit pass/fail is shown in the last column.':'');
+    var html='<div style="font-size:12px;margin-bottom:6px">'+(basisPre?'<i>'+basisPre+'</i><br>':'')+'<b>'+nOutside+'</b> of <b>'+rows.length+
+      '</b> non-'+PRIMARY_SITE+' point(s) '+basisPhrase+
       (nBenign?' (<b>'+nBenign+'</b> of those are benign -- away from the spec-fail direction)':'')+
-      (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency/temperature, fence not meaningful)':'')+
+      (!isSpecBasis&&nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency/temperature, fence not meaningful)':'')+
+      (isSpecBasis&&nNA?' ('+nNA+' have no spec/limit configured)':'')+
       '.'+dirNote+winNote+'</div>';
     html+='<div style="margin:0 0 8px">'+
       '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
@@ -13783,26 +13822,39 @@ function updateSitePanel(){
     // Height-bounded scroll box so the horizontal scrollbar sits at the bottom
     // of the viewport (always reachable) instead of the bottom of a long table.
     html+='<div style="overflow:auto;max-height:60vh;border:1px solid #eee">';
+    var loLbl=isSpecBasis?'Limit&nbsp;lo':PRIMARY_SITE+' fence lo';
+    var hiLbl=isSpecBasis?'Limit&nbsp;hi':PRIMARY_SITE+' fence hi';
+    var outWord=isSpecBasis?'FAIL':'OUTSIDE';
+    var inWord=isSpecBasis?'PASS':'inside';
+    var showSpecCol=(siteBasis==='both');
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Temp</th><th>Freq</th>'+
       '<th>Value</th>'+
       '<th title="Extra raw rows sharing this exact (site, serial, port, condition, temp, frequency) beyond one -- a genuine repeat test run on the point being checked itself, not the '+PRIMARY_SITE+' fence\'s population. A real, confirmed case: some datasets ran every point twice, universally -- the same (Serial, Freq) then legitimately appears as two separate rows with two different real values, which is not a data error.">Site&nbsp;dup&nbsp;pts</th>'+
-      '<th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th>'+
+      '<th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+PRIMARY_SITE+' n</th>'+
       '<th title="Which of the '+PRIMARY_SITE+' fence\'s own reference DUTs at this temp/frequency have more than one raw row (serial×count) -- a DUT not listed here contributed exactly one.">'+PRIMARY_SITE+' dup pts</th>'+
       '<th title="Flags when this fence\'s own population looks compromised -- multiple conditions pooled together, duplicate points from one DUT, or a single extreme point dominating the whole span -- and names the specific fix for whichever applies.">Fence check</th>'+
-      '<th>Dir</th><th>Dist</th><th title="OUTSIDE (benign) means this point is outside the fence in the direction AWAY from a one-sided spec\'s fail side -- a real population difference, but not something that can fail spec.">Verdict</th></tr></thead><tbody>';
+      '<th>Dir</th><th>Dist</th><th title="OUTSIDE (benign) means this point is outside the fence in the direction AWAY from a one-sided spec\'s fail side -- a real population difference, but not something that can fail spec.">Verdict</th>'+
+      (showSpecCol?'<th title="Independent pass/fail of this point against its own datasheet Spec/Limit (the actual requirement), shown alongside the fence verdict.">Spec&nbsp;P/F</th>':'')+
+      '</tr></thead><tbody>';
     rows.forEach(function(r){
       var p=r.p;
       var vTd=r.verdict!=='OUTSIDE'
-        ?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>')
+        ?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>'+inWord+'</td>')
         :r.specRelevant===false
-          ?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only, cannot fail this spec.">OUTSIDE (benign)</td>'
-          :'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>';
+          ?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only, cannot fail this spec.">'+outWord+' (benign)</td>'
+          :'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>';
+      var specTd='';
+      if(showSpecCol){
+        specTd=r.specPF==='FAIL'?'<td style="color:#c00;font-weight:bold">FAIL</td>':
+               r.specPF==='PASS'?'<td style="color:#2a7a2a">PASS</td>':
+               '<td style="color:#aaa">n/a</td>';
+      }
       html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td><td>'+(p.port||'')+'</td><td>'+p.temp+'</td>'+
         '<td>'+(p.freqLabel||p.freq)+'</td><td>'+p.value.toFixed(4)+'</td>'+
         '<td>'+(r.otherDup?'<span class="out">'+r.otherDup+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
-        '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
-        '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
-        '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
+        '<td>'+(r.lo!==undefined&&r.lo!==null?r.lo.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.hi!==undefined&&r.hi!==null?r.hi.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.n!==undefined&&r.n!==null?r.n:'&mdash;')+'</td>'+
         '<td style="max-width:220px;white-space:normal;overflow-wrap:break-word">'+(r.pvDup&&r.pvDup.length?'<span class="out">'+r.pvDup.join(', ')+'</span>':'<span style="color:#aaa">&mdash;</span>')+'</td>'+
         /* .stbl td sets white-space:nowrap globally -- without overriding
            it here, max-width has no effect on a nowrap cell (there's
@@ -13814,7 +13866,7 @@ function updateSitePanel(){
         '<td'+(r.fenceHint?' style="background:#fff8e1;color:#6b5a00;max-width:260px;white-space:normal;overflow-wrap:break-word"':'')+'>'+
         (r.fenceHint?r.fenceHint:'<span style="color:#aaa">&mdash;</span>')+'</td>'+
         '<td>'+(r.dir||'&mdash;')+'</td>'+
-        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
+        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+specTd+'</tr>';
     });
     html+='</tbody></table></div>';
     el.innerHTML=html;
@@ -13837,29 +13889,33 @@ function saveSitePopulationCSV(outsideOnly){
     return;
   }
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var siteBasis=(document.getElementById('box_site_basis')||{}).value||'fence';
+  var boundLbl=siteBasis==='spec'?'Limit':PRIMARY_SITE+'_fence';
   var hdrs=['Site','Serial','Port','Temp','Freq_'+X_UNIT,'Freq_Label','Value','Site_dup_pts',
-    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n',PRIMARY_SITE+'_dup_pts',
-    'Fence_check','Dir','Dist','Verdict','Spec_relevant'];
+    boundLbl+'_lo',boundLbl+'_hi',PRIMARY_SITE+'_n',PRIMARY_SITE+'_dup_pts',
+    'Fence_check','Dir','Dist','Verdict','Spec_relevant','Spec_PF'];
   var out=[hdrs.join(',')];
   rows.forEach(function(r){
     var p=r.p;
     out.push([esc(p.site),esc(p.serial),esc(p.port||''),esc(p.temp),p.freq.toFixed(4),esc(p.freqLabel||p.freq),
       p.value.toFixed(6),
       r.otherDup||0,
-      r.lo!==undefined?r.lo.toFixed(6):'',
-      r.hi!==undefined?r.hi.toFixed(6):'',
-      r.n!==undefined?r.n:'',
+      r.lo!==undefined&&r.lo!==null?r.lo.toFixed(6):'',
+      r.hi!==undefined&&r.hi!==null?r.hi.toFixed(6):'',
+      r.n!==undefined&&r.n!==null?r.n:'',
       esc(r.pvDup&&r.pvDup.length?r.pvDup.join('; '):''),
       esc(r.fenceHint||''),
       r.dir||'',
       r.dist?r.dist.toFixed(6):'',
       r.verdict,
-      r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown'].join(','));
+      r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown',
+      r.specPF||''].join(','));
   });
   var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
   var meta=['# PADB Export','# Plot: '+BOX_TITLE+' -- Site Population Check','# Generated: '+ts,
     '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),
     '# Primary site: '+PRIMARY_SITE,
+    '# Comparison basis: '+(siteBasis==='spec'?'Spec/Limit (each point vs its own datasheet limit)':siteBasis==='both'?'Primary fence (Verdict) + Spec/Limit (Spec_PF)':'Primary '+PRIMARY_SITE+' k x IQR fence'),
     '# Rows: '+rows.length,
     '# Frequency window: '+(_lastSiteMeta.freqWindowed?(_lastSiteMeta.frLo.toFixed(3)+'-'+_lastSiteMeta.frHi.toFixed(3)+' '+X_UNIT):'full range'),
     '# Note: per-DUT rollup and frequency-cluster summaries are not included -- this is the per-point detail table only.',
@@ -13951,6 +14007,7 @@ function clearEverything(){
   updateBoxFilterLabels();
   /* IQR k */
   var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value='1.5';
+  var sbEl=document.getElementById('box_site_basis');if(sbEl)sbEl.value='fence';
   /* Checkboxes */
   var exEl=document.getElementById('box_excl_room_chk');if(exEl)exEl.checked=false;
   var exEl2=document.getElementById('box_excl_denv_chk');if(exEl2)exEl2.checked=false;
@@ -15611,6 +15668,15 @@ def _build_box_interactive_html(
             ' against the k&times;IQR fence built from the primary site\'s (' + primary_site + ')'
             ' own population at that frequency/temperature -- uses the k&times;IQR control above"'
             ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>\n'
+            '  <label style="font-size:12px;margin-left:6px"'
+            ' title="How to judge each non-primary point: against the primary site\'s statistical'
+            ' fence (finds site-population shifts), against the datasheet Spec/Limit (real pass/fail),'
+            ' or both side by side.">Compare&nbsp;to:&nbsp;'
+            '<select id="box_site_basis" onchange="updateSitePanel()">'
+            '<option value="fence">' + primary_site + ' fence</option>'
+            '<option value="spec">Spec/Limit</option>'
+            '<option value="both">Both</option>'
+            '</select></label>\n'
         )
 
     return (
@@ -17211,9 +17277,9 @@ function saveSitePopulationCSV(outsideOnly){
     var p=r.p;
     out.push([esc(p.site),esc(p.serial),p.freq,
       p.value.toFixed(6),
-      r.lo!==undefined?r.lo.toFixed(6):'',
-      r.hi!==undefined?r.hi.toFixed(6):'',
-      r.n!==undefined?r.n:'',
+      r.lo!==undefined&&r.lo!==null?r.lo.toFixed(6):'',
+      r.hi!==undefined&&r.hi!==null?r.hi.toFixed(6):'',
+      r.n!==undefined&&r.n!==null?r.n:'',
       r.dir||'',
       r.dist?r.dist.toFixed(6):'',
       r.verdict].join(','));

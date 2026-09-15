@@ -876,6 +876,55 @@ def test_reference_stats():
               "var STATUS_COL=null;" in h2 and 'id="pareto"' in h2)
 
 
+def test_site_check_compare_basis() -> None:
+    """Boxplot Site Population Check gained a selectable comparison basis (2026-09-15,
+    user request): 'fence' (primary k*IQR fence, existing), 'spec' (judge each
+    non-primary point against its own datasheet Spec/Limit -- reuses the fence path's
+    downstream triage by reclassifying verdict against the limit), and 'both' (fence
+    drives triage + a Spec P/F column). Only on a compare page (PRIMARY_SITE set)."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        pc = Path(td) / "cmp.csv"
+        with pc.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for site in ("SR", "AMC"):
+                for freq in (100.0, 200.0):
+                    for i in range(8):
+                        v = round(10.0 + 0.05 * (i % 4), 4)
+                        if site == "AMC" and i == 0:
+                            v = 25.0  # over the +20 upper limit -> fails spec, may sit in SR fence
+                        w.writerow(["Room", freq, v,
+                                    f"Serial Number: {site}D{i:02d}  Site: {site}", 20, -20])
+        oc = Path(td) / "cmp.html"
+        pp.stat_boxplot(pc, {"y_label": "P", "title_prefix": "T", "primary_site": "SR"}, oc)
+        h = oc.read_text(encoding="utf-8")
+        check("site check: comparison-basis selector rendered (fence/spec/both)",
+              'id="box_site_basis"' in h and 'value="fence"' in h and 'value="spec"' in h and 'value="both"' in h)
+        check("site check: spec classifier present (_siteSpecClass, limit-or-page-spec)",
+              "function _siteSpecClass(p)" in h and "typeof HI_SPEC!=='undefined'" in h
+              and "p.limHi!=null" in h)
+        check("site check: spec basis reclassifies verdict + skips <4-primary gate",
+              "if(siteBasis==='spec')" in h and "the <4-primary-points 'n/a' gate does not apply" in h)
+        check("site check: both-mode adds Spec P/F column + null-safe fence bound render",
+              "var showSpecCol=(siteBasis==='both')" in h
+              and "r.lo!==undefined&&r.lo!==null" in h)
+        check("site check: CSV export carries basis + Spec_PF",
+              "'Spec_PF'" in h and "# Comparison basis: " in h)
+        # A non-compare boxplot has no PRIMARY_SITE -> no selector at all.
+        pn = Path(td) / "nc.csv"
+        with pn.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(8):
+                    w.writerow(["Room", freq, 10.0 + 0.05 * i, f"Serial Number: D{i:02d}", 20, -20])
+        on = Path(td) / "nc.html"
+        pp.stat_boxplot(pn, {"y_label": "P", "title_prefix": "T"}, on)
+        check("site check: no comparison-basis selector on a non-compare page",
+              'id="box_site_basis"' not in on.read_text(encoding="utf-8"))
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -963,7 +1012,7 @@ def main() -> None:
                test_auto_filter_site_scope, test_pdf_report_contract,
                test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats, test_axis_titles_object_form,
-               test_scatter_table_spec_status):
+               test_scatter_table_spec_status, test_site_check_compare_basis):
         try:
             fn()
         except Exception as exc:
