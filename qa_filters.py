@@ -898,8 +898,11 @@ _HARNESS_JS = r"""
       var dAll=csvDataRows(captureCsv(function(){hSaveSitePopulationCSV(false);}));
       chk('site-csv-export-matches-panel', dAll!=null && dAll.length===rows.length, 'csv_rows='+(dAll?dAll.length:'null')+' panel_rows='+rows.length);
       var nOut=rows.filter(function(r){return r.verdict==='OUTSIDE';}).length;
-      var dOut=csvDataRows(captureCsv(function(){hSaveSitePopulationCSV(true);}));
-      chk('site-csv-outside-only-matches-panel', dOut!=null && dOut.length===nOut, 'csv_out='+(dOut?dOut.length:'null')+' outside='+nOut);
+      if(nOut===0){ skip('site-csv-outside-only-matches-panel','0 outside points -> nothing to export (correct)'); }
+      else {
+        var dOut=csvDataRows(captureCsv(function(){hSaveSitePopulationCSV(true);}));
+        chk('site-csv-outside-only-matches-panel', dOut!=null && dOut.length===nOut, 'csv_out='+(dOut?dOut.length:'null')+' outside='+nOut);
+      }
     }
     // Edit-reimport workflow (the histogram has no GF): export -> delete a bad SR
     // DUT's rows -> reimport must re-wire the fence panel AND recompute the fence
@@ -1426,7 +1429,14 @@ _HARNESS_JS = r"""
     chk('subpop-baseline-flags-are-real-serials',
         base.flagged.every(function(s){return sset[s];}), 'flagged='+JSON.stringify(base.flagged));
     var plant=[sl.serials[0], sl.serials[1]];
-    var mut=sl.vals_by_freq.map(function(row){ return row.map(function(v,di){ return (v==null)?v:(di<2?v+1000.0:v); }); });
+    // Dominance-guaranteed offset: set the 2 planted DUTs FAR above the slice's own
+    // range, so they form an unambiguous separate mode regardless of the data's native
+    // scale/spread. A fixed +1000 fails on wide real data (e.g. switching speed in the
+    // thousands of us) where it just lands the pair inside the existing spread.
+    var _all=[]; sl.vals_by_freq.forEach(function(row){row.forEach(function(v){if(typeof v==='number'&&isFinite(v))_all.push(v);});});
+    var _mx=_all.length?Math.max.apply(null,_all):0, _mn=_all.length?Math.min.apply(null,_all):0;
+    var _big=_mx + ((_mx-_mn)||Math.abs(_mx)||1)*1000 + 1e6;
+    var mut=sl.vals_by_freq.map(function(row){ return row.map(function(v,di){ return (v==null)?v:(di<2?_big:v); }); });
     var r=_spDetect(mut, sl.serials, opt); var flg={}; r.flagged.forEach(function(s){flg[s]=1;});
     chk('subpop-planted-flags-exactly-the-2-offset-duts',
         r.status==='flagged'&&r.flagged.length===2&&flg[plant[0]]&&flg[plant[1]],
