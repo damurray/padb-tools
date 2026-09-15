@@ -982,9 +982,48 @@ _VIEW_LABELS = {
 }
 
 
-def _fill_spec_nulls(df: pd.DataFrame) -> pd.DataFrame:
+def _interp_mask_fill(df: pd.DataFrame, col: str, use_log: bool) -> int:
+    """Fill remaining NaN `col` by interpolating the frequency-varying spec MASK
+    between its defined breakpoints -- a piecewise-LINEAR "complex limit line"
+    (phase-noise / broadband-noise masks are specified at a handful of offset
+    breakpoints and interpolated between them, linearly in log-frequency).
+
+    Opt-in only (spec_interp="linear"): most pods have either a constant spec or a
+    STEP/staircase mask (spurs), where linear interpolation would be WRONG -- those
+    keep the default modal fill. Interpolates from the union of known breakpoints
+    (one median value per breakpoint frequency); clamps at the mask ends."""
+    import numpy as _np
+    f = "Frequency_MHz"
+    if col not in df.columns or f not in df.columns:
+        return 0
+    known = df.dropna(subset=[col])
+    if known.empty:
+        return 0
+    bp = known.groupby(f)[col].median().sort_index()   # one value per breakpoint freq
+    xf = bp.index.to_numpy(dtype=float)
+    yv = bp.to_numpy(dtype=float)
+    nullmask = df[col].isna()
+    if not nullmask.any() or len(xf) < 1:
+        return 0
+    tf = df.loc[nullmask, f].to_numpy(dtype=float)
+    if len(xf) < 2:
+        vals = _np.full(len(tf), float(yv[0]))          # single breakpoint -> constant
+    else:
+        _log = use_log and bool((xf > 0).all()) and bool((tf > 0).all())
+        xi = _np.log10(xf) if _log else xf
+        ti = _np.log10(tf) if _log else tf
+        vals = _np.interp(ti, xi, yv)                    # linear; np.interp clamps at ends
+    df.loc[df.index[nullmask.to_numpy()], col] = vals
+    return int(nullmask.sum())
+
+
+def _fill_spec_nulls(df: pd.DataFrame, spec_interp: str = "none") -> pd.DataFrame:
     """
     Fill NaN Upper_Limit / Lower_Limit using modal spec for matching condition × frequency.
+
+    spec_interp="linear" adds a final pass that interpolates a frequency-varying
+    mask between its breakpoints (linear in log-frequency) -- see _interp_mask_fill.
+    Default "none" preserves the modal-only behavior (safe for step/constant specs).
 
     Uses two passes to handle cases where some sub-groups (e.g. Port RF2) are entirely
     null and cannot self-fill:
@@ -1047,6 +1086,19 @@ def _fill_spec_nulls(df: pd.DataFrame) -> pd.DataFrame:
             print(f"    Filled {n_filled:,} null {col} values from per-condition modal spec"
                   + (f" ({exclude_cols} excluded from pass-2 grouping)" if exclude_cols else ""),
                   flush=True)
+
+        # Pass 3 (opt-in): interpolate a frequency-varying mask between breakpoints.
+        # Modal fill can only fill a frequency that HAS a limit somewhere; a mask
+        # defined at sparse breakpoints leaves every gap-frequency null, which then
+        # renders as a flat fallback line. Linear (log-freq) interpolation draws the
+        # true complex limit line and drives pass/fail correctly.
+        if spec_interp == "linear" and df[col].isna().any() and df[col].notna().sum() >= 1:
+            n_interp = _interp_mask_fill(df, col, use_log=True)
+            if n_interp > 0:
+                print(f"    Interpolated {n_interp:,} null {col} values across the mask "
+                      f"breakpoints (linear in log-frequency)", flush=True)
+            after_p2 = int(df[col].isna().sum())
+
         if after_p2 > 0:
             print(f"    WARNING: {after_p2:,} null {col} values remain unfilled "
                   f"(these rows will be hidden in pass-only mode)", flush=True)
@@ -1121,7 +1173,7 @@ def generate_report(
         print(f"  [ERROR] {msg}", flush=True)
         _write_placeholder(output_dir / "index.html", cfg.get("title_prefix", csv_path.stem), msg)
         return []
-    df = _fill_spec_nulls(df)
+    df = _fill_spec_nulls(df, cfg.get("spec_interp", "none"))
     print(f"    Rows: {len(df):,}  |  Temps: {sorted(df['Temperature'].unique())}",
           flush=True)
     _maybe_auto_binary_encode(cfg, csv_path, df)
@@ -1145,7 +1197,7 @@ def generate_report(
         cfg_ec = _cfg_for_view(cfg, ec_cfg_overrides)
         print(f"  Loading env_coverage CSV: {ec_csv_path.name}", flush=True)
         df_ec = load_scatter(ec_csv_path, cfg_ec)
-        df_ec = _fill_spec_nulls(df_ec)
+        df_ec = _fill_spec_nulls(df_ec, cfg.get("spec_interp", "none"))
         print(f"    Rows: {len(df_ec):,}  |  Temps: {sorted(df_ec['Temperature'].unique())}",
               flush=True)
 

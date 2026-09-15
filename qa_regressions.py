@@ -274,6 +274,44 @@ def test_scatter_decimate_toggle():
               f"toggle_rows={nrows(html_tog)} default_rows={nrows(html_def)}")
 
 
+def test_spec_mask_interpolation():
+    """spec_interp='linear' interpolates a frequency-varying spec MASK between its
+    sparse breakpoints (linear in log-frequency), so gap-frequencies get the true
+    complex limit line instead of a flat fallback. Default 'none' leaves gaps null
+    (safe for step/constant specs). Regression for the 2.4G broadband-noise mask
+    that rendered as a flat -72 line with dropouts."""
+    import padb_v2 as _v2
+    import numpy as _np
+    # Sparse mask: breakpoints at 1/10/100/1000 MHz; gaps at 50 and 500 are null.
+    rows = []
+    bp = {1.0: -72.0, 10.0: -95.0, 100.0: -105.0, 1000.0: -135.0}
+    for f, v in bp.items():
+        for s in ("D00", "D01"):
+            rows.append({"_grp_Serial Number": s, "Frequency_MHz": f, "Upper_Limit": v})
+    for f in (50.0, 500.0):          # gap frequencies -- no limit at all
+        for s in ("D00", "D01"):
+            rows.append({"_grp_Serial Number": s, "Frequency_MHz": f, "Upper_Limit": float("nan")})
+    df = pd.DataFrame(rows)
+    # Default: gaps stay null.
+    d_none = _v2._fill_spec_nulls(df.copy(), "none")
+    n_null_none = int(d_none["Upper_Limit"].isna().sum())
+    check("spec mask: default 'none' leaves gap-frequency limits null",
+          n_null_none == 4, f"nulls={n_null_none} (expected 4)")
+    # linear: no nulls, breakpoints preserved, gaps log-interpolated.
+    d_lin = _v2._fill_spec_nulls(df.copy(), "linear")
+    check("spec mask: 'linear' fills every gap (no nulls remain)",
+          int(d_lin["Upper_Limit"].isna().sum()) == 0)
+    at = lambda f: float(d_lin[d_lin["Frequency_MHz"] == f]["Upper_Limit"].iloc[0])
+    check("spec mask: breakpoints preserved exactly",
+          at(1.0) == -72.0 and at(100.0) == -105.0 and at(1000.0) == -135.0)
+    exp50 = _np.interp(_np.log10(50.0), _np.log10([10.0, 100.0]), [-95.0, -105.0])
+    check("spec mask: gap at 50 MHz interpolated linearly in log-frequency",
+          abs(at(50.0) - float(exp50)) < 1e-6, f"got={at(50.0)} expected={exp50}")
+    # descending: 50 is between 10 and 100's values, not a flat fallback.
+    check("spec mask: interpolated gap lies between its neighbors (not flat)",
+          -105.0 < at(50.0) < -95.0, f"at(50)={at(50.0)}")
+
+
 def test_filter_state_scoping():
     """Filter-panel localStorage state (STATE_KEY) must be scoped PER PAGE, not per
     results-dir. All plot jobs of one pod share a results_dir (by design), so a
@@ -669,7 +707,7 @@ def main() -> None:
                test_has_segmentable_spec, test_resolve_date_sentinel,
                test_filename_stem_variants, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
-               test_filter_state_scoping,
+               test_filter_state_scoping, test_spec_mask_interpolation,
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
                test_auto_filter_site_scope, test_pdf_report_contract,
