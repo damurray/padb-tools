@@ -303,6 +303,34 @@ def test_execute_and_status():
     # unknown job-status id -> 404
     check("GET /api/job-status/<unknown> is 404",
           client.get("/api/job-status/does-not-exist").status_code == 404)
+    # queue-position ("N ahead") is derived from the real FIFO queue + the
+    # actively-running job, so it stays sequential and monotonic. Regression for
+    # the insertion-order scan, which counted side-thread resume jobs and could
+    # be non-sequential / non-monotonic. _queue_ahead is pure -> test directly.
+    qa = padb_web._queue_ahead
+    fifo = ["a", "b", "c", "d"]  # worker-queue FIFO snapshot (front = a)
+    # nothing running yet: positions equal the queue index -> 0,1,2,3 (sequential)
+    check("queue-pos: FIFO index with idle worker is 0,1,2,3",
+          [qa(j, fifo, None) for j in fifo] == [0, 1, 2, 3])
+    # a job running (not in the FIFO): every waiting job gains exactly one -> 1,2,3,4
+    check("queue-pos: a running job adds exactly one to each waiter",
+          [qa(j, fifo, "run") for j in fifo] == [1, 2, 3, 4])
+    # monotonic drain: as the front runs and leaves the FIFO, a fixed job's count
+    # only ever decreases (never jumps around).
+    seq = [qa("c", ["a", "b", "c", "d"], None),   # 2 (a,b ahead)
+           qa("c", ["b", "c", "d"], "a"),          # 1 (b) + 1 (a running) = 2
+           qa("c", ["c", "d"], "b"),               # 0 + 1 (b running) = 1
+           qa("c", ["d"], "c")]                     # c now running: 0 (+0, it's itself)
+    check("queue-pos: a job's count is monotonic non-increasing as the queue drains",
+          all(seq[i] >= seq[i + 1] for i in range(len(seq) - 1)) and seq == [2, 2, 1, 0],
+          f"seq={seq}")
+    # The helper considers ONLY the FIFO snapshot + the single worker-current
+    # job -- it never looks at _jobs. So a startup auto-resume job (which lives in
+    # _jobs and may be "running" on its own thread, but is neither in _job_queue
+    # nor the worker-current slot) cannot inflate any waiter's count: the front of
+    # an otherwise-idle queue is 0 regardless of how many such jobs exist.
+    check("queue-pos: front of an idle queue is 0 (side-thread resume jobs can't inflate it)",
+          qa("a", fifo, None) == 0)
     # de-dup: re-submitting the SAME path while its entry exists reuses the id
     r2 = client.post("/api/execute-job", json={"paths": [str(run)]})
     _wait_terminal(r2.get_json()["job_ids"][0])

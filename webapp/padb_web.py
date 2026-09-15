@@ -97,6 +97,12 @@ _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
 _next_id = 0
 _id_lock = threading.Lock()
+# The job_id the single worker thread is currently executing (None when idle).
+# Used to report an accurate "N ahead" queue position -- derived from the real
+# _job_queue FIFO plus this, NOT from _jobs insertion order (which diverges from
+# execution order: e.g. startup auto-resume jobs live in _jobs but run on their
+# own threads, never entering _job_queue).
+_worker_current_id: "str | None" = None
 
 
 def _new_job_id() -> str:
@@ -104,6 +110,18 @@ def _new_job_id() -> str:
     with _id_lock:
         _next_id += 1
         return str(_next_id)
+
+
+def _queue_ahead(job_id: str, qlist: "list[str]", current_id: "str | None") -> int:
+    """Jobs ahead of a queued job = its index in the worker-queue FIFO snapshot
+    `qlist`, plus 1 if the single worker is actively running some other job
+    (`current_id`). Pure/deterministic so it can be unit-tested independently of
+    the live worker thread. Guarantees a sequential, monotonic count that tracks
+    the real _job_queue, not _jobs insertion order."""
+    ahead = qlist.index(job_id) if job_id in qlist else 0
+    if current_id is not None and current_id != job_id:
+        ahead += 1
+    return ahead
 
 
 def _append_log(job_id: str, line: str) -> None:
@@ -573,6 +591,7 @@ def _generate_pdf_task(job_path: Path, cfg: dict, job_id: str,
 
 
 def _worker() -> None:
+    global _worker_current_id
     while True:
         job_id = _job_queue.get()
         with _jobs_lock:
@@ -586,6 +605,7 @@ def _worker() -> None:
                 continue
             job["status"] = "running"
             job["started"] = time.monotonic()
+            _worker_current_id = job_id
         job_path = Path(job["path"])
         ok = False
         result_index = None
@@ -604,6 +624,7 @@ def _worker() -> None:
                     job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
                     job["result_index"] = result_index
                 _persist_console_log(job_id, job_path, cfg)
+                _worker_current_id = None
                 _job_queue.task_done()
                 continue
             # Publishing is opt-in per run (default off) -- a runtime override
@@ -654,6 +675,7 @@ def _worker() -> None:
             job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
             job["result_index"] = result_index
         _persist_console_log(job_id, job_path, cfg)
+        _worker_current_id = None
         _job_queue.task_done()
 
 
@@ -1663,24 +1685,27 @@ def job_status(job_id):
         if job["status"] == "running" and job["started"] is not None:
             elapsed = round(time.monotonic() - job["started"], 1)
         result_index = job.get("result_index")
-        # How many jobs are ahead of this one (the single worker thread
-        # processes _jobs in insertion order) -- reported only while queued,
-        # since it's meaningless once running/done. Added 2026-08-28: a
-        # queued job with no other context just shows "queued 0s" forever
-        # while something else runs, which is indistinguishable from stuck,
-        # especially given some real compare jobs here take 40+ minutes.
-        # Dict insertion order is stable in Python 3.7+, so a plain forward
-        # scan up to this job_id's own entry is enough -- no separate
-        # ordering field needed.
+        # How many jobs are ahead of this one -- reported only while queued,
+        # since it's meaningless once running/done. Added 2026-08-28: a queued
+        # job with no other context just shows "queued 0s" forever while
+        # something else runs, indistinguishable from stuck (some real compare
+        # jobs here take 40+ minutes).
+        #
+        # Derived from the REAL worker queue, not _jobs insertion order. The
+        # earlier insertion-order scan gave non-sequential / non-monotonic
+        # counts whenever _jobs order diverged from execution order -- most
+        # visibly the startup auto-resume jobs, which live in _jobs (status
+        # "running"/"queued") but run on their own threads and never enter
+        # _job_queue, so they were wrongly counted as being "ahead" of genuinely
+        # queued work (and several could be "running" at once, inflating the
+        # count). The single worker consumes _job_queue strictly FIFO, so this
+        # job's index in that snapshot -- plus the one job the worker is actively
+        # running (_worker_current_id) -- is the true, always-sequential wait.
         queue_position = None
         if job["status"] == "queued":
-            ahead = 0
-            for jid, j in _jobs.items():
-                if jid == job_id:
-                    break
-                if j["status"] in ("queued", "running"):
-                    ahead += 1
-            queue_position = ahead
+            with _job_queue.mutex:
+                qlist = list(_job_queue.queue)
+            queue_position = _queue_ahead(job_id, qlist, _worker_current_id)
         log_file = job.get("log_file")
         return jsonify(
             status=job["status"], name=job["name"], elapsed_s=elapsed,
