@@ -337,11 +337,18 @@ function saveCSV(withExcluded){
   GROUP_COLS.forEach(function(p){colMap[p[0]]=p[1].replace(/[,"\n]/g,'');});
   var cols=Object.keys(filtered[0]).filter(function(c){return colMap[c];});
   var hdrs=cols.map(function(c){return colMap[c];});
+  var bnd=(typeof _scatterBounds==='function')?_scatterBounds():{spec:false,limit:false};
+  if(bnd.spec) hdrs.push('Spec Hi','Spec Lo');
+  if(bnd.limit) hdrs.push('Limit Hi','Limit Lo');
+  if(bnd.spec||bnd.limit) hdrs.push('Status');
   if(withExcluded) hdrs.push('Excluded');
   var rows=[hdrs.join(',')];
   function esc(v){var s=String(v===null||v===undefined?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
   filtered.forEach(function(r){
     var vals=cols.map(function(c){return esc(r[c]);});
+    if(bnd.spec) vals.push(_scatFmt(r.Spec_Hi),_scatFmt(r.Spec_Lo));
+    if(bnd.limit) vals.push(_scatFmt(r.Upper_Limit),_scatFmt(r.Lower_Limit));
+    if(bnd.spec||bnd.limit) vals.push(_scatterStatus(r).t);
     if(withExcluded) vals.push(gfSet&&_isInGfFull(r)?'global':'');
     rows.push(vals.join(','));
   });
@@ -902,6 +909,36 @@ function toggleScatterTable(){
   var b=document.getElementById('scatter_table_btn');if(b) b.textContent=open?'Table ▾':'Table ▴';
   if(!open) updateScatterTable();
 }
+/* Spec/Limit + per-point Pass/Fail for the data-rows table & CSV (2026-09-15).
+   Each scatter row carries Spec_Hi/Spec_Lo (datasheet nominal) and
+   Upper_Limit/Lower_Limit (PADB's per-DUT derived go/no-go, spec -/+ M.U./DEnv).
+   Pass/Fail is judged against the LIMIT (the real boundary), and respects the
+   spec direction implicitly: a bound is only applied when that side is present,
+   so a one-sided (e.g. upper-only phase-noise) spec fails only on the side that
+   actually exists. Columns are only added when the dataset has any bound. */
+function _scatNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
+var _scatBoundsCache=null;
+function _scatterBounds(){
+  /* {spec:bool, limit:bool} -- which column pairs the dataset actually populates,
+     so an all-empty Spec (or Limit) pair isn't shown as dead columns. */
+  if(_scatBoundsCache!==null) return _scatBoundsCache;
+  var spec=false,limit=false;
+  for(var i=0;i<DATA.length;i++){var r=DATA[i];
+    if(!spec&&(_scatNum(r.Spec_Hi)!==null||_scatNum(r.Spec_Lo)!==null)) spec=true;
+    if(!limit&&(_scatNum(r.Upper_Limit)!==null||_scatNum(r.Lower_Limit)!==null)) limit=true;
+    if(spec&&limit) break;}
+  _scatBoundsCache={spec:spec,limit:limit};
+  return _scatBoundsCache;
+}
+function _scatterHasBounds(){var b=_scatterBounds();return b.spec||b.limit;}
+function _scatterStatus(r){
+  /* {t:text, c:cssColor} -- Pass/Fail vs the derived Limit (Upper/Lower Limit). */
+  var val=_scatNum(r.Value),hi=_scatNum(r.Upper_Limit),lo=_scatNum(r.Lower_Limit);
+  if(val===null||(hi===null&&lo===null)) return {t:'—',c:'#aaa'};
+  var fail=(hi!==null&&val>hi)||(lo!==null&&val<lo);
+  return fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'};
+}
+function _scatFmt(v){var f=_scatNum(v);return f===null?'':f.toFixed(4);}
 function updateScatterTable(filtered){
   var p=document.getElementById('scatter_table_panel');
   if(!p||p.style.display==='none'||p.style.display==='') return;
@@ -917,17 +954,29 @@ function updateScatterTable(filtered){
   var row0=filtered[0],keep=[],keepH=[];
   cols.forEach(function(c,i){if(c in row0){keep.push(c);keepH.push(hdrs[i]);}});
   function esc(v){v=String(v===null||v===undefined?'':v);return v.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
+  var bnd=_scatterBounds();var withBounds=bnd.spec||bnd.limit;
   var shown=filtered.slice(0,SCATTER_TABLE_CAP);
+  var nFail=0;
+  if(bnd.limit) filtered.forEach(function(r){if(_scatterStatus(r).t==='FAIL')nFail++;});
   var out='<div style="font-size:12px;color:#555;padding:2px 2px 4px">'+n.toLocaleString()+' point'+(n===1?'':'s')+' shown'+
+    (bnd.limit?(' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail limit'):'')+
     (n>SCATTER_TABLE_CAP?(' &mdash; table limited to the first '+SCATTER_TABLE_CAP.toLocaleString()+'; use <b>Save CSV</b> for all'):'')+'</div>';
-  out+='<table class="scatter-tbl"><thead><tr>'+keepH.map(function(h){return '<th>'+esc(h)+'</th>';}).join('')+'</tr></thead><tbody>';
+  var extraH=[];
+  if(bnd.spec) extraH.push('Spec Hi','Spec Lo');
+  if(bnd.limit) extraH.push('Limit Hi','Limit Lo');
+  if(withBounds) extraH.push('Status');
+  out+='<table class="scatter-tbl"><thead><tr>'+keepH.concat(extraH).map(function(h){return '<th>'+esc(h)+'</th>';}).join('')+'</tr></thead><tbody>';
   var body=[];
   shown.forEach(function(r){
-    body.push('<tr>'+keep.map(function(c){
+    var cells=keep.map(function(c){
       var v=r[c];
       if(c==='Frequency_MHz'||c==='Value'){var f=parseFloat(v);if(isFinite(f)) v=f.toFixed(4);}
       return '<td>'+esc(v)+'</td>';
-    }).join('')+'</tr>');
+    });
+    if(bnd.spec) cells.push('<td>'+_scatFmt(r.Spec_Hi)+'</td>','<td>'+_scatFmt(r.Spec_Lo)+'</td>');
+    if(bnd.limit) cells.push('<td>'+_scatFmt(r.Upper_Limit)+'</td>','<td>'+_scatFmt(r.Lower_Limit)+'</td>');
+    if(withBounds){var st=_scatterStatus(r);cells.push('<td style="color:'+st.c+';font-weight:bold">'+st.t+'</td>');}
+    body.push('<tr>'+cells.join('')+'</tr>');
   });
   out+=body.join('')+'</tbody></table>';
   p.innerHTML=out;

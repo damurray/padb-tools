@@ -915,6 +915,36 @@ def test_axis_titles_object_form() -> None:
               "({title:{text:Y_LABEL}},curY?" in h)
 
 
+def test_scatter_table_spec_status() -> None:
+    """Scatter data-rows table + CSV export gained Spec Hi/Lo + Limit Hi/Lo columns
+    and a per-point Pass/Fail Status (added 2026-09-15, user request). Pass/Fail is
+    judged against the LIMIT (Upper/Lower Limit -- PADB's derived go/no-go) and only
+    applies a bound that's present, so a one-sided (upper-only) spec fails only on
+    the side that exists. Spec and Limit column-pairs are gated independently
+    (_scatterBounds) so an all-empty pair isn't shown as dead columns."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "sc.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Frequency (MHz)", "Value (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            # 6 pass (<=-80) + 2 fail (>-80) against an upper-only limit
+            for i, v in enumerate([-90, -85, -82, -95, -88, -100, -70, -60]):
+                w.writerow([100.0 + i, v, f"Serial Number: D{i:02d}", -80, ""])
+        out = Path(td) / "sc.html"
+        pp.accuracy_vs_freq(p, {"y_label": "Value (dBc)", "title_prefix": "T"}, out)
+        h = out.read_text(encoding="utf-8")
+        check("scatter table: bounds gating present (_scatterBounds spec/limit)",
+              "function _scatterBounds()" in h and "spec:spec,limit:limit" in h)
+        check("scatter table: Pass/Fail judged vs Limit (Upper/Lower Limit, side-present)",
+              "function _scatterStatus(r)" in h and "_scatNum(r.Upper_Limit)" in h
+              and "(hi!==null&&val>hi)||(lo!==null&&val<lo)" in h)
+        check("scatter table: Spec/Limit/Status column headers emitted",
+              "'Spec Hi','Spec Lo'" in h and "'Limit Hi','Limit Lo'" in h and "extraH.push('Status')" in h)
+        check("scatter CSV export carries the same Spec/Limit/Status columns",
+              "hdrs.push('Limit Hi','Limit Lo')" in h and "_scatterStatus(r).t" in h)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -932,7 +962,8 @@ def main() -> None:
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
                test_auto_filter_site_scope, test_pdf_report_contract,
                test_room_only_default_views, test_scatter_room_temp_filterable,
-               test_reference_stats, test_axis_titles_object_form):
+               test_reference_stats, test_axis_titles_object_form,
+               test_scatter_table_spec_status):
         try:
             fn()
         except Exception as exc:
