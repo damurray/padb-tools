@@ -207,6 +207,22 @@ _HARNESS_JS = r"""
     });
     a.sort(); return JSON.stringify(a);
   }
+  // VALUE-aware signature: name:len:finiteCount:sum(rounded). On aggregate views
+  // (stat_summary/summary TI bands) a serial/temp filter changes the STATISTICS,
+  // not the number of traces or their length -- length-only plotSig() can't see
+  // that and would false-flag a working filter as dead. This catches value
+  // changes too, and is still exactly reversible (same inputs -> same sum).
+  function plotSigV(){
+    var gd=_gd(); if(!gd||!gd.data) return '[]';
+    var a=[];
+    gd.data.forEach(function(t){
+      var ys=(t.y&&t.y.length!==undefined)?t.y:((t.x&&t.x.length!==undefined)?t.x:null);
+      if(ys===null) return;
+      var s=0,n=0; for(var i=0;i<ys.length;i++){var v=ys[i]; if(typeof v==='number'&&isFinite(v)){s+=v;n++;}}
+      a.push((t.name||'?')+':'+ys.length+':'+n+':'+(Math.round(s*100)/100));
+    });
+    a.sort(); return JSON.stringify(a);
+  }
   // Filter checkboxes across every view (condition-dim / serial / port / temp).
   // Deliberately excludes non-filter toggles (hover columns 'hchk', show-points,
   // hide-spec, GF-mode) so reversibility isn't tested on controls that don't
@@ -237,43 +253,54 @@ _HARNESS_JS = r"""
   function setAllBoxes(list,checked){
     list.forEach(function(c){ if(c.checked!==checked){c.checked=checked; c.dispatchEvent(new Event('change',{bubbles:true}));} });
   }
-  /* EFFECT: for every filter dimension, deselecting all of its values MUST change
-     the plotted set (and reselecting restores it). A dimension where deselecting
-     every value changes nothing -- while the plot has data -- is not wired to the
-     plot: the exact "updating the serial filter does not change the plot" bug.
-     A dimension containing an always-on member (e.g. a disabled Room checkbox on
-     a Room-only view) legitimately may not change and is skipped, not failed. */
+  /* EFFECT: for every filter dimension, toggling ONE of its values must change
+     the plotted set (value-aware, and reselecting restores it). A dimension where
+     toggling a value changes nothing -- while the plot has data -- is not wired to
+     the plot: the exact "updating the serial filter does not change the plot" bug.
+     Deselect-ONE (a partial selection) is unambiguous; the separate "deselect ALL
+     values" question (empty=show-nothing vs show-all) is view-inconsistent today
+     and tracked separately, not gated here (it would false-flag views that treat
+     an empty selection as "no filter"). */
   function runFilterEffect(R,chk,skip,heavy){
     var dims=filterDims(), names=Object.keys(dims);
     if(!names.length){ skip('filter-effect','no filter checkboxes in this view'); return; }
-    // Test serial/port dimensions FIRST -- they are the ones that recur as dead
-    // filters, and must be covered even under the heavy-page dimension cap.
+    // Test serial/port dimensions FIRST -- they recur as dead filters and must be
+    // covered even under the heavy-page dimension cap.
     names.sort(function(a,b){
       function pri(n){var l=n.toLowerCase();return /serial|ser_chk|s\/n|unit id|dut id/.test(l)?0:/port/.test(l)?1:2;}
       return pri(a)-pri(b);
     });
-    // Runs on heavy pages too (2 renders per dimension is bounded -- the size-
-    // scaled budget covers it), just capped to keep a very large page's total
-    // render count in check. NOT skipped: a dead filter on a big page is exactly
-    // the reported failure and must be gated.
+    // Runs on heavy pages too (2 renders per dim is bounded), capped to keep a
+    // very large page's render count in check. A dead filter on a big page is
+    // exactly the reported failure and must be gated.
     var maxDims=heavy?4:names.length, tested=0;
     var S0=plotSig(), hasData=S0!=='[]'&&JSON.parse(S0).some(function(s){return parseInt(s.split(':').pop(),10)>0;});
     names.forEach(function(dim){
       var list=dims[dim], vals=list.filter(function(c){return !c.disabled;});
-      var anyDisabled=list.some(function(c){return c.disabled;});
       if(!vals.length){ skip('filter-effect['+dim+']','no toggleable values'); return; }
       if(tested>=maxDims){ skip('filter-effect['+dim+']','capped on heavy page (serial/port tested first)'); return; }
       tested++;
-      var before=plotSig();
-      setAllBoxes(vals,false); var off=plotSig();
-      setAllBoxes(vals,true);  var back=plotSig();
-      chk('filter-reselect-restores['+dim+']', back===before,
-          'restored='+(back===before)+(back===before?'':' | before='+before.slice(0,70)+' back='+back.slice(0,70)));
-      if(off!==before){ chk('filter-affects-plot['+dim+']', true, 'deselect-all changed the plot'); }
-      else if(anyDisabled){ skip('filter-affects-plot['+dim+']','deselect-all no-op, but dim has an always-on member (e.g. Room) -- legitimate'); }
+      var checkedVals=vals.filter(function(x){return x.checked;});
+      if(checkedVals.length<2){ skip('filter-affects-plot['+dim+']','single toggleable value (toggling it = deselect-all edge, not a partial test)'); return; }
+      // A dimension is EFFECTIVE if toggling AT LEAST ONE of its values changes the
+      // plotted set (value-aware). Try values until one changes -- toggling a
+      // single "special" value (e.g. a ΔTemp view's Room baseline) can legitimately
+      // be a no-op, so requiring the FIRST value to change would false-flag. Each
+      // toggle is restored (reselect must reproduce the exact baseline).
+      var before=plotSigV(), changed=false, restoreOK=true, tried=[];
+      for(var k=0;k<checkedVals.length && k<4 && !changed;k++){
+        var c=checkedVals[k]; tried.push(c.value);
+        c.checked=false; c.dispatchEvent(new Event('change',{bubbles:true})); var off=plotSigV();
+        c.checked=true;  c.dispatchEvent(new Event('change',{bubbles:true})); var back=plotSigV();
+        if(back!==before) restoreOK=false;
+        if(off!==before) changed=true;
+      }
+      chk('filter-reselect-restores['+dim+']', restoreOK,
+          'restored='+restoreOK+(restoreOK?'':' | tried='+tried.join(',')));
+      if(changed){ chk('filter-affects-plot['+dim+']', true, 'toggling a value in '+dim+' changed the plot (tried '+tried.join(',')+')'); }
       else if(!hasData){ skip('filter-affects-plot['+dim+']','plot already empty'); }
       else { chk('filter-affects-plot['+dim+']', false,
-             'DEAD FILTER: deselecting every value of "'+dim+'" left the plot unchanged (baseline non-empty) -- not wired to the plot'); }
+             'DEAD FILTER: toggling any of ['+tried.join(',')+'] in "'+dim+'" left the plot unchanged (baseline non-empty) -- not wired to the plot'); }
     });
   }
   /* PERSISTENCE: each filter's state must survive saveState()->loadState() (the
