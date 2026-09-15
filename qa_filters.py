@@ -1485,6 +1485,28 @@ _HARNESS_JS = r"""
     }
   }
 
+  /* Workflow & Recommendations panel must EXPAND and CONTRACT (regression: it opened
+     but wouldn't hide because the shown-state used display:'' which the toggle read as
+     "closed"). Assert expand shows content + flips the caret, and contract hides it +
+     flips the caret back. */
+  function runWorkflowToggle(R,chk,skip){
+    if(typeof _afToggleWorkflow!=='function'){ skip('workflow-toggle','no _afToggleWorkflow in this view'); return; }
+    var ctx=null; ['BOX_AF','STAT_AF','SUM_AF','EC_AF','HIST_AF'].forEach(function(nm){ if(!ctx&&typeof window[nm]==='object'&&window[nm]&&window[nm].wfPanel&&window[nm].wfBtn) ctx=window[nm]; });
+    if(!ctx){ skip('workflow-toggle','no workflow ctx'); return; }
+    var p=document.getElementById(ctx.wfPanel), b=document.getElementById(ctx.wfBtn);
+    if(!p||!b){ skip('workflow-toggle','panel/button missing'); return; }
+    function caret(){var c=b.querySelector('.wfcaret'); return c?c.innerHTML:'';}
+    if(p.style.display && p.style.display!=='none') _afToggleWorkflow(ctx);   // ensure closed baseline
+    var c0=caret();
+    _afToggleWorkflow(ctx);
+    var expanded=(p.style.display!=='none' && p.innerHTML.length>50), cE=caret();
+    _afToggleWorkflow(ctx);
+    var contracted=(p.style.display==='none'), cC=caret();
+    chk('workflow-toggle: expands (panel shown + content)', expanded, 'disp='+p.style.display);
+    chk('workflow-toggle: contracts (panel hidden)', contracted, 'disp='+p.style.display);
+    chk('workflow-toggle: caret flips open then back', cE!==cC && cC===c0, 'c0='+c0+' cE='+cE+' cC='+cC);
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -1557,6 +1579,9 @@ _HARNESS_JS = r"""
       // Remove-auto-filter GF increment (add/subtract semantics; self-skips off no-GF views).
       if(_HEAVY){ skip('remove-auto','skipped on heavy page'); }
       else { try{ runRemoveAuto(R,chk,skip); }catch(e){ chk('REMOVE-AUTO-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // Workflow & Recommendations expand/contract (self-skips off views without it).
+      if(_HEAVY){ skip('workflow-toggle','skipped on heavy page'); }
+      else { try{ runWorkflowToggle(R,chk,skip); }catch(e){ chk('WORKFLOW-TOGGLE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');

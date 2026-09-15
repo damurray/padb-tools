@@ -447,6 +447,10 @@ def test_auto_filter_boxplot():
         check("remove-auto: engine + boxplot wiring present (_afMarkApplied/_afRemoveApplied/boxRemoveAuto)",
               all(s in h for s in ("_afMarkApplied", "_afRemoveApplied", "boxRemoveAuto",
                                    "removeFn:'boxRemoveAuto'", "Remove auto-filter (")))
+        # Workflow panel expand/contract: caret + shared toggle + explicit display:block
+        # (so the "shown" state is detectable and the panel can actually contract).
+        check("workflow panel expand/contract wired (wfcaret + _afToggleWorkflow + display block)",
+              "wfcaret" in h and "_afToggleWorkflow" in h and "panel.style.display='block'" in h)
         # "No Apply button" is explained (not a blank result) when candidates exist but
         # none is auto-filterable (auto=0 && marginal=0 && review>0) -- e.g. a systemic /
         # site-wide spread. Reported on the Return_Loss compare boxplot.

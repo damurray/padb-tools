@@ -78,14 +78,24 @@ _CROSSVIEW_JS = r"""
   function emit(o){var p=document.getElementById('__qa_gfx')||document.createElement('pre');
     p.id='__qa_gfx';p.style.display='none';p.textContent=JSON.stringify(o);document.body.appendChild(p);}
   function gd(){return document.getElementById('plot')||document.querySelector('.js-plotly-plot');}
-  function loader(){for(var i=0,ns=['_loadGlobalFilter','_loadBoxGlobalFilter','_loadStatGlobalFilter','_loadSumGlobalFilter','_loadEcGlobalFilter','_loadDistGlobalFilter'];i<ns.length;i++){if(typeof window[ns[i]]==='function'){window[ns[i]]();return ns[i];}}return null;}
+  function loader(){for(var i=0,ns=['_loadGlobalFilter','_loadBoxGlobalFilter','_loadStatGlobalFilter','_loadSumGlobalFilter','_loadEcGlobalFilter','_loadDistGlobalFilter','_loadRefGlobalFilter'];i<ns.length;i++){if(typeof window[ns[i]]==='function'){window[ns[i]]();return ns[i];}}return null;}
   // plot fingerprint: every plotted numeric value that a GF change can move
-  function fp(){var g=gd();if(!g||!g.data)return '0/0';var s=0,n=0;g.data.forEach(function(t){['y','q1','median','q3','lowerfence','upperfence'].forEach(function(k){var a=t[k];if(Array.isArray(a))a.forEach(function(v){if(typeof v==='number'&&isFinite(v)){s+=v;n++;}});});});return (Math.round(s*100)/100)+'/'+n;}
+  function fp(){
+    /* reference view is aggregate panels (no per-point value trace), so use its active
+       ROW count -- sensitive to BOTH whole-DUT (drops many rows) AND point-precise (drops
+       one freq's rows) GF, unlike a distinct-serial count which a multi-freq serial
+       survives. applyFilters(DATA) honors ref_gf_chk + _refGfExcl. */
+    try{ if(typeof _refGfExcl==='function'&&typeof applyFilters==='function'&&typeof DATA!=='undefined'){ return 'refrows/'+applyFilters(DATA).length; } }catch(e){}
+    var g=gd();if(!g||!g.data)return '0/0';var s=0,n=0;g.data.forEach(function(t){['y','q1','median','q3','lowerfence','upperfence'].forEach(function(k){var a=t[k];if(Array.isArray(a))a.forEach(function(v){if(typeof v==='number'&&isFinite(v)){s+=v;n++;}});});});return (Math.round(s*100)/100)+'/'+n;}
   // active-DUT/serial count: catches views whose plotted values are DUT-insensitive
   function dutCount(){
     try{ if(typeof ENV_DATA!=='undefined'&&typeof getActiveDuts==='function'){var set={};ENV_DATA.forEach(function(cd){getActiveDuts(cd).forEach(function(d){var s=(d&&d[0]!==undefined)?String(d[0]):String(d);set[s.split('_')[0]]=1;});});return Object.keys(set).length;} }catch(e){}
     try{ if(typeof getSelectedBoxSerials==='function'){/* not GF-driven; skip */} }catch(e){}
     try{ if(typeof STAT_DATA!=='undefined'){var s2={};STAT_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.dut_vals||[]).forEach(function(d){if(!_ex(d.s))s2[String(d.s).split('_')[0]]=1;});});});return Object.keys(s2).length;} }catch(e){}
+    /* reference view: aggregate panels (no per-point value trace), so fp() reads 0/0;
+       its GF-sensitive signal is the active distinct-serial count -- applyFilters(DATA)
+       drops GF-excluded rows (padb_refstats applyFilters honors ref_gf_chk + _refGfExcl). */
+    try{ if(typeof _refGfExcl==='function'&&typeof applyFilters==='function'&&typeof DATA!=='undefined'){var s3={};applyFilters(DATA).forEach(function(r){if(r&&r.Serial!=null&&r.Serial!=='')s3[String(r.Serial).split('_')[0]]=1;});return Object.keys(s3).length;} }catch(e){}
     return -1;
   }
   function _ex(){return false;}
@@ -96,6 +106,7 @@ _CROSSVIEW_JS = r"""
     try{ if(typeof BOX_DATA!=='undefined')BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.vals_detail||[]).forEach(function(d){cands.push(String(d.s));});});}); }catch(e){}
     try{ if(typeof DATA!=='undefined'&&typeof _rowSerial==='function')DATA.slice(0,500).forEach(function(r){cands.push(String(_rowSerial(r)));}); }catch(e){}
     try{ if(typeof DATA!=='undefined')DATA.forEach(function(cd){((cd&&cd.dut_info)||[]).forEach(function(di){cands.push(String(di.s));});}); }catch(e){}  /* summary: per-DUT dut_info */
+    try{ if(typeof DATA!=='undefined'&&typeof _refGfExcl==='function')DATA.slice(0,500).forEach(function(r){if(r&&r.Serial!=null&&r.Serial!=='')cands.push(String(r.Serial));}); }catch(e){}  /* reference: per-row r.Serial */
     try{ if(typeof RAW_ABS!=='undefined')RAW_ABS.forEach(function(col){(col||[]).forEach(function(raw){((raw&&raw.s)||[]).forEach(function(s){cands.push(String(s));});});}); }catch(e){}  /* distribution: RAW_ABS per-point serials */
     try{ if(typeof ENV_DATA!=='undefined')ENV_DATA.forEach(function(cd){Object.keys(cd.duts||{}).forEach(function(k){cands.push(k);});}); }catch(e){}
     var bases=cands.map(function(s){return s.split('_')[0];}).filter(Boolean).sort();
@@ -104,7 +115,7 @@ _CROSSVIEW_JS = r"""
   function sig(){return fp()+'|d'+dutCount();}
   try{
     if(typeof update==='undefined'){emit({err:'no update()'});return;}
-    var view=(typeof BOX_DATA!=='undefined')?'boxplot':(typeof STAT_DATA!=='undefined')?'stat_summary':(typeof ENV_DATA!=='undefined')?'env_coverage':(typeof RAW_ABS!=='undefined')?'distribution':(typeof DATA!=='undefined'?'scatter_or_summary':'?');
+    var view=(typeof BOX_DATA!=='undefined')?'boxplot':(typeof STAT_DATA!=='undefined')?'stat_summary':(typeof ENV_DATA!=='undefined')?'env_coverage':(typeof RAW_ABS!=='undefined')?'distribution':(typeof _refGfExcl==='function')?'reference':(typeof DATA!=='undefined'?'scatter_or_summary':'?');
     var ser=firstSerial();
     if(!ser){emit({view:view,err:'no serial found'});return;}
     // whole-DUT GF for that serial across a couple of plausible conditions
@@ -173,9 +184,20 @@ def main(argv=None) -> None:
         pass
     ap = argparse.ArgumentParser(description="Cross-view Global-Filter consistency check.")
     ap.add_argument("--keep", action="store_true", help="Leave the built synthetic views on disk.")
+    ap.add_argument("--browser", default="",
+                    help="Explicit headless-Chromium exe (e.g. a Playwright chrome-headless-shell) "
+                         "when the system Edge/Chrome is dead. Must pass the --dump-dom smoke test; else exit 3.")
     args = ap.parse_args(argv)
 
-    browser, installed = qa_filters._pick_working_browser()
+    if args.browser:
+        if Path(args.browser).exists() and qa_filters._browser_smoke(args.browser):
+            browser, installed = args.browser, [args.browser]
+        else:
+            print(f"[ENV-UNAVAILABLE] --browser {args.browser} not found or failed the "
+                  "headless --dump-dom smoke test -- cross-view GF check did NOT run.")
+            sys.exit(3)
+    else:
+        browser, installed = qa_filters._pick_working_browser()
     if not browser:
         msg = ("no Edge/Chrome found" if not installed else
                "headless browser present but not rendering (" +

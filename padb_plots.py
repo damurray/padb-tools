@@ -1659,13 +1659,14 @@ def _af_control_html(prefix: str, preview_fn: str, clear_fn: str,
 
 
 def _af_workflow_button_html(prefix: str, toggle_fn: str) -> str:
-    """The 'Workflow & Recommendations' toggle button for a view's button row."""
+    """The 'Workflow & Recommendations' expand/contract toggle for a view's button row.
+    The leading caret (>/v) flips with the panel so it's clearly collapsible."""
     return (
         f'  <button class="toggle-btn" id="{prefix}_wf_btn" onclick="{toggle_fn}()"'
         ' title="Pre-analyzes this dataset (DUTs / conditions / temps / compare / spec / skew / population'
         ' size) and recommends auto-filter settings + a tailored workflow. Includes a one-click, reversible,'
-        ' audited Run and an offline print-to-PDF report.">'
-        '&#9432; Workflow &amp; Recommendations</button>\n'
+        ' audited Run and an offline print-to-PDF report. Click to expand / contract.">'
+        '<span class="wfcaret">&#9656;</span> Workflow &amp; Recommendations</button>\n'
     )
 
 
@@ -3466,6 +3467,16 @@ function _afWorkflowSteps(a,rec,ctx){
   s.push('<b>Or</b> click <b>Run recommended workflow</b> to auto-execute steps '+(a.compare?'2–5':'2–4')+' at the Conservative level in one go (applies only the unambiguous auto set; marginals still left for you; fully reversible).');
   return s;
 }
+/* Shared expand/contract toggle for the Workflow & Recommendations panel: opens
+   (renders) or hides it, and flips the button's leading caret (>/v) so it's an
+   obvious collapsible. Each view's toggleXWorkflow() delegates here (ctx.wfBtn). */
+function _afToggleWorkflow(ctx){
+  var p=document.getElementById(ctx.wfPanel); if(!p)return;
+  var open=(p.style.display==='none'||!p.style.display);
+  if(open){ _afRenderWorkflow(ctx); } else { p.style.display='none'; }
+  var b=ctx.wfBtn?document.getElementById(ctx.wfBtn):null;
+  if(b){ var c=b.querySelector('.wfcaret'); if(c)c.innerHTML=open?'&#9662;':'&#9656;'; }
+}
 function _afRenderWorkflow(ctx){
   var panel=document.getElementById(ctx.wfPanel); if(!panel)return;
   var a=_afAnalyze(ctx), rec=_afRecommend(a); window[ctx.resultVar+'_wf']={a:a,rec:rec};
@@ -3485,7 +3496,7 @@ function _afRenderWorkflow(ctx){
   if(typeof ctx.subpopSlices==='function'){ try{ h+=_spAdvisoryHtml(ctx); }catch(e){ h+='<div style="color:#c00;font-size:11px">subpopulation check error: '+e+'</div>'; } }
   h+='<div style="margin-top:6px;color:#a05000">These are heuristic starting points from the data shape, not a substitute for engineering judgment. Nothing is excluded until you click Apply or Run, and everything is reversible via '+(ctx.undoHint||'Clear global filter')+'.</div>';
   h+='<div id="'+ctx.wfPanel+'_audit"></div></div>';
-  panel.innerHTML=h; panel.style.display='';
+  panel.innerHTML=h; panel.style.display='block';   // explicit (not '') so the toggle can detect shown-vs-hidden and contract
 }
 function _afApplyRec(ctx){
   var st=window[ctx.resultVar+'_wf']; var rec=st?st.rec:_afRecommend(_afAnalyze(ctx));
@@ -8174,7 +8185,7 @@ var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_a
   },
   baseSerial:_statBaseSerial,primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   /* Workflow & Recommendations adapters (pre-analysis of the loaded data) */
-  wfPanel:'stat_wf_panel', previewFn:function(){statAutoFilterPreview();},
+  wfPanel:'stat_wf_panel', wfBtn:'stat_wf_btn', previewFn:function(){statAutoFilterPreview();},
   removeFn:'statRemoveAuto', reloadGf:function(){_loadStatGlobalFilter();update();},
   applyRecFn:'statApplyRec', runFn:'statRunWorkflow', reportFn:'statGenReport', tablePanel:'stat_panel',
   buckets:function(){var out=[];getActiveConditions().forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){out.push({vals:(fs.dut_vals||[]).map(function(d){return d.v;})});});});return out;},
@@ -8229,7 +8240,7 @@ function statRemoveAuto(){_afRemoveApplied(STAT_AF);}
 function statApplyRec(){_afApplyRec(STAT_AF);}
 function statRunWorkflow(){_afRunWorkflow(STAT_AF);}
 function statGenReport(){_afGenerateReport(STAT_AF);}
-function toggleStatWorkflow(){var p=document.getElementById('stat_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(STAT_AF);}else{p.style.display='none';}}
+function toggleStatWorkflow(){_afToggleWorkflow(STAT_AF);}
 /* END */
 
 """
@@ -10371,7 +10382,7 @@ var EC_AF={basisSel:'ec_auto_basis',levelSel:'ec_auto_level',panel:'ec_auto_pane
   loSpec:function(){return (typeof LO_SPEC!=='undefined')?LO_SPEC:null;},
   tllDir:function(){return (typeof SPEC_DIRECTION!=='undefined'&&SPEC_DIRECTION)?SPEC_DIRECTION:'both';},
   baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
-  wfPanel:'ec_wf_panel', previewFn:function(){ecAutoFilterPreview();},
+  wfPanel:'ec_wf_panel', wfBtn:'ec_wf_btn', previewFn:function(){ecAutoFilterPreview();},
   removeFn:'ecRemoveAuto', reloadGf:function(){_loadEcGlobalFilter();update();},
   applyRecFn:'ecApplyRec', runFn:'ecRunWorkflow', reportFn:'ecGenReport', tablePanel:'ec_stat_panel',
   buckets:function(){var out=[];getSelectedConds().forEach(function(cd){var duts=getActiveDuts(cd);(cd.freqs||[]).forEach(function(f,j){var vals=[];duts.forEach(function(sd){var v=sd[1].room[j];if(v!=null)vals.push(v);});out.push({vals:vals});});});return out;},
@@ -10427,7 +10438,7 @@ function ecRemoveAuto(){_afRemoveApplied(EC_AF);}
 function ecApplyRec(){_afApplyRec(EC_AF);}
 function ecRunWorkflow(){_afRunWorkflow(EC_AF);}
 function ecGenReport(){_afGenerateReport(EC_AF);}
-function toggleEcWorkflow(){var p=document.getElementById('ec_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(EC_AF);}else{p.style.display='none';}}
+function toggleEcWorkflow(){_afToggleWorkflow(EC_AF);}
 """
 
 
@@ -14262,7 +14273,7 @@ function boxRemoveAuto(){_afRemoveApplied(BOX_AF);}
 /* Workflow & Recommendations ctx for the boxplot (shared engine in
    _AUTO_FILTER_SHARED_JS; boxplot keeps its bespoke preview/compute). */
 var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoResult',
-  wfPanel:'box_wf_panel', previewFn:function(){autoFilterPreview();},
+  wfPanel:'box_wf_panel', wfBtn:'box_wf_btn', previewFn:function(){autoFilterPreview();},
   removeFn:'boxRemoveAuto', reloadGf:function(){_loadBoxGlobalFilter();update();},
   applyRecFn:'boxApplyRec', runFn:'boxRunWorkflow', reportFn:'boxGenReport', tablePanel:'box_stat_panel',
   merge:_mergeGf, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
@@ -14314,7 +14325,7 @@ var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoRe
 function boxApplyRec(){_afApplyRec(BOX_AF);}
 function boxRunWorkflow(){_afRunWorkflow(BOX_AF);}
 function boxGenReport(){_afGenerateReport(BOX_AF);}
-function toggleBoxWorkflow(){var p=document.getElementById('box_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(BOX_AF);}else{p.style.display='none';}}
+function toggleBoxWorkflow(){_afToggleWorkflow(BOX_AF);}
 function csvTempToTestStep(t){
   /* Convert CSV temp string (e.g. "30°C", "-40°C") to PADB Test Step label
      (e.g. "30.0 Deg C", "-40.0 Deg C"). Leading minus supported -- an
@@ -17855,7 +17866,7 @@ var SUM_AF={basisSel:'sum_auto_basis',levelSel:'sum_auto_level',panel:'sum_auto_
     return (typeof SPEC_DIRECTION!=='undefined'&&SPEC_DIRECTION)?SPEC_DIRECTION:'both';
   },
   baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
-  wfPanel:'sum_wf_panel', previewFn:function(){sumAutoFilterPreview();},
+  wfPanel:'sum_wf_panel', wfBtn:'sum_wf_btn', previewFn:function(){sumAutoFilterPreview();},
   removeFn:'sumRemoveAuto', reloadGf:function(){_loadSumGlobalFilter();update();},
   applyRecFn:'sumApplyRec', runFn:'sumRunWorkflow', reportFn:'sumGenReport', tablePanel:'sum_table_wrap',
   buckets:function(){var out=[];_getFilteredActive(false).forEach(function(cd){(cd.freqs||[]).forEach(function(f,fi){out.push({vals:(cd.dut_vals[fi]||[]).filter(function(v){return v!=null;})});});});return out;},
@@ -17906,7 +17917,7 @@ function sumRemoveAuto(){_afRemoveApplied(SUM_AF);}
 function sumApplyRec(){_afApplyRec(SUM_AF);}
 function sumRunWorkflow(){_afRunWorkflow(SUM_AF);}
 function sumGenReport(){_afGenerateReport(SUM_AF);}
-function toggleSumWorkflow(){var p=document.getElementById('sum_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(SUM_AF);}else{p.style.display='none';}}
+function toggleSumWorkflow(){_afToggleWorkflow(SUM_AF);}
 """
 
 
@@ -18948,7 +18959,7 @@ var HIST_AF={basisSel:'h_auto_basis',levelSel:'h_auto_level',panel:'h_auto_panel
   loSpec:function(){return (typeof LIMIT_LO!=='undefined')?LIMIT_LO:null;},
   tllDir:function(){return (typeof _hTowardFail==='function')?(_hTowardFail()==='high'?'hi':_hTowardFail()==='low'?'lo':'both'):'both';},
   baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
-  wfPanel:'h_wf_panel', previewFn:function(){hAutoFilterPreview();},
+  wfPanel:'h_wf_panel', wfBtn:'h_wf_btn', previewFn:function(){hAutoFilterPreview();},
   applyRecFn:'histApplyRec', runFn:'histRunWorkflow', reportFn:'histGenReport', tablePanel:'h_stats',
   buckets:function(){ var ds=_hSelDims(),ss=_hSelSer(),hasSer=SERIAL_LIST.length>0,b={};
     for(var i=0;i<VALUES.length;i++){ if(_hAutoExcl.has(i))continue; var ok=true; for(var k=0;k<DIMS.length;k++){var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;}} if(ok&&hasSer&&!ss.has(SERIAL[i]))ok=false; if(!ok)continue; var bk=_hCond(i);(b[bk]=b[bk]||[]).push(VALUES[i]); }
@@ -18996,7 +19007,7 @@ function histAutoFilterAffirm(){_afAffirm(HIST_AF);}
 function histApplyRec(){_afApplyRec(HIST_AF);}
 function histRunWorkflow(){_afRunWorkflow(HIST_AF);}
 function histGenReport(){_afGenerateReport(HIST_AF);}
-function toggleHistWorkflow(){var p=document.getElementById('h_wf_panel');if(!p)return;if(p.style.display==='none'||!p.style.display){_afRenderWorkflow(HIST_AF);}else{p.style.display='none';}}
+function toggleHistWorkflow(){_afToggleWorkflow(HIST_AF);}
 """
 
 
