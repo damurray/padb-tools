@@ -527,6 +527,18 @@ function _showAllWarnText(){
   } else { w.textContent=''; }
 }
 function _showAllToggle(){ _showAllWarnText(); update(); }
+/* Whether the DATASET (not the current zoom/filter) is a frequency-varying spec
+   MASK -- decided ONCE from the full DATA and memoized. buildTraces/buildLayout
+   use THIS, not getSpecMask(filtered).isMask: zooming into a slowly-varying part
+   of a mask leaves <=3 distinct rounded limit values IN VIEW, which flipped the
+   per-filter heuristic to "not a mask" and drew flat full-width lines instead of
+   the sloped mask segment (reported: zoomed-in shows a pair of horizontal
+   limits). A truly constant/step spec still resolves false here -> flat lines. */
+var _dsMaskCache=null;
+function _isMaskDataset(){
+  if(_dsMaskCache===null){ try{_dsMaskCache=getSpecMask(DATA).isMask;}catch(e){_dsMaskCache=false;} }
+  return _dsMaskCache;
+}
 function buildTraces(filtered){
   /* Group by is a MULTI-select (2026-09-02): split/color traces by any
      combination of parameters (Ctrl/Cmd-click). None selected = one combined
@@ -586,15 +598,19 @@ function buildTraces(filtered){
   var _hideSpec=document.getElementById('hide_spec_chk').checked;
   var _mask=getSpecMask(filtered);
   var _maskTraces=[];
-  if(_mask.isMask){
+  if(_isMaskDataset()){
     if(_mask.hi.length) _maskTraces.push({
-      type:'scatter',mode:(_mask.hi.length<2?'markers':'lines'),
+      // scattergl (NOT scatter): the F/P data are scattergl (WebGL), which renders
+      // ABOVE the SVG scatter layer, so an SVG mask line is hidden behind the data
+      // band. A scattergl mask sits in the same layer, drawn last -> on top.
+      // Plotly 3.6 scattergl supports line.shape 'hv', so step masks stay stepped.
+      type:'scattergl',mode:(_mask.hi.length<2?'markers':'lines'),
       x:_mask.hi.map(function(p){return p.x;}),y:_mask.hi.map(function(p){return p.y;}),
       line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Hi)',
       visible:!_hideSpec,
       hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
     if(_mask.lo.length) _maskTraces.push({
-      type:'scatter',mode:(_mask.lo.length<2?'markers':'lines'),
+      type:'scattergl',mode:(_mask.lo.length<2?'markers':'lines'),
       x:_mask.lo.map(function(p){return p.x;}),y:_mask.lo.map(function(p){return p.y;}),
       line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Lo)',
       visible:!_hideSpec,
@@ -617,7 +633,7 @@ function buildLayout(filtered){
      re-filtering DATA (this loop is itself the expensive part on a large
      dataset, so skipping it entirely on every other toggle is the point). */
   var _hideSpec=document.getElementById('hide_spec_chk').checked;
-  if(!getSpecMask(filtered||DATA).isMask){
+  if(!_isMaskDataset()){
   (filtered||DATA).forEach(function(r){
     if(r.Upper_Limit!==null&&r.Upper_Limit!==undefined&&r.Upper_Limit!==''&&!isNaN(Number(r.Upper_Limit))){
       var k=Math.round(Number(r.Upper_Limit)),v=Number(r.Upper_Limit);

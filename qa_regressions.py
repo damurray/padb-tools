@@ -312,6 +312,34 @@ def test_spec_mask_interpolation():
           -105.0 < at(50.0) < -95.0, f"at(50)={at(50.0)}")
 
 
+def test_scatter_mask_is_dataset_level():
+    """The scatter must decide 'is this a frequency-varying mask?' from the whole
+    DATASET (memoized _isMaskDataset), NOT from the currently-filtered subset --
+    zooming into a slowly-varying part of a mask leaves <=3 distinct rounded limit
+    values in view and the old per-filter heuristic flipped to 'not a mask',
+    drawing flat full-width lines instead of the sloped mask segment (reported:
+    zoomed-in shows a pair of horizontal limits)."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "mask.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            # descending mask across freq (many distinct limit values -> a real mask)
+            for i in range(40):
+                fq = round(1.0 + i * 5.0, 3)
+                lim = round(-70 - i * 2.5, 3)
+                w.writerow(["Room", fq, round(lim - 5, 3), "Serial Number: D0", lim, -300])
+        df = pp._load_scatter_csv(p)
+        h = pp._build_av_freq_html(df, {"y_label": "P", "views": ["scatter"]}, "T")
+        check("scatter: dataset-level mask helper present (_isMaskDataset + memo)",
+              "function _isMaskDataset()" in h and "_dsMaskCache" in h)
+        check("scatter: buildTraces gates the mask trace on _isMaskDataset() (not the filtered subset)",
+              "if(_isMaskDataset()){" in h)
+        check("scatter: buildLayout gates flat shapes on !_isMaskDataset() (not getSpecMask(filtered).isMask)",
+              "if(!_isMaskDataset()){" in h and "if(!getSpecMask(filtered||DATA).isMask)" not in h)
+
+
 def test_filter_state_scoping():
     """Filter-panel localStorage state (STATE_KEY) must be scoped PER PAGE, not per
     results-dir. All plot jobs of one pod share a results_dir (by design), so a
@@ -708,6 +736,7 @@ def main() -> None:
                test_filename_stem_variants, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
                test_filter_state_scoping, test_spec_mask_interpolation,
+               test_scatter_mask_is_dataset_level,
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
                test_auto_filter_site_scope, test_pdf_report_contract,
