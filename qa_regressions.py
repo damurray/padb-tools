@@ -422,6 +422,15 @@ def test_auto_filter_boxplot():
                                    "_afAnalyze", "_afRecommend", "_afRunWorkflow")))
         check("boxplot print-to-PDF report present (_afGenerateReport/boxGenReport/_afCapture multi-shot)",
               all(s in h for s in ("_afGenerateReport", "boxGenReport", "Generate PDF report", "Plotly.toImage", "_afCapture")))
+        # Longform per-condition selections (box_cond_lf_chk) are the authoritative
+        # getSelectedConds() source and must round-trip through save/loadState --
+        # they can express arbitrary condition subsets the per-dim panels cannot, so
+        # relying on _syncLfFromAllDims to re-derive them silently loses a single
+        # unchecked condition on reload (found by qa_filters on the FM1 compare).
+        check("boxplot persists longform condition selections (saveState writes lfcond)",
+              "_stSet('lfcond_'" in h)
+        check("boxplot restores longform condition selections (loadState reads lfcond)",
+              "_stGet('lfcond_'" in h)
 
 
 def test_auto_filter_site_scope():

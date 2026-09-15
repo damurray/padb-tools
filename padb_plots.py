@@ -14739,6 +14739,13 @@ function saveState(){
     var col='box_cond_'+dim.col_id;
     document.querySelectorAll('.'+col).forEach(function(c){_stSet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
   });
+  /* Longform per-condition selections are the authoritative getSelectedConds()
+     source and can express arbitrary condition subsets the per-dimension panels
+     above cannot (e.g. unchecking one condition whose dim-values are still used
+     by other conditions). Persist them explicitly -- otherwise loadState's
+     _syncLfFromAllDims() re-derives longform from the (still fully-checked) per-dim
+     panels on reload and silently loses that selection. */
+  document.querySelectorAll('.box_cond_lf_chk').forEach(function(c){_stSet('lfcond_'+encodeURIComponent(c.value),c.checked?'1':'0');});
   var fltEl=document.querySelector('input[name="box_flt"]:checked');if(fltEl)_stSet('box_filter_mode',fltEl.value);
   var dirEl=document.querySelector('input[name="box_tll_dir"]:checked');if(dirEl)_stSet('box_tll_dir',dirEl.value);
   var yhiEl=document.getElementById('box_flt_yhi');if(yhiEl)_stSet('box_filter_yhi',yhiEl.value);
@@ -14764,6 +14771,14 @@ function loadState(){
     updateBadge(col);
   });
   if(typeof COND_DIMS!=='undefined'&&typeof _syncLfFromAllDims==='function') _syncLfFromAllDims();
+  /* Restore explicit longform selections LAST, overriding the dim-derived state
+     just computed by _syncLfFromAllDims() (see saveState()). Deliberately do NOT
+     call _syncDimsFromLf() here: the per-dimension panel states were already
+     restored above, and together with these longform states they reproduce the
+     exact runtime pairing -- a single unchecked condition leaves its still-shared
+     dim-values checked; a fully-excluded dimension leaves that dim's panel
+     unchecked. Re-deriving dims from longform would mangle the latter. */
+  document.querySelectorAll('.box_cond_lf_chk').forEach(function(c){var s=_stGet('lfcond_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
   var dm=_stGet('box_tll_dir');
   if(dm){var dr=document.querySelector('input[name="box_tll_dir"][value="'+dm+'"]');if(dr)dr.checked=true;}
   var fm=_stGet('box_filter_mode');

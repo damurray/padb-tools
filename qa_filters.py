@@ -218,8 +218,16 @@ _HARNESS_JS = r"""
     gd.data.forEach(function(t){
       var ys=(t.y&&t.y.length!==undefined)?t.y:((t.x&&t.x.length!==undefined)?t.x:null);
       if(ys===null) return;
-      var s=0,n=0; for(var i=0;i<ys.length;i++){var v=ys[i]; if(typeof v==='number'&&isFinite(v)){s+=v;n++;}}
-      a.push((t.name||'?')+':'+ys.length+':'+n+':'+(Math.round(s*100)/100));
+      var s=0,ss=0,n=0; for(var i=0;i<ys.length;i++){var v=ys[i]; if(typeof v==='number'&&isFinite(v)){s+=v;ss+=v*v;n++;}}
+      /* Magnitude-independent precision (7 sig figs), NOT a fixed 2-decimal round.
+         A fixed round(s*100)/100 erases any change below 0.01 -- which silently
+         MISSED a genuine filter effect on small-magnitude data (e.g. FM1 accuracy
+         deviations ~0.006 dB: deselecting a DUT shifted the mean but the rounded
+         sum was identical), reporting a live filter as a DEAD one. The second
+         moment (ss) guards the rare within-trace cancellation where two values
+         move by +x/-x leaving the plain sum unchanged. */
+      var q=function(x){return (x===0)?'0':x.toExponential(6);};
+      a.push((t.name||'?')+':'+ys.length+':'+n+':'+q(s)+':'+q(ss));
     });
     a.sort(); return JSON.stringify(a);
   }
