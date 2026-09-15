@@ -33,11 +33,13 @@ Job JSON schema:
     "freq_scale": 1.0,                       # optional: multiply Frequency_MHz by this (e.g. 1e-6 if CSV stores Hz)
     "views": ["scatter", "stat_summary", "boxplot", "distribution",
               "env_coverage", "summary"],   # omit to auto-select based on data:
-                                             #   Room-only  -> scatter, boxplot
+                                             #   Room-only  -> scatter, boxplot, reference,
+                                             #                 summary, stat_summary
                                              #   multi-temp -> all six
-    "room_only_full_views": False,          # Room-only data: also add summary + stat_summary
-                                             # (never adds distribution/env_coverage -- those
-                                             # need non-Room data to compute a delta against)
+    "room_only_full_views": False,          # DEPRECATED / no-op: summary + stat_summary are
+                                             # Room-only DEFAULTS now (2026-09-15). Kept accepted
+                                             # for back-compat. distribution/env_coverage still
+                                             # never auto-added Room-only (need non-Room deltas)
     "env_coverage_csv": "",                  # optional: alternate CSV for env_coverage view (e.g. carrier power dBm)
     "env_coverage_y_label": "",             # y-axis label override for env_coverage when env_coverage_csv is set
     "env_coverage_y_lim": null,             # y-axis limits override [lo, hi] for env_coverage when env_coverage_csv is set
@@ -1232,9 +1234,13 @@ def generate_report(
         views = cfg["views"]
     else:
         if is_room_only:
-            views = ["scatter", "boxplot", "reference"]
-            if cfg.get("room_only_full_views", False):
-                views += ["summary", "stat_summary"]
+            # summary + stat_summary are useful for Room-only data too (per-condition
+            # stats/TI vs spec -- no temperature deltas needed), so they're DEFAULTS now
+            # (2026-09-15, David: "when there is no env data it is still useful to have a
+            # summary plot for the room data"). env_coverage/distribution stay OFF -- they
+            # compute deltas against Room and need non-Room data. room_only_full_views is
+            # retained as an accepted no-op (these views are default now, not opt-in).
+            views = ["scatter", "boxplot", "reference", "summary", "stat_summary"]
             print(f"    Room-only data detected -> default views: {views}", flush=True)
         else:
             views = list(_VIEW_FN.keys())

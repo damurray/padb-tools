@@ -577,6 +577,32 @@ def test_auto_filter_stat_summary():
               "subpopSlices:function()" in h and "_spDetect" in h and "_spAdvisoryHtml" in h)
 
 
+def test_room_only_default_views():
+    """Room-only data defaults to scatter+boxplot+reference+summary+stat_summary
+    (2026-09-15: summary/stat_summary are useful Room-only too, no longer opt-in),
+    and NEVER auto-adds env_coverage/distribution (they need non-Room deltas).
+    room_only_full_views is an accepted no-op now."""
+    import csv as _csv
+    import padb_v2 as _v2
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "room.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(8):
+                    w.writerow(["Room", freq, round(10.0 + 0.05 * (i % 4), 4),
+                                f"HarmonicNumber: 2  Serial Number: D{i:02d}", 20, -20])
+        outdir = Path(td) / "out"
+        outdir.mkdir()
+        gen = _v2.generate_report(p, {"title_prefix": "T", "results_dir": "out", "publish_to": ""}, outdir)
+        stems = {g.stem for g in gen}
+        for v in ("scatter", "boxplot", "reference", "summary", "stat_summary"):
+            check(f"room-only default includes {v}", f"T_{v}" in stems, f"stems={sorted(stems)}")
+        check("room-only default EXCLUDES env_coverage/distribution",
+              "T_env_coverage" not in stems and "T_distribution" not in stems, f"stems={sorted(stems)}")
+
+
 def test_auto_filter_rollout_summary_envcov():
     """Server contract: the auto-filter engine + Workflow + PDF report rolled out to
     summary and env_coverage (shared _AUTO_FILTER_SHARED_JS via SUM_AF / EC_AF)."""
@@ -799,6 +825,7 @@ def main() -> None:
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
                test_auto_filter_site_scope, test_pdf_report_contract,
+               test_room_only_default_views,
                test_reference_stats):
         try:
             fn()

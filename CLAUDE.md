@@ -674,11 +674,11 @@ Malaysia (AMC2) production ramp-up surfaced a new axis of variation: the *same* 
 
 `padb_v2.py`'s per-job-runner omits `"views"` from job.json entirely now to get automatic, data-driven defaults instead of hardcoding a list per pod:
 
-- **Room-only data** (`Temperature` column is a subset of `room_values`, default `{"Room"}`) → `scatter` + `boxplot` only.
+- **Room-only data** (`Temperature` column is a subset of `room_values`, default `{"Room"}`) → `scatter` + `boxplot` + `reference` + `summary` + `stat_summary` (**updated 2026-09-15**: summary + stat_summary are now Room-only DEFAULTS — David: "when there is no env data it is still useful to have a summary plot for the room data". They're per-condition stats/TI vs spec and need no temperature deltas). **Never** `distribution`/`env_coverage` for Room-only — those compute deltas against Room and need non-Room data.
 - **Multi-temp data detected** → all six views (`scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`).
-- **Room-only + `"room_only_full_views": true"`** → also adds `summary` + `stat_summary` (never `distribution`/`env_coverage` — those need non-Room data to compute a delta against, so they're never meaningful for Room-only data regardless of the flag).
+- **`"room_only_full_views"` is now a no-op** (accepted for back-compat): summary + stat_summary are default Room-only regardless. Jobs that set it `true` still work (idempotent); jobs that never set it now get the fuller set. Pinned by `qa_regressions.test_room_only_default_views`.
 
-An explicit `"views"` key in job.json always overrides auto-detection, preserving all pre-existing job configs verbatim. `vswr_v2_job.json` / `return_loss_v2_job.json` (Room-only, want `stat_summary` too) now use `"room_only_full_views": true` instead of a hardcoded `views` list — the direct real-world case this was built for.
+An explicit `"views"` key in job.json always overrides auto-detection, preserving all pre-existing job configs verbatim (and is the way to get a *narrower* Room-only set now, e.g. just `["scatter","boxplot"]`).
 
 ---
 
