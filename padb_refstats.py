@@ -13,8 +13,13 @@ override limit (for a compare with no spec).
 Increment 1: filter bar + Overall + Pareto + per-group descriptive table.
 Increment 2: value-distribution histogram (pass/fail-coloured when a pass/fail
 mode exists) + an outlier-points table (the actual 1.5xIQR-fence points behind
-the Overall count, sorted by deviation, with CSV export).
-(The auto-filter before/after impact follows.)
+the Overall count, sorted by deviation, with CSV export). Also honours the shared
+cross-view Global Filter, point-precise, so a DUT cleaned elsewhere drops here too.
+Increment 3: auto-filter before/after impact -- reuses the SAME shared engine the
+plot views use (_afScorer/_afCompute/_afAnalyze/_afRecommend) to preview how a
+chosen basis+level would change the headline numbers (total/pass/fail/outliers/
+mean/median/std). Preview only -- it never writes the GF; the real apply stays on
+the plot views and flows back here via the GF.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ import pandas as pd
 
 from padb_plots import (
     _get_plotlyjs, _checkbox_panel, _detect_group_cols, _short_x_label,
-    _floor_dec, _ceil_dec, _freq_label_map,
+    _floor_dec, _ceil_dec, _freq_label_map, _AUTO_FILTER_SHARED_JS,
 )
 
 # Keyword match for the pod's pass/fail status field among the group dims (the JS
@@ -226,6 +231,20 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + '<div id="grouptbl" style="overflow:auto"></div>\n'
         + '<div class="sect">Outlier points (1.5&times;IQR)</div>\n'
         + '<div id="outliers" style="overflow:auto"></div>\n'
+        + '<div class="sect">Auto-filter impact (preview)</div>\n'
+        + '<div style="font-size:13px;margin-bottom:6px">\n'
+          '  Basis: <select id="ref_af_basis" onchange="_refImpactRefresh()">'
+          '<option value="dist">Distribution (MAD &sigma;)</option>'
+          '<option value="iqr">IQR fence (Tukey)</option>'
+          '<option value="dmad">Double-MAD (skew-aware)</option></select>\n'
+          '  Level: <select id="ref_af_level" onchange="_refImpactRefresh()">'
+          '<option value="off" selected>off</option>'
+          '<option value="conservative">Conservative</option>'
+          '<option value="moderate">Moderate</option>'
+          '<option value="aggressive">Aggressive</option></select>\n'
+          '  <span id="ref_af_rec" style="margin-left:10px"></span>\n'
+          '</div>\n'
+        + '<div id="ref_af_impact"></div>\n'
     )
 
     return (
@@ -233,7 +252,7 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"<title>{title}</title>\n"
         f"<script>{_get_plotlyjs()}</script>\n{style}\n</head>\n<body>\n"
         + body
-        + f"<script>\n{constants}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
+        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
     )
 
 
@@ -395,6 +414,102 @@ function exportOutliers(){var o=window._refOutliers||[]; if(!o.length)return;
   _refDownload((TITLE||'reference')+'_outliers.csv',lines.join('\n'));}
 function _fmt(x,d){return (x==null||isNaN(x))?'—':x.toFixed(d==null?4:d);}
 
+/* ---------- Auto-filter impact preview (increment 3) --------------------------
+   Reuses the SAME shared engine every plot view uses (_afScorer / _afCompute /
+   _afAnalyze / _afRecommend) so the "what would the data look like cleaned"
+   readout is identical to what a real auto-filter would remove -- but this is a
+   PREVIEW only: it never writes the Global Filter (the actual apply stays on the
+   plot views and flows back here via the GF, which this page already honours). */
+function _refCondKey(r){var t=[];for(var i=0;i<GF_DIMS.length;i++){var v=r[GF_DIMS[i][0]];
+  if(v!=null&&v!=='')t.push(GF_DIMS[i][1]+'='+v);}return t.sort().join('|');}
+function _refPtKey(r){var ser=(r.Serial!=null?String(r.Serial):'unknown');
+  return ser+'||'+_refCondKey(r)+'||'+(r.Temperature!=null?String(r.Temperature):'')+
+    '||'+(r.freq_label!=null?r.freq_label:'');}
+function _refBucketMap(rows){ // group by (condition dims, temp, freq-box) -- same buckets the plot views score
+  var b={};
+  rows.forEach(function(r){if(r.Value==null)return;
+    var ck=_refCondKey(r),tp=(r.Temperature!=null?String(r.Temperature):''),fl=(r.freq_label!=null?r.freq_label:'');
+    var k=ck+''+tp+''+fl;
+    (b[k]||(b[k]={ck:ck,tp:tp,fl:fl,rows:[]})).rows.push(r);});
+  return b;
+}
+function _refBadPoints(basis){
+  var bm=_refBucketMap(applyFilters(DATA)),out=[];
+  Object.keys(bm).forEach(function(k){var b=bm[k],fv=b.rows.map(function(r){return r.Value;});
+    var score=_afScorer(basis,fv,null,null);
+    b.rows.forEach(function(r){var sc=score(r.Value);if(!sc)return;
+      var ser=(r.Serial!=null?String(r.Serial):'unknown');
+      out.push({serial:ser,key:ser+'||'+b.ck+'||'+b.tp+'||'+b.fl,dir:sc.dir,mag:sc.mag,
+                temp:b.tp,freqLabel:b.fl,site:''});});});
+  return out;
+}
+var REF_AF={
+  levelSel:'ref_af_level', basisSel:'ref_af_basis', baseSerial:function(s){return s;}, primarySite:null,
+  badPoints:_refBadPoints,
+  buckets:function(){var bm=_refBucketMap(applyFilters(DATA));return Object.keys(bm).map(function(k){
+    return {vals:bm[k].rows.map(function(r){return r.Value;})};});},
+  nDuts:function(){var s={};applyFilters(DATA).forEach(function(r){if(r.Serial!=null&&r.Serial!=='')s[String(r.Serial)]=1;});return Object.keys(s).length;},
+  nConds:function(){var s={};applyFilters(DATA).forEach(function(r){s[_refCondKey(r)]=1;});return Object.keys(s).length;},
+  nFreqs:function(){var s={};applyFilters(DATA).forEach(function(r){if(r.freq_label!=null)s[r.freq_label]=1;});return Object.keys(s).length;},
+  multiTemp:function(){var s={};applyFilters(DATA).forEach(function(r){if(r.Temperature!=null)s[String(r.Temperature)]=1;});return Object.keys(s).length>1;},
+  hasSpec:function(){return HAS_LIMITS||_ovr('ovr_hi')!=null||_ovr('ovr_lo')!=null;}
+};
+function _refRecBasis(rec,a){ // impact panel offers peer bases only; map a 'spec' rec onto one
+  return (rec.basis==='dist'||rec.basis==='iqr'||rec.basis==='dmad')?rec.basis:(a.skewFrac>0.3?'dmad':'dist');}
+function _refUseRec(){
+  var a=_afAnalyze(REF_AF),rec=_afRecommend(a);
+  document.getElementById('ref_af_basis').value=_refRecBasis(rec,a);
+  document.getElementById('ref_af_level').value=rec.level; _refImpactRefresh();
+}
+function _refImpactRefresh(){
+  var recEl=document.getElementById('ref_af_rec'),imp=document.getElementById('ref_af_impact');
+  if(!recEl||!imp)return;
+  var a=_afAnalyze(REF_AF),rec=_afRecommend(a),BN={dist:'Distribution',iqr:'IQR fence',dmad:'Double-MAD'};
+  recEl.innerHTML='Recommended: <b>'+BN[_refRecBasis(rec,a)]+' / '+((_AF_LEVELS[rec.level]||{}).label||rec.level)+'</b> '+
+    '<button class="reset-btn" onclick="_refUseRec()">Use</button> '+
+    '<span style="color:#777;cursor:help" title="'+rec.why.join('  ').replace(/"/g,'&quot;')+'">why?</span>';
+  var level=(document.getElementById('ref_af_level')||{}).value||'off';
+  var basis=(document.getElementById('ref_af_basis')||{}).value||'dist';
+  if(level==='off'){
+    imp.innerHTML='<div style="color:#888;font-size:12px">Pick a level to preview how the chosen auto-filter would '+
+      'change these numbers. <b>Preview only</b> — it changes no data. To actually apply a clean, use the auto-filter on a '+
+      'plot view (Box plots / Statistical summary / …); it writes the shared Global Filter, which this page then reflects.</div>';
+    return;
+  }
+  var pts=_refBadPoints(basis),r=_afCompute(pts,REF_AF),autoKeys={};
+  r.auto.forEach(function(d){d.keys.forEach(function(k){autoKeys[k]=1;});});
+  var rows=applyFilters(DATA),kept=[],remPts=0,remDuts={};
+  rows.forEach(function(r0){ if(autoKeys[_refPtKey(r0)]){remPts++;remDuts[(r0.Serial!=null?String(r0.Serial):'unknown')]=1;} else kept.push(r0); });
+  var mode=_pfMode(rows);
+  function ov(set){var vals=[];set.forEach(function(r0){if(r0.Value!=null)vals.push(r0.Value);});
+    var st=_stats(vals),pass=0,fail=0;
+    if(mode)set.forEach(function(r0){var v=_pf(r0,mode);if(v==='P')pass++;else if(v==='F')fail++;});
+    var tot=pass+fail; return {n:set.length,pass:pass,fail:fail,fpct:tot?100*fail/tot:0,
+      out:(st.out||0),outpct:st.n?100*(st.out||0)/st.n:0,mean:st.mean,med:st.med,sd:st.sd};}
+  var A=ov(rows),B=ov(kept);
+  function d1(x){return (x==null||isNaN(x))?'—':x.toFixed(1);}
+  function dlt(a2,b2,dec,pct){ if(a2==null||b2==null||isNaN(a2)||isNaN(b2))return '';
+    var d=b2-a2; var s=(d>0?'+':'')+d.toFixed(dec==null?4:dec)+(pct?'%':'');
+    return '<span style="color:'+(Math.abs(d)<1e-9?'#999':(d>0?'#c04000':'#1a7d3c'))+'">'+s+'</span>';}
+  var nRemDuts=Object.keys(remDuts).length;
+  var h='<div style="font-size:12px;margin:2px 0 6px">Would remove <b>'+nRemDuts+'</b> DUT'+(nRemDuts!==1?'s':'')+
+    ' (<b>'+remPts+'</b> pt'+(remPts!==1?'s':'')+') at basis <b>'+BN[basis]+'</b>, level <b>'+((_AF_LEVELS[level]||{}).label||level)+
+    '</b> — the risk-gated <i>auto</i> set only (marginal / review DUTs are left, exactly as the plot views’ workflow would).</div>';
+  h+='<table class="stbl"><thead><tr><th class="k">Metric</th><th>As collected</th><th>After auto-filter</th><th>&Delta;</th></tr></thead><tbody>';
+  h+='<tr><td class="k">Total points</td><td>'+A.n.toLocaleString()+'</td><td>'+B.n.toLocaleString()+'</td><td>'+dlt(A.n,B.n,0)+'</td></tr>';
+  if(mode){
+    h+='<tr><td class="k">Pass</td><td>'+A.pass.toLocaleString()+'</td><td>'+B.pass.toLocaleString()+'</td><td>'+dlt(A.pass,B.pass,0)+'</td></tr>';
+    h+='<tr><td class="k">Fail</td><td>'+A.fail.toLocaleString()+'</td><td>'+B.fail.toLocaleString()+'</td><td>'+dlt(A.fail,B.fail,0)+'</td></tr>';
+    h+='<tr><td class="k">Fail %</td><td>'+d1(A.fpct)+'%</td><td>'+d1(B.fpct)+'%</td><td>'+dlt(A.fpct,B.fpct,1,true)+'</td></tr>';
+  }
+  h+='<tr><td class="k">Outliers (1.5×IQR)</td><td>'+A.out.toLocaleString()+' ('+d1(A.outpct)+'%)</td><td>'+B.out.toLocaleString()+' ('+d1(B.outpct)+'%)</td><td>'+dlt(A.out,B.out,0)+'</td></tr>';
+  h+='<tr><td class="k">Mean</td><td>'+_fmt(A.mean)+'</td><td>'+_fmt(B.mean)+'</td><td>'+dlt(A.mean,B.mean)+'</td></tr>';
+  h+='<tr><td class="k">Median</td><td>'+_fmt(A.med)+'</td><td>'+_fmt(B.med)+'</td><td>'+dlt(A.med,B.med)+'</td></tr>';
+  h+='<tr><td class="k">Std dev</td><td>'+_fmt(A.sd)+'</td><td>'+_fmt(B.sd)+'</td><td>'+dlt(A.sd,B.sd)+'</td></tr>';
+  h+='</tbody></table>';
+  imp.innerHTML=h;
+}
+
 function update(){
   _updateRefGfBadge();
   var rows=applyFilters(DATA);
@@ -499,6 +614,7 @@ function update(){
     ot+='</tbody></table>';
     document.getElementById('outliers').innerHTML=oh+ot;
   }
+  _refImpactRefresh();
 }
 
 function resetFilters(){

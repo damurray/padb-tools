@@ -598,6 +598,14 @@ def test_reference_stats():
         # a base serial to match on -- df["Serial"] is empty here.
         check("reference: effective serial embedded for GF (from Group-text)",
               '"Serial":' in h)
+        # Increment 3: auto-filter before/after impact preview, reusing the shared
+        # engine (identical methodology to the plot views), preview-only (no GF write).
+        check("reference: auto-filter impact panel + selectors present (increment 3)",
+              all(s in h for s in ('id="ref_af_basis"', 'id="ref_af_level"', 'id="ref_af_impact"')))
+        check("reference: impact preview reuses the shared auto-filter engine",
+              all(s in h for s in ("_afScorer", "_afCompute", "_afAnalyze", "_afRecommend", "var _AF_LEVELS=")))
+        check("reference: impact ctx + refresh wiring present",
+              all(s in h for s in ("var REF_AF=", "_refImpactRefresh", "_refBadPoints", "_refUseRec")))
         # (2) no status field, limits present -> builds, STATUS_COL null
         pl = Path(td) / "nolim.csv"
         with pl.open("w", newline="") as f:

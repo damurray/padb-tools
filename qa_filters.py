@@ -1208,6 +1208,36 @@ _HARNESS_JS = r"""
       chk('reference-gf-clear-restores', applyFilters(DATA).length===b0,
           'restored='+applyFilters(DATA).length+' before='+b0);
     })();
+    // (6e) AUTO-FILTER IMPACT PREVIEW (increment 3): reuses the shared engine.
+    // 'off' shows the preview-only note (no table); at dist/aggressive a gross
+    // outlier is removed and the rendered "after" total == before minus the exact
+    // set of rows matching the engine's auto keys (never writes the GF).
+    (function(){
+      var be=document.getElementById('ref_af_basis'), le=document.getElementById('ref_af_level'),
+          imp=document.getElementById('ref_af_impact');
+      if(!be||!le||!imp||typeof _refImpactRefresh==='undefined'){ skip('reference-auto-filter','no impact panel'); return; }
+      try{resetFilters();}catch(e){}
+      le.value='off'; _refImpactRefresh();
+      chk('reference-impact-off-is-preview-only',
+          imp.textContent.indexOf('Preview only')>=0 && imp.getElementsByTagName('table').length===0,
+          'off-tables='+imp.getElementsByTagName('table').length);
+      be.value='dist'; le.value='aggressive'; _refImpactRefresh();
+      // independent recompute: rows the engine's auto set would remove
+      var pts=_refBadPoints('dist'), r=_afCompute(pts,REF_AF), ak={};
+      r.auto.forEach(function(d){d.keys.forEach(function(k){ak[k]=1;});});
+      var mBefore=applyFilters(DATA).length;
+      var rem=applyFilters(DATA).filter(function(x){return ak[_refPtKey(x)];}).length;
+      chk('reference-impact-removes-gross-outliers', rem>0, 'removed='+rem+' autoDuts='+r.auto.length);
+      var tbls=imp.getElementsByTagName('table');
+      chk('reference-impact-renders-table', tbls.length===1, 'tables='+tbls.length);
+      if(tbls.length){
+        var totRow=tbls[0].tBodies[0].rows[0]; // "Total points | before | after | delta"
+        var afterTot=parseInt((totRow.cells[2].textContent||'').replace(/[^0-9-]/g,''),10);
+        chk('reference-impact-after-equals-before-minus-removed', afterTot===mBefore-rem,
+            'after='+afterTot+' before='+mBefore+' removed='+rem);
+      }
+      le.value='off'; _refImpactRefresh();  // leave clean
+    })();
     // (7) a frequency filter shrinks overall + group table together, then reverts
     var freqs=DATA.map(function(r){return r.Frequency_MHz;}).filter(function(x){return x!=null;});
     if(freqs.length){
