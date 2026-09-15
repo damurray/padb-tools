@@ -360,8 +360,8 @@ async function update(){
   const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&sites=${encodeURIComponent(sites)}`)).json();
   const traces=r.traces.map(t=>({x:t.x,y:t.y,mode:'markers',type:'scattergl',
       name:t.site+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55}}));
-  Plotly.react('plot',traces,{margin:{t:10,r:10},xaxis:{title:META.x_label},
-      yaxis:{title:META.value_label},legend:{orientation:'h'}},{responsive:true});
+  Plotly.react('plot',traces,{margin:{t:10,r:10},xaxis:{title:{text:META.x_label}},
+      yaxis:{title:{text:META.value_label}},legend:{orientation:'h'}},{responsive:true});
   document.getElementById('status').textContent =
      r.n_total.toLocaleString()+' pts in view -> '+r.n_returned.toLocaleString()+
      ' drawn ('+Math.round(performance.now()-t0)+' ms)';

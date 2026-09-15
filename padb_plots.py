@@ -661,9 +661,9 @@ function buildLayout(filtered){
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:Object.assign({title:X_LABEL,type:isLogX()?'log':'linear'},
+    xaxis:Object.assign({title:{text:X_LABEL},type:isLogX()?'log':'linear'},
                          curX?{range:curX,autorange:false}:{}),
-    yaxis:Object.assign({title:Y_LABEL},curY?{range:curY,autorange:false}:{}),
+    yaxis:Object.assign({title:{text:Y_LABEL}},curY?{range:curY,autorange:false}:{}),
     shapes:_hideSpec?[]:shapes,annotations:_hideSpec?[]:annotations,height:520,
     legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:60,b:60}
@@ -2961,8 +2961,8 @@ function update(){
   var layout={
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:Y_LABEL,range:Y_LIM},
-    yaxis:{title:'Count'},
+    xaxis:{title:{text:Y_LABEL},range:Y_LIM},
+    yaxis:{title:{text:'Count'}},
     shapes:shapes,annotations:annotations,height:480,
     margin:{l:60,r:30,t:60,b:60}
   };
@@ -7017,8 +7017,8 @@ function buildLayout(conds,params,fLo,fHi,curX,curY){
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:Object.assign({title:X_LABEL,type:isLogX()?'log':'linear'},xRange?{range:xRange,autorange:false}:{}),
-    yaxis:Object.assign({title:Y_LABEL},yRange?{range:yRange,autorange:false}:{}),
+    xaxis:Object.assign({title:{text:X_LABEL},type:isLogX()?'log':'linear'},xRange?{range:xRange,autorange:false}:{}),
+    yaxis:Object.assign({title:{text:Y_LABEL}},yRange?{range:yRange,autorange:false}:{}),
     height:450,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:55,b:60},
@@ -9049,8 +9049,8 @@ function buildLayout(){
   return {
     title:{text:ENV_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:'Frequency (MHz)',type:isLogX()?'log':'linear'},
-    yaxis:{title:ENV_Y_LABEL,range:ENV_Y_LIM},
+    xaxis:{title:{text:'Frequency (MHz)'},type:isLogX()?'log':'linear'},
+    yaxis:{title:{text:ENV_Y_LABEL},range:ENV_Y_LIM},
     height:480,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:55,b:60},
@@ -9788,9 +9788,9 @@ function buildLayout(yRange){
   return {
     title:{text:EC_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:Object.assign({title:EC_X_LABEL,type:isLogX()?'log':'linear'},
+    xaxis:Object.assign({title:{text:EC_X_LABEL},type:isLogX()?'log':'linear'},
                          curX?{range:curX,autorange:false}:{}),
-    yaxis:Object.assign({title:EC_Y_LABEL},curY?{range:curY,autorange:false}:{}),
+    yaxis:Object.assign({title:{text:EC_Y_LABEL}},curY?{range:curY,autorange:false}:{}),
     height:480,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:55,b:60},
@@ -12659,8 +12659,8 @@ function buildLayout(){
   return {
     title:{text:BOX_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:'Frequency',categoryorder:'array',categoryarray:filteredOrder,tickangle:-45},
-    yaxis:Object.assign({title:Y_LABEL},curY?{range:curY,autorange:false}:{autorange:true}),
+    xaxis:{title:{text:X_SHORT_LABEL+' ('+X_UNIT+')'},categoryorder:'array',categoryarray:filteredOrder,tickangle:-45},
+    yaxis:Object.assign({title:{text:Y_LABEL}},curY?{range:curY,autorange:false}:{autorange:true}),
     height:540,boxmode:'group',boxgap:0.2,boxgroupgap:0.15,
     legend:{bgcolor:'rgba(255,255,255,0.85)',bordercolor:'#ccc',borderwidth:1,font:{size:11}},
     margin:{l:60,r:30,t:60,b:90},
@@ -16600,8 +16600,8 @@ function buildLayout(){
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
-    xaxis:{title:X_LABEL,type:log?'log':'linear',range:range,autorange:false},
-    yaxis:Object.assign({title:Y_LABEL},curY?{range:curY,autorange:false}:{}),
+    xaxis:{title:{text:X_LABEL},type:log?'log':'linear',range:range,autorange:false},
+    yaxis:Object.assign({title:{text:Y_LABEL}},curY?{range:curY,autorange:false}:{}),
     height:520,
     legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
     margin:{l:60,r:30,t:60,b:60}
@@ -18680,7 +18680,7 @@ function update(){
   function spec(v,lbl){ if(v===null||!isFinite(v)) return; shapes.push({type:'line',x0:v,x1:v,yref:'paper',y0:0,y1:1,line:{color:'#c00',dash:'dash',width:2}}); ann.push({x:v,yref:'paper',y:1.0,yanchor:'bottom',text:lbl,showarrow:false,font:{color:'#c00',size:11}}); }
   if(!hide){ spec(LIMIT_HI,'Upper limit '+LIMIT_HI); spec(LIMIT_LO,'Lower limit '+LIMIT_LO); }
   var xt=VLABEL+(VUNIT?' ('+VUNIT+')':'');
-  Plotly.react('plot',traces,{barmode:'overlay',bargap:0.02,xaxis:{title:xt},yaxis:{title:'Count'},
+  Plotly.react('plot',traces,{barmode:'overlay',bargap:0.02,xaxis:{title:{text:xt}},yaxis:{title:{text:'Count'}},
       shapes:shapes,annotations:ann,legend:{orientation:'h'},margin:{t:24,r:20},uirevision:'keep'},
       {responsive:true,displaylogo:false});
   var nEl=document.getElementById('h_n'); if(nEl) nEl.textContent=vals.length.toLocaleString()+' measurements'+(multi?' in '+keys.length+' conditions':'');

@@ -876,6 +876,45 @@ def test_reference_stats():
               "var STATUS_COL=null;" in h2 and 'id="pareto"' in h2)
 
 
+def test_axis_titles_object_form() -> None:
+    """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
+    xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
+    to 3.6.0 stripped EVERY interactive view's axis names (reported 2026-09-15 on
+    the DCFM boxplot: both axes unlabeled). Pin: no hand-written JS layout in
+    padb_plots.py / padb_viewer.py sets an xaxis/yaxis title as a bare string or
+    variable -- every one must be title:{text:...}. (Python-side plotly, e.g. the
+    reference view's fig.update_yaxes(title_text=...), is unaffected and not
+    scanned.)"""
+    import re
+    # `(xaxis|yaxis)[N]:` optionally wrapped in `Object.assign(`, then `{title:`
+    # whose next char is NOT `{` (i.e. a bare string/var, the broken form).
+    pat = re.compile(r"(?:xaxis|yaxis)\d*:(?:Object\.assign\()?\{title:(?!\{)")
+    for fn in ("padb_plots.py", "padb_viewer.py"):
+        src = (HERE / fn).read_text(encoding="utf-8")
+        bad = pat.findall(src)
+        check(f"{fn}: all JS axis titles use title:{{text:...}} (Plotly-3 form)",
+              not bad, f"{len(bad)} bare-string axis title(s): {bad[:6]}")
+    # And confirm a freshly-built boxplot actually renders both axis titles in the
+    # object form (the categorical x-axis uses X_SHORT_LABEL+' ('+X_UNIT+')').
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "box.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(8):
+                    w.writerow(["Room", freq, round(10.0 + 0.05 * (i % 4), 4),
+                                f"HarmonicNumber: 2  Serial Number: D{i:02d}", 20, -20])
+        out = Path(td) / "box.html"
+        pp.stat_boxplot(p, {"y_label": "Pwr (dBc)", "title_prefix": "T"}, out)
+        h = out.read_text(encoding="utf-8")
+        check("boxplot x-axis title is object form built from X_SHORT_LABEL+X_UNIT",
+              "title:{text:X_SHORT_LABEL+' ('+X_UNIT+')'}" in h)
+        check("boxplot y-axis title is object form",
+              "({title:{text:Y_LABEL}},curY?" in h)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -893,7 +932,7 @@ def main() -> None:
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
                test_auto_filter_site_scope, test_pdf_report_contract,
                test_room_only_default_views, test_scatter_room_temp_filterable,
-               test_reference_stats):
+               test_reference_stats, test_axis_titles_object_form):
         try:
             fn()
         except Exception as exc:
