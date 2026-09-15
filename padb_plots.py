@@ -3438,7 +3438,7 @@ function _afWorkflowSteps(a,rec,ctx){
   s.push((i++)+'. Review each flagged DUT’s reason + false-removal risk; <b>Affirm</b> any marginals you agree with.');
   s.push((i++)+_applyStep);
   if(a.compare) s.push((i++)+'. Export the cleaned CSV to hand the reference-site clean to the onboarding site ('+((ctx.inheritNote!=null)?'the auto-exclusion':'the Global Filter')+' is browser-local and does not travel).');
-  s.push((i++)+'. Re-check the tables / stats / tolerance intervals on the cleaned data.');
+  s.push((i++)+'. Re-check the cleaned data in the <b>Summary</b> and <b>Stat&nbsp;Summary</b> tables (population stats + tolerance intervals vs spec)'+(a.multiTemp?', and in <b>Env&nbsp;Coverage</b> / <b>Distribution</b> for temperature behavior':' &mdash; both are available even for Room-only data')+'. The <b>Distribution&nbsp;health</b> check below flags any DUTs behaving as a separate subpopulation.');
   s.push('<b>Or</b> click <b>Run recommended workflow</b> to auto-execute steps '+(a.compare?'2–5':'2–4')+' at the Conservative level in one go (applies only the unambiguous auto set; marginals still left for you; fully reversible).');
   return s;
 }

@@ -448,6 +448,12 @@ def test_auto_filter_boxplot():
         check("auto-filter no-apply banner present + wired in both preview paths",
               "_afNoApplyBanner" in h and h.count("!r.auto.length && !r.marginal.length && r.review.length") >= 1
               and "Nothing to auto-filter here" in h)
+        # Recommended-workflow re-check step names the now-always-present Summary/Stat
+        # Summary views (+ Env Coverage/Distribution only when multiTemp) and the
+        # Distribution health subpop check -- adapts to the dataset's available views.
+        check("workflow re-check step names Summary/Stat Summary + Distribution health",
+              "Re-check the cleaned data in the" in h and "Stat&nbsp;Summary" in h
+              and "Distribution&nbsp;health" in h and "a.multiTemp?" in h)
         # Longform per-condition selections (box_cond_lf_chk) are the authoritative
         # getSelectedConds() source and must round-trip through save/loadState --
         # they can express arbitrary condition subsets the per-dim panels cannot, so
