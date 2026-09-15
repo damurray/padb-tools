@@ -233,9 +233,12 @@ def detect_subpopulations(
 
     frac_pct = round(100.0 * n_flagged_buckets / max(n_assess, 1))
     dir_word = "above" if net_dir > 0 else ("below" if net_dir < 0 else "off")
-    msg = (f"{len(flagged)} DUT(s) form a separate distribution ({dir_word} the population) "
-           f"across {n_flagged_buckets} of {n_assess} frequencies ({frac_pct}%), "
-           f"median offset {median_offset:+.4g}")
+    # Drop the "across N of M frequencies" clause for a single-bucket population
+    # (e.g. the histogram, which has no frequency axis) -- it would read "1 of 1".
+    across = (f" across {n_flagged_buckets} of {n_assess} frequencies ({frac_pct}%)"
+              if n_assess > 1 else "")
+    msg = (f"{len(flagged)} DUT(s) form a separate distribution ({dir_word} the population)"
+           f"{across}, median offset {median_offset:+.4g}")
     if budget_by_freq is not None:
         msg += f", ~{gob:.1f}x the M.U./env-drift budget"
     if correlation:

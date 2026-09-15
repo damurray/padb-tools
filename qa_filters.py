@@ -1416,9 +1416,11 @@ _HARNESS_JS = r"""
     if(!ctx){ skip('subpop','no ctx.subpopSlices in this view'); return; }
     var slices; try{ slices=ctx.subpopSlices(); }catch(e){ chk('subpop-slices',false,String(e)); return; }
     if(!slices||!slices.length){ skip('subpop','no slices (no per-DUT data)'); return; }
-    var sl=null; for(var i=0;i<slices.length;i++){ if(slices[i].serials&&slices[i].serials.length>=5&&slices[i].vals_by_freq.length>=3){ sl=slices[i]; break; } }
-    if(!sl){ skip('subpop','no slice >=5 DUTs & >=3 freqs'); return; }
+    // >=1 bucket (histogram slices are single-bucket: one dim-combo, per-DUT means).
+    var sl=null; for(var i=0;i<slices.length;i++){ if(slices[i].serials&&slices[i].serials.length>=5&&slices[i].vals_by_freq.length>=1){ sl=slices[i]; break; } }
+    if(!sl){ skip('subpop','no slice >=5 DUTs & >=1 bucket'); return; }
     var opt={budget_by_freq:sl.budget_by_freq,station_by_dut:sl.station_by_dut};
+    if(sl.opts){for(var _k in sl.opts)opt[_k]=sl.opts[_k];}   // per-view overrides (histogram min_buckets:1)
     var base=_spDetect(sl.vals_by_freq, sl.serials, opt);
     var sset={}; sl.serials.forEach(function(s){sset[s]=1;});
     chk('subpop-baseline-flags-are-real-serials',

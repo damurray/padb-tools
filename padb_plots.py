@@ -3653,7 +3653,9 @@ function _spDetect(valsByFreq,serials,opts){
     if(ks.length===1){var only=ks[0];var maj={};for(var m=0;m<ndut;m++){if(flaggedIdx.indexOf(m)<0&&station[m])maj[station[m]]=1;}if(!maj[only])correlation={field:only};}}
   var fracPct=Math.round(100*nFlaggedB/Math.max(nAssess,1));
   var dirWord=netDir>0?'above':(netDir<0?'below':'off');
-  var msg=flagged.length+' DUT(s) form a separate distribution ('+dirWord+' the population) across '+nFlaggedB+' of '+nAssess+' frequencies ('+fracPct+'%), median offset '+(medOff>=0?'+':'')+(Math.round(medOff*10000)/10000);
+  // Drop the "across N of M frequencies" clause for a single-bucket population (histogram).
+  var across=(nAssess>1)?(' across '+nFlaggedB+' of '+nAssess+' frequencies ('+fracPct+'%)'):'';
+  var msg=flagged.length+' DUT(s) form a separate distribution ('+dirWord+' the population)'+across+', median offset '+(medOff>=0?'+':'')+(Math.round(medOff*10000)/10000);
   if(budget)msg+=', ~'+(Math.round(gob*10)/10)+'x the M.U./env-drift budget';
   if(correlation)msg+='; all share '+correlation.field;
   msg+='. Action required -- investigate DUT/station/test. Not auto-filtered.';
@@ -3665,7 +3667,9 @@ function _spAdvisoryHtml(ctx){
   if(!slices||!slices.length)return '';
   var flaggedRows=[],incon=0,clean=0,assessed=0,anyBudget=false;
   slices.forEach(function(sl){
-    var r=_spDetect(sl.vals_by_freq,sl.serials,{budget_by_freq:sl.budget_by_freq,station_by_dut:sl.station_by_dut});
+    var _o={budget_by_freq:sl.budget_by_freq,station_by_dut:sl.station_by_dut};
+    if(sl.opts){for(var _k in sl.opts)_o[_k]=sl.opts[_k];}   // per-view overrides (e.g. histogram min_buckets:1)
+    var r=_spDetect(sl.vals_by_freq,sl.serials,_o);
     if(sl.budget_by_freq)anyBudget=true;
     if(r.status==='flagged')flaggedRows.push({cond:sl.cond,r:r});
     else if(r.status==='inconclusive')incon++; else clean++;
@@ -18922,7 +18926,35 @@ var HIST_AF={basisSel:'h_auto_basis',levelSel:'h_auto_level',panel:'h_auto_panel
   getFreq:function(){return {lo:-Infinity,hi:Infinity};}, setFreq:function(){},
   getSerials:function(){return Array.prototype.slice.call(document.querySelectorAll('.hf_serial:checked')).map(function(c){return c.value;});},
   setSerials:function(list){document.querySelectorAll('.hf_serial').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0;});update();},
-  segments:function(){return [];}};
+  segments:function(){return [];},
+  /* Subpopulation advisory for the histogram. No frequency axis, so each slice is ONE
+     bucket (min_buckets:1): per dim-combination (_hCond), the per-DUT MEAN of that DUT's
+     measurements. The gap test then finds >=2 DUTs whose mean sits apart from peers.
+     Needs per-DUT serials; respects the dim + serial filters + _hAutoExcl. Budget null
+     (no per-DUT M.U. here) -> shape-only; station null. */
+  subpopSlices:function(){
+    var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.length>0;
+    if(!hasSer) return [];
+    var byCond={};
+    for(var i=0;i<VALUES.length;i++){
+      if(_hAutoExcl.has(i))continue;
+      var ok=true; for(var k=0;k<DIMS.length;k++){var d=DIMS[k]; if(!ds[d.col_id].has(DIMVALS[d.col_id][i])){ok=false;break;}}
+      if(ok&&!ss.has(SERIAL[i]))ok=false;
+      if(!ok)continue;
+      var v=VALUES[i]; if(!(typeof v==='number'&&isFinite(v)))continue;
+      var cond=_hCond(i), ser=SERIAL[i];
+      var c=byCond[cond]||(byCond[cond]={acc:{},cnt:{}});
+      c.acc[ser]=(c.acc[ser]||0)+v; c.cnt[ser]=(c.cnt[ser]||0)+1;
+    }
+    var out=[];
+    Object.keys(byCond).forEach(function(cond){
+      var c=byCond[cond], serials=Object.keys(c.acc);
+      if(serials.length<4)return;
+      var row=serials.map(function(s){return c.acc[s]/c.cnt[s];});
+      out.push({cond:cond,vals_by_freq:[row],serials:serials,budget_by_freq:null,station_by_dut:null,opts:{min_buckets:1}});
+    });
+    return out;
+  }};
 function hAutoFilterPreview(){_afPreview(HIST_AF);}
 function histAutoFilterApply(){_afApply(HIST_AF);}
 function histAutoFilterAffirm(){_afAffirm(HIST_AF);}

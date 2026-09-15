@@ -681,6 +681,10 @@ def test_auto_filter_histogram():
               all(s in h for s in ('id="h_wf_btn"', 'id="h_wf_panel"', 'id="h_auto_panel"', "_afGenerateReport")))
         check("histogram ctx text overridden away from Global Filter (no-GF view)",
               "applyNoun:'the auto-exclusion'" in h and "undoHint:'Clear auto-exclusion'" in h)
+        # Subpopulation advisory: histogram is single-bucket (no freq axis) -- one slice
+        # per dim-combo, per-DUT means, opts:{min_buckets:1}. Completes the 5-view rollout.
+        check("histogram supplies subpopSlices to HIST_AF (single-bucket, min_buckets:1)",
+              "subpopSlices:function()" in h and "_spDetect" in h and "min_buckets:1" in h)
 
 
 # ---------------------------------------------------------------------------
