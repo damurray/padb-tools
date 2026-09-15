@@ -582,6 +582,22 @@ def test_reference_stats():
               all(s in h for s in ('id="overall"', 'id="pareto"', 'id="grouptbl"', "var COLS=", "GROUP_COLS", "_pfMode")))
         check("reference: group-by + freq filter + override-limit controls present",
               all(s in h for s in ('id="groupby"', 'id="f_lo"', 'id="ovr_hi"', 'id="ovr_lo"')))
+        # Increment 2: value-distribution histogram + outlier-points table (+ export).
+        check("reference: distribution + outlier panels present (increment 2)",
+              all(s in h for s in ('id="distplot"', 'id="outliers"')))
+        check("reference: outlier table wiring present (fence bounds + export + real-outlier list)",
+              all(s in h for s in ("oflo:loF", "ofhi:hiF", "_refOutliers", "exportOutliers")))
+        check("reference: distribution is pass/fail-coloured overlay when a mode exists",
+              "barmode:'overlay'" in h and "'Pass'" in h and "'Fail'" in h)
+        # Increment 2.1: honour the shared cross-view Global Filter (same key format
+        # every other view uses) so a DUT cleaned elsewhere drops from this view too.
+        check("reference: honours the shared Global Filter (key + apply toggle + matcher)",
+              all(s in h for s in ('var GF_KEY="padb_v2_excluded_', "var GF_DIMS=",
+                                   'id="ref_gf_chk"', "_refGfExcl", "_loadRefGlobalFilter")))
+        # Serial embedded from the Group-text serial col (the common case) so GF has
+        # a base serial to match on -- df["Serial"] is empty here.
+        check("reference: effective serial embedded for GF (from Group-text)",
+              '"Serial":' in h)
         # (2) no status field, limits present -> builds, STATUS_COL null
         pl = Path(td) / "nolim.csv"
         with pl.open("w", newline="") as f:

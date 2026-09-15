@@ -11,7 +11,10 @@ misreport counts). Pass/fail precedence: the pod's own status field (e.g.
 override limit (for a compare with no spec).
 
 Increment 1: filter bar + Overall + Pareto + per-group descriptive table.
-(Distribution + outlier table, and the auto-filter before/after impact, follow.)
+Increment 2: value-distribution histogram (pass/fail-coloured when a pass/fail
+mode exists) + an outlier-points table (the actual 1.5xIQR-fence points behind
+the Overall count, sorted by deviation, with CSV export).
+(The auto-filter before/after impact follows.)
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import pandas as pd
 
 from padb_plots import (
     _get_plotlyjs, _checkbox_panel, _detect_group_cols, _short_x_label,
-    _floor_dec, _ceil_dec,
+    _floor_dec, _ceil_dec, _freq_label_map,
 )
 
 # Keyword match for the pod's pass/fail status field among the group dims (the JS
@@ -41,13 +44,28 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     x_short = _short_x_label(x_label)
 
     group_cols = _detect_group_cols(df)  # [(col, label)] cardinality>1
-    # Split into: real condition/group dims (from Group text) vs Serial/Station/Temp.
-    grp_dims = [(c, l) for c, l in group_cols if c.startswith("_grp_")]
+    grp_all = [(c, l) for c, l in group_cols if c.startswith("_grp_")]
+    # Serial usually lives in the Group text (a "_grp_Serial Number" column), not a
+    # dedicated CSV "Serial" column -- the same case _grpSerialFromRow handles on the
+    # other views. Detect that serial-like _grp_ col DIRECTLY from df (not the
+    # cardinality-capped detect list, so a >100-DUT pod still gets a serial for GF),
+    # use it as the effective Serial, and drop it from the condition dims so it isn't
+    # double-counted (it's the Serial filter, not a "condition").
+    _SER_KWS = ("serial", "unit id", "dut id", "s/n", "sn")
+    serial_grp_col = next((c for c in df.columns if c.startswith("_grp_")
+                           and any(k in c[5:].lower() for k in _SER_KWS)), None)
+    grp_dims = [(c, l) for c, l in grp_all if c != serial_grp_col]
     status_col = next((c for c, l in grp_dims
                        if any(k in l.lower() for k in _STATUS_KWS)), None)
 
-    has_serial = "Serial" in df.columns and df["Serial"].replace("", pd.NA).nunique(dropna=True) > 1
-    n_serial = int(df["Serial"].replace("", pd.NA).nunique(dropna=True)) if has_serial else 0
+    if "Serial" in df.columns and df["Serial"].replace("", pd.NA).nunique(dropna=True) > 1:
+        serial_series = df["Serial"].astype(str)
+    elif serial_grp_col is not None:
+        serial_series = df[serial_grp_col].fillna("").astype(str)
+    else:
+        serial_series = None
+    has_serial = serial_series is not None and serial_series.replace("", pd.NA).nunique(dropna=True) > 1
+    n_serial = int(serial_series.replace("", pd.NA).nunique(dropna=True)) if has_serial else 0
     serial_panel = has_serial and n_serial <= _SERIAL_CHK_CAP
     temps = sorted(str(t) for t in df["Temperature"].dropna().unique()) if "Temperature" in df.columns else []
     has_temp = len(temps) > 1
@@ -56,8 +74,6 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     json_cols = ["Value", "Frequency_MHz"]
     if "Temperature" in df.columns:
         json_cols.append("Temperature")
-    if has_serial:
-        json_cols.append("Serial")
     for c in ("Upper_Limit", "Lower_Limit"):
         if c in df.columns:
             json_cols.append(c)
@@ -74,6 +90,13 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
             cols_obj[c] = [None if pd.isna(v) else float(v) for v in s]
         else:
             cols_obj[c] = [None if pd.isna(v) else str(v) for v in s]
+    # Per-row frequency-BOX label (adaptive-precision, same map every other view
+    # uses) so the Global Filter's freq component matches cross-view, point-precise.
+    _flabels = _freq_label_map(sorted(df["Frequency_MHz"].dropna().unique()), x_unit)
+    cols_obj["freq_label"] = [None if pd.isna(v) else _flabels.get(float(v), "")
+                              for v in df["Frequency_MHz"]]
+    if has_serial:  # effective per-row serial (dedicated col or serial-like _grp_ col)
+        cols_obj["Serial"] = [None if (v is None or v == "") else str(v) for v in serial_series]
 
     # ---- filter bar ----
     filt_parts = []
@@ -83,7 +106,7 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
             filt_parts.append(_checkbox_panel(c, lbl, vals))
     if serial_panel:
         filt_parts.append(_checkbox_panel("Serial", "Serial",
-                                          sorted(str(v) for v in df["Serial"].dropna().unique() if str(v))))
+                                          sorted(set(str(v) for v in serial_series if str(v)))))
     temp_bar = ""
     if has_temp:
         temp_items = "".join(
@@ -118,9 +141,16 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     has_lim = (("Upper_Limit" in df.columns and df["Upper_Limit"].notna().any())
                or ("Lower_Limit" in df.columns and df["Lower_Limit"].notna().any()))
 
+    # Global Filter: shared, dataset-scoped key -- identical derivation to every
+    # other view (title is "<prefix> — <view label>"), so a DUT/point cleaned via
+    # auto-filter or GF anywhere is excluded from this 1000-ft view too.
+    gf_key = "padb_v2_excluded_" + title.rsplit(" — ", 1)[0]
+
     constants = "\n".join([
         f"var COLS={json.dumps(cols_obj)};",
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in gb_opts_src])};",
+        f"var GF_DIMS={json.dumps([[c, l] for c, l in grp_dims])};",
+        f"var GF_KEY={json.dumps(gf_key)};",
         f"var STATUS_COL={json.dumps(status_col)};",
         f"var HAS_LIMITS={json.dumps(bool(has_lim))};",
         f"var Y_LABEL={json.dumps(y_label)};",
@@ -147,6 +177,12 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         ' (e.g. a compare with no spec). Leave blank to skip.">&nbsp;override lim'
         ' Hi<input type="number" step="any" id="ovr_hi" style="width:80px" oninput="update()">'
         ' Lo<input type="number" step="any" id="ovr_lo" style="width:80px" oninput="update()"></label>\n'
+        '  <span class="sep"></span>\n'
+        '  <label title="Apply the shared Global Filter (the cross-view per-point exclusion'
+        ' written by auto-filter / Set-as-GF on the other views) so this summary reflects the'
+        ' same cleaned population."><input type="checkbox" id="ref_gf_chk" checked'
+        ' onchange="update()"> Apply Global Filter</label>\n'
+        '  <span id="ref_gf_badge" class="gfbadge"></span>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         '</div>\n'
     )
@@ -166,6 +202,7 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
  .fitem{display:block;font-size:13px;white-space:nowrap;padding:1px 4px}
  .fall{font-weight:600}.fdiv{margin:4px 0;border:none;border-top:1px solid #eee}
  .badge{font-size:11px;color:#a60;font-weight:600}
+ .gfbadge{font-size:11px;font-weight:600;padding:1px 6px;border-radius:4px;border:1px solid transparent}
  .sect{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#888;border-bottom:1px solid #ddd;
    padding-bottom:3px;margin:16px 0 6px}
  table.stbl{border-collapse:collapse;font-size:12.5px}
@@ -181,10 +218,14 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"<h1>{title}</h1>\n" + ctrl
         + '<div class="sect">Overall (current filter view)</div>\n'
         + '<div id="overall"></div>\n'
+        + '<div class="sect">Value distribution (current filter view)</div>\n'
+        + '<div id="distplot" style="max-width:1000px"></div>\n'
         + '<div class="sect">Pareto by group</div>\n'
         + '<div id="pareto" style="max-width:1000px"></div>\n'
         + '<div class="sect">Per-group descriptive statistics</div>\n'
         + '<div id="grouptbl" style="overflow:auto"></div>\n'
+        + '<div class="sect">Outlier points (1.5&times;IQR)</div>\n'
+        + '<div id="outliers" style="overflow:auto"></div>\n'
     )
 
     return (
@@ -218,6 +259,70 @@ document.addEventListener('click',function(e){ // close open panels on outside c
     if(!p.parentNode.contains(e.target))p.classList.remove('open');});
 });
 
+/* ---------- Global Filter (shared, dataset-scoped -- honours the same cross-view
+   per-point exclusion every other view does, point-precise via a dims-intersection
+   match on serial + condition dims + temperature + frequency-box label) ---------- */
+var _gfExcluded=null, _gfCoarse=null;
+var _SER_KWS=['serial','unit id','dut id','s/n'];
+function _loadRefGlobalFilter(){
+  try{
+    var raw=(typeof GF_KEY!=='undefined')?localStorage.getItem(GF_KEY):null;
+    if(!raw){_gfExcluded=null;_gfCoarse=null;}
+    else{
+      var obj=JSON.parse(raw); _gfExcluded=new Set(obj.excluded||[]); _gfCoarse=new Set();
+      _gfExcluded.forEach(function(k){
+        var parts=k.split('||'); if(parts.length<2)return;
+        var coarseCond=parts[1].split('|').filter(function(p){
+          var lo=p.toLowerCase(); return !_SER_KWS.some(function(kw){return lo.indexOf(kw)===0;});
+        }).join('|');
+        var tp=(parts.length>=3&&parts[2]&&parts[2]!=='manual')?'|Temp='+parts[2]:'';
+        var fq=(parts.length>=4&&parts[3]&&parts[3]!=='0')?'|Freq='+parts[3]:'';
+        _gfCoarse.add(parts[0]+'||'+coarseCond+tp+fq);
+      });
+    }
+  }catch(e){_gfExcluded=null;_gfCoarse=null;}
+  _updateRefGfBadge();
+}
+function _gfIsIn(checkKey){ // dims-intersection (mirrors _statGfIsIn/_boxIsInGf)
+  if(!_gfCoarse||!_gfCoarse.size)return false;
+  if(_gfCoarse.has(checkKey))return true;
+  var sep=checkKey.indexOf('||'); if(sep<0)return false;
+  var ser=checkKey.slice(0,sep), rowMap={};
+  checkKey.slice(sep+2).split('|').filter(Boolean).forEach(function(kv){
+    var i=kv.indexOf('='); if(i>=0)rowMap[kv.slice(0,i)]=kv.slice(i+1);});
+  var found=false;
+  _gfCoarse.forEach(function(gk){
+    if(found)return; var gs=gk.indexOf('||'); if(gs<0||gk.slice(0,gs)!==ser)return;
+    var ok=true;
+    gk.slice(gs+2).split('|').filter(Boolean).forEach(function(kv){
+      if(!ok)return; var i=kv.indexOf('='); if(i<0)return;
+      var d=kv.slice(0,i); if(rowMap.hasOwnProperty(d)&&rowMap[d]!==kv.slice(i+1))ok=false;});
+    if(ok)found=true;});
+  return found;
+}
+function _refGfExcl(r){ // build this row's point key, then match
+  if(!_gfCoarse||!_gfCoarse.size)return false;
+  var ser=(r.Serial!=null?String(r.Serial):'unknown');
+  var toks=[];
+  for(var i=0;i<GF_DIMS.length;i++){var v=r[GF_DIMS[i][0]];
+    if(v!=null&&v!=='')toks.push(GF_DIMS[i][1]+'='+v);}
+  var cond=toks.join('|');
+  var temp=(r.Temperature!=null&&r.Temperature!=='')?'|Temp='+r.Temperature:'';
+  var fq=(r.freq_label!=null&&r.freq_label!=='')?'|Freq='+r.freq_label:'';
+  return _gfIsIn(ser+'||'+cond+temp+fq);
+}
+function _updateRefGfBadge(){
+  var el=document.getElementById('ref_gf_badge'); if(!el)return;
+  var chk=document.getElementById('ref_gf_chk'), on=chk?chk.checked:true;
+  var duts=new Set(); if(_gfExcluded)_gfExcluded.forEach(function(k){duts.add(k.split('||')[0]);});
+  var n=duts.size, pts=_gfExcluded?_gfExcluded.size:0;
+  if(n>0){el.textContent=(on?'GF ON':'GF OFF')+': '+pts+' pt'+(pts!==1?'s':'')+' ('+n+' DUT'+(n!==1?'s':'')+')';
+    el.style.background=on?'#ffeaea':'#f0f0f0'; el.style.color=on?'#900':'#888';
+    el.style.borderColor=on?'#c88':'#ccc';}
+  else{el.textContent='';el.style.background='';el.style.borderColor='transparent';}
+}
+window.addEventListener('storage',function(e){if(typeof GF_KEY!=='undefined'&&e.key===GF_KEY){_loadRefGlobalFilter();update();}});
+
 /* ---------- filtering ---------- */
 function _filterCols(){ // every _grp_/Serial/Temperature column that has a checkbox panel
   var cols={}; document.querySelectorAll('.fchk').forEach(function(c){cols[c.getAttribute('data-col')]=1;});
@@ -227,10 +332,12 @@ function applyFilters(rows){
   var cols=_filterCols(), sel={}; cols.forEach(function(c){sel[c]=_selected(c);});
   var flo=parseFloat(document.getElementById('f_lo').value); if(isNaN(flo))flo=-Infinity;
   var fhi=parseFloat(document.getElementById('f_hi').value); if(isNaN(fhi))fhi=Infinity;
+  var gfChk=document.getElementById('ref_gf_chk'), gfOn=gfChk?gfChk.checked:false;
   return rows.filter(function(r){
     if(r.Frequency_MHz<flo||r.Frequency_MHz>fhi)return false;
     for(var i=0;i<cols.length;i++){var c=cols[i];var v=(c==='Serial'||c==='Temperature')?r[c]:r[c];
       if(v==null)v=''; if(!sel[c][String(v)])return false;}
+    if(gfOn&&_refGfExcl(r))return false;
     return true;
   });
 }
@@ -270,11 +377,26 @@ function _stats(vals){
   var v=0;for(i=0;i<n;i++)v+=(s[i]-mean)*(s[i]-mean);var sd=n>1?Math.sqrt(v/(n-1)):0;
   var q1=pc(25),q3=pc(75),iqr=q3-q1,loF=q1-1.5*iqr,hiF=q3+1.5*iqr,out=0;
   for(i=0;i<n;i++)if(s[i]>hiF||s[i]<loF)out++;
-  return {n:n,mean:mean,sd:sd,med:pc(50),min:s[0],max:s[n-1],out:out};
+  return {n:n,mean:mean,sd:sd,med:pc(50),min:s[0],max:s[n-1],out:out,
+          q1:q1,q3:q3,oflo:loF,ofhi:hiF};
 }
+
+/* ---------- CSV download (outlier table export) ---------- */
+function _csvCell(v){v=String(v==null?'':v);return /[",\n]/.test(v)?'"'+v.replace(/"/g,'""')+'"':v;}
+function _refDownload(name,text){var b=new Blob([text],{type:'text/csv'});var u=URL.createObjectURL(b);
+  var a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();
+  document.body.removeChild(a);URL.revokeObjectURL(u);}
+function exportOutliers(){var o=window._refOutliers||[]; if(!o.length)return;
+  var hasSer=o.some(function(x){return x.ser;});
+  var hdr=['Group'].concat(hasSer?['Serial']:[]).concat([X_SHORT+' ('+X_UNIT+')',Y_LABEL,'Dev from median','Side']);
+  var lines=[hdr.map(_csvCell).join(',')];
+  o.forEach(function(x){var row=[x.grp].concat(hasSer?[x.ser]:[]).concat([x.freq,x.val,x.dev,x.side]);
+    lines.push(row.map(_csvCell).join(','));});
+  _refDownload((TITLE||'reference')+'_outliers.csv',lines.join('\n'));}
 function _fmt(x,d){return (x==null||isNaN(x))?'—':x.toFixed(d==null?4:d);}
 
 function update(){
+  _updateRefGfBadge();
   var rows=applyFilters(DATA);
   var mode=_pfMode(rows);
   var vals=[];rows.forEach(function(r){if(r.Value!=null)vals.push(r.Value);});
@@ -332,6 +454,51 @@ function update(){
       (mode?('<td'+(g.fail>0?' class="fail"':'')+'>'+g.fail+'</td><td>'+(g.rows?(100*g.fail/g.rows).toFixed(1):'0.0')+'%</td>'):'')+'</tr>';});
   th+='</tbody></table>';
   document.getElementById('grouptbl').innerHTML=th;
+  // ---- Value distribution (pass/fail-coloured overlay when a mode exists) ----
+  (function(){
+    if(!vals.length){Plotly.react('distplot',[],{margin:{t:10}});return;}
+    var bw=(st.q3-st.q1)>0?2*(st.q3-st.q1)/Math.pow(vals.length,1/3):0;
+    var xb=bw>0?{start:st.min,end:st.max+bw,size:bw}:undefined;
+    var traces;
+    if(mode){
+      var pv=[],fv=[];
+      rows.forEach(function(r){if(r.Value==null)return;var v=_pf(r,mode);
+        if(v==='P')pv.push(r.Value);else if(v==='F')fv.push(r.Value);});
+      traces=[{type:'histogram',x:pv,name:'Pass',marker:{color:'#4472c4'},opacity:0.6,xbins:xb},
+              {type:'histogram',x:fv,name:'Fail',marker:{color:'#c0504d'},opacity:0.6,xbins:xb}];
+    } else {
+      traces=[{type:'histogram',x:vals,name:Y_LABEL,marker:{color:'#4472c4'},xbins:xb}];
+    }
+    Plotly.react('distplot',traces,{barmode:'overlay',margin:{t:10,r:20,b:44,l:56},height:300,
+      xaxis:{title:Y_LABEL},yaxis:{title:'count'},legend:{orientation:'h',y:1.12}},
+      {responsive:true,displayModeBar:false});
+  })();
+  // ---- Outlier points (overall 1.5xIQR fence -- matches Overall's outlier count) ----
+  var outs=[];
+  if(st.n){rows.forEach(function(r){if(r.Value==null)return;
+    if(r.Value>st.ofhi||r.Value<st.oflo){
+      var okey=(gb&&r[gb]!=null&&r[gb]!=='')?String(r[gb]):(gb?'(blank)':'(all)');
+      outs.push({grp:okey,ser:(r.Serial!=null?String(r.Serial):''),freq:r.Frequency_MHz,
+        val:r.Value,dev:r.Value-st.med,side:(r.Value>st.ofhi?'high':'low')});}});}
+  outs.sort(function(a,b){return Math.abs(b.dev)-Math.abs(a.dev);});
+  window._refOutliers=outs;
+  var OCAP=300, hasSer=outs.some(function(o){return o.ser;});
+  var oh='<div style="margin-bottom:5px"><b>'+outs.length.toLocaleString()+
+    '</b> outlier point(s) &mdash; |value &minus; median| beyond the 1.5&times;IQR fence'+
+    (outs.length>OCAP?(' (showing top '+OCAP+' by deviation)'):'')+
+    (outs.length?' <button class="reset-btn" onclick="exportOutliers()">Export CSV</button>':'')+'</div>';
+  if(!outs.length){document.getElementById('outliers').innerHTML=oh+'<div style="color:#888">None.</div>';}
+  else{
+    var ot='<table class="stbl"><thead><tr><th class="k">'+glabel+'</th>'+
+      (hasSer?'<th class="k">Serial</th>':'')+'<th>'+X_SHORT+'('+X_UNIT+')</th><th>'+Y_LABEL+
+      '</th><th>Dev from median</th><th>Side</th></tr></thead><tbody>';
+    outs.slice(0,OCAP).forEach(function(o){
+      ot+='<tr><td class="k">'+o.grp+'</td>'+(hasSer?'<td class="k">'+o.ser+'</td>':'')+
+        '<td>'+_fmt(o.freq,3)+'</td><td>'+_fmt(o.val)+'</td><td'+(o.side==='high'?'':' class="fail"')+
+        '>'+(o.dev>0?'+':'')+_fmt(o.dev)+'</td><td>'+o.side+'</td></tr>';});
+    ot+='</tbody></table>';
+    document.getElementById('outliers').innerHTML=oh+ot;
+  }
 }
 
 function resetFilters(){
@@ -340,7 +507,8 @@ function resetFilters(){
   document.querySelectorAll('.badge').forEach(function(b){b.textContent='';});
   document.getElementById('f_lo').value=FREQ_MIN; document.getElementById('f_hi').value=FREQ_MAX;
   document.getElementById('ovr_hi').value=''; document.getElementById('ovr_lo').value='';
+  var gfChk=document.getElementById('ref_gf_chk'); if(gfChk)gfChk.checked=true;
   update();
 }
-window.addEventListener('DOMContentLoaded',update);
+window.addEventListener('DOMContentLoaded',function(){_loadRefGlobalFilter();update();});
 """

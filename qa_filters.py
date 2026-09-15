@@ -1153,6 +1153,61 @@ _HARNESS_JS = r"""
       chk('reference-overall-fail-equals-grouptable-fail-sum',
           parseInt(mf[1].replace(/,/g,''),10)===gfs, 'overall='+mf[1]+' grouptbl='+gfs);
     } else skip('reference-fail-coupling','no pass/fail mode (no status field or limits)');
+    // (6b) OUTLIER TABLE (increment 2): its row count equals the Overall outlier
+    // count, and every listed point is genuinely beyond the fence (side<->sign).
+    function overallOutliers(){
+      var m=document.getElementById('overall').textContent.match(/Outliers \(1\.5[^)]*\)\s*([\d,]+)/);
+      return m?parseInt(m[1].replace(/,/g,''),10):null;
+    }
+    var oc=overallOutliers(), refOut=(window._refOutliers||[]);
+    if(oc!=null){
+      chk('reference-outlier-table-matches-overall-count', oc===refOut.length,
+          'overall='+oc+' table='+refOut.length);
+    } else skip('reference-outlier-coupling','no outlier row in overall');
+    if(refOut.length) chk('reference-listed-outliers-are-real',
+        refOut.every(function(o){return (o.side==='high')===(o.dev>0);}), 'n='+refOut.length);
+    else skip('reference-listed-outliers-are-real','no outliers in this filtered set');
+    // (6c) DISTRIBUTION (increment 2): the #distplot histogram traces cover a
+    // positive subset of the filtered non-null values (never more than exist).
+    function distTotal(){
+      var dp=document.getElementById('distplot');
+      return (dp&&dp.data?dp.data:[]).reduce(function(a,t){return a+((t.x&&t.x.length)||0);},0);
+    }
+    var dt0=distTotal();
+    chk('reference-distribution-covers-filtered', dt0>0 && dt0<=nonNull,
+        'dist='+dt0+' nonNull='+nonNull);
+    // (6d) GLOBAL FILTER coupling (increment 2.1): the reference view must honour
+    // the same shared cross-view GF as every other page. Inject a whole-DUT
+    // exclusion, confirm exactly that serial's rows drop when Apply-GF is on,
+    // toggling off restores, and clearing the GF restores.
+    (function(){
+      if(typeof GF_KEY==='undefined'){ skip('reference-gf','no GF_KEY on this page'); return; }
+      var gchk=document.getElementById('ref_gf_chk');
+      if(!gchk){ skip('reference-gf','no Apply-GF control'); return; }
+      try{resetFilters();}catch(e){}
+      var b0=applyFilters(DATA).length;
+      var srow=null;
+      for(var i=0;i<DATA.length;i++){ if(DATA[i].Serial!=null&&DATA[i].Serial!==''){ srow=DATA[i]; break; } }
+      if(!srow){ skip('reference-gf','no serials to exclude'); return; }
+      var ser=String(srow.Serial);
+      var serRows=applyFilters(DATA).filter(function(r){return String(r.Serial)===ser;}).length;
+      if(!serRows){ skip('reference-gf','serial not in view'); return; }
+      var saved=localStorage.getItem(GF_KEY);
+      // whole-DUT key: serial||Serial Number=<ser>||manual||0 (serial part is
+      // stripped from the coarse cond; manual/0 -> no Temp/Freq dim -> all rows).
+      localStorage.setItem(GF_KEY, JSON.stringify({v:1, excluded:[ser+'||Serial Number='+ser+'||manual||0']}));
+      _loadRefGlobalFilter(); update();
+      chk('reference-gf-excludes-when-on', applyFilters(DATA).length===b0-serRows,
+          'before='+b0+' after='+applyFilters(DATA).length+' serRows='+serRows);
+      gchk.checked=false; update();
+      chk('reference-gf-toggle-off-restores', applyFilters(DATA).length===b0,
+          'off='+applyFilters(DATA).length+' before='+b0);
+      gchk.checked=true;
+      if(saved!=null) localStorage.setItem(GF_KEY,saved); else localStorage.removeItem(GF_KEY);
+      _loadRefGlobalFilter(); update();
+      chk('reference-gf-clear-restores', applyFilters(DATA).length===b0,
+          'restored='+applyFilters(DATA).length+' before='+b0);
+    })();
     // (7) a frequency filter shrinks overall + group table together, then reverts
     var freqs=DATA.map(function(r){return r.Frequency_MHz;}).filter(function(x){return x!=null;});
     if(freqs.length){
@@ -1165,8 +1220,16 @@ _HARNESS_JS = r"""
       chk('reference-freq-filter-shrinks-and-couples',
           narrowed<base && overallTotal()===narrowed && s2===narrowed,
           'base='+base+' narrowed='+narrowed+' overall='+overallTotal()+' grouprows='+s2);
+      // distribution + outlier table track the narrowed set too (never exceed it)
+      var ndist=distTotal(), nnn=applyFilters(DATA).filter(function(r){return r.Value!=null;}).length;
+      chk('reference-distribution-tracks-narrowed', ndist<=nnn && (nnn===0||ndist>0),
+          'dist='+ndist+' nonNull='+nnn);
+      chk('reference-outliers-track-narrowed',
+          (window._refOutliers||[]).length<=nnn, 'outliers='+(window._refOutliers||[]).length+' nonNull='+nnn);
       fhi.value=saved; update();
-      chk('reference-freq-filter-reverts', overallTotal()===base, 'restored='+overallTotal()+' base='+base);
+      chk('reference-freq-filter-reverts',
+          overallTotal()===base && (window._refOutliers||[]).length===refOut.length,
+          'restored='+overallTotal()+' base='+base);
     } else skip('reference-freq-filter','no frequency data');
   }
 
