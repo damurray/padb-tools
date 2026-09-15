@@ -612,6 +612,11 @@ def test_auto_filter_rollout_summary_envcov():
                   "_afGenerateReport" in h and "Generate PDF report" in h)
             check(f"{label} clear-global-filter present",
                   f"clear{prefix.capitalize()}GlobalFilter" in h or ("clearSumGlobalFilter" if prefix == "sum" else "clearEcGlobalFilter") in h)
+            # Subpopulation advisory rollout: summary is wired (SUM_AF.subpopSlices);
+            # env_coverage/histogram are still pending, so only assert it for summary.
+            if label == "summary":
+                check(f"{label} supplies subpopSlices to {ctx} (subpop advisory wired)",
+                      "subpopSlices:function()" in h and "_spDetect" in h and "_spAdvisoryHtml" in h)
 
 
 def test_auto_filter_histogram():

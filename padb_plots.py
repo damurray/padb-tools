@@ -17796,7 +17796,36 @@ var SUM_AF={basisSel:'sum_auto_basis',levelSel:'sum_auto_level',panel:'sum_auto_
   setFreq:function(lo,hi){var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt'),ls=document.getElementById('freq_lo'),hs=document.getElementById('freq_hi');if(lt)lt.value=(''+lo);if(ht)ht.value=(''+hi);if(ls)ls.value=lo;if(hs)hs.value=hi;update();},
   getSerials:function(){return getSumSelectedSerials();},
   setSerials:function(list){document.querySelectorAll('.sum_ser_chk').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0;});update();},
-  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];}};
+  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];},
+  /* Subpopulation advisory slices (temp-blind, condition-matched): one slice per active
+     condition; buckets are its frequencies, per-DUT value = dut_vals[fi][di] (already a
+     per-DUT mean blended across temps). Budget = median |unc_hi| per freq from
+     dut_spec_vals when present, else shape-only. Respects the condition and serial
+     filters (GF-parity a later refinement, matching the boxplot/stat_summary prototype). */
+  subpopSlices:function(){
+    var conds=_getFilteredActive(false);
+    var allS=getSumAllSerials(), selS=getSumSelectedSerials();
+    var serFlt=allS.length>1&&selS.length<allS.length, selSet={}; selS.forEach(function(s){selSet[s]=1;});
+    var out=[];
+    conds.forEach(function(cd){
+      var freqs=cd.freqs||[]; if(freqs.length<3)return;
+      var di=cd.dut_info||[], dv=cd.dut_vals||[];
+      var incl=[]; for(var k=0;k<di.length;k++){ if(!(serFlt&&!selSet[di[k].s])) incl.push(k); }
+      if(incl.length<4)return;
+      var serials=incl.map(function(k){return di[k].s;});
+      var uncRows=(cd.dut_spec_vals&&cd.dut_spec_vals.unc_hi)?cd.dut_spec_vals.unc_hi:null;
+      var vbf=[],budget=[],anyB=false;
+      for(var fi=0;fi<freqs.length;fi++){
+        var rowSrc=dv[fi]||[];
+        vbf.push(incl.map(function(k){var v=rowSrc[k]; return (typeof v==='number'&&isFinite(v))?v:null;}));
+        var b=null;
+        if(uncRows&&uncRows[fi]){ var us=[]; incl.forEach(function(k){var u=uncRows[fi][k]; if(typeof u==='number'&&isFinite(u))us.push(Math.abs(u));}); if(us.length)b=_spMedian(us); }
+        if(b!=null)anyB=true; budget.push(b);
+      }
+      out.push({cond:cd.condition,vals_by_freq:vbf,serials:serials,budget_by_freq:anyB?budget:null,station_by_dut:null});
+    });
+    return out;
+  }};
 function sumAutoFilterPreview(){_afPreview(SUM_AF);}
 function sumAutoFilterApply(){_afApply(SUM_AF);}
 function sumAutoFilterAffirm(){_afAffirm(SUM_AF);}
