@@ -179,15 +179,25 @@ def test_jobs_listing_and_kind():
     _clear_jobs_dir()
     _write_job("aaa_run_job.json", {"pod": "x.pod", "mode": "legacy", "description": "a run job"})
     _write_job("bbb_plot_v2_job.json", {"csv_path": str(_TMP / "b.csv"), "description": "a plot job"})
+    _write_job("ccc_compare_v2_job.json",
+               {"compare_csv": {"SR": str(_TMP / "sr.csv"), "AMC": str(_TMP / "amc.csv")},
+                "primary_site": "SR", "description": "a compare job"})
     r = client.get("/api/jobs")
     j = r.get_json() if r.status_code == 200 else {}
     jobs = {x["name"]: x for x in j.get("jobs", [])}
-    check("GET /api/jobs lists both job files", r.status_code == 200 and len(jobs) == 2,
+    check("GET /api/jobs lists all job files", r.status_code == 200 and len(jobs) == 3,
           f"names={list(jobs)}")
     check("GET /api/jobs classifies a pod job as kind=run",
           jobs.get("aaa_run_job.json", {}).get("kind") == "run", f"{jobs.get('aaa_run_job.json')}")
     check("GET /api/jobs classifies a csv_path job as kind=plot",
           jobs.get("bbb_plot_v2_job.json", {}).get("kind") == "plot", f"{jobs.get('bbb_plot_v2_job.json')}")
+    # is_compare drives the PDF "site" dropdown greying (compare jobs only).
+    check("GET /api/jobs flags a compare_csv job is_compare=True",
+          jobs.get("ccc_compare_v2_job.json", {}).get("is_compare") is True,
+          f"{jobs.get('ccc_compare_v2_job.json')}")
+    check("GET /api/jobs flags a non-compare job is_compare=False",
+          jobs.get("bbb_plot_v2_job.json", {}).get("is_compare") is False,
+          f"{jobs.get('bbb_plot_v2_job.json')}")
 
 
 def test_results_token_roundtrip():

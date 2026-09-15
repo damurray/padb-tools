@@ -1217,6 +1217,7 @@ def list_jobs():
             "mode": cfg.get("mode", "legacy" if kind == "run" else "interactive"),
             "pod": cfg.get("pod", ""),
             "kind": kind,
+            "is_compare": bool(cfg.get("compare_csv")),
             "index_path": index_path,
             "index_url": _result_url(index_path),
             "last_run": last_run,

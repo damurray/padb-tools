@@ -406,6 +406,7 @@ function renderJobsTable() {
     cb.type = "checkbox";
     cb.value = job.path;
     cb.dataset.kind = job.kind;
+    cb.dataset.compare = job.is_compare ? "1" : "";
     td.appendChild(cb);
     tr.appendChild(td);
     const resultsCell = job.index_url
@@ -420,6 +421,20 @@ function renderJobsTable() {
     tbody.appendChild(tr);
   }
   applyTooltipPref(); // Results link's title is only known once rendered here
+  updatePdfSiteEnabled();
+}
+
+// The PDF "site" scope dropdown only does anything on compare jobs (Site
+// dimension); grey it out unless a compare job is in the current selection.
+function updatePdfSiteEnabled() {
+  const sel = document.getElementById("pdfFilterSite");
+  if (!sel) return;
+  const anyCompare = [...document.querySelectorAll("#jobsTable tbody input[type=checkbox]:checked")]
+    .some(cb => cb.dataset.compare === "1");
+  sel.disabled = !anyCompare;
+  sel.title = anyCompare
+    ? "Compare jobs only: which site the auto-filter cleans in the report (Reference/Onboarding/Both)."
+    : "Compare jobs only — select a compare job to enable. Ignored for non-compare jobs.";
 }
 
 function selectedJobPaths() {
@@ -435,6 +450,13 @@ document.getElementById("nameFilter").addEventListener("input", renderJobsTable)
 document.getElementById("selectAllRunnableBtn").addEventListener("click", () => {
   const boxes = document.querySelectorAll("#jobsTable tbody input[type=checkbox]");
   for (const cb of boxes) cb.checked = cb.dataset.kind === "run";
+  updatePdfSiteEnabled();
+});
+
+// Row checkboxes are recreated on every renderJobsTable (innerHTML +=), so use
+// delegation on the table to keep the PDF site dropdown's enabled state in sync.
+document.getElementById("jobsTable").addEventListener("change", (e) => {
+  if (e.target && e.target.matches('input[type="checkbox"]')) updatePdfSiteEnabled();
 });
 
 // Select every job matching the current Mode/Kind/Name filters. renderJobsTable
@@ -445,6 +467,7 @@ document.getElementById("selectAllRunnableBtn").addEventListener("click", () => 
 document.getElementById("selectFilteredBtn").addEventListener("click", () => {
   const boxes = document.querySelectorAll("#jobsTable tbody input[type=checkbox]");
   for (const cb of boxes) cb.checked = true;
+  updatePdfSiteEnabled();
 });
 
 document.getElementById("runSelectedBtn").addEventListener("click", async () => {
