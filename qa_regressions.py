@@ -364,6 +364,23 @@ def test_auto_filter_site_scope():
         hn = on.read_text(encoding="utf-8")
         check("site-scope: non-compare boxplot has NO site selector",
               'id="auto_gf_site"' not in hn)
+        # Shared control helper: renders the scope selector only when has_site_scope.
+        cy = pp._af_control_html("x", "pv", "cl", has_site_scope=True, primary_site="SR")
+        cn = pp._af_control_html("x", "pv", "cl")
+        check("site-scope: _af_control_html renders selector + options when compare",
+              'id="x_auto_site"' in cy and all(f'value="{v}"' in cy for v in ("primary", "onboarding", "both")))
+        check("site-scope: _af_control_html omits selector when not compare",
+              "auto_site" not in cn)
+        # Shared-engine view (stat_summary) carries the selector + scope engine.
+        oss = Path(td) / "ss.html"
+        pp.stat_summary(pc, {"y_label": "P", "title_prefix": "T", "primary_site": "SR"}, oss)
+        hss = oss.read_text(encoding="utf-8")
+        check("site-scope: compare stat_summary renders its site selector + scope engine",
+              'id="stat_auto_site"' in hss and "_afScopeLabel" in hss and "siteScope" in hss and "siteSummary" in hss)
+        oss1 = Path(td) / "ss1.html"
+        pp.stat_summary(pn, {"y_label": "P", "title_prefix": "T"}, oss1)
+        check("site-scope: non-compare stat_summary has NO site selector",
+              'id="stat_auto_site"' not in oss1.read_text(encoding="utf-8"))
 
 
 def test_auto_filter_stat_summary():

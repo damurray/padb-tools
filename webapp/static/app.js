@@ -491,12 +491,14 @@ document.getElementById("generatePdfBtn").addEventListener("click", async () => 
   const btn = document.getElementById("generatePdfBtn");
   const faEl = document.getElementById("pdfFilterAwareCheckbox");
   const applyFilter = faEl ? faEl.checked : false;
+  const siteEl = document.getElementById("pdfFilterSite");
+  const filterSite = siteEl ? siteEl.value : "primary";
   btn.disabled = true;
   try {
     const res = await fetch("/api/generate-pdf", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths, apply_filter: applyFilter }),
+      body: JSON.stringify({ paths, apply_filter: applyFilter, filter_site: filterSite }),
     });
     const data = await res.json();
     if (!res.ok) {

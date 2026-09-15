@@ -921,6 +921,26 @@ _HARNESS_JS = r"""
     var ar=window._statAutoResult;
     var bad=(ar?ar.auto:[]).filter(function(d){return d.shared>0.5||d.risk>=0.05;});
     chk('auto-never-systemic-or-risky', bad.length===0, 'violations='+bad.length+' auto='+(ar?ar.auto.length:0));
+    // Compare SITE SCOPE invariants (stat_summary). Same contract as boxplot / the
+    // shared-engine views.
+    var _ssel=document.getElementById('stat_auto_site');
+    if(_ssel && typeof PRIMARY_SITE!=='undefined' && PRIMARY_SITE && typeof STAT_AF!=='undefined'){
+      basisEl.value='dist';
+      function _sres(sc){ _ssel.value=sc; return STAT_AF.compute('dist','aggressive'); }
+      var _rp=_sres('primary'), _ro=_sres('onboarding'), _rb=_sres('both');
+      chk('site-scope-primary-only-reference[stat]', _rp.auto.filter(function(d){return d.site!==PRIMARY_SITE;}).length===0,
+          'non-ref in primary auto='+_rp.auto.filter(function(d){return d.site!==PRIMARY_SITE;}).length);
+      chk('site-scope-onboarding-only-nonreference[stat]', _ro.auto.filter(function(d){return d.site===PRIMARY_SITE;}).length===0,
+          'ref in onboarding auto='+_ro.auto.filter(function(d){return d.site===PRIMARY_SITE;}).length);
+      chk('site-scope-both-is-union-by-site[stat]', _rb.auto.length===_rp.auto.length+_ro.auto.length,
+          'both='+_rb.auto.length+' primary='+_rp.auto.length+' onboarding='+_ro.auto.length);
+      function _sum(r){return Object.keys(r.siteSummary||{}).sort().map(function(k){return k+':'+r.siteSummary[k].eligible;}).join(',');}
+      chk('site-scope-summary-scope-independent[stat]', _sum(_rp)===_sum(_ro)&&_sum(_ro)===_sum(_rb),
+          'p['+_sum(_rp)+'] o['+_sum(_ro)+'] b['+_sum(_rb)+']');
+      var _te=Object.keys(_rb.siteSummary||{}).reduce(function(x,k){return x+_rb.siteSummary[k].eligible;},0);
+      chk('site-scope-summary-matches-both[stat]', _te===_rb.auto.length, 'summaryElig='+_te+' bothAuto='+_rb.auto.length);
+      _ssel.value='primary'; basisEl.value='dist'; levelEl.value='aggressive'; statAutoFilterPreview(); ar=window._statAutoResult;
+    } else skip('site-scope[stat]','not a compare stat_summary (no stat_auto_site / PRIMARY_SITE)');
     if(ar && ar.auto.length && typeof statAutoFilterApply==='function'){
       var autoKeyCount=0; ar.auto.forEach(function(d){autoKeyCount+=d.keys.length;});
       statAutoFilterApply();
@@ -1012,6 +1032,28 @@ _HARNESS_JS = r"""
     var ar=window[CTX.resultVar];
     var bad=(ar?ar.auto:[]).filter(function(d){return d.shared>0.5||d.risk>=0.05;});
     chk('auto-never-systemic-or-risky['+tag+']', bad.length===0, 'violations='+bad.length+' auto='+(ar?ar.auto.length:0));
+    // Compare SITE SCOPE invariants (shared-engine views). Same contract as the
+    // boxplot block: the gate scopes the auto set by site, and the per-site
+    // eligible summary is scope-INDEPENDENT and equals what 'both' auto-filters.
+    var _ssel=CTX.siteSel?document.getElementById(CTX.siteSel):null;
+    if(_ssel && typeof PRIMARY_SITE!=='undefined' && PRIMARY_SITE){
+      basisEl.value='dist';
+      function _sres(sc){ _ssel.value=sc; return CTX.compute('dist','aggressive'); }
+      var _rp=_sres('primary'), _ro=_sres('onboarding'), _rb=_sres('both');
+      chk('site-scope-primary-only-reference['+tag+']', _rp.auto.filter(function(d){return d.site!==PRIMARY_SITE;}).length===0,
+          'non-ref in primary auto='+_rp.auto.filter(function(d){return d.site!==PRIMARY_SITE;}).length);
+      chk('site-scope-onboarding-only-nonreference['+tag+']', _ro.auto.filter(function(d){return d.site===PRIMARY_SITE;}).length===0,
+          'ref in onboarding auto='+_ro.auto.filter(function(d){return d.site===PRIMARY_SITE;}).length);
+      chk('site-scope-both-is-union-by-site['+tag+']', _rb.auto.length===_rp.auto.length+_ro.auto.length,
+          'both='+_rb.auto.length+' primary='+_rp.auto.length+' onboarding='+_ro.auto.length);
+      function _sum(r){return Object.keys(r.siteSummary||{}).sort().map(function(k){return k+':'+r.siteSummary[k].eligible;}).join(',');}
+      chk('site-scope-summary-scope-independent['+tag+']', _sum(_rp)===_sum(_ro)&&_sum(_ro)===_sum(_rb),
+          'p['+_sum(_rp)+'] o['+_sum(_ro)+'] b['+_sum(_rb)+']');
+      var _te=Object.keys(_rb.siteSummary||{}).reduce(function(x,k){return x+_rb.siteSummary[k].eligible;},0);
+      chk('site-scope-summary-matches-both['+tag+']', _te===_rb.auto.length, 'summaryElig='+_te+' bothAuto='+_rb.auto.length);
+      // restore the state the apply block below expects (default primary, aggressive).
+      _ssel.value='primary'; basisEl.value='dist'; levelEl.value='aggressive'; CTX.previewFn(); ar=window[CTX.resultVar];
+    } else skip('site-scope['+tag+']','not a compare view (no siteSel / PRIMARY_SITE)');
     if(ar&&ar.auto.length){
       var keys=0; ar.auto.forEach(function(d){keys+=d.keys.length;});
       _afApply(CTX);

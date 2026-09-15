@@ -75,12 +75,12 @@ _logging.getLogger("asyncio").setLevel(_logging.CRITICAL)
 # population (you want to *see* every point in a raw scatter / KDE).
 PRINT_PROFILES: dict[str, dict[str, Any]] = {
     "scatter":      {"plot": "plot",     "panels": ["scatter_table_panel"], "toggles": ["toggleScatterTable"]},
-    "stat_summary": {"plot": "plot",     "panels": ["stat_panel"],          "toggles": ["toggleStatPanel"],  "refresh": "stat_refresh_table_btn", "workflow": "statRunWorkflow", "ctx": "STAT_AF"},
-    "boxplot":      {"plot": "plot",     "panels": ["box_stat_panel"],       "toggles": ["toggleStatPanel"],  "refresh": "box_refresh_table_btn", "workflow": "boxRunWorkflow", "ctx": "BOX_AF"},
+    "stat_summary": {"plot": "plot",     "panels": ["stat_panel"],          "toggles": ["toggleStatPanel"],  "refresh": "stat_refresh_table_btn", "workflow": "statRunWorkflow", "ctx": "STAT_AF", "siteSel": "stat_auto_site"},
+    "boxplot":      {"plot": "plot",     "panels": ["box_stat_panel"],       "toggles": ["toggleStatPanel"],  "refresh": "box_refresh_table_btn", "workflow": "boxRunWorkflow", "ctx": "BOX_AF", "siteSel": "auto_gf_site"},
     "distribution": {"plot": "kde_plot", "panels": ["delta_tbl", "dist_ti_tbl"], "toggles": []},
-    "env_coverage": {"plot": "plot",     "panels": ["ec_stat_panel"],        "toggles": ["toggleStatsPanel"], "refresh": "ec_refresh_table_btn", "workflow": "ecRunWorkflow", "ctx": "EC_AF"},
-    "summary":      {"plot": "plot",     "panels": ["sum_table_wrap"],       "toggles": ["buildTable"],       "refresh": "sum_refresh_table_btn", "workflow": "sumRunWorkflow", "ctx": "SUM_AF"},
-    "histogram":    {"plot": "plot",     "panels": ["h_stats"],              "toggles": ["toggleStats"],      "workflow": "histRunWorkflow", "ctx": "HIST_AF"},
+    "env_coverage": {"plot": "plot",     "panels": ["ec_stat_panel"],        "toggles": ["toggleStatsPanel"], "refresh": "ec_refresh_table_btn", "workflow": "ecRunWorkflow", "ctx": "EC_AF", "siteSel": "ec_auto_site"},
+    "summary":      {"plot": "plot",     "panels": ["sum_table_wrap"],       "toggles": ["buildTable"],       "refresh": "sum_refresh_table_btn", "workflow": "sumRunWorkflow", "ctx": "SUM_AF", "siteSel": "sum_auto_site"},
+    "histogram":    {"plot": "plot",     "panels": ["h_stats"],              "toggles": ["toggleStats"],      "workflow": "histRunWorkflow", "ctx": "HIST_AF", "siteSel": "h_auto_site"},
 }
 
 # Known view slugs, longest-first, so a filename like
@@ -160,7 +160,8 @@ def check_environment() -> tuple[bool, str]:
 # --------------------------------------------------------------------------
 def _cover_html(meta: dict[str, Any], view_labels: list[str],
                 apply_filter: bool = False,
-                exclusions: Optional[list] = None) -> str:
+                exclusions: Optional[list] = None,
+                filter_site: str = "primary") -> str:
     esc = _html.escape
     title = esc(str(meta.get("title", "Multi-View Analysis Report")))
     rows = []
@@ -197,10 +198,13 @@ def _cover_html(meta: dict[str, Any], view_labels: list[str],
             )
         else:
             excl_rows = "<li>No engine views in this report.</li>"
+        _site_txt = {"onboarding": " (compare scope: <b>onboarding site(s) only</b>)",
+                     "both": " (compare scope: <b>both sites</b>)"}.get(
+                         filter_site, " (compare scope: <b>reference site only</b>, where applicable)")
         filter_html = (
             '<div class="sect">Filtering applied</div>'
             '<p class="note">The statistical views below reflect the auto-filter '
-            "<b>recommended exclusions</b> (the risk-gated &ldquo;auto&rdquo; set, "
+            "<b>recommended exclusions</b>" + _site_txt + " (the risk-gated &ldquo;auto&rdquo; set, "
             "the same as the in-page &ldquo;Run recommended workflow&rdquo; button) "
             "&mdash; reversible and audited. The raw Scatter / Distribution views "
             "(where present) still show the <b>full collected population</b>, so "
@@ -245,7 +249,8 @@ def _cover_html(meta: dict[str, Any], view_labels: list[str],
 # Printing
 # --------------------------------------------------------------------------
 def _prepare_and_print(page, url: str, out_pdf: Path, profile: Optional[dict],
-                       log: Callable[[str], None], apply_filter: bool = False) -> tuple[bool, Optional[dict]]:
+                       log: Callable[[str], None], apply_filter: bool = False,
+                       filter_site: str = "primary") -> tuple[bool, Optional[dict]]:
     """Load one page, (optionally) apply the auto-filter, open its table, hide
     chrome, print to out_pdf. Returns (ok, exclusion_info) -- exclusion_info is
     {"duts": n, "pts": m} when filtering ran on this view, else None."""
@@ -269,6 +274,15 @@ def _prepare_and_print(page, url: str, out_pdf: Path, profile: Optional[dict],
         # recommendation) -- the same thing the in-page "Run recommended
         # workflow" button does -- and re-renders the plot + table against it.
         try:
+            # Compare: set the auto-filter site scope before running the workflow so
+            # the report can render Reference / Onboarding / Both (the selector only
+            # exists on compare pages; a no-op elsewhere).
+            ssel = profile.get("siteSel")
+            if ssel and filter_site and filter_site != "primary":
+                page.evaluate(
+                    "(a)=>{var el=document.getElementById(a.id); if(el){ el.value=a.v; }}",
+                    {"id": ssel, "v": filter_site},
+                )
             page.evaluate(
                 "(fn)=>{ if(typeof window[fn]==='function'){ try{ window[fn](); }catch(e){} } }",
                 profile["workflow"],
@@ -341,6 +355,7 @@ def generate_multiview_pdf(
     meta: dict[str, Any],
     log: Optional[Callable[[str], None]] = None,
     apply_filter: bool = False,
+    filter_site: str = "primary",
 ) -> Optional[Path]:
     """Build one comprehensive PDF from the given (view_slug, html_path) pairs.
 
@@ -389,7 +404,7 @@ def generate_multiview_pdf(
             try:
                 page = browser.new_page(viewport={"width": 1000, "height": 1400})
                 try:
-                    ok, excl = _prepare_and_print(page, url, part, profile, log, do_filter)
+                    ok, excl = _prepare_and_print(page, url, part, profile, log, do_filter, filter_site)
                 finally:
                     try:
                         page.close()
@@ -441,7 +456,8 @@ def generate_multiview_pdf(
             # Cover page last (needs the exclusion tallies), merged first.
             cover_html = tmpdir / "_cover.html"
             cover_html.write_text(
-                _cover_html(meta, view_labels, apply_filter=apply_filter, exclusions=exclusions),
+                _cover_html(meta, view_labels, apply_filter=apply_filter, exclusions=exclusions,
+                            filter_site=filter_site),
                 encoding="utf-8")
             cover_pdf = tmpdir / "00_cover.pdf"
             try:
@@ -504,6 +520,10 @@ def _cli(argv: list[str]) -> int:
                          "recommended workflow before printing, so the stats views "
                          "show the cleaned population (raw scatter/distribution stay "
                          "full). Best run on demand, after the plots exist.")
+    ap.add_argument("--filter-site", choices=["primary", "onboarding", "both"], default="primary",
+                    help="Compare only: which site the auto-filter cleans in the "
+                         "report (with --apply-filter). primary=reference/SR (default), "
+                         "onboarding=the site under evaluation, both.")
     args = ap.parse_args(argv)
 
     target = Path(args.target)
@@ -540,7 +560,8 @@ def _cli(argv: list[str]) -> int:
             "histogram": "Histogram",
         },
     }
-    res = generate_multiview_pdf(pairs, out, meta, apply_filter=args.apply_filter)
+    res = generate_multiview_pdf(pairs, out, meta, apply_filter=args.apply_filter,
+                                 filter_site=args.filter_site)
     return 0 if res else 1
 
 

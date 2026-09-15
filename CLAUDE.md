@@ -1864,3 +1864,48 @@ time hit when it isn't required."
   view type on the fresh sample (boxplot 28/0, stat_summary 31/0, summary 33/0,
   env_coverage 26/0, histogram 32/0, compare boxplot 46/0) = 241/0 after the
   k-slider check fix. Filter-aware + on-demand verified live via the webapp button.
+
+## Auto-filter compare SITE SCOPE (Reference / Onboarding / Both) + per-site risk (added 2026-09-14)
+
+On a `compare_csv` job the auto-filter used to auto-clean ONLY the reference
+(primary/SR) site; onboarding-site (MY/AMC) DUTs were always forced to review.
+Added a per-view **"auto-filter site"** selector so the user can scope
+auto-filtering to **Reference only** (default, unchanged), **Onboarding only**, or
+**Both** -- and the preview surfaces the **per-site false-removal risk** so the
+choice is informed (the user's ask: "the tool will provide the risk level so the
+user can change the selection").
+
+- **Engine.** `_afCompute` (shared: stat_summary/summary/env_coverage/histogram)
+  and boxplot's bespoke `_autoFilterCompute` both: read the scope from the view's
+  site selector (default `'primary'`); compute each DUT's **intrinsic**
+  auto-eligibility (benign/systemic/bar/risk) INDEPENDENT of scope; build a
+  **scope-independent** `siteSummary` `{site:{eligible,pts,minRisk,maxRisk}}`; then
+  apply the scope gate (out-of-scope DUTs -> review with a "change the scope"
+  reason). Return `siteScope`+`siteSummary`. The preview shows a "Per-site
+  auto-eligible (risk …)" line for every site; `_afRunWorkflow`'s audit +
+  filter-aware PDF are scope-aware.
+- **Selector.** Rendered only on compare pages. `_af_control_html(has_site_scope,
+  primary_site)` (ec/sum/h) and inline blocks (boxplot `auto_gf_site`,
+  stat_summary `stat_auto_site`) emit `<prefix>_auto_site` (primary/onboarding/
+  both). Element ids: `auto_gf_site`, `stat_auto_site`, `sum_auto_site`,
+  `ec_auto_site`, `h_auto_site`; each ctx has `siteSel`. **Histogram badPoints
+  must set `o.site` from `DIMVALS[SITE_COL_ID][i]`** (it hardcoded `''` -- fixed;
+  without it the gate/summary are inert on histogram).
+- **Non-compare is unchanged:** no Site dim -> no selector, `compare=false`, gate
+  never fires -- auto-filter behaves exactly as before on every non-compare plot.
+- **PDF report scope option.** `padb_pdf_report.py --filter-site
+  primary|onboarding|both` (sets each view's site selector before running the
+  workflow); `padb_v2.py --pdf-filter-site` + cfg `pdf_report_filter_site`
+  (implies filter-aware); webapp on-demand row has a **site** dropdown
+  (`/api/generate-pdf {filter_site}` -> `_generate_pdf_task` -> `--filter-site`).
+  The cover's "Filtering applied" section names the scope.
+- **Auto QA (with teeth).** qa_regressions `test_auto_filter_site_scope`
+  (deterministic: selector present on compare / absent on single-site, options,
+  scope+summary wiring, `_af_control_html` helper on/off, stat_summary shared
+  engine). qa_filters site-scope invariants in the boxplot block, `runAutoFilterCtx`
+  (sum/ec/hist) and `runAutoFilterStat`: primary-scope auto = reference-only,
+  onboarding = non-reference, `both` = the by-site union, `siteSummary` is
+  scope-independent and equals what `both` auto-filters. Verified on synthetic
+  compares with planted per-site outliers -- boxplot/stat_summary `both=2
+  primary=1 onboarding=1`; histogram gated correctly (found+fixed the missing
+  `o.site` this way). qa_regressions 104/0, qa_selfcheck GREEN.

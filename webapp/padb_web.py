@@ -549,7 +549,7 @@ def _pdf_targets(job_path: Path, cfg: dict) -> list[tuple[Path, Path]]:
 
 
 def _generate_pdf_task(job_path: Path, cfg: dict, job_id: str,
-                       apply_filter: bool) -> tuple[bool, str | None]:
+                       apply_filter: bool, filter_site: str = "primary") -> tuple[bool, str | None]:
     """Run padb_pdf_report.py on already-built results (no plot rebuild)."""
     targets = _pdf_targets(job_path, cfg)
     if not targets:
@@ -559,11 +559,13 @@ def _generate_pdf_task(job_path: Path, cfg: dict, job_id: str,
     ok_all = True
     for prefix_path, out_pdf in targets:
         _append_log(job_id, f"\n--- PDF report: {prefix_path.name} "
-                            f"{'(filter-aware)' if apply_filter else ''} ---")
+                            f"{'(filter-aware' + (', site=' + filter_site if filter_site != 'primary' else '') + ')' if apply_filter else ''} ---")
         cmd = [sys.executable, str(TOOLS_DIR / "padb_pdf_report.py"),
                str(prefix_path), "--out", str(out_pdf)]
         if apply_filter:
             cmd.append("--apply-filter")
+            if filter_site and filter_site != "primary":
+                cmd += ["--filter-site", filter_site]
         rc = _stream(cmd, job_id)
         ok_all = ok_all and rc == 0
     idx = _job_result_index_path(job_path, cfg)
@@ -595,7 +597,8 @@ def _worker() -> None:
             # filter-aware, from already-built results.
             if job.get("action") == "pdf":
                 ok, result_index = _generate_pdf_task(
-                    job_path, cfg, job_id, bool(job.get("pdf_apply_filter")))
+                    job_path, cfg, job_id, bool(job.get("pdf_apply_filter")),
+                    job.get("pdf_filter_site", "primary"))
                 with _jobs_lock:
                     job["status"] = "done" if ok else "failed"
                     job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
@@ -1418,6 +1421,9 @@ def generate_pdf():
     body = request.get_json(force=True) or {}
     paths = body.get("paths") or []
     apply_filter = bool(body.get("apply_filter"))
+    filter_site = body.get("filter_site") or "primary"
+    if filter_site not in ("primary", "onboarding", "both"):
+        filter_site = "primary"
     if not paths:
         return jsonify(error="paths must be a non-empty list"), 400
     job_ids = []
@@ -1439,7 +1445,7 @@ def generate_pdf():
         with _jobs_lock:
             _jobs[job_id] = {
                 "status": "queued", "path": str(job_path), "name": job_path.name,
-                "action": "pdf", "pdf_apply_filter": apply_filter,
+                "action": "pdf", "pdf_apply_filter": apply_filter, "pdf_filter_site": filter_site,
                 "log": [], "started": None, "elapsed_s": 0,
                 "result_index": None, "proc": None, "cancel_requested": False,
             }

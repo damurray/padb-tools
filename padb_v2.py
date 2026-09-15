@@ -1237,9 +1237,13 @@ def _maybe_build_pdf_report(df, cfg, prefix, csv_path, output_dir, gen_pairs, vi
         }
         out_pdf = output_dir / (re.sub(r"[^\w]+", "_", prefix) + "_report.pdf")
         apply_filter = bool(cfg.get("pdf_report_apply_filter", False))
+        filter_site = cfg.get("pdf_report_filter_site", "primary")
         print(f"  Building comprehensive PDF report -> {out_pdf.name}"
-              f"{' (filter-aware)' if apply_filter else ''}", flush=True)
-        padb_pdf_report.generate_multiview_pdf(gen_pairs, out_pdf, meta, apply_filter=apply_filter)
+              f"{' (filter-aware)' if apply_filter else ''}"
+              f"{' [site: ' + filter_site + ']' if (apply_filter and filter_site != 'primary') else ''}",
+              flush=True)
+        padb_pdf_report.generate_multiview_pdf(gen_pairs, out_pdf, meta,
+                                               apply_filter=apply_filter, filter_site=filter_site)
     except Exception as exc:
         _log_note(output_dir, f"build-time PDF report failed ({exc}).")
 
@@ -1640,6 +1644,12 @@ def main(argv: list[str] | None = None) -> None:
              "views show the cleaned population (raw scatter/distribution stay "
              "full). Implies --pdf-report.",
     )
+    parser.add_argument(
+        "--pdf-filter-site", choices=["primary", "onboarding", "both"], default=None,
+        help="Compare only: which site the filter-aware PDF cleans "
+             "(primary=reference/SR default, onboarding, both). Implies "
+             "--pdf-apply-filter.",
+    )
     args = parser.parse_args(argv)
 
     job_path = Path(args.job).resolve()
@@ -1666,6 +1676,10 @@ def main(argv: list[str] | None = None) -> None:
     if args.pdf_apply_filter:
         cfg["build_pdf_report"] = True
         cfg["pdf_report_apply_filter"] = True
+    if args.pdf_filter_site:
+        cfg["build_pdf_report"] = True
+        cfg["pdf_report_apply_filter"] = True
+        cfg["pdf_report_filter_site"] = args.pdf_filter_site
 
     job_dir = job_path.parent
 

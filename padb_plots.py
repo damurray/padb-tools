@@ -1570,10 +1570,29 @@ def _segment_by_html(has_segments: bool) -> str:
     )
 
 
-def _af_control_html(prefix: str, preview_fn: str, clear_fn: str) -> str:
+def _af_control_html(prefix: str, preview_fn: str, clear_fn: str,
+                     has_site_scope: bool = False, primary_site: str = "") -> str:
     """Auto-filter basis/level control + Clear-global-filter button for a view's
     control bar. Element ids are <prefix>_auto_basis / <prefix>_auto_level; the
-    view's JS ctx must use the same ids. Shared across the population views."""
+    view's JS ctx must use the same ids. Shared across the population views.
+    On compare pages (has_site_scope), also renders the <prefix>_auto_site scope
+    selector (Reference / Onboarding / Both)."""
+    site = ""
+    if has_site_scope:
+        site = (
+            f'  <label class="toggle-btn" id="{prefix}_auto_site_wrap"'
+            ' style="background:#eef4ff;border-color:#6688cc;color:#0044aa"'
+            ' title="Compare only: which site the auto-filter may auto-exclude from.'
+            f' Reference = the trusted baseline ({primary_site}); Onboarding = the site(s)'
+            ' under evaluation; Both = clean each against its own peers. The preview shows'
+            ' the per-site false-removal risk so you can choose. Default is reference-only'
+            ' (unchanged behavior).">'
+            '&nbsp;auto-filter site '
+            f'<select id="{prefix}_auto_site" onchange="{preview_fn}()">'
+            f'<option value="primary" selected>Reference only ({primary_site})</option>'
+            '<option value="onboarding">Onboarding only</option>'
+            '<option value="both">Both sites</option></select></label>\n'
+        )
     return (
         '  <span class="sep"></span>\n'
         '  <label class="toggle-btn" style="background:#fff7e8;border-color:#e0905a;color:#a05000"'
@@ -1597,7 +1616,8 @@ def _af_control_html(prefix: str, preview_fn: str, clear_fn: str) -> str:
         '<option value="conservative">Conservative</option>'
         '<option value="moderate">Moderate</option>'
         '<option value="aggressive">Aggressive</option></select></label>\n'
-        '  <button class="toggle-btn" style="background:#fff0f0;border-color:#c00;color:#c00"'
+        + site
+        + '  <button class="toggle-btn" style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' title="Remove every Global Filter exclusion (browser-wide, shared across all views) -- the one-click undo."'
         f' onclick="{clear_fn}()">Clear global filter</button>\n'
     )
@@ -3181,12 +3201,16 @@ function _afRisk(maxMag,basis,nExamined){
   return Math.min(1,p);
 }
 function _afRiskLabel(p){ return p<1e-4?'very low':p<1e-2?'low':p<0.05?'moderate':'HIGH'; }
+function _afScopeLabel(scope,ps){ return scope==='both'?'both sites':scope==='onboarding'?'onboarding site(s) only':'reference site ('+ps+') only'; }
 function _afCompute(pts,ctx){
   var level=(document.getElementById(ctx.levelSel)||{}).value||'off';
   var basis=(document.getElementById(ctx.basisSel)||{}).value||'dist';
   var dir=ctx.tllDir?ctx.tllDir():'both';
   var baseSerial=ctx.baseSerial||function(s){return s;};
   var primarySite=ctx.primarySite||null;
+  // Compare: which site(s) the auto-filter may auto-exclude from (default reference
+  // only). ctx.siteSel names the view's selector; absent -> 'primary' (unchanged).
+  var scope=(ctx.siteSel?(document.getElementById(ctx.siteSel)||{}).value:null)||'primary';
   var nExamined=pts.length, byDut={}, spot={};
   pts.forEach(function(o){
     var bs=baseSerial(o.serial);
@@ -3200,30 +3224,46 @@ function _afCompute(pts,ctx){
   var thr=_AF_LEVELS[level]||_AF_LEVELS.conservative;
   var unit=_afPeerBasis(basis)?'σ from peers':'σ past '+(basis==='tll'?'TLL/limit':'spec');
   var compare=!!primarySite;
-  var auto=[],marginal=[],review=[];
+  var auto=[],marginal=[],review=[],siteSummary={};
   Object.keys(byDut).forEach(function(bs){
     var d=byDut[bs], sh=0;
     d.pts.forEach(function(o){if(Object.keys(spot[o.temp+'|'+o.freqLabel+'|'+o.dir]).length>1)sh++;});
     d.shared=d.pts.length?sh/d.pts.length:0;
     d.risk=_afRisk(d.maxMag,basis,Math.max(nExamined,d.pts.length));
     var riskTxt=' (false-removal risk '+_afRiskLabel(d.risk)+', p≈'+d.risk.toExponential(1)+')';
-    if(compare && d.site && d.site!==primarySite){
-      d.reason='onboarding site “'+d.site+'”: '+d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — filter manually (auto-clean is scoped to the reference site '+primarySite+')'+riskTxt; review.push(d); return;
+    // Intrinsic classification (independent of site scope) so the per-site summary
+    // can tell the user what EACH site would auto-filter -- letting them pick the
+    // scope with the risk in view.
+    var benign=_afPeerBasis(basis)&&((dir==='hi'&&d.high===0)||(dir==='lo'&&d.low===0));
+    var systemic=d.shared>0.5;
+    var meetsBar=d.maxMag>=thr.minSigma&&d.pts.length>=thr.minPts&&d.risk<0.05;
+    d.autoEligible=(!benign&&!systemic&&meetsBar);
+    if(compare&&d.site){
+      var ss=siteSummary[d.site]||(siteSummary[d.site]={site:d.site,eligible:0,pts:0,minRisk:1,maxRisk:0});
+      if(d.autoEligible){ss.eligible++;ss.pts+=d.pts.length;ss.minRisk=Math.min(ss.minRisk,d.risk);ss.maxRisk=Math.max(ss.maxRisk,d.risk);}
     }
-    if(_afPeerBasis(basis)&&(dir==='hi'&&d.high===0||dir==='lo'&&d.low===0)){
+    // Site-scope gate: only auto-filter the selected site(s). Default 'primary'.
+    if(compare && d.site){
+      var isPrim=(d.site===primarySite);
+      var inScope=(scope==='both')||(scope==='primary'&&isPrim)||(scope==='onboarding'&&!isPrim);
+      if(!inScope){
+        d.reason=(isPrim?'reference':'onboarding')+' site “'+d.site+'”: '+d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — outside the selected auto-filter scope ('+_afScopeLabel(scope,primarySite)+'); filter manually or change the scope'+riskTxt; review.push(d); return;
+      }
+    }
+    if(benign){
       d.reason=d.pts.length+' peer-outlier pt(s), all AWAY from the '+(dir==='hi'?'upper':'lower')+' spec — can’t fail spec (benign)'+riskTxt; review.push(d); return;
     }
-    if(d.shared>0.5){
+    if(systemic){
       d.reason=d.pts.length+' pt(s), most shared with other DUTs at the same frequency — likely station/systemic, not one bad DUT'+riskTxt; review.push(d); return;
     }
-    if(d.maxMag>=thr.minSigma&&d.pts.length>=thr.minPts&&d.risk<0.05){
+    if(meetsBar){
       d.reason=d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+', not shared → auto ('+thr.label+')'+riskTxt; auto.push(d);
     } else {
       d.reason=d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — '+(d.risk>=0.05?'risk too high to auto':'below the '+thr.label+' bar ('+thr.minSigma+'σ / '+thr.minPts+' pts)')+riskTxt; marginal.push(d);
     }
   });
   auto.sort(function(a,b){return a.risk-b.risk;}); marginal.sort(function(a,b){return b.maxMag-a.maxMag;});
-  return {auto:auto,marginal:marginal,review:review,thr:thr,basis:basis,unit:unit,compare:compare,primarySite:primarySite};
+  return {auto:auto,marginal:marginal,review:review,thr:thr,basis:basis,unit:unit,compare:compare,primarySite:primarySite,siteScope:scope,siteSummary:siteSummary};
 }
 function _afPreview(ctx){
   var panel=document.getElementById(ctx.panel); if(!panel)return;
@@ -3243,9 +3283,22 @@ function _afPreview(ctx){
   var autoPts=r.auto.reduce(function(a,d){return a+d.pts.length;},0);
   var _an=ctx.applyNoun||'Global Filter', _undo=ctx.undoHint||'Clear global filter',
       _inh=(ctx.inheritNote!=null)?ctx.inheritNote:' Cleaning here writes the shared Global Filter, so every view inherits it.';
-  var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare: auto-clean is scoped to the reference site <b>'+r.primarySite+'</b>; onboarding-site DUTs are listed for manual review.</span>':'';
+  var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare — auto-filter scope: <b>'+_afScopeLabel(r.siteScope,r.primarySite)+'</b>'+(ctx.siteSel?' (change via the “auto-filter site” selector)':'')+'.</span>':'';
   var h='<div style="font-size:12px;margin:4px 0">⚙ <b>Auto-filter preview</b> — basis <b>'+basisName+'</b>, level <b>'+r.thr.label+
     '</b> (bar '+r.thr.minSigma+'σ / '+r.thr.minPts+' pts, false-removal risk &lt; 5%). Nothing is applied until you click <b>Apply</b>; reversible via <b>'+_undo+'</b>.'+_inh+siteNote+'</div>';
+  if(r.compare){
+    var _sites=Object.keys(r.siteSummary||{});
+    if(_sites.length){
+      _sites.sort(function(a,b){return (a===r.primarySite?-1:b===r.primarySite?1:a<b?-1:1);});
+      h+='<div style="font-size:12px;margin:2px 0 6px;padding:4px 8px;background:#eef4ff;border:1px solid #cdd6e6;border-radius:4px">'+
+        '<b>Per-site auto-eligible</b> (at this basis/level): '+
+        _sites.map(function(s){var ss=r.siteSummary[s];
+          var lbl=(s===r.primarySite?'reference ':'onboarding ')+'<b>'+s+'</b>: '+ss.eligible+' DUT'+(ss.eligible!==1?'s':'');
+          if(ss.eligible)lbl+=' ('+ss.pts+' pts, risk '+_afRiskLabel(ss.minRisk)+(ss.maxRisk!==ss.minRisk?'–'+_afRiskLabel(ss.maxRisk):'')+')';
+          return lbl;
+        }).join(' &nbsp;|&nbsp; ')+'</div>';
+    }
+  }
   h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
     (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.applyFn+'()">Apply → add to '+_an+'</button>':'')+'</div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
@@ -7915,7 +7968,7 @@ function clearStatGlobalFilter(){
   try{localStorage.removeItem(GF_KEY);}catch(e){}
   _loadStatGlobalFilter(); update();
 }
-var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_auto_panel',
+var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_auto_panel',siteSel:'stat_auto_site',
   applyFn:'statAutoFilterApply',affirmFn:'statAutoFilterAffirm',margChkClass:'stat_auto_marg_chk',
   resultVar:'_statAutoResult',badPoints:_statAutoBadPoints,merge:_statMergeGf,
   hiSpec:function(){return (typeof HI_SPEC!=='undefined')?HI_SPEC:null;},
@@ -8510,7 +8563,16 @@ def _build_stat_summary_html(
         '<option value="conservative">Conservative</option>'
         '<option value="moderate">Moderate</option>'
         '<option value="aggressive">Aggressive</option></select></label>\n'
-        '  <button class="toggle-btn" style="background:#fff0f0;border-color:#c00;color:#c00"'
+        + (('  <label class="toggle-btn" id="stat_auto_site_wrap" style="background:#eef4ff;border-color:#6688cc;color:#0044aa"'
+            ' title="Compare only: which site the auto-filter may auto-exclude from. Reference = the trusted baseline ('
+            + str(primary_site) + '); Onboarding = the site(s) under evaluation; Both = clean each against its own peers.'
+            ' The preview shows the per-site false-removal risk so you can choose. Default is reference-only (unchanged behavior).">'
+            '&nbsp;auto-filter site '
+            '<select id="stat_auto_site" onchange="statAutoFilterPreview()">'
+            '<option value="primary" selected>Reference only (' + str(primary_site) + ')</option>'
+            '<option value="onboarding">Onboarding only</option>'
+            '<option value="both">Both sites</option></select></label>\n') if site_compare_enabled else '')
+        + '  <button class="toggle-btn" style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' title="Remove every Global Filter exclusion. The Global Filter is browser-wide and shared'
         ' across all views, so this clears the auto-filter (and any manual exclusion) for every view at'
         ' once -- the one-click undo for an auto-filter you did not want."'
@@ -10073,7 +10135,7 @@ function _ecMergeGf(keys){
     _ecGfEnabled=true; _loadEcGlobalFilter(); update();}catch(e){alert('localStorage write failed: '+e.message);}
 }
 function clearEcGlobalFilter(){ try{localStorage.removeItem(GF_KEY);}catch(e){} _loadEcGlobalFilter(); update(); }
-var EC_AF={basisSel:'ec_auto_basis',levelSel:'ec_auto_level',panel:'ec_auto_panel',
+var EC_AF={basisSel:'ec_auto_basis',levelSel:'ec_auto_level',panel:'ec_auto_panel',siteSel:'ec_auto_site',
   applyFn:'ecAutoFilterApply',affirmFn:'ecAutoFilterAffirm',margChkClass:'ec_auto_marg_chk',
   resultVar:'_ecAutoResult',badPoints:_ecAutoBadPoints,merge:_ecMergeGf,
   hiSpec:function(){return (typeof HI_SPEC!=='undefined')?HI_SPEC:null;},
@@ -10557,7 +10619,8 @@ def _build_env_coverage_html(
         + f'  <label title="Show non-selected conditions as dim gray bands">'
         + f'<input type="checkbox" id="ec_show_excl" onchange="update()">'
         + f'&nbsp;Show&nbsp;excluded</label>\n'
-        + _af_control_html('ec', 'ecAutoFilterPreview', 'clearEcGlobalFilter')
+        + _af_control_html('ec', 'ecAutoFilterPreview', 'clearEcGlobalFilter',
+                           has_site_scope=bool(primary_site), primary_site=primary_site or '')
         + f'  {help_panel_html}\n'
         + f'  <button class="csv-btn" onclick="saveCSV()">&#8595;&nbsp;CSV</button>\n'
         + f'  <button class="stat-btn" id="ec_stat_btn" onclick="toggleStatsPanel()">&#9658;&nbsp;Statistics</button>\n'
@@ -17449,7 +17512,7 @@ function _sumMergeGf(keys){
     _loadSumGlobalFilter(); update();}catch(e){alert('localStorage write failed: '+e.message);}
 }
 function clearSumGlobalFilter(){ try{localStorage.removeItem(GF_KEY);}catch(e){} _loadSumGlobalFilter(); update(); }
-var SUM_AF={basisSel:'sum_auto_basis',levelSel:'sum_auto_level',panel:'sum_auto_panel',
+var SUM_AF={basisSel:'sum_auto_basis',levelSel:'sum_auto_level',panel:'sum_auto_panel',siteSel:'sum_auto_site',
   applyFn:'sumAutoFilterApply',affirmFn:'sumAutoFilterAffirm',margChkClass:'sum_auto_marg_chk',
   resultVar:'_sumAutoResult',badPoints:_sumAutoBadPoints,merge:_sumMergeGf,
   hiSpec:function(){return (typeof HI_SPEC!=='undefined')?HI_SPEC:null;},
@@ -17850,7 +17913,8 @@ def _build_summary_html(
         + '  <span id="sum_gf_badge" style="display:none;font-size:11px;background:#fff0e8;'
         + 'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000;'
         + 'margin-left:4px"></span>\n'
-        + _af_control_html('sum', 'sumAutoFilterPreview', 'clearSumGlobalFilter')
+        + _af_control_html('sum', 'sumAutoFilterPreview', 'clearSumGlobalFilter',
+                           has_site_scope=bool(primary_site), primary_site=primary_site or '')
         + site_btn_html
         + f'  {_csv_btn("saveCSV")}\n'
         + '</div>\n'
@@ -18504,14 +18568,15 @@ function _histAutoBadPoints(basis){
     var score=_afScorer(basis, idxs.map(function(i){return VALUES[i];}),
       (typeof LIMIT_HI!=='undefined'?LIMIT_HI:null), (typeof LIMIT_LO!=='undefined'?LIMIT_LO:null));
     idxs.forEach(function(i){ var r=score(VALUES[i]); if(!r)return;
-      out.push({serial:(hasSer?SERIAL[i]:'(all)'),port:'',cond:bk,temp:'All',freq:0,freqLabel:bk,value:VALUES[i],mag:r.mag,dir:r.dir,site:'',key:String(i)});
+      var _site=(typeof SITE_COL_ID!=='undefined'&&SITE_COL_ID&&DIMVALS[SITE_COL_ID])?DIMVALS[SITE_COL_ID][i]:'';
+      out.push({serial:(hasSer?SERIAL[i]:'(all)'),port:'',cond:bk,temp:'All',freq:0,freqLabel:bk,value:VALUES[i],mag:r.mag,dir:r.dir,site:_site,key:String(i)});
     });
   });
   return out;
 }
 function _hMergeAuto(keys){ keys.forEach(function(k){var n=parseInt(k,10); if(!isNaN(n))_hAutoExcl.add(n);}); update(); }
 function clearHistAuto(){ _hAutoExcl.clear(); update(); }
-var HIST_AF={basisSel:'h_auto_basis',levelSel:'h_auto_level',panel:'h_auto_panel',
+var HIST_AF={basisSel:'h_auto_basis',levelSel:'h_auto_level',panel:'h_auto_panel',siteSel:'h_auto_site',
   applyFn:'histAutoFilterApply',affirmFn:'histAutoFilterAffirm',margChkClass:'h_auto_marg_chk',
   resultVar:'_histAutoResult',badPoints:_histAutoBadPoints,merge:_hMergeAuto,
   applyNoun:'the auto-exclusion',undoHint:'Clear auto-exclusion',inheritNote:'',
@@ -18672,7 +18737,8 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "onchange='hImportCsvFile(this)'>\n"
         "  <span id='h_import_status' style='color:#080'></span>\n"
         "  <span id='h_n' style='color:#555'></span>\n"
-        + _af_control_html('h', 'hAutoFilterPreview', 'clearHistAuto')
+        + _af_control_html('h', 'hAutoFilterPreview', 'clearHistAuto',
+                           has_site_scope=site_compare_enabled, primary_site=primary_site or '')
         + "  <input type='hidden' id='h_binmode' value='auto'>\n"
         "</div>\n"
         f"<div class='ctrl-bar' id='h_filterbar'>{filt_html}</div>\n"

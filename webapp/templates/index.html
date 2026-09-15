@@ -133,6 +133,7 @@
     <div class="toolbar">
       <button id="generatePdfBtn" title="Generate the comprehensive multi-view PDF report NOW from the checked jobs' already-built results -- no plot rebuild. Use this to defer the (minutes-long) PDF cost until you actually want it, e.g. after reviewing/filtering. Saved as &lt;prefix&gt;_report.pdf and linked from the results index.">Generate PDF report (on demand)</button>
       <label title="When generating the PDF, run each stats view's auto-filter recommended workflow first, so the box/stat/summary/env/histogram views show the CLEANED (bad-DUT-excluded) population. Raw scatter/distribution still show the full collected data; the cover documents both what was collected and what was excluded."><input type="checkbox" id="pdfFilterAwareCheckbox"> Apply auto-filter (cleaned views)</label>
+      <label title="Compare jobs only: which site the auto-filter cleans in the report. Reference = the trusted baseline (SR); Onboarding = the site under evaluation; Both = clean each against its own peers. Ignored for non-compare jobs and when 'Apply auto-filter' is off.">site <select id="pdfFilterSite"><option value="primary" selected>Reference only</option><option value="onboarding">Onboarding only</option><option value="both">Both sites</option></select></label>
     </div>
     <div class="toolbar">
       <label title="Weekly runs on the checked days below; Daily runs every day.">Schedule
