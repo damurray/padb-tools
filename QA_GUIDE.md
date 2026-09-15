@@ -137,6 +137,21 @@ py qa_stats_recompute.py
 ```
 Baseline: **43 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
 
+### `qa_subpop.py` — subpopulation / dual-distribution detector
+Deterministic tests for `padb_subpop.detect_subpopulations` — the "N serials are
+behaving differently — action required" advisory (Workflow & Recommendations). Proves
+the statistics before any view UI: on hand-built synthetic slices it must FLAG a
+planted minority subpopulation (teeth) and must NOT flag the false-positive shapes
+(unimodal, continuous spread, one-off, within-budget separation, small-n) — the guards
+are shown non-vacuous by a permissive parameterization that DOES flag them. Also covers
+budget-anchoring (a separation within the M.U./env-drift budget is clean, beyond it is
+flagged), the recurrence gate, cross-field (station) correlation, and the advisory-only
+caveats. Browser-free and deterministic.
+```bash
+py qa_subpop.py
+```
+Baseline: **18 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
+
 ### `padb_csv_check.py` — pre-flight one CSV (or one job)
 Inspects a single extracted CSV before you build plots: load success, x-axis/value
 auto-detection, serial/temperature/spec detection, Group cardinality, drop rate.
