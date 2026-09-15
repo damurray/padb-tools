@@ -3437,6 +3437,7 @@ function _afRenderWorkflow(ctx){
   h+='<ul style="margin:4px 0 4px 16px;padding:0">'+rec.why.map(function(w){return '<li>'+w+'</li>';}).join('')+'</ul>';
   h+='<div style="font-weight:600;margin:8px 0 2px">Suggested workflow</div>';
   h+='<ol style="margin:2px 0 2px 16px;padding:0;list-style:none">'+_afWorkflowSteps(a,rec,ctx).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
+  if(typeof ctx.subpopSlices==='function'){ try{ h+=_spAdvisoryHtml(ctx); }catch(e){ h+='<div style="color:#c00;font-size:11px">subpopulation check error: '+e+'</div>'; } }
   h+='<div style="margin-top:6px;color:#a05000">These are heuristic starting points from the data shape, not a substitute for engineering judgment. Nothing is excluded until you click Apply or Run, and everything is reversible via '+(ctx.undoHint||'Clear global filter')+'.</div>';
   h+='<div id="'+ctx.wfPanel+'_audit"></div></div>';
   panel.innerHTML=h; panel.style.display='';
@@ -3565,6 +3566,104 @@ function _afCapture(ctx, runResult, cb){
     }, mutated?300:60);
   }
   next();
+}
+
+/* ============================================================================
+   Subpopulation / dual-distribution detector -- JS port of padb_subpop.py
+   (the Python reference + oracle). Answers "are >=2 DUTs behaving as a SEPARATE
+   distribution from the population?" within a condition-matched slice. Advisory
+   only -- never filters. A view opts in by supplying ctx.subpopSlices() ->
+   [{cond, vals_by_freq:[[perDUT]], serials:[...], budget_by_freq:[...|null],
+   station_by_dut:[...|null]}]; the advisory renders in the Workflow panel.
+   Kept byte-faithful to padb_subpop.py so qa_subpop remains its oracle.
+   ============================================================================ */
+function _spMedian(xs){var s=xs.slice().sort(function(a,b){return a-b;});var n=s.length;if(!n)return NaN;var m=n>>1;return (n%2)?s[m]:0.5*(s[m-1]+s[m]);}
+function _spMad(xs,med){if(!xs.length)return 0;return 1.4826*_spMedian(xs.map(function(x){return Math.abs(x-med);}));}
+function _spBucketSplit(vals,threshold,minMinority,domRatio){
+  var n=vals.length; if(n<2*minMinority)return null;
+  var sv=vals.slice().sort(function(a,b){return a[1]-b[1];});
+  var ys=sv.map(function(t){return t[1];});
+  var gaps=[]; for(var i=0;i<n-1;i++)gaps.push(ys[i+1]-ys[i]);
+  var gmax=-Infinity,gi=-1; for(var j=0;j<gaps.length;j++){if(gaps[j]>gmax){gmax=gaps[j];gi=j;}}
+  if(gmax<=0)return null;
+  var lowN=gi+1, highN=n-lowN, minority,majority,direction;
+  if(lowN<=highN){minority=sv.slice(0,lowN);majority=sv.slice(lowN);direction=-1;}
+  else{minority=sv.slice(lowN);majority=sv.slice(0,lowN);direction=1;}
+  if(minority.length<minMinority||minority.length>=majority.length)return null;
+  if(gmax<threshold)return null;
+  var others=[]; for(var k=0;k<gaps.length;k++)if(k!==gi)others.push(gaps[k]);
+  var ref=others.length?_spMedian(others):0;
+  if(ref>0&&gmax<domRatio*ref)return null;
+  return {idxs:minority.map(function(t){return t[0];}),direction:direction,gap:gmax};
+}
+function _spDetect(valsByFreq,serials,opts){
+  opts=opts||{};
+  var budget=opts.budget_by_freq||null, station=opts.station_by_dut||null;
+  var minMinority=opts.min_minority||2, minBucketN=opts.min_bucket_n||4, minBuckets=opts.min_buckets||3;
+  var recFrac=(opts.recurrence_frac!=null)?opts.recurrence_frac:0.5, gapK=(opts.gap_k!=null)?opts.gap_k:3.0, domRatio=opts.dom_ratio||2.0;
+  var ndut=serials.length, nfreq=valsByFreq.length;
+  var minorityCount=[]; for(var d=0;d<ndut;d++)minorityCount.push(0);
+  var dirs=[],offsets=[],gaps=[],thrs=[],nAssess=0,nFlaggedB=0;
+  for(var fi=0;fi<nfreq;fi++){
+    var rw=valsByFreq[fi]||[]; var vals=[];
+    for(var di=0;di<Math.min(ndut,rw.length);di++){var v=rw[di];if(typeof v==='number'&&isFinite(v))vals.push([di,v]);}
+    if(vals.length<minBucketN)continue; nAssess++;
+    var ys=vals.map(function(t){return t[1];}); var med=_spMedian(ys),mad=_spMad(ys,med);
+    var threshold; if(budget&&fi<budget.length&&typeof budget[fi]==='number'&&isFinite(budget[fi]))threshold=budget[fi]; else threshold=gapK*mad;
+    if(!(threshold>0))threshold=0;
+    var split=_spBucketSplit(vals,threshold,minMinority,domRatio); if(!split)continue;
+    nFlaggedB++; var mset={}; split.idxs.forEach(function(ix){minorityCount[ix]++;mset[ix]=1;});
+    var majV=[],minV=[]; vals.forEach(function(t){(mset[t[0]]?minV:majV).push(t[1]);});
+    offsets.push(_spMedian(minV)-_spMedian(majV)); dirs.push(split.direction); gaps.push(split.gap); thrs.push(threshold>0?threshold:split.gap);
+  }
+  var caveats=[];
+  if(!budget)caveats.push("No M.U./env-drift budget in this data -- distribution-SHAPE heuristic only; re-extract with Spec+Uncertainty for a budget-anchored verdict.");
+  caveats.push("Valid only when measurement conditions match the DUT calibration conditions; off-condition separation can be legitimate.");
+  var base={n_buckets:nAssess,n_flagged_buckets:nFlaggedB,direction:0,median_offset:0,gap_over_budget:0,correlation:null,shape_only:!budget,caveats:caveats,message:''};
+  if(nAssess<minBuckets){base.flagged=[];base.status='inconclusive';return base;}
+  var denom=nAssess, flagged=[],flaggedIdx=[];
+  for(var d2=0;d2<ndut;d2++){if(denom>0&&minorityCount[d2]>=recFrac*denom&&minorityCount[d2]>0){flaggedIdx.push(d2);flagged.push(serials[d2]);}}
+  if(!flagged.length){base.flagged=[];base.status='clean';return base;}
+  var netDir=0; if(dirs.length){var sd=0;dirs.forEach(function(x){sd+=x;});netDir=sd>0?1:(sd<0?-1:0);}
+  var medOff=offsets.length?_spMedian(offsets):0;
+  var gob=0; if(thrs.length){var sg=0,st=0;gaps.forEach(function(x){sg+=x;});thrs.forEach(function(x){st+=x;});gob=st>0?(sg/gaps.length)/(st/thrs.length):0;}
+  var correlation=null;
+  if(station){var sv2={};flaggedIdx.forEach(function(ix){var s=station[ix];if(s!=null&&s!=='')sv2[s]=1;});var ks=Object.keys(sv2);
+    if(ks.length===1){var only=ks[0];var maj={};for(var m=0;m<ndut;m++){if(flaggedIdx.indexOf(m)<0&&station[m])maj[station[m]]=1;}if(!maj[only])correlation={field:only};}}
+  var fracPct=Math.round(100*nFlaggedB/Math.max(nAssess,1));
+  var dirWord=netDir>0?'above':(netDir<0?'below':'off');
+  var msg=flagged.length+' DUT(s) form a separate distribution ('+dirWord+' the population) across '+nFlaggedB+' of '+nAssess+' frequencies ('+fracPct+'%), median offset '+(medOff>=0?'+':'')+(Math.round(medOff*10000)/10000);
+  if(budget)msg+=', ~'+(Math.round(gob*10)/10)+'x the M.U./env-drift budget';
+  if(correlation)msg+='; all share '+correlation.field;
+  msg+='. Action required -- investigate DUT/station/test. Not auto-filtered.';
+  base.flagged=flagged;base.status='flagged';base.direction=netDir;base.median_offset=medOff;base.gap_over_budget=gob;base.correlation=correlation;base.message=msg;
+  return base;
+}
+function _spAdvisoryHtml(ctx){
+  var slices; try{slices=ctx.subpopSlices();}catch(e){return '';}
+  if(!slices||!slices.length)return '';
+  var flaggedRows=[],incon=0,clean=0,assessed=0,anyBudget=false;
+  slices.forEach(function(sl){
+    var r=_spDetect(sl.vals_by_freq,sl.serials,{budget_by_freq:sl.budget_by_freq,station_by_dut:sl.station_by_dut});
+    if(sl.budget_by_freq)anyBudget=true;
+    if(r.status==='flagged')flaggedRows.push({cond:sl.cond,r:r});
+    else if(r.status==='inconclusive')incon++; else clean++;
+    assessed++;
+  });
+  var h='<div style="font-weight:600;margin:10px 0 2px">Distribution health &mdash; subpopulation check'+(anyBudget?'':' <span style="font-weight:400;color:#a05000">(shape-only; no M.U./drift budget in this data)</span>')+'</div>';
+  if(!flaggedRows.length){
+    h+='<div style="color:#2a7">No separate-distribution subpopulation found across '+assessed+' condition(s) ('+clean+' clean, '+incon+' inconclusive). Ordinary M.U./drift spread only.</div>';
+    return h;
+  }
+  h+='<div style="padding:6px 8px;background:#fff0e8;border:1px solid #e0905a;border-radius:4px;color:#c04000;margin-bottom:3px">'+
+     '<b>&#9888; '+flaggedRows.length+' of '+assessed+' condition(s) show a separate distribution &mdash; action required.</b> Advisory only; nothing is filtered.</div>';
+  flaggedRows.forEach(function(fr){
+    h+='<div style="margin:4px 0 0"><b>'+fr.cond+'</b></div>';
+    h+='<div style="font-size:12px;margin-left:8px">'+fr.r.message+'</div>';
+    h+='<div style="font-size:12px;margin-left:8px;color:#a05000">Serials: '+fr.r.flagged.join(', ')+'</div>';
+  });
+  h+='<ul style="margin:4px 0 4px 16px;padding:0;color:#a05000;font-size:11px">'+flaggedRows[0].r.caveats.map(function(c){return '<li>'+c+'</li>';}).join('')+'</ul>';
+  return h;
 }
 """
 
@@ -14055,7 +14154,39 @@ var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoRe
   setFreq:function(lo,hi){var a=document.getElementById('box_freq_lo'),b=document.getElementById('box_freq_hi');if(a)a.value=lo;if(b)b.value=hi;update();},
   getSerials:function(){return Array.prototype.slice.call(document.querySelectorAll('.box_ser_chk:checked')).map(function(c){return c.value;});},
   setSerials:function(list){document.querySelectorAll('.box_ser_chk').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0||list.indexOf(_boxBaseSerial(c.value))>=0;});update();},
-  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];}};
+  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];},
+  /* Subpopulation advisory slices: one condition-matched slice per (condition,temp)
+     currently shown; buckets are its frequencies, per-DUT value = mean of that DUT's
+     raw points at that frequency (base serial; repeat runs collapse to one vote).
+     Budget = median |unc_hi| per frequency when present, else shape-only. Respects the
+     condition/temp/serial filters (GF-parity is a later refinement). */
+  subpopSlices:function(){
+    var selC={}; getSelectedConds().forEach(function(c){selC[c]=1;});
+    var selT=null; try{var _t=getSelectedTemps(); if(_t&&_t.length){selT={}; _t.forEach(function(x){selT[x]=1;});}}catch(e){}
+    var allS=getAllBoxSerials(), selS=getSelectedBoxSerials();
+    var serFlt=allS.length>1&&selS.length<allS.length, selSet={}; selS.forEach(function(s){selSet[_boxBaseSerial(s)]=1;});
+    var out=[];
+    BOX_DATA.forEach(function(cd){
+      if(!selC[cd.condition])return;
+      if(selT&&cd.temp!=null&&!selT[cd.temp])return;
+      var fss=cd.freq_stats||[]; if(fss.length<3)return;
+      var serIdx={},serials=[];
+      fss.forEach(function(fs){(fs.vals_detail||[]).forEach(function(d){var bs=_boxBaseSerial(d.s); if(serFlt&&!selSet[bs])return; if(!(bs in serIdx)){serIdx[bs]=serials.length;serials.push(bs);}});});
+      if(serials.length<4)return;
+      var vbf=[],budget=[],anyB=false;
+      fss.forEach(function(fs){
+        var row=[]; for(var i=0;i<serials.length;i++)row.push(null);
+        var acc={},cnt={},uncs=[];
+        (fs.vals_detail||[]).forEach(function(d){var bs=_boxBaseSerial(d.s); if(serFlt&&!selSet[bs])return; var idx=serIdx[bs];
+          if(typeof d.v==='number'&&isFinite(d.v)){acc[idx]=(acc[idx]||0)+d.v;cnt[idx]=(cnt[idx]||0)+1;}
+          if(typeof d.unc_hi==='number'&&isFinite(d.unc_hi))uncs.push(Math.abs(d.unc_hi));});
+        for(var k in acc)row[k]=acc[k]/cnt[k];
+        vbf.push(row); var b=uncs.length?_spMedian(uncs):null; if(b!=null)anyB=true; budget.push(b);
+      });
+      out.push({cond:cd.condition+(cd.temp?(' @ '+cd.temp):''),vals_by_freq:vbf,serials:serials,budget_by_freq:anyB?budget:null,station_by_dut:null});
+    });
+    return out;
+  }};
 function boxApplyRec(){_afApplyRec(BOX_AF);}
 function boxRunWorkflow(){_afRunWorkflow(BOX_AF);}
 function boxGenReport(){_afGenerateReport(BOX_AF);}

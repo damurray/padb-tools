@@ -433,6 +433,15 @@ def test_auto_filter_boxplot():
                                    "_afAnalyze", "_afRecommend", "_afRunWorkflow")))
         check("boxplot print-to-PDF report present (_afGenerateReport/boxGenReport/_afCapture multi-shot)",
               all(s in h for s in ("_afGenerateReport", "boxGenReport", "Generate PDF report", "Plotly.toImage", "_afCapture")))
+        # Subpopulation / dual-distribution advisory: the JS port of padb_subpop.py
+        # (_spDetect/_spBucketSplit) + its Workflow-panel renderer (_spAdvisoryHtml),
+        # gated behind ctx.subpopSlices, wired into boxplot via BOX_AF.subpopSlices.
+        check("subpop advisory: JS detector port present (_spDetect/_spBucketSplit/_spMedian)",
+              all(s in h for s in ("_spDetect", "_spBucketSplit", "_spMedian", "_spMad")))
+        check("subpop advisory: renderer + workflow hook present",
+              "_spAdvisoryHtml" in h and "typeof ctx.subpopSlices==='function'" in h)
+        check("subpop advisory: boxplot supplies subpopSlices to BOX_AF",
+              "subpopSlices:function()" in h and "budget_by_freq" in h and "station_by_dut" in h)
         # Longform per-condition selections (box_cond_lf_chk) are the authoritative
         # getSelectedConds() source and must round-trip through save/loadState --
         # they can express arbitrary condition subsets the per-dim panels cannot, so

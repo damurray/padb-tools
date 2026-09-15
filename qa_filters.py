@@ -1403,6 +1403,41 @@ _HARNESS_JS = r"""
     } else skip('reference-freq-filter','no frequency data');
   }
 
+  /* Subpopulation / dual-distribution advisory (Workflow & Recommendations). Teeth:
+     plant a large offset into 2 DUTs of a real slice -> _spDetect must flag EXACTLY
+     those 2; a uniform shift of every DUT must create NO subpopulation (proves it's
+     relative, not absolute); the advisory HTML must render. Self-skips off a view
+     without _spDetect / ctx.subpopSlices. */
+  function runSubpop(R,chk,skip){
+    if(typeof _spDetect!=='function'){ skip('subpop','no _spDetect in this view'); return; }
+    var ctx=null; ['BOX_AF','STAT_AF','SUM_AF','EC_AF','HIST_AF'].forEach(function(nm){
+      if(!ctx && typeof window[nm]==='object' && window[nm] && typeof window[nm].subpopSlices==='function') ctx=window[nm];
+    });
+    if(!ctx){ skip('subpop','no ctx.subpopSlices in this view'); return; }
+    var slices; try{ slices=ctx.subpopSlices(); }catch(e){ chk('subpop-slices',false,String(e)); return; }
+    if(!slices||!slices.length){ skip('subpop','no slices (no per-DUT data)'); return; }
+    var sl=null; for(var i=0;i<slices.length;i++){ if(slices[i].serials&&slices[i].serials.length>=5&&slices[i].vals_by_freq.length>=3){ sl=slices[i]; break; } }
+    if(!sl){ skip('subpop','no slice >=5 DUTs & >=3 freqs'); return; }
+    var opt={budget_by_freq:sl.budget_by_freq,station_by_dut:sl.station_by_dut};
+    var base=_spDetect(sl.vals_by_freq, sl.serials, opt);
+    var sset={}; sl.serials.forEach(function(s){sset[s]=1;});
+    chk('subpop-baseline-flags-are-real-serials',
+        base.flagged.every(function(s){return sset[s];}), 'flagged='+JSON.stringify(base.flagged));
+    var plant=[sl.serials[0], sl.serials[1]];
+    var mut=sl.vals_by_freq.map(function(row){ return row.map(function(v,di){ return (v==null)?v:(di<2?v+1000.0:v); }); });
+    var r=_spDetect(mut, sl.serials, opt); var flg={}; r.flagged.forEach(function(s){flg[s]=1;});
+    chk('subpop-planted-flags-exactly-the-2-offset-duts',
+        r.status==='flagged'&&r.flagged.length===2&&flg[plant[0]]&&flg[plant[1]],
+        'status='+r.status+' flagged='+JSON.stringify(r.flagged)+' planted='+JSON.stringify(plant));
+    var shift=sl.vals_by_freq.map(function(row){ return row.map(function(v){ return v==null?v:v+1000.0; }); });
+    var rs=_spDetect(shift, sl.serials, opt);
+    chk('subpop-uniform-shift-is-not-a-subpopulation',
+        JSON.stringify(rs.flagged)===JSON.stringify(base.flagged),
+        'shifted='+JSON.stringify(rs.flagged)+' base='+JSON.stringify(base.flagged));
+    var html=''; try{ html=_spAdvisoryHtml(ctx); }catch(e){}
+    chk('subpop-advisory-renders', html.indexOf('Distribution health')>=0, 'len='+html.length);
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -1469,6 +1504,9 @@ _HARNESS_JS = r"""
         try{ if(typeof window[nm]==='object'&&window[nm]) runAutoFilterCtx(R,chk,skip,window[nm],nm.replace('_AF','').toLowerCase()); }
         catch(e){ chk('AUTOFILTER-CTX-HARNESS-ERROR['+nm+']',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
       }); }
+      // Subpopulation / dual-distribution advisory (self-skips off a view without it).
+      if(_HEAVY){ skip('subpop','skipped on heavy page'); }
+      else { try{ runSubpop(R,chk,skip); }catch(e){ chk('SUBPOP-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');
