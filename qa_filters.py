@@ -1440,6 +1440,41 @@ _HARNESS_JS = r"""
     chk('subpop-advisory-renders', html.indexOf('Distribution health')>=0, 'len='+html.length);
   }
 
+  /* "Remove auto-filter": applying auto-filter must ADD to the Global Filter (increment,
+     manual items preserved), and Remove must SUBTRACT ONLY the auto increment (manual
+     items survive) -- while Clear wipes everything. Tests the merge/mark/remove mechanism
+     directly (independent of whether this dataset produces auto candidates). GF-view only;
+     the histogram has no GF (its Clear-auto already removes exactly the auto set). */
+  function runRemoveAuto(R,chk,skip){
+    if(typeof GF_KEY==='undefined'||typeof _afMarkApplied!=='function'||typeof _afRemoveApplied!=='function'){ skip('remove-auto','no GF / remove-auto in this view'); return; }
+    var ctx=null; ['BOX_AF','STAT_AF','SUM_AF','EC_AF'].forEach(function(nm){ if(!ctx&&typeof window[nm]==='object'&&window[nm]&&window[nm].removeFn&&window[nm].merge) ctx=window[nm]; });
+    if(!ctx){ skip('remove-auto','no GF-view ctx with removeFn'); return; }
+    var _origAlert=window.alert; window.alert=function(){};
+    function gf(){ try{var r=localStorage.getItem(GF_KEY); return r?(JSON.parse(r).excluded||[]):[]; }catch(e){return [];} }
+    var savedGf=null; try{savedGf=localStorage.getItem(GF_KEY);}catch(e){}
+    try{
+      try{localStorage.removeItem(GF_KEY);}catch(e){} window[ctx.resultVar+'__applied']=new Set(); if(ctx.reloadGf)ctx.reloadGf();
+      var M='QAMAN||qac||Room||1.0 MHz', A='QAA||qac||Room||2.0 MHz', B='QAB||qac||Room||3.0 MHz';
+      ctx.merge([M]);
+      chk('remove-auto: seed manual GF key present', gf().indexOf(M)>=0, JSON.stringify(gf()));
+      _afMarkApplied(ctx,[A,B]); ctx.merge([A,B]); var g1=gf();
+      chk('remove-auto: Apply is ADDITIVE (manual + auto both present)',
+          g1.indexOf(M)>=0&&g1.indexOf(A)>=0&&g1.indexOf(B)>=0, JSON.stringify(g1));
+      _afRemoveApplied(ctx); var g2=gf();
+      chk('remove-auto: subtracts ONLY the auto increment (manual survives)',
+          g2.indexOf(M)>=0&&g2.indexOf(A)<0&&g2.indexOf(B)<0, JSON.stringify(g2));
+      // a key already added MANUALLY is not removed even if auto re-applies it (auto-new only)
+      window[ctx.resultVar+'__applied']=new Set();
+      var O='QAOVL||qac||Room||4.0 MHz';
+      ctx.merge([O]); _afMarkApplied(ctx,[O]); ctx.merge([O]); _afRemoveApplied(ctx);
+      chk('remove-auto: a manually-added key is NOT removed (only auto-new keys)', gf().indexOf(O)>=0, JSON.stringify(gf()));
+    } finally {
+      window.alert=_origAlert;
+      try{ if(savedGf!==null)localStorage.setItem(GF_KEY,savedGf); else localStorage.removeItem(GF_KEY); }catch(e){}
+      window[ctx.resultVar+'__applied']=new Set(); if(ctx.reloadGf)ctx.reloadGf();
+    }
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -1509,6 +1544,9 @@ _HARNESS_JS = r"""
       // Subpopulation / dual-distribution advisory (self-skips off a view without it).
       if(_HEAVY){ skip('subpop','skipped on heavy page'); }
       else { try{ runSubpop(R,chk,skip); }catch(e){ chk('SUBPOP-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
+      // Remove-auto-filter GF increment (add/subtract semantics; self-skips off no-GF views).
+      if(_HEAVY){ skip('remove-auto','skipped on heavy page'); }
+      else { try{ runRemoveAuto(R,chk,skip); }catch(e){ chk('REMOVE-AUTO-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); } }
       // Deep boxplot-only GF invariants (the view where GF is SET).
       if(typeof BOX_DATA==='undefined'){emit({view:view,results:R});return;}
       var pc=document.getElementById('box_show_pts_chk');

@@ -3360,6 +3360,8 @@ function _afPreview(ctx){
   if(!r.auto.length && !r.marginal.length && r.review.length){ h+=_afNoApplyBanner(r,ctx); }
   h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
     (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.applyFn+'()">Apply → add to '+_an+'</button>':'')+'</div>';
+  var _applN=(typeof GF_KEY!=='undefined'&&ctx.removeFn)?_afAppliedInGf(ctx).length:0;
+  if(_applN) h+='<div style="margin:2px 0 4px"><button class="toggle-btn" style="background:#fff0f0;border-color:#c88;color:#a33" onclick="'+ctx.removeFn+'()">Remove auto-filter ('+_applN+' pt'+(_applN!==1?'s':'')+') from '+_an+'</button> <span style="font-size:11px;color:#888">subtracts only what auto-filter added; your manual exclusions stay ('+_undo+' clears everything)</span></div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
     r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td class="out">'+d.maxMag.toFixed(1)+'</td><td title="false-removal risk, p≈'+d.risk.toExponential(1)+'">'+_afRiskLabel(d.risk)+'</td><td>'+d.high+'</td><td>'+d.low+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
   h+='<div style="font-weight:600;margin:8px 0 2px;color:#6b5a00">Marginal — review &amp; affirm: '+r.marginal.length+
@@ -3373,10 +3375,32 @@ function _afPreview(ctx){
   }
   panel.innerHTML=h;
 }
+/* --- "Remove auto-filter": subtract ONLY what auto-filter added, leaving manual /
+   pre-existing Global Filter items intact (Clear global filter wipes everything). We
+   track, per view, the keys the auto-filter merged that were NOT already in the GF, so
+   removal is an exact set-difference of the auto increment. GF-view only; the histogram
+   has no GF (its "Clear auto-exclusion" already removes exactly the auto set). */
+function _afGfExcludedArr(){ try{ if(typeof GF_KEY==='undefined')return []; var r=localStorage.getItem(GF_KEY); return r?(JSON.parse(r).excluded||[]):[]; }catch(e){return [];} }
+function _afAppliedSet(ctx){ var n=ctx.resultVar+'__applied'; if(!window[n])window[n]=new Set(); return window[n]; }
+function _afMarkApplied(ctx,keys){ if(typeof GF_KEY==='undefined')return; var cur={}; _afGfExcludedArr().forEach(function(k){cur[k]=1;}); var s=_afAppliedSet(ctx); keys.forEach(function(k){ if(!cur[k]) s.add(k); }); }
+function _afAppliedInGf(ctx){ if(typeof GF_KEY==='undefined')return []; var s=_afAppliedSet(ctx); return _afGfExcludedArr().filter(function(k){return s.has(k);}); }
+function _afRemoveApplied(ctx){
+  if(typeof GF_KEY==='undefined')return;
+  var inGf=_afAppliedInGf(ctx);
+  if(!inGf.length){alert('No auto-filter exclusions to remove (nothing applied since the last Apply/Clear).');return;}
+  try{
+    var s=_afAppliedSet(ctx);
+    var kept=_afGfExcludedArr().filter(function(k){return !s.has(k);});
+    localStorage.setItem(GF_KEY,JSON.stringify({v:1,excluded:kept}));
+    window[ctx.resultVar+'__applied']=new Set();
+    if(typeof ctx.reloadGf==='function')ctx.reloadGf();
+    _afPreview(ctx);
+  }catch(e){alert('remove failed: '+e.message);}
+}
 function _afApply(ctx){
   var r=window[ctx.resultVar]; if(!r||!r.auto.length){alert('Nothing to auto-filter at this basis/level.');return;}
   var keys=[]; r.auto.forEach(function(d){keys=keys.concat(d.keys);});
-  ctx.merge(keys); _afPreview(ctx);
+  _afMarkApplied(ctx,keys); ctx.merge(keys); _afPreview(ctx);
 }
 function _afAffirm(ctx){
   var r=window[ctx.resultVar]; if(!r)return;
@@ -3385,7 +3409,7 @@ function _afAffirm(ctx){
     var d=r.marginal[parseInt(c.getAttribute('data-i'),10)]; if(d)keys=keys.concat(d.keys);
   });
   if(!keys.length){alert('No marginal DUTs checked.');return;}
-  ctx.merge(keys); _afPreview(ctx);
+  _afMarkApplied(ctx,keys); ctx.merge(keys); _afPreview(ctx);
 }
 /* ============================================================================
    Workflow & Recommendations -- pre-analyze the LOADED dataset and recommend
@@ -3480,7 +3504,7 @@ function _afRunWorkflow(ctx){
   var r=ctx.compute(rec.basis,rec.level); window[ctx.resultVar]=r;
   var keys=[]; r.auto.forEach(function(d){keys=keys.concat(d.keys);});
   var pts=r.auto.reduce(function(x,d){return x+d.pts.length;},0);
-  if(keys.length) ctx.merge(keys);      // shared GF -> every view inherits; reversible
+  if(keys.length){ _afMarkApplied(ctx,keys); ctx.merge(keys); }      // shared GF -> every view inherits; reversible (Remove auto-filter)
   ctx.previewFn();                       // refresh the auto-filter preview panel too
   var au=document.getElementById(ctx.wfPanel+'_audit');
   if(au){
@@ -8151,6 +8175,7 @@ var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_a
   baseSerial:_statBaseSerial,primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   /* Workflow & Recommendations adapters (pre-analysis of the loaded data) */
   wfPanel:'stat_wf_panel', previewFn:function(){statAutoFilterPreview();},
+  removeFn:'statRemoveAuto', reloadGf:function(){_loadStatGlobalFilter();update();},
   applyRecFn:'statApplyRec', runFn:'statRunWorkflow', reportFn:'statGenReport', tablePanel:'stat_panel',
   buckets:function(){var out=[];getActiveConditions().forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){out.push({vals:(fs.dut_vals||[]).map(function(d){return d.v;})});});});return out;},
   nDuts:function(){var s={};STAT_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.dut_vals||[]).forEach(function(d){s[_statBaseSerial(d.s)]=1;});});});return Object.keys(s).length;},
@@ -8200,6 +8225,7 @@ var STAT_AF={basisSel:'stat_auto_basis',levelSel:'stat_auto_level',panel:'stat_a
 function statAutoFilterPreview(){_afPreview(STAT_AF);}
 function statAutoFilterApply(){_afApply(STAT_AF);}
 function statAutoFilterAffirm(){_afAffirm(STAT_AF);}
+function statRemoveAuto(){_afRemoveApplied(STAT_AF);}
 function statApplyRec(){_afApplyRec(STAT_AF);}
 function statRunWorkflow(){_afRunWorkflow(STAT_AF);}
 function statGenReport(){_afGenerateReport(STAT_AF);}
@@ -10346,6 +10372,7 @@ var EC_AF={basisSel:'ec_auto_basis',levelSel:'ec_auto_level',panel:'ec_auto_pane
   tllDir:function(){return (typeof SPEC_DIRECTION!=='undefined'&&SPEC_DIRECTION)?SPEC_DIRECTION:'both';},
   baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   wfPanel:'ec_wf_panel', previewFn:function(){ecAutoFilterPreview();},
+  removeFn:'ecRemoveAuto', reloadGf:function(){_loadEcGlobalFilter();update();},
   applyRecFn:'ecApplyRec', runFn:'ecRunWorkflow', reportFn:'ecGenReport', tablePanel:'ec_stat_panel',
   buckets:function(){var out=[];getSelectedConds().forEach(function(cd){var duts=getActiveDuts(cd);(cd.freqs||[]).forEach(function(f,j){var vals=[];duts.forEach(function(sd){var v=sd[1].room[j];if(v!=null)vals.push(v);});out.push({vals:vals});});});return out;},
   nDuts:function(){var s={};ENV_DATA.forEach(function(cd){Object.keys(cd.duts||{}).forEach(function(k){s[cd.duts[k].serial||k]=1;});});return Object.keys(s).length;},
@@ -10396,6 +10423,7 @@ var EC_AF={basisSel:'ec_auto_basis',levelSel:'ec_auto_level',panel:'ec_auto_pane
 function ecAutoFilterPreview(){_afPreview(EC_AF);}
 function ecAutoFilterApply(){_afApply(EC_AF);}
 function ecAutoFilterAffirm(){_afAffirm(EC_AF);}
+function ecRemoveAuto(){_afRemoveApplied(EC_AF);}
 function ecApplyRec(){_afApplyRec(EC_AF);}
 function ecRunWorkflow(){_afRunWorkflow(EC_AF);}
 function ecGenReport(){_afGenerateReport(EC_AF);}
@@ -14199,6 +14227,8 @@ function autoFilterPreview(){
   if(!r.auto.length && !r.marginal.length && r.review.length){ h+=_afNoApplyBanner(r); }
   h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
     (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="autoFilterApply()">Apply → add to Global Filter</button>':'')+'</div>';
+  var _boxApplN=(typeof GF_KEY!=='undefined')?_afAppliedInGf(BOX_AF).length:0;
+  if(_boxApplN) h+='<div style="margin:2px 0 4px"><button class="toggle-btn" style="background:#fff0f0;border-color:#c88;color:#a33" onclick="boxRemoveAuto()">Remove auto-filter ('+_boxApplN+' pt'+(_boxApplN!==1?'s':'')+') from Global Filter</button> <span style="font-size:11px;color:#888">subtracts only what auto-filter added; your manual exclusions stay (Clear global filter clears everything)</span></div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
     r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td class="out">'+d.maxMag.toFixed(1)+'</td><td title="false-removal risk, p≈'+d.risk.toExponential(1)+'">'+_riskLabel(d.risk)+'</td><td>'+d.high+'</td><td>'+d.low+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
   h+='<div style="font-weight:600;margin:8px 0 2px;color:#6b5a00">Marginal — review &amp; affirm: '+r.marginal.length+
@@ -14215,6 +14245,7 @@ function autoFilterPreview(){
 function autoFilterApply(){
   var r=window._autoResult; if(!r||!r.auto.length){alert('Nothing to auto-filter at this basis/level.');return;}
   var keys=[]; r.auto.forEach(function(d){keys=keys.concat(d.keys);});
+  _afMarkApplied(BOX_AF,keys);   // track the auto increment for "Remove auto-filter"
   _mergeGf(keys);          // merges into the GF + reloads + update()
   autoFilterPreview();     // refresh the preview against the now-filtered view
 }
@@ -14225,12 +14256,14 @@ function autoFilterAffirm(){
     var d=r.marginal[parseInt(c.getAttribute('data-i'),10)]; if(d)keys=keys.concat(d.keys);
   });
   if(!keys.length){alert('No marginal DUTs checked.');return;}
-  _mergeGf(keys); autoFilterPreview();
+  _afMarkApplied(BOX_AF,keys); _mergeGf(keys); autoFilterPreview();
 }
+function boxRemoveAuto(){_afRemoveApplied(BOX_AF);}
 /* Workflow & Recommendations ctx for the boxplot (shared engine in
    _AUTO_FILTER_SHARED_JS; boxplot keeps its bespoke preview/compute). */
 var BOX_AF={basisSel:'auto_gf_basis',levelSel:'auto_gf_level',resultVar:'_autoResult',
   wfPanel:'box_wf_panel', previewFn:function(){autoFilterPreview();},
+  removeFn:'boxRemoveAuto', reloadGf:function(){_loadBoxGlobalFilter();update();},
   applyRecFn:'boxApplyRec', runFn:'boxRunWorkflow', reportFn:'boxGenReport', tablePanel:'box_stat_panel',
   merge:_mergeGf, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   compute:function(basis,level){return _autoFilterCompute(basis,level);},
@@ -17823,6 +17856,7 @@ var SUM_AF={basisSel:'sum_auto_basis',levelSel:'sum_auto_level',panel:'sum_auto_
   },
   baseSerial:function(s){return s;}, primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   wfPanel:'sum_wf_panel', previewFn:function(){sumAutoFilterPreview();},
+  removeFn:'sumRemoveAuto', reloadGf:function(){_loadSumGlobalFilter();update();},
   applyRecFn:'sumApplyRec', runFn:'sumRunWorkflow', reportFn:'sumGenReport', tablePanel:'sum_table_wrap',
   buckets:function(){var out=[];_getFilteredActive(false).forEach(function(cd){(cd.freqs||[]).forEach(function(f,fi){out.push({vals:(cd.dut_vals[fi]||[]).filter(function(v){return v!=null;})});});});return out;},
   nDuts:function(){var s={};DATA.forEach(function(cd){(cd.dut_info||[]).forEach(function(di){s[di.s]=1;});});return Object.keys(s).length;},
@@ -17868,6 +17902,7 @@ var SUM_AF={basisSel:'sum_auto_basis',levelSel:'sum_auto_level',panel:'sum_auto_
 function sumAutoFilterPreview(){_afPreview(SUM_AF);}
 function sumAutoFilterApply(){_afApply(SUM_AF);}
 function sumAutoFilterAffirm(){_afAffirm(SUM_AF);}
+function sumRemoveAuto(){_afRemoveApplied(SUM_AF);}
 function sumApplyRec(){_afApplyRec(SUM_AF);}
 function sumRunWorkflow(){_afRunWorkflow(SUM_AF);}
 function sumGenReport(){_afGenerateReport(SUM_AF);}

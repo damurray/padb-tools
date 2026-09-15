@@ -442,6 +442,11 @@ def test_auto_filter_boxplot():
               "_spAdvisoryHtml" in h and "typeof ctx.subpopSlices==='function'" in h)
         check("subpop advisory: boxplot supplies subpopSlices to BOX_AF",
               "subpopSlices:function()" in h and "budget_by_freq" in h and "station_by_dut" in h)
+        # "Remove auto-filter": subtract ONLY the auto increment from the GF (manual items
+        # survive), distinct from Clear-global-filter (wipes all). Tracks auto-new keys.
+        check("remove-auto: engine + boxplot wiring present (_afMarkApplied/_afRemoveApplied/boxRemoveAuto)",
+              all(s in h for s in ("_afMarkApplied", "_afRemoveApplied", "boxRemoveAuto",
+                                   "removeFn:'boxRemoveAuto'", "Remove auto-filter (")))
         # "No Apply button" is explained (not a blank result) when candidates exist but
         # none is auto-filterable (auto=0 && marginal=0 && review>0) -- e.g. a systemic /
         # site-wide spread. Reported on the Return_Loss compare boxplot.
@@ -581,6 +586,8 @@ def test_auto_filter_stat_summary():
         # _spAdvisoryHtml via _afRenderWorkflow's ctx.subpopSlices hook.
         check("stat_summary supplies subpopSlices to STAT_AF (subpop advisory wired)",
               "subpopSlices:function()" in h and "_spDetect" in h and "_spAdvisoryHtml" in h)
+        check("stat_summary remove-auto wired (statRemoveAuto + removeFn + reloadGf)",
+              "statRemoveAuto" in h and "removeFn:'statRemoveAuto'" in h and "_afRemoveApplied" in h)
 
 
 def test_room_only_default_views():
