@@ -24,6 +24,13 @@ Coupling coverage per plot type (view-agnostic, so every view above is checked):
   * range/zoom coupling: narrowing the frequency range AND a Plotly drag-zoom move
                        BOTH the plot and the table together, and restore
                        (runCoordination; histogram uses its Pass/Fail filter).
+  * filter effect    : for EVERY filter dimension (data-col granular -- serial,
+                       each condition dim, temp), deselecting its values changes
+                       the plotted set and reselecting restores it; a dimension
+                       whose values never change the plot is a FAIL, not a skip
+                       (runFilterEffect -- catches a dead serial filter).
+  * filter persist   : each filter's state survives saveState()->loadState()
+                       (runPersistence -- catches "the change does not persist").
   * group-by         : every group-by mode renders non-blank and reverts
                        (runGroupBy).
   * CSV export       : matches what's on screen + histogram import round-trip
@@ -214,6 +221,93 @@ _HARNESS_JS = r"""
     var names=['clearEverything','resetFilters','resetView','hResetFilters'];
     for(var i=0;i<names.length;i++){ try{ if(eval('typeof '+names[i])==='function') return names[i]; }catch(e){} }
     return null;
+  }
+  /* Group every filter checkbox by its DIMENSION -- data-col when present (the
+     condition/serial/temp panels all share class "fchk" but differ by data-col,
+     so class alone conflates them -- that is exactly how a dead serial filter
+     slipped past the old one-per-class reversibility loop), else the class. */
+  function filterDims(){
+    var m={};
+    filterBoxes().forEach(function(c){
+      var dim=c.getAttribute('data-col')||(c.className||'').trim();
+      (m[dim]=m[dim]||[]).push(c);
+    });
+    return m;
+  }
+  function setAllBoxes(list,checked){
+    list.forEach(function(c){ if(c.checked!==checked){c.checked=checked; c.dispatchEvent(new Event('change',{bubbles:true}));} });
+  }
+  /* EFFECT: for every filter dimension, deselecting all of its values MUST change
+     the plotted set (and reselecting restores it). A dimension where deselecting
+     every value changes nothing -- while the plot has data -- is not wired to the
+     plot: the exact "updating the serial filter does not change the plot" bug.
+     A dimension containing an always-on member (e.g. a disabled Room checkbox on
+     a Room-only view) legitimately may not change and is skipped, not failed. */
+  function runFilterEffect(R,chk,skip,heavy){
+    var dims=filterDims(), names=Object.keys(dims);
+    if(!names.length){ skip('filter-effect','no filter checkboxes in this view'); return; }
+    // Test serial/port dimensions FIRST -- they are the ones that recur as dead
+    // filters, and must be covered even under the heavy-page dimension cap.
+    names.sort(function(a,b){
+      function pri(n){var l=n.toLowerCase();return /serial|ser_chk|s\/n|unit id|dut id/.test(l)?0:/port/.test(l)?1:2;}
+      return pri(a)-pri(b);
+    });
+    // Runs on heavy pages too (2 renders per dimension is bounded -- the size-
+    // scaled budget covers it), just capped to keep a very large page's total
+    // render count in check. NOT skipped: a dead filter on a big page is exactly
+    // the reported failure and must be gated.
+    var maxDims=heavy?4:names.length, tested=0;
+    var S0=plotSig(), hasData=S0!=='[]'&&JSON.parse(S0).some(function(s){return parseInt(s.split(':').pop(),10)>0;});
+    names.forEach(function(dim){
+      var list=dims[dim], vals=list.filter(function(c){return !c.disabled;});
+      var anyDisabled=list.some(function(c){return c.disabled;});
+      if(!vals.length){ skip('filter-effect['+dim+']','no toggleable values'); return; }
+      if(tested>=maxDims){ skip('filter-effect['+dim+']','capped on heavy page (serial/port tested first)'); return; }
+      tested++;
+      var before=plotSig();
+      setAllBoxes(vals,false); var off=plotSig();
+      setAllBoxes(vals,true);  var back=plotSig();
+      chk('filter-reselect-restores['+dim+']', back===before,
+          'restored='+(back===before)+(back===before?'':' | before='+before.slice(0,70)+' back='+back.slice(0,70)));
+      if(off!==before){ chk('filter-affects-plot['+dim+']', true, 'deselect-all changed the plot'); }
+      else if(anyDisabled){ skip('filter-affects-plot['+dim+']','deselect-all no-op, but dim has an always-on member (e.g. Room) -- legitimate'); }
+      else if(!hasData){ skip('filter-affects-plot['+dim+']','plot already empty'); }
+      else { chk('filter-affects-plot['+dim+']', false,
+             'DEAD FILTER: deselecting every value of "'+dim+'" left the plot unchanged (baseline non-empty) -- not wired to the plot'); }
+    });
+  }
+  /* PERSISTENCE: each filter's state must survive saveState()->loadState() (the
+     "the serial number change does not persist" report). Uncheck one value, save,
+     force it back checked in the DOM (simulating a fresh load), loadState, and
+     assert it comes back UNchecked. Covers up to a few dimensions per view. */
+  function runPersistence(R,chk,skip){
+    if(typeof saveState!=='function'||typeof loadState!=='function'){
+      skip('filter-persistence','view has no saveState/loadState'); return; }
+    var dims=filterDims(), names=Object.keys(dims), tested=0;
+    if(!names.length){ skip('filter-persistence','no filter checkboxes'); return; }
+    // serial/port first, so they're covered even under the per-view cap.
+    names.sort(function(a,b){
+      function pri(n){var l=n.toLowerCase();return /serial|ser_chk|s\/n|unit id|dut id/.test(l)?0:/port/.test(l)?1:2;}
+      return pri(a)-pri(b);
+    });
+    names.forEach(function(dim){
+      if(tested>=4) return;
+      var vals=dims[dim].filter(function(c){return !c.disabled;});
+      var c=vals.filter(function(x){return x.checked;})[0]||vals[0];
+      if(!c){ return; }
+      var v=c.value;
+      c.checked=false; c.dispatchEvent(new Event('change',{bubbles:true}));
+      try{ saveState(); }catch(e){}
+      var cur=dims[dim].filter(function(x){return x.value===v;})[0]; if(cur) cur.checked=true; // simulate fresh DOM
+      try{ loadState(); }catch(e){}
+      var after=dims[dim].filter(function(x){return x.value===v;})[0];
+      chk('filter-state-persists['+dim+'='+v+']', !!after&&after.checked===false,
+          'after loadState checked='+(after?after.checked:'gone')+' (expected false)');
+      if(after){ after.checked=true; after.dispatchEvent(new Event('change',{bubbles:true})); }
+      try{ saveState(); }catch(e){}
+      tested++;
+    });
+    if(!tested) skip('filter-persistence','no toggleable filter values');
   }
   // Generic invariants for ANY view. `runViewSetup` optionally primes the view
   // (e.g. box: turn on Show Points) and returns a label. Returns pushes into R.
@@ -973,8 +1067,12 @@ _HARNESS_JS = r"""
           'basis='+rec.basis+' level='+rec.level+' reasons='+(rec.why?rec.why.length:0));
       // expected auto-key count at the recommended settings
       basisEl.value=rec.basis; levelEl.value=rec.level;
-      var expR=STAT_AF.compute(rec.basis,rec.level), expKeys=0;
-      expR.auto.forEach(function(d){expKeys+=d.keys.length;});
+      // UNIQUE keys -- ctx.merge stores a Set, and a DUT can have several bad
+      // points collapsing to one (serial,cond,temp,freq-box) key, so a raw
+      // d.keys.length sum over-counts vs. what the GF actually holds.
+      var expR=STAT_AF.compute(rec.basis,rec.level), _uk={};
+      expR.auto.forEach(function(d){d.keys.forEach(function(k){_uk[k]=1;});});
+      var expKeys=Object.keys(_uk).length;
       clearStatGlobalFilter();
       statRunWorkflow();
       chk('workflow-run-applies-recommended-auto', gfN()===expKeys, 'gf='+gfN()+' expected='+expKeys);
@@ -1072,7 +1170,7 @@ _HARNESS_JS = r"""
         ['dist','iqr','dmad','spec','tll'].indexOf(rec.basis)>=0 && ['conservative','moderate','aggressive'].indexOf(rec.level)>=0 && rec.why&&rec.why.length>0,
         'basis='+rec.basis+' level='+rec.level);
     basisEl.value=rec.basis; levelEl.value=rec.level;
-    var expR=CTX.compute(rec.basis,rec.level), ek=0; expR.auto.forEach(function(d){ek+=d.keys.length;});
+    var expR=CTX.compute(rec.basis,rec.level), _uk={}; expR.auto.forEach(function(d){d.keys.forEach(function(k){_uk[k]=1;});}); var ek=Object.keys(_uk).length;
     clr(); _afRunWorkflow(CTX);
     chk('workflow-run-applies-recommended-auto['+tag+']', gfN()===ek, 'gf='+gfN()+' expected='+ek);
     window._afNoPrint=true; window._afNoCapture=true; try{_afGenerateReport(CTX);}catch(e){} window._afNoPrint=false; window._afNoCapture=false;
@@ -1227,7 +1325,14 @@ _HARNESS_JS = r"""
       r.auto.forEach(function(d){d.keys.forEach(function(k){ak[k]=1;});});
       var mBefore=applyFilters(DATA).length;
       var rem=applyFilters(DATA).filter(function(x){return ak[_refPtKey(x)];}).length;
-      chk('reference-impact-removes-gross-outliers', rem>0, 'removed='+rem+' autoDuts='+r.auto.length);
+      // The engine's risk-gated auto set is legitimately empty on many real
+      // datasets (nothing meets the dist/aggressive bar) -- only assert a
+      // positive removal when the engine DID flag DUTs; otherwise skip (the
+      // consistency check below still has teeth). The "genuinely removes gross
+      // outliers" teeth live in the synthetic planted-outlier regression.
+      if(r.auto.length>0) chk('reference-impact-removes-when-auto-nonempty', rem>0,
+          'removed='+rem+' autoDuts='+r.auto.length);
+      else skip('reference-impact-removes-when-auto-nonempty','auto set empty on this data (auto-filter found nothing at dist/aggressive) -- legitimate');
       var tbls=imp.getElementsByTagName('table');
       chk('reference-impact-renders-table', tbls.length===1, 'tables='+tbls.length);
       if(tbls.length){
@@ -1284,6 +1389,11 @@ _HARNESS_JS = r"""
       var _HEAVY=(typeof window._QA_HEAVY!=='undefined')?(window._QA_HEAVY===true):false;
       // Generic invariants for every view (reversibility loop skipped when heavy).
       runGeneric(R,chk,skip,_HEAVY);
+      // Per-dimension filter EFFECT + PERSISTENCE -- runs for EVERY view (incl.
+      // reference), covering EACH filter dimension separately (data-col granular),
+      // so a dead/non-persisting filter (e.g. the serial filter) can't slip past.
+      try{ runFilterEffect(R,chk,skip,_HEAVY); }catch(e){ chk('FILTER-EFFECT-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
+      try{ runPersistence(R,chk,skip); }catch(e){ chk('PERSISTENCE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
       // Reference Statistics view: an aggregate view (no #plot points). It has its
       // own coupling block; the interactive per-point checks below assume a #plot
       // point view and don't apply, so run it and emit early.
@@ -1560,8 +1670,9 @@ _HARNESS_JS = r"""
               && ['conservative','moderate','aggressive'].indexOf(rec.level)>=0
               && rec.why && rec.why.length>0,
               'basis='+rec.basis+' level='+rec.level+' reasons='+(rec.why?rec.why.length:0));
-          var expR=BOX_AF.compute(rec.basis,rec.level), expKeys=0;
-          expR.auto.forEach(function(d){expKeys+=d.keys.length;});
+          var expR=BOX_AF.compute(rec.basis,rec.level), _uk={};
+          expR.auto.forEach(function(d){d.keys.forEach(function(k){_uk[k]=1;});});
+          var expKeys=Object.keys(_uk).length;
           if(typeof clearGlobalFilter!=='undefined') clearGlobalFilter();
           boxRunWorkflow();
           chk('workflow-run-applies-recommended-auto', _gfN()===expKeys, 'gf='+_gfN()+' expected='+expKeys);

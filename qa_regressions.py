@@ -274,6 +274,43 @@ def test_scatter_decimate_toggle():
               f"toggle_rows={nrows(html_tog)} default_rows={nrows(html_def)}")
 
 
+def test_filter_state_scoping():
+    """Filter-panel localStorage state (STATE_KEY) must be scoped PER PAGE, not per
+    results-dir. All plot jobs of one pod share a results_dir (by design), so a
+    results-dir-only key made every analytic -- and two different datasets built
+    into the same dir -- collide in localStorage: one analytic's serial selection
+    leaked into another's and 'did not persist'. STATE_KEY now includes the page
+    title, so two pages sharing a results_dir get distinct namespaces."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "s.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for i in range(4):
+                for fq in (100.0, 200.0):
+                    w.writerow(["Room", fq, round(-80 + 0.2 * i, 3),
+                                f"Serial Number: D{i:02d}", -50, -110])
+        df = pp._load_scatter_csv(p)
+        import re as _re
+        def state_key(h):
+            m = _re.search(r"var STATE_KEY=(\"[^\"]*\");", h)
+            return m.group(1) if m else None
+        # Two DIFFERENT analytics/pages, SAME results_dir.
+        rd = {"y_label": "P", "views": ["scatter"], "results_dir": "shared_v2_results"}
+        hA = pp._build_av_freq_html(df.copy(), {**rd, "title": "PodX AnalyticA — Scatter (Room)"}, "A")
+        hB = pp._build_av_freq_html(df.copy(), {**rd, "title": "PodX AnalyticB — Scatter (Room)"}, "B")
+        kA, kB = state_key(hA), state_key(hB)
+        check("filter STATE_KEY is present and page-scoped (includes the title)",
+              kA is not None and "AnalyticA" in kA, f"kA={kA}")
+        check("filter STATE_KEY differs between two pages sharing a results_dir",
+              kA is not None and kB is not None and kA != kB, f"kA={kA} kB={kB}")
+        # Same page (same title+results_dir) is stable across rebuilds.
+        hA2 = pp._build_av_freq_html(df.copy(), {**rd, "title": "PodX AnalyticA — Scatter (Room)"}, "A")
+        check("filter STATE_KEY is stable for the same page across rebuilds",
+              state_key(hA2) == kA, f"{state_key(hA2)} vs {kA}")
+
+
 def test_auto_filter_boxplot():
     """Server contract for the boxplot 'Auto-filter bad DUTs' feature: the controls
     render, and the JS carries the MAD-robust magnitude (not sigma-from-mean) and
@@ -632,6 +669,7 @@ def main() -> None:
                test_has_segmentable_spec, test_resolve_date_sentinel,
                test_filename_stem_variants, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
+               test_filter_state_scoping,
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
                test_auto_filter_site_scope, test_pdf_report_contract,

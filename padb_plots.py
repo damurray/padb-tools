@@ -516,6 +516,17 @@ function _scatDecimateActive(){
   var sa=document.getElementById('show_all_pts_chk');
   return !(sa&&sa.checked);   // decimate unless "Show all points" is ticked
 }
+/* Show-all-points toggle: warn about the extra render time (every embedded raw
+   point is drawn, vs the fast envelope) before the potentially-slow update(). */
+function _showAllWarnText(){
+  var w=document.getElementById('show_all_pts_warn'),sa=document.getElementById('show_all_pts_chk');
+  if(!w) return;
+  if(sa&&sa.checked){
+    var n=(typeof DATA!=='undefined'&&DATA&&DATA.length)?DATA.length:0;
+    w.textContent=' — drawing all'+(n?' '+n.toLocaleString():'')+' points; slower to render';
+  } else { w.textContent=''; }
+}
+function _showAllToggle(){ _showAllWarnText(); update(); }
 function buildTraces(filtered){
   /* Group by is a MULTI-select (2026-09-02): split/color traces by any
      combination of parameters (Ctrl/Cmd-click). None selected = one combined
@@ -927,6 +938,7 @@ function loadState(){
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
   var hs=_stGet('hide_spec');if(hs!==null)document.getElementById('hide_spec_chk').checked=(hs==='1');
   var sap=_stGet('show_all_pts');var sapEl=document.getElementById('show_all_pts_chk');if(sap!==null&&sapEl)sapEl.checked=(sap==='1');
+  if(typeof _showAllWarnText==='function')_showAllWarnText();
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -2118,7 +2130,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
             '<b>Fast render:</b> dense traces are drawn as a min/max envelope '
             f'(&gt;{_tog_threshold:,} pts/trace reduced to ~{_tog_target:,}, spikes '
             'preserved). Every raw point is embedded &mdash; tick '
-            '<b>Show&nbsp;all&nbsp;points</b> to draw them all.</div>'
+            '<b>Show&nbsp;all&nbsp;points</b> to draw them all '
+            '(slower to render and pan/zoom on a large dataset).</div>'
         )
 
     # Temperature env_bar: if Test_Step has >1 unique value, show it as an inline
@@ -2279,7 +2292,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
         f"var TEMPS={json.dumps(temps_present)};",
-        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         # GF is scoped PER-ANALYTIC (the title prefix, shared across this
         # analytic's views but distinct per analytic/test), not browser-global
         # -- so a Global Filter built on one dataset never bleeds onto an
@@ -2381,8 +2394,10 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         ' Hide&nbsp;spec&nbsp;lines</label>\n'
         + (
             '  <label id="show_all_pts_label" title="This dataset embeds every raw point. '
-            'Unchecked draws a fast min/max envelope (spikes preserved); check to draw every point.">'
-            '<input type="checkbox" id="show_all_pts_chk" onchange="update()"> Show&nbsp;all&nbsp;points</label>\n'
+            'Unchecked draws a fast min/max envelope (spikes preserved); check to draw every point '
+            '-- on a large dataset this can take several seconds to render and pan/zoom more slowly.">'
+            '<input type="checkbox" id="show_all_pts_chk" onchange="_showAllToggle()"> Show&nbsp;all&nbsp;points'
+            '<span id="show_all_pts_warn" style="color:#a05000;font-weight:600"></span></label>\n'
             if scatter_toggle else ""
         )
         + f'{band_section_html}'
@@ -2569,7 +2584,7 @@ def distribution(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
-        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
     ])
 
     css = (
@@ -3994,7 +4009,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
                 if dist_primary_site else "")
 
     constants = "\n".join([
-        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         f"var X_UNIT={json.dumps(x_unit)};",
         f"var SPUR_TYPES={json.dumps(spur_types)};",
         f"var SPUR_COLORS={json.dumps(spur_colors)};",
@@ -4161,6 +4176,7 @@ function saveState(){
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.dist_spur_chk').forEach(function(c){_stSet('dist_spur_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.dist_port_chk').forEach(function(c){_stSet('dist_port_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.dist_ser_chk').forEach(function(c){_stSet('dist_ser_'+c.value,c.checked?'1':'0');});
 }
 function loadState(){
   var vm=_stGet('dist_view');
@@ -4177,6 +4193,7 @@ function loadState(){
   if(spurChks.length&&!spurChks.some(function(c){return c.checked;}))
     spurChks.forEach(function(c){c.checked=true;});
   document.querySelectorAll('.dist_port_chk').forEach(function(c){var s=_stGet('dist_port_'+c.value);if(s!==null)c.checked=(s==='1');});
+  document.querySelectorAll('.dist_ser_chk').forEach(function(c){var s=_stGet('dist_ser_'+c.value);if(s!==null)c.checked=(s==='1');});
   ['spur','ser','port'].forEach(_distUpdateBadge);
 }
 
@@ -7834,6 +7851,8 @@ function saveState(){
     var col='cond_'+dim.col_id;
     document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){_stSet('cond_'+col+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
   });
+  document.querySelectorAll('.ser_chk').forEach(function(c){_stSet('ser_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.ss_port_chk').forEach(function(c){_stSet('port_'+c.value,c.checked?'1':'0');});
   var fltEl=document.querySelector('input[name="data_flt"]:checked');if(fltEl)_stSet('stat_filter_mode',fltEl.value);
   var yhiEl=document.getElementById('flt_yhi');if(yhiEl)_stSet('stat_filter_yhi',yhiEl.value);
   var yloEl=document.getElementById('flt_ylo');if(yloEl)_stSet('stat_filter_ylo',yloEl.value);
@@ -7859,6 +7878,8 @@ function loadState(){
     if(allChk){var n=chks.filter(function(c){return c.checked;}).length;allChk.checked=(n===chks.length);allChk.indeterminate=(n>0&&n<chks.length);}
     updateBadge(col);
   });
+  document.querySelectorAll('.ser_chk').forEach(function(c){var s=_stGet('ser_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  document.querySelectorAll('.ss_port_chk').forEach(function(c){var s=_stGet('port_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   var fm=_stGet('stat_filter_mode');
   if(fm){var fr=document.querySelector('input[name="data_flt"][value="'+fm+'"]');if(fr){fr.checked=true;}}
   var fyhi=_stGet('stat_filter_yhi');var fyhiEl=document.getElementById('flt_yhi');if(fyhi!==null&&fyhiEl)fyhiEl.value=fyhi;
@@ -8249,7 +8270,7 @@ def _build_stat_summary_html(
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
         f"var SS_ALL_PORTS={json.dumps(all_ports_ss)};",
         f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
-        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site if site_compare_enabled else None)};",
@@ -10064,6 +10085,8 @@ function saveState(){
   _stSet('freq_lo',document.getElementById('ec_freq_lo')?document.getElementById('ec_freq_lo').value:'');
   _stSet('freq_hi',document.getElementById('ec_freq_hi')?document.getElementById('ec_freq_hi').value:'');
   document.querySelectorAll('.ec_temp_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.ec_ser_chk').forEach(function(c){_stSet('ser_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.ec_port_chk').forEach(function(c){_stSet('port_'+c.value,c.checked?'1':'0');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     document.querySelectorAll('.'+dim.col_id).forEach(function(c){_stSet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
   });
@@ -10080,6 +10103,8 @@ function loadState(){
   if(lo!==null){var sl=document.getElementById('ec_freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('ec_freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('ec_freq_hi');if(sh){sh.value=hi;var th=document.getElementById('ec_freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
   document.querySelectorAll('.ec_temp_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  document.querySelectorAll('.ec_ser_chk').forEach(function(c){var s=_stGet('ser_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  document.querySelectorAll('.ec_port_chk').forEach(function(c){var s=_stGet('port_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     document.querySelectorAll('.'+dim.col_id).forEach(function(c){var s=_stGet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
     var chks=Array.from(document.querySelectorAll('.'+dim.col_id));
@@ -11516,8 +11541,16 @@ function _syncLfFromAllDims(){
   document.querySelectorAll('.box_cond_lf_row').forEach(function(row){
     var cond=row.querySelector('.box_cond_lf_chk').value;
     var ok=COND_DIMS.every(function(dim){
+      var boxes=document.querySelectorAll('.box_cond_'+dim.col_id);
       var sel=getSelected('box_cond_'+dim.col_id);
-      if(!sel.length) return true;
+      /* Zero selected in a dim that HAS values means "exclude everything on this
+         dim" (the user unchecked them all), NOT "no constraint" -- otherwise
+         deselecting a whole per-dimension panel leaves the longform fully checked
+         and the plot unchanged (a dead filter). A dim with no checkboxes at all
+         (boxes.length===0) genuinely imposes no constraint. Matches the
+         env-family getSelectedConds() semantics (if(!chks.length) return false). */
+      if(!boxes.length) return true;
+      if(!sel.length) return false;
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
       /* Use lookahead for double-space or end-of-string so multi-word values are captured */
       var m=cond.match(new RegExp(safe+':\\s*(.+?)(?=  |$)'));
@@ -14677,6 +14710,8 @@ function saveState(){
   var flo=document.getElementById('box_freq_lo');if(flo)_stSet('freq_lo',flo.value);
   var fhi=document.getElementById('box_freq_hi');if(fhi)_stSet('freq_hi',fhi.value);
   document.querySelectorAll('.box_env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.box_ser_chk').forEach(function(c){_stSet('ser_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.box_port_chk').forEach(function(c){_stSet('port_'+c.value,c.checked?'1':'0');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     var col='box_cond_'+dim.col_id;
     document.querySelectorAll('.'+col).forEach(function(c){_stSet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
@@ -14695,6 +14730,8 @@ function loadState(){
   if(lo!==null){var sl=document.getElementById('box_freq_lo');if(sl)sl.value=lo;}
   if(hi!==null){var sh=document.getElementById('box_freq_hi');if(sh)sh.value=hi;}
   document.querySelectorAll('.box_env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  document.querySelectorAll('.box_ser_chk').forEach(function(c){var s=_stGet('ser_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  document.querySelectorAll('.box_port_chk').forEach(function(c){var s=_stGet('port_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     var col='box_cond_'+dim.col_id;
     document.querySelectorAll('.'+col).forEach(function(c){var s=_stGet('cond_cond_'+dim.col_id+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
@@ -17410,6 +17447,7 @@ function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
   document.querySelectorAll('.sum_temp_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
+  document.querySelectorAll('.sum_ser_chk').forEach(function(c){_stSet('ser_'+c.value,c.checked?'1':'0');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     var col='cond_'+dim.col_id;
     document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){_stSet('cond_'+col+'_'+encodeURIComponent(c.value),c.checked?'1':'0');});
@@ -17432,6 +17470,7 @@ function loadState(){
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
   document.querySelectorAll('.sum_temp_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
+  document.querySelectorAll('.sum_ser_chk').forEach(function(c){var s=_stGet('ser_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     var col='cond_'+dim.col_id;
     document.querySelectorAll('.fchk[data-col="'+col+'"]').forEach(function(c){var s=_stGet('cond_'+col+'_'+encodeURIComponent(c.value));if(s!==null)c.checked=(s==='1');});
@@ -17702,7 +17741,7 @@ def _build_summary_html(
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in freq_vals))};",
-        f"var STATE_KEY='padb_{cfg.get('results_dir', '')}';",
+        f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site)};",
