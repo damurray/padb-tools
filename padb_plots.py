@@ -12802,7 +12802,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
         - Temperature is NOT a group dim -> the group pools every selected
           temp, so it's Room-only only when Room is the sole selected temp. */
     var _stReuseBase=!_hasUnitDimSt&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive
-      &&!gfFocusActive&&!isExclRoom()&&!isExclDEnv()&&!isCollapseDup()&&!portActiveSt;
+      &&!gfFocusActive&&!_gfActiveSt&&!isExclRoom()&&!isExclDEnv()&&!isCollapseDup()&&!portActiveSt;
     var _stTempColIdx=_bxGrpColsSt.indexOf('__temp__');
     var _stRoomOnlySel=(selTemps||[]).length>0&&(selTemps||[]).every(function(t){return t==='Room';});
     var _stStatsMap={};
@@ -12885,7 +12885,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
       });
     });
-  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive||isExclRoom()||isExclDEnv()||isCollapseDup()){
+  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive||_gfActiveSt||isExclRoom()||isExclDEnv()||isCollapseDup()){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rlo=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var exclRoomSt=isExclRoom(),exclDEnvSt=isExclDEnv();
@@ -12898,6 +12898,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
                  yFltActive?'Y-filtered [hi='+rhi.toFixed(3)+']':
                  (exclRoomSt||exclDEnvSt)?'Outliers excluded':
                  isCollapseDup()?'Dup runs collapsed':
+                 _gfActiveSt?'GF-filtered':
                  'Filtered';
     /* Real bug found by the user (2026-08-31): narrowing the Temperature
        checkboxes to Room-only used to fall into this branch just like any
@@ -12915,7 +12916,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
        filter combination and for non-Room rows (no normality test exists
        for those at all, filtered or not). */
     var tempOnlyFilter=tempActive&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive&&
-      !gfFocusActive&&!exclRoomSt&&!exclDEnvSt&&!isCollapseDup();
+      !gfFocusActive&&!_gfActiveSt&&!exclRoomSt&&!exclDEnvSt&&!isCollapseDup();
     var _boxStatsByCondFreqSt={};
     if(tempOnlyFilter) BOX_STATS.forEach(function(cd){
       (cd.freq_stats||[]).forEach(function(fs){_boxStatsByCondFreqSt[cd.condition+'|'+fs.freq]=fs;});
@@ -12934,7 +12935,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
         if(f.freq<fr.lo||f.freq>fr.hi) return;
         var detail=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}))
           .filter(function(d){
-            if(gfFocusActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);if(!_boxIsInGf(_ck)) return false;}
+            if(_gfActiveSt){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);var _ig=_boxIsInGf(_ck);if(_gfFocusSt?!_ig:_ig) return false;}
             return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
               &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi));
           });

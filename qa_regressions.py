@@ -498,6 +498,26 @@ def test_auto_filter_boxplot():
               "_stSet('lfcond_'" in h)
         check("boxplot restores longform condition selections (loadState reads lfcond)",
               "_stGet('lfcond_'" in h)
+        # Statistics Table couples to a normal-mode GF exclusion (the auto-filter's own
+        # apply path), not only GF Focus/Inspect mode. Bug found 2026-09-15 on the
+        # MaxPowerTutorial2 Leveled_Linear boxplot ("auto filter tables are not
+        # coupled"): the ungrouped table branch was entered for gfFocusActive but not
+        # _gfActiveSt, and its inner point-drop ran only 'if(gfFocusActive)', so an
+        # auto-filter/GF exclusion (exclude mode -- the default) changed the plot's box
+        # stats but never the Statistics Table's n/mean/Q1..Q3. The plot has always
+        # applied GF in both modes (buildBoxTraces: gfActive + boxGfFocus?!_ig:_ig);
+        # the table must match. (Grouped Group-by path already did, via
+        # _computeBoxGroupedByColId.)
+        check("stats table enters filtered branch on normal-mode GF (_gfActiveSt in else-if)",
+              "||gfFocusActive||_gfActiveSt||isExclRoom()" in h)
+        check("stats table applies GF point-drop in BOTH modes (not focus-only)",
+              "if(_gfActiveSt){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)"
+              "+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);var _ig=_boxIsInGf(_ck);"
+              "if(_gfFocusSt?!_ig:_ig) return false;}" in h)
+        check("stats table shows GF-filtered label + skips BOX_STATS normality reuse under GF",
+              "_gfActiveSt?'GF-filtered'" in h
+              and "!gfFocusActive&&!_gfActiveSt&&!exclRoomSt" in h  # tempOnlyFilter
+              and "&&!gfFocusActive&&!_gfActiveSt&&!isExclRoom()" in h)  # _stReuseBase
 
 
 def test_auto_filter_site_scope():
