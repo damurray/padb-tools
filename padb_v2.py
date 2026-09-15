@@ -943,6 +943,23 @@ def _df_to_scatter_csv(df: pd.DataFrame, out_path: Path) -> None:
 # 5.  Report orchestrator
 # ===========================================================================
 
+def render_reference_stats(
+    df: pd.DataFrame,
+    cfg: dict,
+    output_html: Path,
+) -> None:
+    """Filter-coupled descriptive-statistics "1000 ft view": overall + pass/fail,
+    Pareto by group, per-group descriptive stats. Aggregates over the FULL data
+    (never decimated), so counts are accurate on large datasets."""
+    if df.empty:
+        _write_placeholder(output_html, cfg.get("title", output_html.stem), "No data rows found.")
+        return
+    import padb_refstats
+    html = padb_refstats._build_reference_stats_html(df, cfg, cfg.get("title", output_html.stem))
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html, encoding="utf-8")
+
+
 _VIEW_FN = {
     "scatter":      render_scatter,
     "stat_summary": render_stat_summary,
@@ -950,6 +967,7 @@ _VIEW_FN = {
     "distribution": render_distribution,
     "env_coverage": render_env_coverage,
     "summary":      render_summary,
+    "reference":    render_reference_stats,
 }
 
 _VIEW_LABELS = {
@@ -959,6 +977,7 @@ _VIEW_LABELS = {
     "distribution": "Distribution (Delta-Env)",
     "env_coverage": "Environmental Coverage",
     "summary":      "Summary (All Temps)",
+    "reference":    "Reference Statistics",
     "histogram":    "Histogram",
 }
 
@@ -1137,7 +1156,7 @@ def generate_report(
         views = cfg["views"]
     else:
         if is_room_only:
-            views = ["scatter", "boxplot"]
+            views = ["scatter", "boxplot", "reference"]
             if cfg.get("room_only_full_views", False):
                 views += ["summary", "stat_summary"]
             print(f"    Room-only data detected -> default views: {views}", flush=True)

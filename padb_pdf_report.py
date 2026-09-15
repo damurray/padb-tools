@@ -80,6 +80,7 @@ PRINT_PROFILES: dict[str, dict[str, Any]] = {
     "distribution": {"plot": "kde_plot", "panels": ["delta_tbl", "dist_ti_tbl"], "toggles": []},
     "env_coverage": {"plot": "plot",     "panels": ["ec_stat_panel"],        "toggles": ["toggleStatsPanel"], "refresh": "ec_refresh_table_btn", "workflow": "ecRunWorkflow", "ctx": "EC_AF", "siteSel": "ec_auto_site"},
     "summary":      {"plot": "plot",     "panels": ["sum_table_wrap"],       "toggles": ["buildTable"],       "refresh": "sum_refresh_table_btn", "workflow": "sumRunWorkflow", "ctx": "SUM_AF", "siteSel": "sum_auto_site"},
+    "reference":    {"plot": "pareto",   "panels": ["overall", "grouptbl"],  "toggles": []},
     "histogram":    {"plot": "plot",     "panels": ["h_stats"],              "toggles": ["toggleStats"],      "workflow": "histRunWorkflow", "ctx": "HIST_AF", "siteSel": "h_auto_site"},
 }
 

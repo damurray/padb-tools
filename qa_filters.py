@@ -2,8 +2,15 @@
 """
 qa_filters.py -- filter/plot/table/statistics COUPLING + Global-Filter
 self-consistency gate for EVERY interactive view (scatter, stat_summary, boxplot,
-distribution, env_coverage, summary, histogram), single-site AND cross-site
-compare.
+distribution, env_coverage, summary, histogram, reference), single-site AND
+cross-site compare.
+
+The Reference Statistics view (padb_refstats) is an AGGREGATE view (no #plot
+per-point markers): its own runReference block proves the #overall headline,
+#pareto bar, and #grouptbl table stay coupled to one applyFilters(DATA) set --
+overall total == filter output, per-group rows sum to it, pareto keys subset of
+table keys, group-table Fail sums to overall Fail, and a freq filter shrinks all
+three together and reverts.
 
 Coupling coverage per plot type (view-agnostic, so every view above is checked):
   * filter -> plot   : toggling a condition/serial/temp filter changes the plotted
@@ -1074,6 +1081,95 @@ _HARNESS_JS = r"""
     clr(); levelEl.value='off'; CTX.previewFn();
   }
 
+  // ---- Reference Statistics view (padb_refstats) -------------------------
+  // An AGGREGATE view: no #plot per-point markers -- it renders #overall
+  // (headline pass/fail + descriptive stats), a #pareto Plotly bar (fails/
+  // outliers by group), and a #grouptbl per-group descriptive table, all
+  // recomputed from applyFilters(DATA). This block proves those three panels
+  // stay coupled to the SAME filtered set: the overall total equals the filter
+  // output, per-group rows sum to that total, the pareto's group keys are a
+  // subset of the table's, the group-table Fail column sums to the overall Fail
+  // (plots/stats/table match on the pass/fail axis), and a frequency filter
+  // shrinks all three together and reverts. Self-skips on any other view.
+  function _isReference(){
+    return typeof COLS!=='undefined' && typeof GROUP_COLS!=='undefined'
+        && typeof applyFilters==='function'
+        && document.getElementById('grouptbl') && document.getElementById('overall')
+        && document.getElementById('pareto');
+  }
+  function runReference(R,chk,skip){
+    if(!_isReference()){ skip('reference','not a reference-stats view'); return; }
+    function overallTotal(){
+      var el=document.getElementById('overall'); if(!el)return null;
+      var m=el.textContent.match(/Total points \(filtered\)\s*([\d,]+)/);
+      return m?parseInt(m[1].replace(/,/g,''),10):null;
+    }
+    function groupCount(rows,gb){
+      var g={}; rows.forEach(function(r){
+        var key=(gb&&r[gb]!=null&&r[gb]!=='')?String(r[gb]):(gb?'(blank)':'(all)');
+        g[key]=(g[key]||0)+1;}); return g;
+    }
+    function tableKeys(){ return [].slice.call(document.querySelectorAll('#grouptbl tbody tr td.k'))
+      .map(function(td){return td.textContent;}); }
+    function tableColSum(name){
+      var ths=[].slice.call(document.querySelectorAll('#grouptbl thead th')), fi=-1;
+      ths.forEach(function(th,i){ if(th.textContent.trim()===name) fi=i; });
+      if(fi<0) return null;
+      var sum=0; [].slice.call(document.querySelectorAll('#grouptbl tbody tr')).forEach(function(tr){
+        sum+=parseInt((tr.children[fi]||{}).textContent||'0',10)||0; }); return sum;
+    }
+    function paretoKeys(){
+      var gd=document.getElementById('pareto');
+      return (gd&&gd.data&&gd.data[0]?(gd.data[0].x||[]):[]).map(String);
+    }
+    try{resetFilters();}catch(e){} update();
+    var gb=document.getElementById('groupby').value;
+    var flt=applyFilters(DATA), base=flt.length;
+    chk('reference-baseline-not-blank', base>0, 'rows='+base);
+    if(!base){ return; }
+    // (1) overall headline total == filter output
+    chk('reference-overall-total-matches-filter', overallTotal()===base, 'overall='+overallTotal()+' filter='+base);
+    // (2) per-group rows sum back to the filtered total
+    var g=groupCount(flt,gb), gkeys=Object.keys(g);
+    var sumRows=gkeys.reduce(function(a,k){return a+g[k];},0);
+    chk('reference-group-rows-sum-to-total', sumRows===base, 'sum='+sumRows+' total='+base);
+    // (3) group-table keys == the recomputed grouping (set equality)
+    var tk=tableKeys().slice().sort(), rk=gkeys.slice().sort();
+    chk('reference-table-keys-match-grouping', JSON.stringify(tk)===JSON.stringify(rk),
+        'table=['+tk.join(',')+'] grouping=['+rk.join(',')+']');
+    // (4) pareto keys are a non-empty subset of the table keys (pareto caps at top 30)
+    var pk=paretoKeys(), tset={}; tk.forEach(function(k){tset[k]=1;});
+    chk('reference-pareto-keys-subset-of-table', pk.length>0 && pk.every(function(k){return tset[k];}),
+        'pareto=['+pk.join(',')+'] notin=['+pk.filter(function(k){return !tset[k];}).join(',')+']');
+    // (5) group-table 'n' (non-null Values) sums to the filtered non-null count
+    var sumN=tableColSum('n'), nonNull=flt.filter(function(r){return r.Value!=null;}).length;
+    chk('reference-table-n-sums-to-nonnull-values', sumN===nonNull, 'sumN='+sumN+' nonNull='+nonNull);
+    // (6) pass/fail axis: overall Fail == sum of the group-table Fail column
+    var el=document.getElementById('overall');
+    // Overall "Fail" + its count render as adjacent <td> cells, so textContent has
+    // no whitespace between them ("Fail19,247 (46.2%)") -- match with \s* not \s+.
+    var mf=el.textContent.match(/Fail\s*([\d,]+)\s*\(/), gfs=tableColSum('Fail');
+    if(mf&&gfs!=null){
+      chk('reference-overall-fail-equals-grouptable-fail-sum',
+          parseInt(mf[1].replace(/,/g,''),10)===gfs, 'overall='+mf[1]+' grouptbl='+gfs);
+    } else skip('reference-fail-coupling','no pass/fail mode (no status field or limits)');
+    // (7) a frequency filter shrinks overall + group table together, then reverts
+    var freqs=DATA.map(function(r){return r.Frequency_MHz;}).filter(function(x){return x!=null;});
+    if(freqs.length){
+      var mn=Math.min.apply(null,freqs), mx=Math.max.apply(null,freqs);
+      var fhi=document.getElementById('f_hi'), saved=fhi.value;
+      fhi.value=(mn+mx)/2; update();
+      var narrowed=applyFilters(DATA).length;
+      var g2=groupCount(applyFilters(DATA),gb);
+      var s2=Object.keys(g2).reduce(function(a,k){return a+g2[k];},0);
+      chk('reference-freq-filter-shrinks-and-couples',
+          narrowed<base && overallTotal()===narrowed && s2===narrowed,
+          'base='+base+' narrowed='+narrowed+' overall='+overallTotal()+' grouprows='+s2);
+      fhi.value=saved; update();
+      chk('reference-freq-filter-reverts', overallTotal()===base, 'restored='+overallTotal()+' base='+base);
+    } else skip('reference-freq-filter','no frequency data');
+  }
+
   function run(){
     var R=[]; function chk(n,ok,d){R.push({name:n,ok:!!ok,detail:d||''});}
     function skip(n,d){R.push({name:n,skip:true,detail:d||''});}
@@ -1095,6 +1191,13 @@ _HARNESS_JS = r"""
       var _HEAVY=(typeof window._QA_HEAVY!=='undefined')?(window._QA_HEAVY===true):false;
       // Generic invariants for every view (reversibility loop skipped when heavy).
       runGeneric(R,chk,skip,_HEAVY);
+      // Reference Statistics view: an aggregate view (no #plot points). It has its
+      // own coupling block; the interactive per-point checks below assume a #plot
+      // point view and don't apply, so run it and emit early.
+      if(_isReference()){
+        try{ runReference(R,chk,skip); }catch(e){ chk('REFERENCE-HARNESS-ERROR',false,String(e)+' @ '+String((e&&e.stack||'').split('\n')[1]||'')); }
+        emit({view:'reference',results:R}); return;
+      }
       // Table cross-check -- skipped on heavy pages (building/rebuilding a large
       // stats table 3x races the virtual-time dump; the deep GF block is the
       // deterministic priority for a heavy compare boxplot).
@@ -1490,7 +1593,7 @@ def _discover(root: Path, glob: str, include_single: bool) -> list[Path]:
         # histogram alike, not just boxplot+histogram. ("summary" matches both
         # summary and stat_summary.) Use --limit to scope a large root.
         _VIEW_TOKENS = ("scatter", "boxplot", "histogram", "distribution",
-                        "env_coverage", "summary")
+                        "env_coverage", "summary", "reference")
         if not any(k in p.name.lower() for k in _VIEW_TOKENS):
             continue
         is_compare = "compare" in str(p).lower()

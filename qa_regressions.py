@@ -556,6 +556,47 @@ def test_pdf_report_contract():
               'href="Bar_B_report.pdf"' not in idx)
 
 
+def test_reference_stats():
+    """Server contract for the Reference Statistics view (padb_refstats): a dataset
+    with a pod status field ('Test Run Status') detects STATUS_COL and renders the
+    overall/pareto/group panels + column-oriented embed; a dataset without a status
+    field still builds (STATUS_COL null, pass/fail falls back to limits)."""
+    import csv as _csv
+    import padb_refstats as _rs
+    with tempfile.TemporaryDirectory() as td:
+        # (1) with a pod status field
+        ps = Path(td) / "st.csv"
+        with ps.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for st in ("P", "F"):
+                for freq in (100.0, 200.0):
+                    for i in range(10):
+                        w.writerow(["Room", freq, round(10.0 + 0.1 * i, 3),
+                                    f"Test Run Status: {st}  Serial Number: D{i:02d}", 20, -20])
+        df = pp._parse_group_fields(pp._load_scatter_for_stats(ps))
+        h = _rs._build_reference_stats_html(df, {"title": "T", "y_label": "P"}, "T")
+        check("reference: status field detected as STATUS_COL",
+              '"_grp_Test Run Status"' in h and "STATUS_COL" in h)
+        check("reference: overall/pareto/group panels + column embed + JS present",
+              all(s in h for s in ('id="overall"', 'id="pareto"', 'id="grouptbl"', "var COLS=", "GROUP_COLS", "_pfMode")))
+        check("reference: group-by + freq filter + override-limit controls present",
+              all(s in h for s in ('id="groupby"', 'id="f_lo"', 'id="ovr_hi"', 'id="ovr_lo"')))
+        # (2) no status field, limits present -> builds, STATUS_COL null
+        pl = Path(td) / "nolim.csv"
+        with pl.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(10):
+                    w.writerow(["Room", freq, round(10.0 + 0.1 * i, 3),
+                                f"HarmonicNumber: 2  Serial Number: D{i:02d}", 20, -20])
+        df2 = pp._parse_group_fields(pp._load_scatter_for_stats(pl))
+        h2 = _rs._build_reference_stats_html(df2, {"title": "T", "y_label": "P"}, "T")
+        check("reference: no-status dataset still builds with STATUS_COL null",
+              "var STATUS_COL=null;" in h2 and 'id="pareto"' in h2)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -569,7 +610,8 @@ def main() -> None:
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
-               test_auto_filter_site_scope, test_pdf_report_contract):
+               test_auto_filter_site_scope, test_pdf_report_contract,
+               test_reference_stats):
         try:
             fn()
         except Exception as exc:
