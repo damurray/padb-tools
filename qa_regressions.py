@@ -570,6 +570,11 @@ def test_auto_filter_stat_summary():
                                    "toggleStatWorkflow", "buckets:function", "_afRenderWorkflow")))
         check("stat_summary print-to-PDF report present (statGenReport)",
               "statGenReport" in h and "_afGenerateReport" in h and "Generate PDF report" in h)
+        # Subpopulation advisory rolled out to stat_summary: STAT_AF supplies
+        # subpopSlices (budget from unc_hi, station null), rendered by the shared
+        # _spAdvisoryHtml via _afRenderWorkflow's ctx.subpopSlices hook.
+        check("stat_summary supplies subpopSlices to STAT_AF (subpop advisory wired)",
+              "subpopSlices:function()" in h and "_spDetect" in h and "_spAdvisoryHtml" in h)
 
 
 def test_auto_filter_rollout_summary_envcov():
