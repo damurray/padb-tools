@@ -442,6 +442,12 @@ def test_auto_filter_boxplot():
               "_spAdvisoryHtml" in h and "typeof ctx.subpopSlices==='function'" in h)
         check("subpop advisory: boxplot supplies subpopSlices to BOX_AF",
               "subpopSlices:function()" in h and "budget_by_freq" in h and "station_by_dut" in h)
+        # "No Apply button" is explained (not a blank result) when candidates exist but
+        # none is auto-filterable (auto=0 && marginal=0 && review>0) -- e.g. a systemic /
+        # site-wide spread. Reported on the Return_Loss compare boxplot.
+        check("auto-filter no-apply banner present + wired in both preview paths",
+              "_afNoApplyBanner" in h and h.count("!r.auto.length && !r.marginal.length && r.review.length") >= 1
+              and "Nothing to auto-filter here" in h)
         # Longform per-condition selections (box_cond_lf_chk) are the authoritative
         # getSelectedConds() source and must round-trip through save/loadState --
         # they can express arbitrary condition subsets the per-dim panels cannot, so

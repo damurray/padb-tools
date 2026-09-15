@@ -3303,6 +3303,26 @@ function _afCompute(pts,ctx){
   auto.sort(function(a,b){return a.risk-b.risk;}); marginal.sort(function(a,b){return b.maxMag-a.maxMag;});
   return {auto:auto,marginal:marginal,review:review,thr:thr,basis:basis,unit:unit,compare:compare,primarySite:primarySite,siteScope:scope,siteSummary:siteSummary};
 }
+/* Explains WHY there's no Apply button when candidates exist but none is auto-filterable
+   (auto=0 && marginal=0 && review>0) -- otherwise a preview full of "review" rows with no
+   button reads as a broken control (reported on the Return_Loss compare boxplot, where 25
+   SR DUTs were systemic + 10 AMC DUTs were out of the default reference-only scope). Dataset-
+   adaptive: it breaks the review reasons down and points at the right tool / the scope selector. */
+function _afNoApplyBanner(r,ctx){
+  var nSys=0,nBen=0,nScope=0,nOther=0;
+  (r.review||[]).forEach(function(d){var rs=(d.reason||'');
+    if(/systemic/.test(rs))nSys++; else if(/benign/.test(rs))nBen++; else if(/scope/.test(rs))nScope++; else nOther++;});
+  var bits=[];
+  if(nSys)bits.push(nSys+' likely station/systemic (whole-population, not one bad DUT)');
+  if(nBen)bits.push(nBen+' benign (away from the failing side, can’t fail spec)');
+  if(nScope)bits.push(nScope+' outside the current auto-filter site scope');
+  if(nOther)bits.push(nOther+' below the level bar / risk too high');
+  var undo=(ctx&&ctx.undoHint)||'Clear global filter';
+  return '<div style="padding:6px 8px;background:#eef4ff;border:1px solid #cdd6e6;border-radius:4px;color:#2c5c96;margin:2px 0">'
+    +'<b>Nothing to auto-filter here</b> &mdash; no DUT met the bar, so there is no Apply button. Of '+(r.review||[]).length+' flagged DUT(s): '+bits.join('; ')+'. '
+    +'Auto-filter only removes clearly-<i>isolated</i> bad DUTs; a systemic or site-wide spread is better investigated (Site Population Check / Distribution health) than auto-removed'
+    +(nScope?'. To act on the out-of-scope onboarding-site DUTs, change the “auto-filter site” selector to Onboarding or Both':'')+'.</div>';
+}
 function _afPreview(ctx){
   var panel=document.getElementById(ctx.panel); if(!panel)return;
   var level=(document.getElementById(ctx.levelSel)||{}).value||'off';
@@ -3337,6 +3357,7 @@ function _afPreview(ctx){
         }).join(' &nbsp;|&nbsp; ')+'</div>';
     }
   }
+  if(!r.auto.length && !r.marginal.length && r.review.length){ h+=_afNoApplyBanner(r,ctx); }
   h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
     (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.applyFn+'()">Apply → add to '+_an+'</button>':'')+'</div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
@@ -14106,6 +14127,7 @@ function autoFilterPreview(){
         }).join(' &nbsp;|&nbsp; ')+'</div>';
     }
   }
+  if(!r.auto.length && !r.marginal.length && r.review.length){ h+=_afNoApplyBanner(r); }
   h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
     (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="autoFilterApply()">Apply → add to Global Filter</button>':'')+'</div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
