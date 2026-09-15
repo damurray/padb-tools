@@ -612,11 +612,15 @@ def test_auto_filter_rollout_summary_envcov():
                   "_afGenerateReport" in h and "Generate PDF report" in h)
             check(f"{label} clear-global-filter present",
                   f"clear{prefix.capitalize()}GlobalFilter" in h or ("clearSumGlobalFilter" if prefix == "sum" else "clearEcGlobalFilter") in h)
-            # Subpopulation advisory rollout: summary is wired (SUM_AF.subpopSlices);
-            # env_coverage/histogram are still pending, so only assert it for summary.
-            if label == "summary":
-                check(f"{label} supplies subpopSlices to {ctx} (subpop advisory wired)",
-                      "subpopSlices:function()" in h and "_spDetect" in h and "_spAdvisoryHtml" in h)
+            # Subpopulation advisory rollout: summary + env_coverage wired
+            # (SUM_AF/EC_AF.subpopSlices); histogram still pending.
+            check(f"{label} supplies subpopSlices to {ctx} (subpop advisory wired)",
+                  "subpopSlices:function()" in h and "_spDetect" in h and "_spAdvisoryHtml" in h)
+            if label == "env_coverage":
+                # env_coverage adds the DEnv-drift/Room basis picker (default drift).
+                check("env_coverage subpop basis picker present (drift default + room)",
+                      "subpopBasisControlHtml:function()" in h and "_ecSubpopBasis" in h
+                      and "value=\"drift\"" in h and "value=\"room\"" in h)
 
 
 def test_auto_filter_histogram():

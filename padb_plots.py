@@ -3672,6 +3672,7 @@ function _spAdvisoryHtml(ctx){
     assessed++;
   });
   var h='<div style="font-weight:600;margin:10px 0 2px">Distribution health &mdash; subpopulation check'+(anyBudget?'':' <span style="font-weight:400;color:#a05000">(shape-only; no M.U./drift budget in this data)</span>')+'</div>';
+  if(typeof ctx.subpopBasisControlHtml==='function'){ try{ h+=ctx.subpopBasisControlHtml(); }catch(e){} }
   if(!flaggedRows.length){
     h+='<div style="color:#2a7">No separate-distribution subpopulation found across '+assessed+' condition(s) ('+clean+' clean, '+incon+' inconclusive). Ordinary M.U./drift spread only.</div>';
     return h;
@@ -10353,7 +10354,41 @@ var EC_AF={basisSel:'ec_auto_basis',levelSel:'ec_auto_level',panel:'ec_auto_pane
   setFreq:function(lo,hi){var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt'),ls=document.getElementById('ec_freq_lo'),hs=document.getElementById('ec_freq_hi');if(lt)lt.value=(''+lo);if(ht)ht.value=(''+hi);if(ls)ls.value=lo;if(hs)hs.value=hi;update();},
   getSerials:function(){return getSelectedSerials();},
   setSerials:function(list){document.querySelectorAll('.ec_ser_chk').forEach(function(c){c.checked=(list==null)||list.indexOf(c.value)>=0;});update();},
-  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];}};
+  segments:function(){return (typeof _specSegments!=='undefined'&&_specSegments)?_specSegments.map(function(s){return {lo:s.lo,hi:s.hi,label:Math.round(s.lo)+'–'+Math.round(s.hi)};}):[];},
+  /* Subpopulation advisory for env_coverage. Its per-DUT data is ΔEnv deltas, so the
+     "population" to fence against is a genuine choice (picker below): ΔEnv DRIFT (default
+     -- finds DUTs whose temperature sensitivity is anomalous; one slice per condition x
+     selected non-Room temp, value = deltas[temp][freq]) or ROOM baseline (one slice per
+     condition, value = room[freq]). Respects the condition/serial/port/GF filters via
+     getActiveDuts. Budget = null here (no per-DUT M.U. in this structure) -> shape-only. */
+  subpopBasisControlHtml:function(){
+    var b=(typeof window._ecSubpopBasis!=='undefined'&&window._ecSubpopBasis)?window._ecSubpopBasis:'drift';
+    return '<div style="font-size:12px;margin:2px 0 4px">Subpopulation basis: '+
+      '<label><input type="radio" name="ec_subpop_basis" value="drift"'+(b!=='room'?' checked':'')+' onchange="window._ecSubpopBasis=this.value;_afRenderWorkflow(EC_AF);"> ΔEnv drift</label> &nbsp;'+
+      '<label><input type="radio" name="ec_subpop_basis" value="room"'+(b==='room'?' checked':'')+' onchange="window._ecSubpopBasis=this.value;_afRenderWorkflow(EC_AF);"> Room baseline</label></div>';
+  },
+  subpopSlices:function(){
+    var basis=(typeof window._ecSubpopBasis!=='undefined'&&window._ecSubpopBasis)?window._ecSubpopBasis:'drift';
+    var conds=getSelectedConds();
+    var selTemps=(typeof getSelectedTemps==='function')?getSelectedTemps():[];
+    var out=[];
+    conds.forEach(function(cd){
+      var freqs=cd.freqs||[]; if(freqs.length<3)return;
+      var duts=getActiveDuts(cd); if(duts.length<4)return;
+      var serials=duts.map(function(sd){return sd[1].serial||sd[0];});
+      if(basis==='room'){
+        var vbf=freqs.map(function(f,j){return duts.map(function(sd){var v=sd[1].room[j]; return (v!=null&&isFinite(v))?v:null;});});
+        out.push({cond:cd.condition+' [Room baseline]',vals_by_freq:vbf,serials:serials,budget_by_freq:null,station_by_dut:null});
+      } else {
+        (selTemps||[]).forEach(function(temp){
+          if(!duts.some(function(sd){return sd[1].deltas&&sd[1].deltas[temp];}))return;
+          var vbf=freqs.map(function(f,j){return duts.map(function(sd){var dt=sd[1].deltas&&sd[1].deltas[temp]; var v=dt?dt[j]:null; return (v!=null&&isFinite(v))?v:null;});});
+          out.push({cond:cd.condition+' [ΔEnv '+temp+']',vals_by_freq:vbf,serials:serials,budget_by_freq:null,station_by_dut:null});
+        });
+      }
+    });
+    return out;
+  }};
 function ecAutoFilterPreview(){_afPreview(EC_AF);}
 function ecAutoFilterApply(){_afApply(EC_AF);}
 function ecAutoFilterAffirm(){_afAffirm(EC_AF);}
