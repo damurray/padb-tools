@@ -2325,9 +2325,15 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
     ])
 
+    # Every temperature is a normal, toggleable filter in the SCATTER -- Room is just
+    # another plotted Test Step here, NOT a baseline (that role only exists in the
+    # delta/env views). Previously Room was rendered `disabled`, so it was force-on and
+    # un-filterable while every other temp toggled -- reported as "filter/table/plot don't
+    # match" (Room ~22% of points couldn't be excluded). The filter machinery handles Room
+    # fine; only the disabled attribute was wrong.
     env_chks_html = "\n  ".join(
         f'<label><input type="checkbox" class="env_chk" value="{t}"'
-        + (' checked disabled' if t == "Room" else ' checked onchange="update()"')
+        ' checked onchange="update()"'
         + f'>&nbsp;{t}</label>'
         for t in temps_present
     )

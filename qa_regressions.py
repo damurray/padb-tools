@@ -351,6 +351,32 @@ def test_scatter_mask_is_dataset_level():
               "if(!_isMaskDataset()){" in h and "if(!getSpecMask(filtered||DATA).isMask)" not in h)
 
 
+def test_scatter_room_temp_filterable():
+    """Scatter temperature checkboxes are ALL toggleable, including Room. Room is just a
+    plotted Test Step in a scatter, NOT a baseline (that role is delta/env-only). Room was
+    previously rendered `disabled` (force-on) so it couldn't be excluded while every other
+    temp toggled -- reported as filter/table/plot not matching on a multi-temp compare."""
+    import csv as _csv, re as _re
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "mt.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for temp in ("Room", "20.0 Deg C", "30.0 Deg C"):
+                for i in range(4):
+                    w.writerow([temp, 100.0, round(10.0 + i * 0.1, 4), f"Serial Number: D{i}", 20, -20])
+        df = pp._load_scatter_csv(p)
+        h = pp._build_av_freq_html(df, {"y_label": "P", "views": ["scatter"]}, "T")
+        checks = _re.findall(r'<input type="checkbox" class="env_chk" value="([^"]*)"([^>]*)>', h)
+        room = [a for v, a in checks if v == "Room"]
+        check("scatter: multi-temp env_chk boxes rendered incl Room", len(checks) >= 2 and len(room) == 1,
+              f"vals={[v for v, _ in checks]}")
+        check("scatter: Room temp checkbox is NOT disabled (filterable like other temps)",
+              bool(room) and "disabled" not in room[0], f"room_attrs={room}")
+        check("scatter: every temp checkbox has onchange=update() (incl Room)",
+              all("onchange" in a for _, a in checks) and not any("disabled" in a for _, a in checks))
+
+
 def test_filter_state_scoping():
     """Filter-panel localStorage state (STATE_KEY) must be scoped PER PAGE, not per
     results-dir. All plot jobs of one pod share a results_dir (by design), so a
@@ -846,7 +872,7 @@ def main() -> None:
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
                test_auto_filter_site_scope, test_pdf_report_contract,
-               test_room_only_default_views,
+               test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats):
         try:
             fn()
