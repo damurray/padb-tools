@@ -321,6 +321,51 @@ def test_auto_filter_boxplot():
               all(s in h for s in ("_afGenerateReport", "boxGenReport", "Generate PDF report", "Plotly.toImage", "_afCapture")))
 
 
+def test_auto_filter_site_scope():
+    """Server contract for the compare auto-filter SITE SCOPE (boxplot prototype):
+    a compare boxplot (Site in Group + primary_site) renders the site-scope selector
+    (Reference/Onboarding/Both) and the scope-gate + per-site risk-summary wiring; a
+    NON-compare boxplot has no such selector (default reference-only, unchanged)."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        # Compare CSV: two sites, a lone per-site outlier at different freqs.
+        pc = Path(td) / "cmp.csv"
+        with pc.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for site in ("SR", "AMC"):
+                for freq in (100.0, 200.0):
+                    for i in range(12):
+                        v = round(10.0 + 0.05 * (i % 5), 4)
+                        if (site == "SR" and freq == 100.0 and i == 0) or (site == "AMC" and freq == 200.0 and i == 6):
+                            v = 40.0
+                        w.writerow(["Room", freq, v,
+                                    f"HarmonicNumber: 2  Serial Number: {site}D{i:02d}  Site: {site}", 20, -20])
+        oc = Path(td) / "cmp.html"
+        pp.stat_boxplot(pc, {"y_label": "P", "title_prefix": "T", "primary_site": "SR"}, oc)
+        h = oc.read_text(encoding="utf-8")
+        check("site-scope: compare boxplot renders the auto-filter site selector",
+              'id="auto_gf_site"' in h)
+        check("site-scope: selector has reference/onboarding/both options",
+              all(f'value="{v}"' in h for v in ("primary", "onboarding", "both")))
+        check("site-scope: scope-gate + scope-independent per-site summary wired",
+              "siteScope" in h and "siteSummary" in h and "_autoScopeLabel" in h and "autoEligible" in h)
+        # Non-compare boxplot: no site selector at all (default reference-only).
+        pn = Path(td) / "single.csv"
+        with pn.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(12):
+                    w.writerow(["Room", freq, round(10.0 + 0.05 * (i % 5), 4),
+                                f"HarmonicNumber: 2  Serial Number: D{i:02d}", 20, -20])
+        on = Path(td) / "single.html"
+        pp.stat_boxplot(pn, {"y_label": "P", "title_prefix": "T"}, on)
+        hn = on.read_text(encoding="utf-8")
+        check("site-scope: non-compare boxplot has NO site selector",
+              'id="auto_gf_site"' not in hn)
+
+
 def test_auto_filter_stat_summary():
     """Server contract for the stat_summary 'Auto-filter bad DUTs' feature (the
     first population view on the shared engine). Pins the controls, the shared
@@ -507,7 +552,7 @@ def main() -> None:
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
                test_auto_filter_boxplot, test_auto_filter_stat_summary,
                test_auto_filter_rollout_summary_envcov, test_auto_filter_histogram,
-               test_pdf_report_contract):
+               test_auto_filter_site_scope, test_pdf_report_contract):
         try:
             fn()
         except Exception as exc:

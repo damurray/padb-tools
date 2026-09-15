@@ -1271,6 +1271,32 @@ _HARNESS_JS = r"""
         var ar=window._autoResult;
         var badCls=(ar?ar.auto:[]).filter(function(d){ return d.shared>0.5 || d.risk>=0.05; });
         chk('auto-never-systemic-or-risky', badCls.length===0, 'violations='+badCls.length+' auto='+(ar?ar.auto.length:0));
+        // (d2) compare SITE SCOPE invariants (reference / onboarding / both). The
+        // gate must scope the auto set by site; the per-site eligible summary must
+        // be scope-INDEPENDENT (it's what lets the user choose the scope) and must
+        // equal what 'both' actually auto-filters. Real teeth whenever >=1 DUT is
+        // auto-eligible on a site (vacuously true at 0, honest either way).
+        var _siteSel=document.getElementById('auto_gf_site');
+        if(_siteSel && typeof PRIMARY_SITE!=='undefined' && PRIMARY_SITE){
+          function _scopeRes(sc){ _siteSel.value=sc; return _autoFilterCompute('dist','aggressive'); }
+          var _rp=_scopeRes('primary'), _ro=_scopeRes('onboarding'), _rb=_scopeRes('both');
+          function _ser(r){return r.auto.map(function(d){return d.serial;}).sort();}
+          var _sp=_ser(_rp), _so=_ser(_ro), _sb=_ser(_rb);
+          chk('site-scope-primary-only-reference', _rp.auto.filter(function(d){return d.site!==PRIMARY_SITE;}).length===0,
+              'non-reference DUTs in primary-scope auto='+_rp.auto.filter(function(d){return d.site!==PRIMARY_SITE;}).length);
+          chk('site-scope-onboarding-only-nonreference', _ro.auto.filter(function(d){return d.site===PRIMARY_SITE;}).length===0,
+              'reference DUTs in onboarding-scope auto='+_ro.auto.filter(function(d){return d.site===PRIMARY_SITE;}).length);
+          chk('site-scope-both-is-union-by-site', _sb.length===_sp.length+_so.length && _sb.length>=_sp.length && _sb.length>=_so.length,
+              'both='+_sb.length+' primary='+_sp.length+' onboarding='+_so.length);
+          function _sumStr(r){return Object.keys(r.siteSummary||{}).sort().map(function(k){return k+':'+r.siteSummary[k].eligible;}).join(',');}
+          chk('site-scope-summary-scope-independent', _sumStr(_rp)===_sumStr(_ro)&&_sumStr(_ro)===_sumStr(_rb),
+              'primary['+_sumStr(_rp)+'] onboarding['+_sumStr(_ro)+'] both['+_sumStr(_rb)+']');
+          var _totElig=Object.keys(_rb.siteSummary||{}).reduce(function(x,k){return x+_rb.siteSummary[k].eligible;},0);
+          chk('site-scope-summary-matches-both-auto', _totElig===_sb.length, 'summaryEligible='+_totElig+' bothAuto='+_sb.length);
+          // restore the state the (e) apply/clear block below expects (default
+          // scope=primary, aggressive, preview regenerated).
+          _siteSel.value='primary'; alevel.value='aggressive'; if(typeof autoFilterPreview==='function') autoFilterPreview(); ar=window._autoResult;
+        } else skip('site-scope','not a compare boxplot (no auto_gf_site / PRIMARY_SITE)');
         // (e) apply point-precise + clear restores (skip when nothing qualifies)
         if(ar && ar.auto.length && typeof autoFilterApply==='function'){
           var autoSers={}; ar.auto.forEach(function(d){autoSers[d.serial]=1;});

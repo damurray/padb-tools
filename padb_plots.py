@@ -3377,7 +3377,10 @@ function _afRunWorkflow(ctx){
     var _dest=(ctx.inheritNote!=null)?' from this view':' to the shared Global Filter — every view now reflects it';
     h+='Auto-excluded <b>'+r.auto.length+'</b> DUT'+(r.auto.length!==1?'s':'')+' ('+pts+' point'+(pts!==1?'s':'')+')'+_dest+'. Reversible via <b>'+_undoA+'</b>.';
     if(r.marginal.length) h+=' <b>'+r.marginal.length+'</b> marginal DUT'+(r.marginal.length!==1?'s':'')+' left for your review (see the Auto-filter panel → <i>Also filter checked</i>).';
-    if(a.compare) h+=' Only the reference site was cleaned; onboarding-site DUTs are left for manual review — export the cleaned CSV to hand off.';
+    if(a.compare){var _sc=(r&&r.siteScope)||'primary';
+      h+=(_sc==='both')?' Both sites were auto-cleaned against their own peers.'
+        :(_sc==='onboarding')?' Only the onboarding site(s) were cleaned; the reference site was left as the baseline.'
+        :' Only the reference site was cleaned; onboarding-site DUTs are left for manual review — export the cleaned CSV to hand off.';}
     h+='</div>';
     if(r.auto.length) h+='<table class="stbl" style="margin-top:4px"><thead><tr><th>Auto-excluded serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>Reason</th></tr></thead><tbody>'+
       r.auto.map(function(d){return '<tr><td>'+d.serial+'</td><td>'+d.pts.length+'</td><td class="out">'+d.maxMag.toFixed(1)+'</td><td>'+_afRiskLabel(d.risk)+'</td><td style="white-space:normal;max-width:480px">'+d.reason+'</td></tr>';}).join('')+'</tbody></table>';
@@ -13789,9 +13792,15 @@ function _autoRisk(maxMag,basis,nExamined){
   return Math.min(1,p);
 }
 function _riskLabel(p){ return p<1e-4?'very low':p<1e-2?'low':p<0.05?'moderate':'HIGH'; }
+function _autoScopeLabel(scope){return scope==='both'?'both sites':scope==='onboarding'?'onboarding site(s) only':'reference site ('+PRIMARY_SITE+') only';}
 function _autoFilterCompute(basis,level){
   var pts=_autoBadPoints(basis), dir=getTllDirection();
   var nExamined=pts.length;   // for the Bonferroni scale on the risk metric
+  // Compare: which site(s) the auto-filter may auto-exclude from. Default
+  // 'primary' (reference/SR only) -- the onboarding site is the population under
+  // evaluation, so cleaning it is opt-in. The preview shows the per-site
+  // false-removal risk either way, so the choice is informed.
+  var scope=(document.getElementById('auto_gf_site')||{}).value||'primary';
   var byDut={},spot={};
   pts.forEach(function(o){
     var bs=_boxBaseSerial(o.serial);
@@ -13805,34 +13814,49 @@ function _autoFilterCompute(basis,level){
   var thr=_AUTO_LEVELS[level]||_AUTO_LEVELS.conservative;
   var unit=_afPeerBasis(basis)?'σ from peers':'σ past '+(basis==='tll'?'TLL/limit':'spec');
   var compare=(typeof PRIMARY_SITE!=='undefined')&&!!PRIMARY_SITE;
-  var auto=[],marginal=[],review=[];
+  var auto=[],marginal=[],review=[],siteSummary={};
   Object.keys(byDut).forEach(function(bs){
     var d=byDut[bs], sh=0;
     d.pts.forEach(function(o){if(Object.keys(spot[o.temp+'|'+o.freqLabel+'|'+o.dir]).length>1)sh++;});
     d.shared=d.pts.length?sh/d.pts.length:0;
     d.risk=_autoRisk(d.maxMag,basis,Math.max(nExamined,d.pts.length));
     var riskTxt=' (false-removal risk '+_riskLabel(d.risk)+', p≈'+d.risk.toExponential(1)+')';
-    // Compare: auto-clean only the REFERENCE (primary) site; the onboarding site
-    // is the population under evaluation -- never auto-touch it, leave it to the user.
-    if(compare && d.site && d.site!==PRIMARY_SITE){
-      d.reason='onboarding site “'+d.site+'”: '+d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — filter manually (auto-clean is scoped to the reference site '+PRIMARY_SITE+')'+riskTxt; review.push(d); return;
+    // Intrinsic classification (independent of the site scope), so the per-site
+    // summary can tell the user what EACH site would auto-filter -- letting them
+    // pick the scope with the risk in view.
+    var benign=_afPeerBasis(basis)&&((dir==='hi'&&d.high===0)||(dir==='lo'&&d.low===0));
+    var systemic=d.shared>0.5;
+    var meetsBar=d.maxMag>=thr.minSigma&&d.pts.length>=thr.minPts&&d.risk<0.05;
+    d.autoEligible=(!benign&&!systemic&&meetsBar);
+    if(compare&&d.site){
+      var ss=siteSummary[d.site]||(siteSummary[d.site]={site:d.site,eligible:0,pts:0,minRisk:1,maxRisk:0});
+      if(d.autoEligible){ss.eligible++;ss.pts+=d.pts.length;ss.minRisk=Math.min(ss.minRisk,d.risk);ss.maxRisk=Math.max(ss.maxRisk,d.risk);}
     }
-    if(_afPeerBasis(basis)&&(dir==='hi'&&d.high===0||dir==='lo'&&d.low===0)){
+    // Site-scope gate: only auto-filter the site(s) the user selected. Default
+    // 'primary' == today's behavior (reference/SR only).
+    if(compare && d.site){
+      var isPrim=(d.site===PRIMARY_SITE);
+      var inScope=(scope==='both')||(scope==='primary'&&isPrim)||(scope==='onboarding'&&!isPrim);
+      if(!inScope){
+        d.reason=(isPrim?'reference':'onboarding')+' site “'+d.site+'”: '+d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — outside the selected auto-filter scope ('+_autoScopeLabel(scope)+'); filter manually or change the scope'+riskTxt; review.push(d); return;
+      }
+    }
+    if(benign){
       d.reason=d.pts.length+' peer-outlier pt(s), all AWAY from the '+(dir==='hi'?'upper':'lower')+' spec — can’t fail spec (benign)'+riskTxt; review.push(d); return;
     }
-    if(d.shared>0.5){
+    if(systemic){
       d.reason=d.pts.length+' pt(s), most shared with other DUTs at the same frequency — likely station/systemic, not one bad DUT'+riskTxt; review.push(d); return;
     }
     // A high false-removal risk blocks auto even if the level bar is met -- the
     // whole point of the risk metric is to not auto-remove a shaky call.
-    if(d.maxMag>=thr.minSigma&&d.pts.length>=thr.minPts&&d.risk<0.05){
+    if(meetsBar){
       d.reason=d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+', not shared → auto ('+thr.label+')'+riskTxt; auto.push(d);
     } else {
       d.reason=d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+' — '+(d.risk>=0.05?'risk too high to auto':'below the '+thr.label+' bar ('+thr.minSigma+'σ / '+thr.minPts+' pts)')+riskTxt; marginal.push(d);
     }
   });
   auto.sort(function(a,b){return a.risk-b.risk;}); marginal.sort(function(a,b){return b.maxMag-a.maxMag;});
-  return {auto:auto,marginal:marginal,review:review,thr:thr,basis:basis,unit:unit,compare:compare};
+  return {auto:auto,marginal:marginal,review:review,thr:thr,basis:basis,unit:unit,compare:compare,siteScope:scope,siteSummary:siteSummary};
 }
 function autoFilterPreview(){
   var panel=document.getElementById('auto_gf_panel'); if(!panel)return;
@@ -13846,9 +13870,24 @@ function autoFilterPreview(){
   var r=_autoFilterCompute(basis,level); window._autoResult=r;
   var basisName=basis==='dist'?'Distribution (MAD σ)':basis==='iqr'?'IQR fence (Tukey)':basis==='dmad'?'Double-MAD (skew-aware)':basis==='tll'?'TLL/limit-relative':'Spec-relative';
   var autoPts=r.auto.reduce(function(a,d){return a+d.pts.length;},0);
-  var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare: auto-clean is scoped to the reference site <b>'+PRIMARY_SITE+'</b>; onboarding-site DUTs are listed for manual review.</span>':'';
+  var siteNote=r.compare?' &nbsp;<span style="color:#2c5c96">Compare — auto-filter scope: <b>'+_autoScopeLabel(r.siteScope)+'</b> (change via the “auto-filter site” selector).</span>':'';
   var h='<div style="font-size:12px;margin:4px 0">⚙ <b>Auto-filter preview</b> — basis <b>'+basisName+'</b>, level <b>'+r.thr.label+
     '</b> (bar '+r.thr.minSigma+'σ / '+r.thr.minPts+' pts, false-removal risk &lt; 5%). Nothing is applied until you click <b>Apply</b>; the Global Filter is reversible via <b>Clear global filter</b>.'+siteNote+'</div>';
+  // Per-site auto-eligible summary + risk, so the user can pick the scope with the
+  // risk in view (a low-risk onboarding-site clean may be worth including).
+  if(r.compare){
+    var _sites=Object.keys(r.siteSummary||{});
+    if(_sites.length){
+      _sites.sort(function(a,b){return (a===PRIMARY_SITE?-1:b===PRIMARY_SITE?1:a<b?-1:1);});
+      h+='<div style="font-size:12px;margin:2px 0 6px;padding:4px 8px;background:#eef4ff;border:1px solid #cdd6e6;border-radius:4px">'+
+        '<b>Per-site auto-eligible</b> (at this basis/level): '+
+        _sites.map(function(s){var ss=r.siteSummary[s];
+          var lbl=(s===PRIMARY_SITE?'reference ':'onboarding ')+'<b>'+s+'</b>: '+ss.eligible+' DUT'+(ss.eligible!==1?'s':'');
+          if(ss.eligible)lbl+=' ('+ss.pts+' pts, risk '+_riskLabel(ss.minRisk)+(ss.maxRisk!==ss.minRisk?'–'+_riskLabel(ss.maxRisk):'')+')';
+          return lbl;
+        }).join(' &nbsp;|&nbsp; ')+'</div>';
+    }
+  }
   h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
     (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="autoFilterApply()">Apply → add to Global Filter</button>':'')+'</div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
@@ -15208,6 +15247,13 @@ def _build_box_interactive_html(
         '<option value="conservative">Conservative</option>'
         '<option value="moderate">Moderate</option>'
         '<option value="aggressive">Aggressive</option></select></label>\n'
+        + (('  <label class="toggle-btn" id="auto_gf_site_wrap" style="background:#eef4ff;border-color:#6688cc;color:#0044aa"'
+            ' title="Compare only: which site the auto-filter may auto-exclude from. Reference = the trusted baseline (' + str(primary_site) + '); Onboarding = the site(s) under evaluation; Both = clean each against its own peers. The preview shows the per-site false-removal risk so you can choose. Default is reference-only (unchanged behavior).">'
+            '&nbsp;auto-filter site '
+            '<select id="auto_gf_site" onchange="autoFilterPreview()">'
+            '<option value="primary" selected>Reference only (' + str(primary_site) + ')</option>'
+            '<option value="onboarding">Onboarding only</option>'
+            '<option value="both">Both sites</option></select></label>\n') if primary_site else '')
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00"'
         ' onclick="clearGlobalFilter()">Clear global filter</button>\n'
