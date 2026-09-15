@@ -310,6 +310,17 @@ def test_spec_mask_interpolation():
     # descending: 50 is between 10 and 100's values, not a flat fallback.
     check("spec mask: interpolated gap lies between its neighbors (not flat)",
           -105.0 < at(50.0) < -95.0, f"at(50)={at(50.0)}")
+    # pchip: smooth monotone mask -- fills every gap, preserves breakpoints, and
+    # (unlike a plain cubic spline) never overshoots below the neighbors' range.
+    d_pch = _v2._fill_spec_nulls(df.copy(), "pchip")
+    check("spec mask: 'pchip' fills every gap (no nulls remain)",
+          int(d_pch["Upper_Limit"].isna().sum()) == 0)
+    atp = lambda f: float(d_pch[d_pch["Frequency_MHz"] == f]["Upper_Limit"].iloc[0])
+    check("spec mask: 'pchip' preserves breakpoints exactly",
+          atp(1.0) == -72.0 and atp(100.0) == -105.0 and atp(1000.0) == -135.0)
+    check("spec mask: 'pchip' gap stays within neighbor range (no overshoot)",
+          -105.0 <= atp(50.0) <= -95.0 and -135.0 <= atp(500.0) <= -105.0,
+          f"at50={atp(50.0)} at500={atp(500.0)}")
 
 
 def test_scatter_mask_is_dataset_level():

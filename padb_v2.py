@@ -982,16 +982,28 @@ _VIEW_LABELS = {
 }
 
 
-def _interp_mask_fill(df: pd.DataFrame, col: str, use_log: bool) -> int:
+def _interp_mask_fill(df: pd.DataFrame, col: str, use_log: bool,
+                      method: str = "linear") -> int:
     """Fill remaining NaN `col` by interpolating the frequency-varying spec MASK
-    between its defined breakpoints -- a piecewise-LINEAR "complex limit line"
-    (phase-noise / broadband-noise masks are specified at a handful of offset
-    breakpoints and interpolated between them, linearly in log-frequency).
+    between its defined breakpoints -- a "complex limit line" (phase-noise /
+    broadband-noise masks are specified at a handful of offset breakpoints and
+    interpolated between them, in log-frequency).
 
-    Opt-in only (spec_interp="linear"): most pods have either a constant spec or a
-    STEP/staircase mask (spurs), where linear interpolation would be WRONG -- those
-    keep the default modal fill. Interpolates from the union of known breakpoints
-    (one median value per breakpoint frequency); clamps at the mask ends."""
+    method="linear" (default): piecewise-LINEAR between breakpoints (np.interp).
+    method="pchip": monotone piecewise-cubic Hermite (shape-preserving) -- a
+    SMOOTH mask that, unlike a plain cubic spline, provably never overshoots
+    between breakpoints (no false limit dips that would misclassify passing
+    points). Falls back to linear if SciPy is unavailable or there are <2
+    breakpoints. Chosen over cubic spline deliberately: on the real 2.4G
+    broadband-noise mask, a plain cubic spline overshot below ~893 passing points
+    while PCHIP did not; PCHIP fit the recorded pass/fail status as well as linear
+    with no overshoot risk.
+
+    Opt-in only (spec_interp="linear"/"pchip"): most pods have either a constant
+    spec or a STEP/staircase mask (spurs), where interpolation would be WRONG --
+    those keep the default modal fill. Interpolates from the union of known
+    breakpoints (one median value per breakpoint frequency); clamps at the mask
+    ends (a held-constant limit past the first/last breakpoint, for both methods)."""
     import numpy as _np
     f = "Frequency_MHz"
     if col not in df.columns or f not in df.columns:
@@ -1012,7 +1024,17 @@ def _interp_mask_fill(df: pd.DataFrame, col: str, use_log: bool) -> int:
         _log = use_log and bool((xf > 0).all()) and bool((tf > 0).all())
         xi = _np.log10(xf) if _log else xf
         ti = _np.log10(tf) if _log else tf
-        vals = _np.interp(ti, xi, yv)                    # linear; np.interp clamps at ends
+        if method == "pchip":
+            try:
+                from scipy.interpolate import PchipInterpolator as _Pchip
+                pc = _Pchip(xi, yv)
+                # Clamp targets to the breakpoint range so the ends hold constant
+                # (match np.interp's clamping); PCHIP itself would extrapolate.
+                vals = pc(_np.clip(ti, xi[0], xi[-1]))
+            except Exception:
+                vals = _np.interp(ti, xi, yv)            # SciPy missing -> linear
+        else:
+            vals = _np.interp(ti, xi, yv)                # linear; np.interp clamps at ends
     df.loc[df.index[nullmask.to_numpy()], col] = vals
     return int(nullmask.sum())
 
@@ -1021,9 +1043,10 @@ def _fill_spec_nulls(df: pd.DataFrame, spec_interp: str = "none") -> pd.DataFram
     """
     Fill NaN Upper_Limit / Lower_Limit using modal spec for matching condition × frequency.
 
-    spec_interp="linear" adds a final pass that interpolates a frequency-varying
-    mask between its breakpoints (linear in log-frequency) -- see _interp_mask_fill.
-    Default "none" preserves the modal-only behavior (safe for step/constant specs).
+    spec_interp="linear" (or "pchip" for a smooth, non-overshooting monotone mask)
+    adds a final pass that interpolates a frequency-varying mask between its
+    breakpoints in log-frequency -- see _interp_mask_fill. Default "none" preserves
+    the modal-only behavior (safe for step/constant specs).
 
     Uses two passes to handle cases where some sub-groups (e.g. Port RF2) are entirely
     null and cannot self-fill:
@@ -1092,11 +1115,12 @@ def _fill_spec_nulls(df: pd.DataFrame, spec_interp: str = "none") -> pd.DataFram
         # defined at sparse breakpoints leaves every gap-frequency null, which then
         # renders as a flat fallback line. Linear (log-freq) interpolation draws the
         # true complex limit line and drives pass/fail correctly.
-        if spec_interp == "linear" and df[col].isna().any() and df[col].notna().sum() >= 1:
-            n_interp = _interp_mask_fill(df, col, use_log=True)
+        if spec_interp in ("linear", "pchip") and df[col].isna().any() and df[col].notna().sum() >= 1:
+            n_interp = _interp_mask_fill(df, col, use_log=True, method=spec_interp)
             if n_interp > 0:
+                _how = "monotone PCHIP" if spec_interp == "pchip" else "linear"
                 print(f"    Interpolated {n_interp:,} null {col} values across the mask "
-                      f"breakpoints (linear in log-frequency)", flush=True)
+                      f"breakpoints ({_how} in log-frequency)", flush=True)
             after_p2 = int(df[col].isna().sum())
 
         if after_p2 > 0:
