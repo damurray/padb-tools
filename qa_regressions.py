@@ -474,6 +474,16 @@ def test_auto_filter_site_scope():
               'id="x_auto_site"' in cy and all(f'value="{v}"' in cy for v in ("primary", "onboarding", "both")))
         check("site-scope: _af_control_html omits selector when not compare",
               "auto_site" not in cn)
+        # Undo-button label: default is the shared-GF text; histogram overrides it
+        # (its clear affects only this view, not a shared Global Filter).
+        c_hist = pp._af_control_html("h", "pv", "clearHistAuto",
+                                     clear_label="Clear auto-exclusion",
+                                     clear_title="Remove every auto-filter exclusion on this histogram")
+        check("undo-label: default _af_control_html button says 'Clear global filter'",
+              ">Clear global filter</button>" in cn)
+        check("undo-label: histogram override button says 'Clear auto-exclusion', not global-filter",
+              ">Clear auto-exclusion</button>" in c_hist
+              and ">Clear global filter</button>" not in c_hist)
         # Shared-engine view (stat_summary) carries the selector + scope engine.
         oss = Path(td) / "ss.html"
         pp.stat_summary(pc, {"y_label": "P", "title_prefix": "T", "primary_site": "SR"}, oss)

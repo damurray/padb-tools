@@ -1599,12 +1599,19 @@ def _segment_by_html(has_segments: bool) -> str:
 
 
 def _af_control_html(prefix: str, preview_fn: str, clear_fn: str,
-                     has_site_scope: bool = False, primary_site: str = "") -> str:
-    """Auto-filter basis/level control + Clear-global-filter button for a view's
-    control bar. Element ids are <prefix>_auto_basis / <prefix>_auto_level; the
-    view's JS ctx must use the same ids. Shared across the population views.
-    On compare pages (has_site_scope), also renders the <prefix>_auto_site scope
-    selector (Reference / Onboarding / Both)."""
+                     has_site_scope: bool = False, primary_site: str = "",
+                     clear_label: str = "Clear global filter",
+                     clear_title: str = "Remove every Global Filter exclusion"
+                     " (browser-wide, shared across all views) -- the one-click undo.",
+                     apply_dest: str = "the shared Global Filter (every view inherits the clean)") -> str:
+    """Auto-filter basis/level control + undo button for a view's control bar.
+    Element ids are <prefix>_auto_basis / <prefix>_auto_level; the view's JS ctx
+    must use the same ids. Shared across the population views. On compare pages
+    (has_site_scope), also renders the <prefix>_auto_site scope selector
+    (Reference / Onboarding / Both). clear_label/clear_title/apply_dest override
+    the undo button and the control's own tooltip for views whose undo is not the
+    shared Global Filter (e.g. the histogram, whose clean affects only this
+    view's local auto-exclusion)."""
     site = ""
     if has_site_scope:
         site = (
@@ -1624,13 +1631,13 @@ def _af_control_html(prefix: str, preview_fn: str, clear_fn: str,
     return (
         '  <span class="sep"></span>\n'
         '  <label class="toggle-btn" style="background:#fff7e8;border-color:#e0905a;color:#a05000"'
-        ' title="Auto-add clearly-bad DUTs to the shared Global Filter (every view inherits the clean).'
+        f' title="Auto-add clearly-bad DUTs to {apply_dest}.'
         ' BASIS: Distribution (robust median/MAD &sigma; from peers -- for NPI/no trusted spec); IQR fence'
         ' (Tukey 1.5&times;IQR -- what the boxplot whiskers draw); Double-MAD (skew-aware, separate left/right'
         ' spread); Spec (past datasheet Spec Hi/Lo, fail direction only); TLL/limit. LEVEL: Conservative /'
         ' Moderate / Aggressive. A per-DUT false-removal RISK under 5% is required to auto-filter; systemic'
         ' (multi-DUT same freq/direction) and benign (away-from-fail) cases are NEVER auto-filtered. A Preview'
-        ' lists every DUT with a reason before anything is applied; reversible via Clear global filter.">'
+        f' lists every DUT with a reason before anything is applied; reversible via {clear_label}.">'
         'Auto-filter bad DUTs &mdash; basis '
         f'<select id="{prefix}_auto_basis" onchange="{preview_fn}()">'
         '<option value="dist" selected>Distribution (&sigma;)</option>'
@@ -1646,8 +1653,8 @@ def _af_control_html(prefix: str, preview_fn: str, clear_fn: str,
         '<option value="aggressive">Aggressive</option></select></label>\n'
         + site
         + '  <button class="toggle-btn" style="background:#fff0f0;border-color:#c00;color:#c00"'
-        ' title="Remove every Global Filter exclusion (browser-wide, shared across all views) -- the one-click undo."'
-        f' onclick="{clear_fn}()">Clear global filter</button>\n'
+        f' title="{clear_title}"'
+        f' onclick="{clear_fn}()">{clear_label}</button>\n'
     )
 
 
@@ -3409,7 +3416,7 @@ function _afWorkflowSteps(a,rec,ctx){
   s.push((i++)+'. Set basis <b>'+rec.basis.toUpperCase()+'</b> / level <b>'+rec.level+'</b> (or click <b>Apply recommendation</b>), then <b>Preview</b>.');
   s.push((i++)+'. Review each flagged DUT’s reason + false-removal risk; <b>Affirm</b> any marginals you agree with.');
   s.push((i++)+_applyStep);
-  if(a.compare) s.push((i++)+'. Export the cleaned CSV to hand the reference-site clean to the onboarding site (the Global Filter is browser-local and does not travel).');
+  if(a.compare) s.push((i++)+'. Export the cleaned CSV to hand the reference-site clean to the onboarding site ('+((ctx.inheritNote!=null)?'the auto-exclusion':'the Global Filter')+' is browser-local and does not travel).');
   s.push((i++)+'. Re-check the tables / stats / tolerance intervals on the cleaned data.');
   s.push('<b>Or</b> click <b>Run recommended workflow</b> to auto-execute steps '+(a.compare?'2–5':'2–4')+' at the Conservative level in one go (applies only the unambiguous auto set; marginals still left for you; fully reversible).');
   return s;
@@ -3430,7 +3437,7 @@ function _afRenderWorkflow(ctx){
   h+='<ul style="margin:4px 0 4px 16px;padding:0">'+rec.why.map(function(w){return '<li>'+w+'</li>';}).join('')+'</ul>';
   h+='<div style="font-weight:600;margin:8px 0 2px">Suggested workflow</div>';
   h+='<ol style="margin:2px 0 2px 16px;padding:0;list-style:none">'+_afWorkflowSteps(a,rec,ctx).map(function(w){return '<li style="margin-bottom:2px">'+w+'</li>';}).join('')+'</ol>';
-  h+='<div style="margin-top:6px;color:#a05000">These are heuristic starting points from the data shape, not a substitute for engineering judgment. Nothing is excluded until you click Apply or Run, and everything is reversible via Clear global filter.</div>';
+  h+='<div style="margin-top:6px;color:#a05000">These are heuristic starting points from the data shape, not a substitute for engineering judgment. Nothing is excluded until you click Apply or Run, and everything is reversible via '+(ctx.undoHint||'Clear global filter')+'.</div>';
   h+='<div id="'+ctx.wfPanel+'_audit"></div></div>';
   panel.innerHTML=h; panel.style.display='';
 }
@@ -18793,7 +18800,14 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         "  <span id='h_import_status' style='color:#080'></span>\n"
         "  <span id='h_n' style='color:#555'></span>\n"
         + _af_control_html('h', 'hAutoFilterPreview', 'clearHistAuto',
-                           has_site_scope=site_compare_enabled, primary_site=primary_site or '')
+                           has_site_scope=site_compare_enabled, primary_site=primary_site or '',
+                           clear_label='Clear auto-exclusion',
+                           clear_title='Remove every auto-filter exclusion on this histogram'
+                           ' -- the one-click undo. (The histogram has no shared Global Filter;'
+                           ' this affects only this view.)',
+                           apply_dest="this view's auto-exclusion (this histogram only -- there is"
+                           ' no shared Global Filter here; use Export CSV to hand a clean off to'
+                           ' another site)')
         + "  <input type='hidden' id='h_binmode' value='auto'>\n"
         "</div>\n"
         f"<div class='ctrl-bar' id='h_filterbar'>{filt_html}</div>\n"

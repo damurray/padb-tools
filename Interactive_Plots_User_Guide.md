@@ -136,6 +136,27 @@ Zooming in on the plot (drag a box, or scroll) now also narrows the Statistics T
 
 ---
 
+## Auto-filter bad DUTs (Workflow & Recommendations)
+
+**What it is:** on the population views (**Boxplot, Stat Summary, Summary, Env Coverage,** and **Histogram**) there's an **"Auto-filter bad DUTs"** control (a *basis* and *level* dropdown) plus a **⚙ Workflow & Recommendations** button. It finds clearly-bad units statistically and excludes them, but only after showing you exactly what it will remove and why.
+
+**How it works:**
+- Pick a **basis** (Distribution / IQR fence / Double-MAD for data with no trusted spec; Spec / TLL when there's a datasheet limit) and a **level** (Off / Conservative / Moderate / Aggressive). Leaving level on **Off** does nothing.
+- Once level is not Off, a **Preview** panel lists every flagged DUT with its reason and a false-removal risk. **Nothing is excluded until you click Apply** (or **Run recommended workflow**, which applies only the unambiguous "auto" set for you). A unit is only auto-excluded if its false-removal risk is under 5%; systemic patterns (several units bad at the same point) and benign cases (away from the failing side) are never auto-removed — they're listed for you to judge.
+- The **⚙ Workflow & Recommendations** button analyzes the dataset and suggests a starting basis/level, walks you through the steps, and offers a one-click **Run** and an offline **Generate PDF report**.
+
+**How do I know it's applied?** There's no always-on badge — instead:
+- The **plot itself changes** (the excluded points are gone).
+- The **Auto-filter Preview panel** and the **Workflow audit box** report it explicitly: *"Auto-excluded N DUTs (M points)."*
+
+**How do I undo it?** Click the red **undo button** in the auto-filter controls. It's fully reversible:
+- On **Boxplot / Stat Summary / Summary / Env Coverage** the button is **"Clear global filter"** — because on those views the clean is written to the shared **Global Filter**, so **every** view (including Scatter and Distribution) reflects it. Clearing it removes the exclusion everywhere.
+- On the **Histogram** the button is **"Clear auto-exclusion"** — the histogram has **no** shared Global Filter, so its auto-filter affects **only that page**. Clearing it undoes just the histogram. (To carry a histogram clean to another site, use **Export CSV**, edit, and **Import CSV** — the histogram's cleaning vehicle instead of a Global Filter.)
+
+> If a histogram (or any page) has no "Auto-filter bad DUTs" control at all, it was built with an older version of the tool — rebuild it to get the feature.
+
+---
+
 ## Cross-Site Comparison
 
 Some result pages combine data from two sites — e.g. an established site's data against a newer site's first production units — instead of just one. You'll know because the Boxplot, Stat Summary, and Summary pages will have an extra "Site Population Check" button, and "Site" will show up as its own filter dimension alongside the usual conditions. Want to build one of these yourself? See `Compare_Mode_Cheatsheet.md` for the one-page steps.
