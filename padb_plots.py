@@ -148,6 +148,19 @@ function median(arr){
   var m=Math.floor(s.length/2);
   return s.length%2?s[m]:(s[m-1]+s[m])/2;
 }
+/* Repeat-collapse (multiple values at one x within a series) uses the MEAN, to
+   match the tool-wide convention: stat_summary/summary average a DUT's repeats
+   (np.mean per DUT/freq) and boxplot's "Collapse dup runs" (_collapseDupRuns)
+   averages exact-identity repeats -- and the whole TI/TTL/MU framework is
+   mean+/-sigma based. Lines mode used median here alone; unified to mean so the
+   scatter line, boxplot collapsed box, and stat_summary/summary central values
+   agree for the same DUT/point. (median() above is kept for group-ORDERING,
+   where a robust central sort key is fine and unrelated to this.) */
+function meanOf(arr){
+  if(!arr||!arr.length) return NaN;
+  var s=0;for(var i=0;i<arr.length;i++) s+=arr[i];
+  return s/arr.length;
+}
 
 /* ---------- checkbox panel open/close ---------- */
 function togglePanel(col){
@@ -602,9 +615,9 @@ function buildTraces(filtered){
       var byXl={};
       sorted.forEach(function(r){var x=r.Frequency_MHz;(byXl[x]=byXl[x]||[]).push(r.Value);});
       var xkl=Object.keys(byXl).map(Number).sort(function(a,b){return a-b;});
-      return {type:'scattergl',x:xkl,y:xkl.map(function(x){return median(byXl[x]);}),
+      return {type:'scattergl',x:xkl,y:xkl.map(function(x){return meanOf(byXl[x]);}),
         mode:'lines',line:{width:0.75,shape:_lineShape},name:key,
-        hovertemplate:'<b>'+key+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f} (median of repeats)<extra></extra>'};
+        hovertemplate:'<b>'+key+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f} (mean of repeats)<extra></extra>'};
     }
     var customdata=sorted.map(function(r){
       return HOVER_COLS.map(function(hc){var v=r[hc[0]];return (v===null||v===undefined)?'':v;});
@@ -12479,6 +12492,10 @@ function isCollapseDup(){var el=document.getElementById('box_collapse_dup_chk');
    tagged _cond/_temp -- otherwise two points from genuinely different
    SpurTypes at the same frequency would get averaged together, which is
    exactly the condition-pooling mistake _dupRunCount's own fix avoids. */
+/* Collapse a DUT's exact-identity repeat runs into ONE point by the MEAN of
+   their values -- the tool-wide repeat-collapse convention (see scatter's
+   meanOf()/lines mode, stat_summary/summary DUT-averaging, and the mean+/-sigma
+   TI/TTL/MU framework). Keep this a mean if scatter's lines mode is a mean. */
 function _collapseDupRuns(items,keyFn){
   if(!items||items.length<2) return items||[];
   keyFn=keyFn||function(d){return (d.s||'unknown')+'|'+(d.p||'');};

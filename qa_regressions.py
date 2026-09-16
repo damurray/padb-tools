@@ -881,7 +881,7 @@ def test_scatter_draw_modes() -> None:
     user request): Markers / Lines / Lines+markers / Vertical(per-freq sticks), a
     Smooth (spline) toggle, and a default group-by of Serial (one curve per DUT) for
     a real swept measurement with a modest DUT count. 'lines' collapses repeat
-    measurements to one median point per x (clean curve); 'sticks' draws a vertical
+    measurements to one mean point per x (unified to mean 2026-09-16); 'sticks' draws a vertical
     min..max segment per frequency (right for discrete spurs); Smooth is off by
     default (honest linear) and can be defaulted on via cfg 'scatter_smooth'."""
     import csv as _csv
@@ -904,8 +904,9 @@ def test_scatter_draw_modes() -> None:
               and 'value="lines+markers"' in h and 'value="sticks"' in h)
         check("scatter: Smooth (spline) toggle present, spline shape wired",
               'id="smooth_chk"' in h and "?'spline':'linear'" in h)
-        check("scatter: lines mode collapses repeats to one median point per x",
-              "median(byXl[x])" in h and "(median of repeats)" in h)
+        check("scatter: lines mode collapses repeats to one mean point per x",
+              "meanOf(byXl[x])" in h and "(mean of repeats)" in h
+              and "median(byXl[x])" not in h)
         check("scatter: sticks mode draws vertical min..max segment per freq",
               "drawMode==='sticks'" in h and "sx.push(x,x,null)" in h)
         # This 6-DUT, 8-offset sweep should default the selected groupby <option> to
@@ -1153,6 +1154,24 @@ def test_stat_sum_table_perpoint_rollout() -> None:
           and "_sumFailTd({fail:r.n_fail,scored:r.n_scored})" in src)
 
 
+def test_repeat_collapse_is_mean() -> None:
+    """Repeat-collapse (multiple values at one point) uses the MEAN everywhere,
+    reconciled 2026-09-16: scatter's lines mode previously used median alone while
+    boxplot's _collapseDupRuns / stat_summary+summary DUT-averaging all use mean
+    (and the TI/TTL/MU framework is mean+/-sigma based). Drift guard: scatter
+    lines mode must collapse with meanOf (not median), and _collapseDupRuns must
+    stay a mean (sum/length)."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("scatter lines mode collapses repeats by mean (meanOf), not median",
+          "y:xkl.map(function(x){return meanOf(byXl[x]);})" in src
+          and "function meanOf(" in src
+          and "median(byXl[x])" not in src)
+    check("scatter lines hover says 'mean of repeats' (not median)",
+          "(mean of repeats)" in src and "(median of repeats)" not in src)
+    check("_collapseDupRuns stays a mean (sum/length)",
+          "function _collapseDupRuns(" in src and "out.v=sum/g.length;" in src)
+
+
 def test_site_compare_basis_rollout() -> None:
     """The Site Population Check "Compare to" selector (fence/spec/both) was rolled
     out from boxplot to ALL views (2026-09-15): stat_summary, summary, histogram
@@ -1273,6 +1292,7 @@ def main() -> None:
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
+               test_repeat_collapse_is_mean,
                test_common_prelude_and_feature_registry,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
