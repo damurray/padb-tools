@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 18,
+      "passed": 20,
       "failed": 0
     },
     "qa_padb": {
@@ -34,6 +34,10 @@
     },
     "qa_testpoint_reduce": {
       "passed": 11,
+      "failed": 0
+    },
+    "qa_sentinel": {
+      "passed": 10,
       "failed": 0
     }
   }

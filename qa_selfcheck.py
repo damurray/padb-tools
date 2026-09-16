@@ -52,6 +52,7 @@ _COMPILE_TARGETS = [
     "qa_js_segments.py", "qa_stats_recompute.py", "qa_webapp.py",
     "qa_regressions.py", "qa_filters.py", "padb_subpop.py", "qa_subpop.py",
     "padb_testpoint_reduce.py", "qa_testpoint_reduce.py",
+    "padb_sentinel.py", "qa_sentinel.py",
     "webapp/padb_web.py",
 ]
 
@@ -104,6 +105,7 @@ def run_suites() -> list[dict]:
         _suite("qa_regressions", ["qa_regressions.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_subpop", ["qa_subpop.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_testpoint_reduce", ["qa_testpoint_reduce.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
+        _suite("qa_sentinel", ["qa_sentinel.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
     ]
 
 
