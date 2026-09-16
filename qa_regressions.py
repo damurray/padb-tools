@@ -974,11 +974,19 @@ def test_common_prelude_and_feature_registry() -> None:
     appear across the builders, so dropping a feature from one view (the 'one view
     first' drift David flagged) FAILS QA until propagated."""
     src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
-    # 1) Shared prelude defined once with the side-aware single rule.
-    check("_COMMON_JS defines PADB_num + PADB_isFail (single side-aware rule)",
+    # 1) Shared prelude defines the single classification (the ONLY >hi/<lo site),
+    #    and PADB_isFail is derived from it (no second copy of the rule).
+    check("_COMMON_JS defines PADB_specClass (single side-aware >hi/<lo rule) + derived PADB_isFail",
           '_COMMON_JS = r"""' in src and "function PADB_num(v)" in src
-          and "function PADB_isFail(v,hi,lo)" in src
-          and "return (hi!==null&&v>hi)||(lo!==null&&v<lo);" in src)
+          and "function PADB_specClass(v,hi,lo)" in src
+          and "if(hi!==null&&v>hi){dir='high'" in src
+          and "function PADB_isFail(v,hi,lo){ var c=PADB_specClass(v,hi,lo);" in src)
+    # 1b) Every Site spec-classifier delegates to PADB_specClass (no inline copy of
+    #     the direction/dist/verdict logic left in any view).
+    check(f"all 5 Site spec-classifiers delegate to PADB_specClass (found {src.count('PADB_specClass(p.value')})",
+          src.count("PADB_specClass(p.value") >= 5)
+    check("the spec >hi/<lo direction rule exists in exactly one place (PADB_specClass)",
+          src.count("if(hi!==null&&v>hi){dir='high'") == 1)
     # 2) Injected into every V2 view's <script> assembly (uses = total minus the def).
     common_uses = src.count("_COMMON_JS") - 1
     check(f"_COMMON_JS injected into every V2 view (>=7 uses; found {common_uses})",
@@ -1057,9 +1065,10 @@ def test_site_compare_basis_rollout() -> None:
           ppsrc.count("meta.compareBasis||'fence'") >= 2)
     check("dist + ec supply compareBasis to shared panel",
           ppsrc.count("compareBasis:cmp") >= 2)
-    # Every classifier uses the same side-aware rule (a bound applied only when present).
-    check("spec classifiers are side-aware (hi!=null&&p.value>hi)",
-          ppsrc.count("if(hi!=null&&p.value>hi)") >= 4)
+    # Every classifier delegates to the shared PADB_specClass (the single rule),
+    # so all views' spec verdicts are side-aware and identical by construction.
+    check("all Site spec-classifiers delegate to shared PADB_specClass",
+          ppsrc.count("PADB_specClass(p.value") >= 5)
 
 
 def test_axis_titles_object_form() -> None:

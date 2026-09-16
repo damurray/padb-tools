@@ -3229,15 +3229,24 @@ _COMMON_JS = r"""
    null.toFixed crash, and the Plotly-3 axis-title breakage). Add cross-view helpers
    HERE, not per-view. Pinned by qa_regressions (common-prelude in every view). */
 function PADB_num(v){ if(v===null||v===undefined||v==='') return null; var f=parseFloat(v); return isFinite(f)?f:null; }
-/* THE pass/fail rule for the whole tool: a point fails when it crosses a bound that
-   is PRESENT. A bound applies only when non-null, so a one-sided (e.g. upper-only)
-   spec fails only on the side that exists. Returns null == "no verdict" (no limit).
-   Every pass/fail -- scatter data-rows table, boxplot per-point + Site spec-mode,
-   stat_summary/summary/histogram Site spec-mode, shared _spSpecClass, grouped
-   #fail columns -- MUST go through this so they can never disagree. */
-function PADB_isFail(v,hi,lo){ v=PADB_num(v); hi=PADB_num(hi); lo=PADB_num(lo);
-  if(v===null||(hi===null&&lo===null)) return null;
-  return (hi!==null&&v>hi)||(lo!==null&&v<lo); }
+/* THE single spec/limit classification for the whole tool -- the ONLY place the
+   >hi / <lo comparison lives. A point fails when it crosses a bound that is
+   PRESENT; a bound applies only when non-null, so a one-sided (e.g. upper-only)
+   spec fails only on the side that exists. Returns {verdict:'n/a'|'inside'|
+   'OUTSIDE', dir:null|'high'|'low', dist, lo, hi}. Every Site spec-mode
+   (boxplot/stat_summary/summary/histogram/env_coverage/distribution) resolves its
+   own hi/lo (per-point limit else page spec) then calls THIS, so they can never
+   disagree. */
+function PADB_specClass(v,hi,lo){ v=PADB_num(v); hi=PADB_num(hi); lo=PADB_num(lo);
+  if(v===null||(hi===null&&lo===null)) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
+  var dir=null,dist=0;
+  if(hi!==null&&v>hi){dir='high';dist=v-hi;}
+  else if(lo!==null&&v<lo){dir='low';dist=lo-v;}
+  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi}; }
+/* Pass/fail as a boolean (null == no verdict), defined via PADB_specClass so the
+   rule has exactly one definition. Used by the scatter data-rows table, boxplot
+   per-point + #fail columns, etc. */
+function PADB_isFail(v,hi,lo){ var c=PADB_specClass(v,hi,lo); return c.verdict==='n/a'?null:(c.dir!==null); }
 """
 
 _SITE_PANEL_SHARED_JS = r"""
@@ -3251,14 +3260,11 @@ function _spNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFlo
    the page HI_SPEC/LO_SPEC. verdict 'OUTSIDE' == fails spec. Same rule as the
    bespoke views (vs Limit, side-aware). */
 function _spSpecClass(p){
-  var pgHi=(typeof HI_SPEC!=='undefined')?_spNum(HI_SPEC):null, pgLo=(typeof LO_SPEC!=='undefined')?_spNum(LO_SPEC):null;
+  /* per-point limit -> raw spec -> page spec; classify via shared PADB_specClass. */
+  var pgHi=(typeof HI_SPEC!=='undefined')?HI_SPEC:null, pgLo=(typeof LO_SPEC!=='undefined')?LO_SPEC:null;
   var hi=(p.limHi!=null?p.limHi:(p.specHi!=null?p.specHi:pgHi));
   var lo=(p.limLo!=null?p.limLo:(p.specLo!=null?p.specLo:pgLo));
-  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
-  var dir=null,dist=0;
-  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
-  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
-  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+  return PADB_specClass(p.value,hi,lo);
 }
 /* Given a per-point p and its already-computed fence row, return the row for the
    chosen compare basis. specPF is attached for 'both'. */
@@ -7482,13 +7488,8 @@ function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseF
    (per-DUT limit embedded in dut_vals -- prefer derived Limit, fall back to raw
    Spec), not the primary fence. verdict 'OUTSIDE' == fails spec, so the whole
    downstream triage is reused verbatim. Identical rule to boxplot/scatter. */
-function _siteSpecClass(p){
-  var hi=(p.limHi!=null?p.limHi:p.specHi), lo=(p.limLo!=null?p.limLo:p.specLo);
-  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
-  var dir=null,dist=0;
-  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
-  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
-  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+function _siteSpecClass(p){   // per-point limit -> raw spec; classify via shared PADB_specClass
+  return PADB_specClass(p.value, (p.limHi!=null?p.limHi:p.specHi), (p.limLo!=null?p.limLo:p.specLo));
 }
 var _lastSiteRows=[];
 var _lastSiteMeta={};
@@ -13768,17 +13769,13 @@ function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseF
    present so a one-sided spec fails only on the side that exists. verdict
    'OUTSIDE' == fails spec, reusing the fence path's downstream triage verbatim. */
 function _siteSpecClass(p){
-  /* Per-point limit if the payload carries it (frequency-varying pods), else the
-     page-level HI_SPEC/LO_SPEC (the same spec the boxplot's own pass/fail uses). */
-  var pgHi=(typeof HI_SPEC!=='undefined')?_siteNum(HI_SPEC):null;
-  var pgLo=(typeof LO_SPEC!=='undefined')?_siteNum(LO_SPEC):null;
+  /* Per-point limit if the payload carries it (frequency-varying pods), else raw
+     spec, else page-level HI_SPEC/LO_SPEC; classify via the single shared
+     PADB_specClass (_COMMON_JS) so every view's spec verdict agrees. */
+  var pgHi=(typeof HI_SPEC!=='undefined')?HI_SPEC:null, pgLo=(typeof LO_SPEC!=='undefined')?LO_SPEC:null;
   var hi=(p.limHi!=null?p.limHi:(p.specHi!=null?p.specHi:pgHi));
   var lo=(p.limLo!=null?p.limLo:(p.specLo!=null?p.specLo:pgLo));
-  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
-  var dir=null,dist=0;
-  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
-  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
-  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+  return PADB_specClass(p.value,hi,lo);
 }
 function updateSitePanel(){
   var el=document.getElementById('box_site_panel');
@@ -17341,14 +17338,8 @@ function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseF
    Spec/Limit (page HI_SPEC/LO_SPEC -- summary's per-DUT value is a cross-temp
    mean, so this is that mean vs the requirement). verdict 'OUTSIDE' == fails
    spec; reuses the downstream triage verbatim. Same rule as boxplot/scatter. */
-function _siteSpecClass(p){
-  var hi=(typeof HI_SPEC!=='undefined')?_siteNum(HI_SPEC):null;
-  var lo=(typeof LO_SPEC!=='undefined')?_siteNum(LO_SPEC):null;
-  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
-  var dir=null,dist=0;
-  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
-  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
-  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+function _siteSpecClass(p){   // page HI_SPEC/LO_SPEC; classify via shared PADB_specClass
+  return PADB_specClass(p.value, (typeof HI_SPEC!=='undefined'?HI_SPEC:null), (typeof LO_SPEC!=='undefined'?LO_SPEC:null));
 }
 var _lastSiteRows=[];
 var _lastSiteMeta={};
@@ -19233,14 +19224,8 @@ function _hSiteFence(vals,k){ if(vals.length<4) return null; if(k===undefined||k
    Spec/Limit (page LIMIT_HI/LIMIT_LO), not the primary fence. verdict 'OUTSIDE'
    == fails spec; reuses the downstream triage verbatim. Same rule as the other
    views (vs Limit, side-aware). */
-function _hSiteSpecClass(p){
-  var hi=(LIMIT_HI!==null&&LIMIT_HI!==undefined)?LIMIT_HI:null;
-  var lo=(LIMIT_LO!==null&&LIMIT_LO!==undefined)?LIMIT_LO:null;
-  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
-  var dir=null,dist=0;
-  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
-  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
-  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+function _hSiteSpecClass(p){   // page LIMIT_HI/LIMIT_LO; classify via shared PADB_specClass
+  return PADB_specClass(p.value, LIMIT_HI, LIMIT_LO);
 }
 function _hSiteBasis(){ var el=document.getElementById('h_site_basis'); return el?el.value:'fence'; }
 function _hSiteTriage(d,towardFail){ if(!d.outside) return null;
