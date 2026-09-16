@@ -259,6 +259,108 @@ _SIMPLE_FORCE_KEYS = {"OutputConfig_OutputGraph": "1", "OutputConfig_GraphFormat
 # to the CSVs a viewer might mistake for the actual result.
 _DISABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "0"}
 
+# --- Test-point-reduction extraction (2026-09-16) --------------------------
+# A reduction study needs EVERY run of each DUT (not last-run/passing only), so
+# the run-to-run behaviour is visible -- a point that fails then passes after a
+# repair/cal is a confirmed sentinel; one that fails every run is a test issue.
+# So force all-runs, and add "Test Run Datetime" as a grouping item on every
+# Type=80 analytic so each run is a distinguishable, chronologically-orderable
+# point in the CSV (the scatter reduction view derives a per-DUT run index from
+# it). The prefix for the grouping item is DERIVED from an existing analytic-
+# prefixed grouping item (confirmed real form: "<Analytic>-->...:Test Run
+# Datetime"), never guessed.
+_REDUCTION_EXTRACT_KEYS = {"TestRun_RunStatus": "{All}", "ExtractionOptions_AllRunResults": "True"}
+_RUN_GROUP_FIELD = "Test Run Datetime"
+
+
+def _force_extract_keys_in_body(body: list[str], eol: str, changed: dict) -> None:
+    """Ensure each _REDUCTION_EXTRACT_KEYS key is present/correct in an [Extract]
+    section body (replace in place, else append)."""
+    seen: dict[str, int] = {}
+    for i, ln in enumerate(body):
+        s = ln.strip()
+        if "=" in s:
+            k = s.split("=", 1)[0].strip()
+            if k in _REDUCTION_EXTRACT_KEYS:
+                seen[k] = i
+    for k, v in _REDUCTION_EXTRACT_KEYS.items():
+        want = f"{k}={v}"
+        if k in seen:
+            if body[seen[k]].strip() != want:
+                body[seen[k]] = want + eol
+                changed["extract_forced"] += 1
+        else:
+            at = len(body)
+            while at > 0 and body[at - 1].strip() == "":
+                at -= 1
+            body.insert(at, want + eol)
+            changed["extract_forced"] += 1
+
+
+def _add_run_grouping_in_body(body: list[str], eol: str, changed: dict) -> None:
+    """Append '<prefix>:Test Run Datetime' as a new Grouping_Item on a Type=80
+    analytic body (idempotent). Prefix derived from an existing analytic-prefixed
+    grouping item; if none can be found, the section is left untouched."""
+    gi_re = re.compile(r"^\s*Grouping_Item(\d+)\s*=(.*?)\s*$")
+    items: list[tuple[int, int, str]] = []
+    prefix = None
+    for i, ln in enumerate(body):
+        m = gi_re.match(ln)
+        if m:
+            items.append((i, int(m.group(1)), m.group(2)))
+            if prefix is None and "-->" in m.group(2) and ":" in m.group(2):
+                prefix = m.group(2).rsplit(":", 1)[0]
+    if not items or prefix is None:
+        return
+    if any(val.rstrip().endswith(_RUN_GROUP_FIELD) for _, _, val in items):
+        return  # already grouped by run datetime
+    new_num = max(n for _, n, _ in items) + 1
+    last_idx = max(i for i, _, _ in items)
+    body.insert(last_idx + 1, f"Grouping_Item{new_num}={prefix}:{_RUN_GROUP_FIELD}{eol}")
+    for i, ln in enumerate(body):
+        if re.match(r"^\s*Group_Num\s*=\s*\d+\s*$", ln):
+            body[i] = f"Group_Num={new_num}{eol}"
+            break
+    changed["analytics_grouped"] += 1
+
+
+def apply_reduction_extraction(run_pod: Path) -> dict:
+    """Post-process a _run.pod for a test-point-reduction study: force all-runs
+    extraction ([Extract]) and add 'Test Run Datetime' grouping to every Type=80
+    analytic. Idempotent. Returns {'extract_forced', 'analytics_grouped',
+    'pinned_datetime_filter'} -- the last flags that the source pod pins specific
+    TestRun_RunDateTime values (a run filter that would defeat all-runs; the
+    caller/workflow should clear it via the per-site date window instead)."""
+    raw = run_pod.read_text(encoding="utf-8", errors="replace")
+    lines = raw.splitlines(keepends=True)
+    eol = "\r\n" if "\r\n" in raw else "\n"
+    changed = {"extract_forced": 0, "analytics_grouped": 0, "pinned_datetime_filter": False}
+    hdr_re = re.compile(r"^\s*\[(.+?)\]\s*$")
+    preamble: list[str] = []
+    sections: list[list] = []  # [header_line, name_lower, [body_lines]]
+    target = preamble
+    for ln in lines:
+        m = hdr_re.match(ln)
+        if m:
+            sections.append([ln, m.group(1).lower(), []])
+            target = sections[-1][2]
+        else:
+            target.append(ln)
+    for _hdr, name, body in sections:
+        if name == "extract":
+            for ln in body:
+                s = ln.strip()
+                if s.startswith("TestRun_RunDateTime=") and s.split("=", 1)[1].strip() not in ("", "{All}"):
+                    changed["pinned_datetime_filter"] = True
+            _force_extract_keys_in_body(body, eol, changed)
+        elif re.match(r"padbanalytic\d+$", name):
+            if any(re.match(r"\s*type\s*=\s*80\s*$", b, re.I) for b in body):
+                _add_run_grouping_in_body(body, eol, changed)
+    run_pod.write_text(
+        "".join(preamble) + "".join(hdr + "".join(body) for hdr, _n, body in sections),
+        encoding="utf-8")
+    return changed
+
 
 def _slugify_name(name: str) -> str:
     return re.sub(r"[^\w]+", "_", name.strip()).strip("_")
@@ -1072,6 +1174,17 @@ def main() -> None:
                  disable_native_render=(mode != "simple"),
                  unique_output_filenames=unique_output_filenames,
                  force_output_csv=force_output_csv)
+    # Test-point-reduction study: force all-runs + add Test Run Datetime grouping
+    # so every run of each DUT is a distinguishable, orderable point.
+    if cfg.get("reduction_extraction"):
+        rc = apply_reduction_extraction(run_pod)
+        print(f"Reduction extraction: forced {rc['extract_forced']} extract key(s), "
+              f"added run-datetime grouping to {rc['analytics_grouped']} Type=80 analytic(s).")
+        if rc["pinned_datetime_filter"]:
+            print("  WARNING: this pod pins specific TestRun_RunDateTime values -- that "
+                  "run filter will restrict extraction to those runs, defeating all-runs. "
+                  "Set the per-site date window (min/max date) and clear the pinned "
+                  "datetime list in the source pod for a full reduction study.")
     print(f"Run pod: {run_pod}\n")
 
     # Parse analytics from the actual run pod, not the original -- reflects

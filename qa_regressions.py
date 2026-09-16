@@ -1154,6 +1154,58 @@ def test_stat_sum_table_perpoint_rollout() -> None:
           and "_sumFailTd({fail:r.n_fail,scored:r.n_scored})" in src)
 
 
+def test_reduction_extraction() -> None:
+    """Test-point-reduction extraction primitive (2026-09-16): a run pod flagged
+    for a reduction study must force all-runs (TestRun_RunStatus={All},
+    ExtractionOptions_AllRunResults=True) and add '<prefix>:Test Run Datetime' as a
+    grouping item on every Type=80 analytic (prefix DERIVED from an existing
+    analytic-prefixed grouping item, never guessed), so each run of a DUT is a
+    distinguishable, orderable point. Idempotent; safe-skips when no prefix can be
+    derived; flags a pinned datetime filter."""
+    import padb_run as pr
+    def _run(pod_text):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "_run.pod"
+            p.write_text(pod_text, encoding="utf-8")
+            c1 = pr.apply_reduction_extraction(p)
+            c2 = pr.apply_reduction_extraction(p)  # idempotency
+            return c1, c2, p.read_text(encoding="utf-8")
+    # 1) Extract keys MISSING -> appended; Type=80 -> run-datetime grouping added.
+    pod = ("[Extract]\nDevice_Device='X'\n\n"
+           "[PADBAnalytic1]\nType=80\n"
+           "Grouping_Item1=Foo-->Foo (dBc):AlcState\n"
+           "Grouping_Item2=Serial Number\n"
+           "Group_Num=2\n")
+    c1, c2, out = _run(pod)
+    check("reduction: forces all-runs extract keys when missing",
+          "TestRun_RunStatus={All}" in out and "ExtractionOptions_AllRunResults=True" in out
+          and c1["extract_forced"] == 2)
+    check("reduction: adds '<derived-prefix>:Test Run Datetime' grouping on Type=80",
+          "Grouping_Item3=Foo-->Foo (dBc):Test Run Datetime" in out
+          and "Group_Num=3" in out and c1["analytics_grouped"] == 1)
+    check("reduction: is idempotent (second pass changes nothing)",
+          c2["extract_forced"] == 0 and c2["analytics_grouped"] == 0
+          and out.count("Test Run Datetime") == 1)
+    # 2) Non-Type=80 analytic is left alone.
+    pod2 = ("[Extract]\nDevice_Device='X'\n\n[PADBAnalytic1]\nType=70\n"
+            "Grouping_Item1=Foo-->Foo (dBc):AlcState\nGroup_Num=1\n")
+    c1b, _c2b, out2 = _run(pod2)
+    check("reduction: non-Type=80 analytic is NOT grouped",
+          c1b["analytics_grouped"] == 0 and "Test Run Datetime" not in out2)
+    # 3) TEETH: no analytic-prefixed grouping item -> can't derive a prefix ->
+    #    the analytic is left untouched rather than emitting a guessed field ref.
+    pod3 = ("[Extract]\nDevice_Device='X'\n\n[PADBAnalytic1]\nType=80\n"
+            "Grouping_Item1=Serial Number\nGroup_Num=1\n")
+    c1c, _c2c, out3 = _run(pod3)
+    check("reduction: safe-skips a Type=80 with no derivable prefix (no guess)",
+          c1c["analytics_grouped"] == 0 and "Test Run Datetime" not in out3)
+    # 4) Pinned datetime filter is flagged (would defeat all-runs).
+    pod4 = ("[Extract]\nTestRun_RunDateTime='06/01/2026 01:00:00 AM'\n\n"
+            "[PADBAnalytic1]\nType=80\nGrouping_Item1=Foo-->Foo (dBc):AlcState\nGroup_Num=1\n")
+    c1d, _c2d, _out4 = _run(pod4)
+    check("reduction: flags a pinned TestRun_RunDateTime filter", c1d["pinned_datetime_filter"] is True)
+
+
 def test_repeat_collapse_is_mean() -> None:
     """Repeat-collapse (multiple values at one point) uses the MEAN everywhere,
     reconciled 2026-09-16: scatter's lines mode previously used median alone while
@@ -1292,7 +1344,7 @@ def main() -> None:
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
-               test_repeat_collapse_is_mean,
+               test_repeat_collapse_is_mean, test_reduction_extraction,
                test_common_prelude_and_feature_registry,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
