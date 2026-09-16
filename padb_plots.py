@@ -553,6 +553,10 @@ function buildTraces(filtered){
   var groupSel=document.getElementById('groupby');
   var groupCols=Array.from(groupSel.selectedOptions||[]).map(function(o){return o.value;}).filter(function(v){return v;});
   var sortBy=document.getElementById('sortby').value;
+  var _drawEl=document.getElementById('drawmode');
+  var drawMode=_drawEl?_drawEl.value:TRACE_MODE;
+  var _smoothEl=document.getElementById('smooth_chk');
+  var _lineShape=(_smoothEl&&_smoothEl.checked)?'spline':'linear';
   /* Envelope-decimate the POINT set only (when the toggle is on and "Show all
      points" is off) -- `filtered` itself is left intact so the spec mask and the
      data-rows table still see every filtered row. */
@@ -579,6 +583,29 @@ function buildTraces(filtered){
   var traces=entries.map(function(entry){
     var key=entry[0],rows=entry[1];
     var sorted=rows.slice().sort(function(a,b){return a.Frequency_MHz-b.Frequency_MHz;});
+    /* 'sticks' -- one vertical segment per x from min..max value (for discrete
+       spur frequencies, where connecting adjacent frequencies is misleading).
+       'lines' -- collapse repeat measurements to ONE median point per x so the
+       curve is clean/smooth (a dense sweep with many repeats otherwise draws a
+       spiky line). markers / lines+markers show every raw point unchanged. */
+    if(drawMode==='sticks'){
+      var byXs={};
+      sorted.forEach(function(r){var x=r.Frequency_MHz;(byXs[x]=byXs[x]||[]).push(r.Value);});
+      var xk=Object.keys(byXs).map(Number).sort(function(a,b){return a-b;});
+      var sx=[],sy=[];
+      xk.forEach(function(x){var vs=byXs[x];var mn=Math.min.apply(null,vs),mx=Math.max.apply(null,vs);
+        sx.push(x,x,null);sy.push(mn,mx,null);});
+      return {type:'scattergl',x:sx,y:sy,mode:'lines',line:{width:1.5,shape:'linear'},name:key,
+        hovertemplate:'<b>'+key+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f}<extra></extra>'};
+    }
+    if(drawMode==='lines'){
+      var byXl={};
+      sorted.forEach(function(r){var x=r.Frequency_MHz;(byXl[x]=byXl[x]||[]).push(r.Value);});
+      var xkl=Object.keys(byXl).map(Number).sort(function(a,b){return a-b;});
+      return {type:'scattergl',x:xkl,y:xkl.map(function(x){return median(byXl[x]);}),
+        mode:'lines',line:{width:0.75,shape:_lineShape},name:key,
+        hovertemplate:'<b>'+key+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f} (median of repeats)<extra></extra>'};
+    }
     var customdata=sorted.map(function(r){
       return HOVER_COLS.map(function(hc){var v=r[hc[0]];return (v===null||v===undefined)?'':v;});
     });
@@ -592,7 +619,7 @@ function buildTraces(filtered){
       x:sorted.map(function(r){return r.Frequency_MHz;}),
       y:sorted.map(function(r){return r.Value;}),
       customdata:customdata,
-      mode:TRACE_MODE,marker:{size:3},name:key,
+      mode:drawMode,marker:{size:3},line:{width:1.5,shape:_lineShape},name:key,
       hovertemplate:tmpl
     };
   });
@@ -991,6 +1018,8 @@ function saveState(){
   _stSet('freq_hi',document.getElementById('freq_hi').value);
   _stSet('hide_spec',document.getElementById('hide_spec_chk').checked?'1':'0');
   var _sap=document.getElementById('show_all_pts_chk'); if(_sap) _stSet('show_all_pts',_sap.checked?'1':'0');
+  var _dm=document.getElementById('drawmode'); if(_dm) _stSet('drawmode',_dm.value);
+  var _sm=document.getElementById('smooth_chk'); if(_sm) _stSet('smooth',_sm.checked?'1':'0');
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -1003,6 +1032,8 @@ function loadState(){
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
   var hs=_stGet('hide_spec');if(hs!==null)document.getElementById('hide_spec_chk').checked=(hs==='1');
   var sap=_stGet('show_all_pts');var sapEl=document.getElementById('show_all_pts_chk');if(sap!==null&&sapEl)sapEl.checked=(sap==='1');
+  var dm=_stGet('drawmode');var dmEl=document.getElementById('drawmode');if(dm!==null&&dmEl)dmEl.value=dm;
+  var sm=_stGet('smooth');var smEl=document.getElementById('smooth_chk');if(sm!==null&&smEl)smEl.checked=(sm==='1');
   if(typeof _showAllWarnText==='function')_showAllWarnText();
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   GROUP_COLS.forEach(function(pair){
@@ -2280,7 +2311,32 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     # 100 distinct values (that function's own cap) and dominate the plot
     # with a huge legend on first load. Mirrors the same adaptive-default fix
     # already applied to boxplot's Group-by selector.
-    if group_cols:
+    # Prefer per-DUT (Serial) lines as the default for a real SWEPT measurement
+    # with a modest DUT count when the trace mode draws lines -- the phase-noise /
+    # gain-vs-frequency "one curve per DUT" look the user asked to be the default
+    # (2026-09-15). Gated so it only kicks in where per-DUT lines are clearly right:
+    # Serial exists, 2..SERIAL_LINE_MAX DUTs, a genuine sweep (median distinct
+    # x-points per DUT >= 4), and the mode connects points. Otherwise keep the
+    # smallest-cardinality dimension (avoids a huge default legend).
+    SERIAL_LINE_MAX = 60
+    _draw_mode_default = cfg.get("mode", "lines+markers")
+    # Serial may be a real "Serial" column (compare/phase-noise pods) or a Group-text
+    # dimension ("_grp_Serial Number" etc.) -- accept either as the per-DUT axis.
+    _ser_kws = ("serial", "unit id", "dut id", "s/n")
+    _serial_grp = next(
+        (c for c, lbl in group_cols
+         if c == "Serial" or any(kw in lbl.lower() for kw in _ser_kws)),
+        None,
+    )
+    _n_serials = df[_serial_grp].replace("", pd.NA).nunique(dropna=True) if _serial_grp else 0
+    _med_pts_per_serial = 0.0
+    if _serial_grp and _n_serials:
+        _pps = df.dropna(subset=["Frequency_MHz"]).groupby(_serial_grp)["Frequency_MHz"].nunique()
+        _med_pts_per_serial = float(_pps.median()) if len(_pps) else 0.0
+    if (_serial_grp and "line" in _draw_mode_default
+            and 2 <= _n_serials <= SERIAL_LINE_MAX and _med_pts_per_serial >= 4):
+        _default_grp_col = _serial_grp
+    elif group_cols:
         _default_grp_col = min(
             group_cols, key=lambda cl: df[cl[0]].replace("", pd.NA).nunique(dropna=True)
         )[0]
@@ -2453,6 +2509,19 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '    <option value="median_asc">Median low&#8594;high</option>\n'
         '    <option value="median_desc">Median high&#8594;low</option>\n'
         '  </select></label>\n'
+        '  <label title="How to draw each series: Markers only, connected Lines'
+        ' (phase-noise style -- one curve per group, e.g. per DUT when grouped by'
+        ' Serial), or both.">Draw:<select id="drawmode" onchange="update()">\n'
+        f'    <option value="markers"{" selected" if _draw_mode_default=="markers" else ""}>Markers</option>\n'
+        f'    <option value="lines"{" selected" if _draw_mode_default=="lines" else ""}>Lines</option>\n'
+        f'    <option value="lines+markers"{" selected" if _draw_mode_default not in ("markers","lines") else ""}>Lines + markers</option>\n'
+        '    <option value="sticks">Vertical (per freq)</option>\n'
+        '  </select></label>\n'
+        f'  <label title="Draw connected lines as smooth curves (Plotly spline) instead of'
+        ' straight segments between points. Purely cosmetic -- the underlying data points'
+        ' are unchanged; on sparse data a spline can bow between points, so it is off by'
+        ' default.">'
+        f'<input type="checkbox" id="smooth_chk" onchange="update()"{" checked" if cfg.get("scatter_smooth") else ""}> Smooth</label>\n'
         '  <div class="sep"></div>\n'
         f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'

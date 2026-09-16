@@ -876,6 +876,47 @@ def test_reference_stats():
               "var STATUS_COL=null;" in h2 and 'id="pareto"' in h2)
 
 
+def test_scatter_draw_modes() -> None:
+    """Scatter gained Draw modes + Smooth for phase-noise-style plots (2026-09-15,
+    user request): Markers / Lines / Lines+markers / Vertical(per-freq sticks), a
+    Smooth (spline) toggle, and a default group-by of Serial (one curve per DUT) for
+    a real swept measurement with a modest DUT count. 'lines' collapses repeat
+    measurements to one median point per x (clean curve); 'sticks' draws a vertical
+    min..max segment per frequency (right for discrete spurs); Smooth is off by
+    default (honest linear) and can be defaulted on via cfg 'scatter_smooth'."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "pn.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Frequency (MHz)", "Value (dBc/Hz)", "Group"])
+            # 6 DUTs, 8 offsets each, 2 repeats/offset -> a real sweep with repeats
+            for s in range(6):
+                for fo in (1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6, 1e7):
+                    for rep in (0, 1):
+                        w.writerow([fo, -80 - 5 * (fo > 1e3) + rep * 0.2,
+                                    f"Serial Number: D{s:02d}"])
+        out = Path(td) / "pn.html"
+        pp.accuracy_vs_freq(p, {"y_label": "Value (dBc/Hz)", "title_prefix": "T"}, out)
+        h = out.read_text(encoding="utf-8")
+        check("scatter: Draw selector has markers/lines/lines+markers/sticks",
+              'id="drawmode"' in h and 'value="markers"' in h and 'value="lines"' in h
+              and 'value="lines+markers"' in h and 'value="sticks"' in h)
+        check("scatter: Smooth (spline) toggle present, spline shape wired",
+              'id="smooth_chk"' in h and "?'spline':'linear'" in h)
+        check("scatter: lines mode collapses repeats to one median point per x",
+              "median(byXl[x])" in h and "(median of repeats)" in h)
+        check("scatter: sticks mode draws vertical min..max segment per freq",
+              "drawMode==='sticks'" in h and "sx.push(x,x,null)" in h)
+        # This 6-DUT, 8-offset sweep should default the selected groupby <option> to
+        # the serial-like dimension (one curve per DUT), not a lower-cardinality dim.
+        import re as _re
+        m = _re.search(r'<option value="[^"]*"\s+selected>([^<]*)</option>', h)
+        check("scatter: default group-by option is serial-like (per DUT) for a swept dataset",
+              bool(m) and any(kw in m.group(1).lower() for kw in ("serial", "unit id", "dut id", "s/n")),
+              f"selected default option = {m.group(1) if m else '(none)'}")
+
+
 def test_site_check_compare_basis() -> None:
     """Boxplot Site Population Check gained a selectable comparison basis (2026-09-15,
     user request): 'fence' (primary k*IQR fence, existing), 'spec' (judge each
@@ -1012,7 +1053,8 @@ def main() -> None:
                test_auto_filter_site_scope, test_pdf_report_contract,
                test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats, test_axis_titles_object_form,
-               test_scatter_table_spec_status, test_site_check_compare_basis):
+               test_scatter_table_spec_status, test_site_check_compare_basis,
+               test_scatter_draw_modes):
         try:
             fn()
         except Exception as exc:
