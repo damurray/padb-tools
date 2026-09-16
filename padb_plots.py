@@ -3226,6 +3226,32 @@ function _spFence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.
   var s=vals.slice().sort(function(a,b){return a-b;});
   function q(p){var i=(p/100)*(s.length-1),lo=Math.floor(i);return lo+1<s.length?s[lo]+(s[lo+1]-s[lo])*(i-lo):s[lo];}
   var q1=q(25),q3=q(75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
+function _spNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
+/* Comparison basis 'spec' shared classify: judge a point vs its OWN Spec/Limit --
+   per-point limit when the view supplies it (p.limHi/limLo/specHi/specLo), else
+   the page HI_SPEC/LO_SPEC. verdict 'OUTSIDE' == fails spec. Same rule as the
+   bespoke views (vs Limit, side-aware). */
+function _spSpecClass(p){
+  var pgHi=(typeof HI_SPEC!=='undefined')?_spNum(HI_SPEC):null, pgLo=(typeof LO_SPEC!=='undefined')?_spNum(LO_SPEC):null;
+  var hi=(p.limHi!=null?p.limHi:(p.specHi!=null?p.specHi:pgHi));
+  var lo=(p.limLo!=null?p.limLo:(p.specLo!=null?p.specLo:pgLo));
+  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
+  var dir=null,dist=0;
+  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
+  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
+  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+}
+/* Given a per-point p and its already-computed fence row, return the row for the
+   chosen compare basis. specPF is attached for 'both'. */
+function _spRowForBasis(p,fenceRow,basis,towardFail){
+  var sc=_spSpecClass(p);
+  var specPF=sc.verdict==='n/a'?'n/a':(sc.dir?'FAIL':'PASS');
+  if(basis==='spec'){
+    var sr=(sc.dir&&towardFail)?(sc.dir===towardFail):null;
+    return {p:p,verdict:sc.verdict,dir:sc.dir,dist:sc.dist,lo:sc.lo,hi:sc.hi,n:undefined,specRelevant:sr,specPF:specPF};
+  }
+  fenceRow.specPF=specPF; return fenceRow;
+}
 function _spTriage(d,towardFail,primary){ if(!d.outside) return null;
   var ms=d.sharedCount/d.outside>0.5, mh=d.high/d.outside>0.5, ml=d.low/d.outside>0.5;
   var bad=towardFail==='high'?mh:towardFail==='low'?ml:null;
@@ -3244,12 +3270,18 @@ function _spRollup(rows,towardFail,primary){
   return {clus:clus,dutMap:dutMap}; }
 function _spRender(rows,meta){
   var primary=meta.primary, roll=_spRollup(rows,meta.towardFail,primary), rank={OUTSIDE:0,inside:1,'n/a':2};
+  var cbasis=meta.compareBasis||'fence', isSpec=(cbasis==='spec'), showSpecCol=(cbasis==='both');
+  var loLbl=isSpec?'Limit lo':primary+' fence lo', hiLbl=isSpec?'Limit hi':primary+' fence hi';
+  var outWord=isSpec?'FAIL':'OUTSIDE', inWord=isSpec?'PASS':'inside';
   rows.sort(function(a,b){if(rank[a.verdict]!==rank[b.verdict])return rank[a.verdict]-rank[b.verdict];return (b.dist||0)-(a.dist||0);});
   var outside=rows.filter(function(r){return r.verdict==='OUTSIDE';});
   var nBenign=outside.filter(function(r){return r.specRelevant===false;}).length;
   var nNA=rows.filter(function(r){return r.verdict==='n/a';}).length;
   var dirNote=meta.towardFail?(' Direction relative to spec: <b>'+meta.towardFail+'</b> is toward failing -- OUTSIDE points the other way are flagged benign.'):' (Spec two-sided/unconfigured -- both directions shown as plain deviations.)';
-  var html='<div style="font-size:12px;margin-bottom:6px"><b>'+outside.length+'</b> of <b>'+rows.length+'</b> non-'+primary+' point(s) fall outside the '+primary+' '+meta.k+'&times;IQR fence ('+meta.basisLabel+') for their own '+meta.bucketLabel+(nBenign?' (<b>'+nBenign+'</b> benign)':'')+(nNA?' ('+nNA+' skipped -- <4 '+primary+' points in that group)':'')+'.'+dirNote+'</div>';
+  var basisPre=isSpec?('<i>Comparison: each non-'+primary+' point vs its own Spec/Limit (the primary-site fence is not used).</i><br>'):
+    (showSpecCol?'<i>Comparison: outside = '+primary+' fence (drives triage below); a separate Spec/Limit pass/fail is in the last column.</i><br>':'');
+  var summaryPhrase=isSpec?('fail their own Spec/Limit'):('fall outside the '+primary+' '+meta.k+'&times;IQR fence ('+meta.basisLabel+') for their own '+meta.bucketLabel);
+  var html='<div style="font-size:12px;margin-bottom:6px">'+basisPre+'<b>'+outside.length+'</b> of <b>'+rows.length+'</b> non-'+primary+' point(s) '+summaryPhrase+(nBenign?' (<b>'+nBenign+'</b> benign)':'')+(!isSpec&&nNA?' ('+nNA+' skipped -- <4 '+primary+' points in that group)':'')+(isSpec&&nNA?' ('+nNA+' have no spec/limit)':'')+'.'+dirNote+'</div>';
   html+='<div style="margin:0 0 8px"><button class="csv-btn" onclick="'+meta.exportFnName+'(false)">&#8595; Export CSV (All)</button>&nbsp;&nbsp;<button class="csv-btn" onclick="'+meta.exportFnName+'(true)">&#8595; Export CSV (Outside only)</button></div>';
   var dutRows=Object.keys(roll.dutMap).map(function(k){return roll.dutMap[k];}).filter(function(d){return d.outside>0;}).sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
   if(dutRows.length){ html+='<div style="font-weight:600;margin:8px 0 2px">Per-DUT summary (suggested triage, not a verdict)</div><table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th><th>Outside</th><th>%</th><th>High</th><th>Low</th><th>Max dist</th><th>Shared w/ others</th><th>Suggested triage</th></tr></thead><tbody>';
@@ -3259,17 +3291,19 @@ function _spRender(rows,meta){
   if(clusters.length){ html+='<div style="font-weight:600;margin:8px 0 2px">Groups with multiple DUTs affected (points at a station/fixture/calibration issue, not one DUT)</div><table class="stbl"><thead><tr><th>Site</th><th>'+meta.bucketLabel+'</th><th>DUTs</th><th>Serials</th></tr></thead><tbody>';
     clusters.forEach(function(e){var ser=Object.keys(e.serials).sort();html+='<tr><td>'+e.site+'</td><td>'+(e.bucket||'All')+'</td><td class="sev-hi">'+ser.length+'</td><td>'+ser.join(', ')+'</td></tr>';});
     html+='</tbody></table>'; }
-  html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div><div style="overflow:auto;max-height:60vh;border:1px solid #eee"><table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>'+meta.bucketLabel+'</th><th>'+meta.valueLabel+'</th><th>'+primary+' fence lo</th><th>'+primary+' fence hi</th><th>'+primary+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
-  rows.forEach(function(r){var p=r.p;var vTd=r.verdict!=='OUTSIDE'?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>'):r.specRelevant===false?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only.">OUTSIDE (benign)</td>':'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>';
-    html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td><td>'+(p.bucket||'All')+'</td><td>'+p.value.toFixed(4)+'</td><td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td><td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td><td>'+(r.n!==undefined?r.n:'&mdash;')+'</td><td>'+(r.dir||'&mdash;')+'</td><td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';});
+  html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div><div style="overflow:auto;max-height:60vh;border:1px solid #eee"><table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>'+meta.bucketLabel+'</th><th>'+meta.valueLabel+'</th><th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+primary+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th>'+(showSpecCol?'<th title="Independent pass/fail of this point vs its own datasheet Spec/Limit.">Spec&nbsp;P/F</th>':'')+'</tr></thead><tbody>';
+  rows.forEach(function(r){var p=r.p;var vTd=r.verdict!=='OUTSIDE'?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>'+inWord+'</td>'):r.specRelevant===false?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only.">'+outWord+' (benign)</td>':'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>';
+    var specTd=showSpecCol?(r.specPF==='FAIL'?'<td style="color:#c00;font-weight:bold">FAIL</td>':r.specPF==='PASS'?'<td style="color:#2a7a2a">PASS</td>':'<td style="color:#aaa">n/a</td>'):'';
+    html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td><td>'+(p.bucket||'All')+'</td><td>'+p.value.toFixed(4)+'</td><td>'+(r.lo!==undefined&&r.lo!==null?r.lo.toFixed(4):'&mdash;')+'</td><td>'+(r.hi!==undefined&&r.hi!==null?r.hi.toFixed(4):'&mdash;')+'</td><td>'+(r.n!==undefined&&r.n!==null?r.n:'&mdash;')+'</td><td>'+(r.dir||'&mdash;')+'</td><td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+specTd+'</tr>';});
   html+='</tbody></table></div>'; return html; }
 function _spCsv(rows,meta){
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
-  var hdrs=['Site','Serial','Group',meta.valueLabel,meta.primary+'_fence_lo',meta.primary+'_fence_hi',meta.primary+'_n','Dir','Dist','Verdict','Spec_relevant'];
+  var cbasis=meta.compareBasis||'fence', boundLbl=(cbasis==='spec')?'Limit':meta.primary+'_fence';
+  var hdrs=['Site','Serial','Group',meta.valueLabel,boundLbl+'_lo',boundLbl+'_hi',meta.primary+'_n','Dir','Dist','Verdict','Spec_relevant','Spec_PF'];
   var out=[hdrs.join(',')];
-  rows.forEach(function(r){var p=r.p;out.push([esc(p.site),esc(p.serial),esc(p.bucket),p.value.toFixed(6),r.lo!==undefined?r.lo.toFixed(6):'',r.hi!==undefined?r.hi.toFixed(6):'',r.n!==undefined?r.n:'',r.dir||'',r.dist?r.dist.toFixed(6):'',r.verdict,r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown'].join(','));});
+  rows.forEach(function(r){var p=r.p;out.push([esc(p.site),esc(p.serial),esc(p.bucket),p.value.toFixed(6),r.lo!==undefined&&r.lo!==null?r.lo.toFixed(6):'',r.hi!==undefined&&r.hi!==null?r.hi.toFixed(6):'',r.n!==undefined&&r.n!==null?r.n:'',r.dir||'',r.dist?r.dist.toFixed(6):'',r.verdict,r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown',r.specPF||''].join(','));});
   var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
-  var mh=['# PADB Export -- Site Population Check','# Generated: '+ts,'# Primary site: '+meta.primary,'# Fence basis: '+meta.basisLabel,'# Fence: '+meta.primary+' '+meta.k+'xIQR per '+meta.bucketLabel,'# Rows: '+rows.length,'#'].join('\r\n');
+  var mh=['# PADB Export -- Site Population Check','# Generated: '+ts,'# Primary site: '+meta.primary,'# Fence basis: '+meta.basisLabel,'# Comparison basis: '+(cbasis==='spec'?'Spec/Limit':cbasis==='both'?'fence + Spec/Limit (Spec_PF)':'primary fence')+'','# Fence: '+meta.primary+' '+meta.k+'xIQR per '+meta.bucketLabel,'# Rows: '+rows.length,'#'].join('\r\n');
   return mh+'\r\n'+out.join('\r\n'); }
 function _spDownload(text,fname){var blob=new Blob([text],{type:'text/csv;charset=utf-8;'});var url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=fname;document.body.appendChild(a);a.click();document.body.removeChild(a);URL.revokeObjectURL(url);}
 function _spSiteFromG(g){ var m=String(g==null?'':g).match(/Site:\s*([^|]+?)(?:\s{2,}|$)/i); return m?m[1].trim():''; }
@@ -3858,6 +3892,7 @@ function _spAdvisoryHtml(ctx){
 _DIST_SITE_JS = r"""
 var _distLastSiteRows=[], _distLastSiteMeta={};
 function _distSiteBasis(){ var el=document.querySelector('input[name="dist_site_basis"]:checked'); return el?el.value:'abs'; }
+function _distSiteCmp(){ var el=document.getElementById('dist_site_cmp'); return el?el.value:'fence'; }
 function _distSiteK(){ var el=document.getElementById('dist_site_k'); var k=el?parseFloat(el.value):1.5; return (isFinite(k)&&k>=0)?k:1.5; }
 function toggleDistSitePanel(){ var p=document.getElementById('dist_site_panel'),b=document.getElementById('dist_site_btn'); if(!p||!b)return;
   var show=p.style.display==='none'; p.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Site Population Check'; if(show) updateDistSitePanel(); }
@@ -3866,11 +3901,15 @@ function updateDistSitePanel(){
   try{
     if(typeof PRIMARY_SITE==='undefined'||!PRIMARY_SITE){ el.innerHTML='<i style="color:#888">No comparison site configured.</i>'; return; }
     var basis=_distSiteBasis(), k=_distSiteK();
+    /* Compare basis (fence/spec/both) is separate from the fence DATA basis
+       (abs/ΔTemp). Spec/Limit only means something for Absolute values -- a ΔTemp
+       delta has no datasheet spec -- so force fence when the data basis is ΔTemp. */
+    var cmp=(basis==='abs')?_distSiteCmp():'fence';
     var spurs=getSelSpurIdxs(), selSer=getSelSerials(), selPor=getSelPorts(), fr=getFreqRange();
     var serFlt=(selSer.size<SERIALS.length)||(PORTS.length>0&&selPor.size<PORTS.length);
     var condFilts=_distCondFilters(), condFlt=condFilts.length>0, gfFlt=_distGfActive();
     var prim={}, others=[];
-    function consider(raw,spurLbl,tempLabel,valueArr,gfTemp){
+    function consider(raw,spurLbl,tempLabel,valueArr,gfTemp,isAbs){
       for(var i=0;i<raw.f.length;i++){
         if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
         var ser=raw.s?raw.s[i]:'', port=raw.p?raw.p[i]:'';
@@ -3882,25 +3921,29 @@ function updateDistSitePanel(){
         var bucket=spurLbl+' | '+tempLabel+(PORTS.length&&port?' | '+port:'')+' | '+fl;
         var val=valueArr[i];
         if(site===PRIMARY_SITE){ (prim[bucket]=prim[bucket]||[]).push(val); }
-        else others.push({site:site,serial:ser,bucket:bucket,value:val});
+        else others.push({site:site,serial:ser,bucket:bucket,value:val,
+          limHi:isAbs&&raw.hi?_spNum(raw.hi[i]):null,limLo:isAbs&&raw.lo?_spNum(raw.lo[i]):null,
+          specHi:isAbs&&raw.spec_hi?_spNum(raw.spec_hi[i]):null,specLo:isAbs&&raw.spec_lo?_spNum(raw.spec_lo[i]):null});
       }
     }
     if(basis==='abs'){
       var tIdxs=getSelTempIdxs();
-      spurs.forEach(function(si){ if(!RAW_ABS[si])return; tIdxs.forEach(function(ti){ var raw=RAW_ABS[si][ti]; if(!raw)return; consider(raw,SPUR_TYPES[si],TEMPS[ti],raw.v,TEMPS[ti]); }); });
+      spurs.forEach(function(si){ if(!RAW_ABS[si])return; tIdxs.forEach(function(ti){ var raw=RAW_ABS[si][ti]; if(!raw)return; consider(raw,SPUR_TYPES[si],TEMPS[ti],raw.v,TEMPS[ti],true); }); });
     } else {
       var dIdxs=getSelNonRoomIdxs();
-      spurs.forEach(function(si){ if(!RAW_DELTA[si])return; dIdxs.forEach(function(di){ var raw=RAW_DELTA[si][di]; if(!raw)return; consider(raw,SPUR_TYPES[si],'Δ'+NON_ROOM_TEMPS[di],raw.d,''); }); });
+      spurs.forEach(function(si){ if(!RAW_DELTA[si])return; dIdxs.forEach(function(di){ var raw=RAW_DELTA[si][di]; if(!raw)return; consider(raw,SPUR_TYPES[si],'Δ'+NON_ROOM_TEMPS[di],raw.d,'',false); }); });
     }
     if(!others.length){ el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current selection.</i>'; return; }
     var towardFail=(basis==='abs')?((HI_SPEC!=null&&LO_SPEC==null)?'high':(LO_SPEC!=null&&HI_SPEC==null)?'low':null):null;
-    var rows=others.map(function(p){ var f=_spFence(prim[p.bucket]||[],k); if(!f) return {p:p,verdict:'n/a',n:(prim[p.bucket]||[]).length};
-      var dir=null,dist=0; if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
-      var sr=(dir&&towardFail)?(dir===towardFail):null;
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:sr}; });
+    var rows=others.map(function(p){ var f=_spFence(prim[p.bucket]||[],k);
+      var fenceRow=f?(function(){var dir=null,dist=0; if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
+        var sr=(dir&&towardFail)?(dir===towardFail):null;
+        return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:sr};})()
+        :{p:p,verdict:'n/a',n:(prim[p.bucket]||[]).length};
+      return _spRowForBasis(p,fenceRow,cmp,towardFail); });
     var meta={primary:PRIMARY_SITE,k:k,basisLabel:(basis==='abs'?'Absolute value':'ΔTemp delta'),
       bucketLabel:'Spur | '+(basis==='abs'?'Temp':'ΔTemp')+(PORTS.length?' | Port':'')+' | Freq',
-      valueLabel:(basis==='abs'?Y_LABEL:('ΔTemp ('+Y_LABEL+')')),towardFail:towardFail,exportFnName:'saveDistSitePopCsv'};
+      valueLabel:(basis==='abs'?Y_LABEL:('ΔTemp ('+Y_LABEL+')')),towardFail:towardFail,exportFnName:'saveDistSitePopCsv',compareBasis:cmp};
     _distLastSiteRows=rows; _distLastSiteMeta=meta;
     el.innerHTML=_spRender(rows,meta);
   }catch(e){ el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>'; }
@@ -3921,6 +3964,7 @@ function saveDistSitePopCsv(outsideOnly){
 _EC_SITE_JS = r"""
 var _ecLastSiteRows=[], _ecLastSiteMeta={};
 function _ecSiteBasis(){ var el=document.querySelector('input[name="ec_site_basis"]:checked'); return el?el.value:'room'; }
+function _ecSiteCmp(){ var el=document.getElementById('ec_site_cmp'); return el?el.value:'fence'; }
 function _ecSiteK(){ var el=document.getElementById('ec_site_k'); var k=el?parseFloat(el.value):1.5; return (isFinite(k)&&k>=0)?k:1.5; }
 function toggleEcSitePanel(){ var p=document.getElementById('ec_site_panel'),b=document.getElementById('ec_site_btn'); if(!p||!b)return;
   var show=p.style.display==='none'; p.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Site Population Check'; if(show) updateEcSitePanel(); }
@@ -3929,18 +3973,21 @@ function updateEcSitePanel(){
   try{
     if(typeof PRIMARY_SITE==='undefined'||!PRIMARY_SITE){ el.innerHTML='<i style="color:#888">No comparison site configured.</i>'; return; }
     var basis=_ecSiteBasis(), k=_ecSiteK(), fr=getFreqRange(), selTemps=getSelectedTemps();
+    /* Spec/Limit compare only means something for the Room baseline (a Room value
+       vs the datasheet spec); a ΔEnv drift has no spec, so force fence there. */
+    var cmp=(basis==='room')?_ecSiteCmp():'fence';
     var prim={}, others=[];
     ENV_DATA.forEach(function(cd){
       var site=(cd.cond_keys&&cd.cond_keys['Site'])||''; if(!site) return;   // Group-by pooled conds have empty cond_keys -> skipped
       var bucketBase=Object.keys(cd.cond_keys||{}).filter(function(kk){return kk!=='Site';}).map(function(kk){return cd.cond_keys[kk];}).filter(function(v){return v!=='';}).join(' | ');
-      var duts=getActiveDuts(cd);
+      var duts=getActiveDuts(cd), csHi=_spNum(cd.spec_hi), csLo=_spNum(cd.spec_lo);
       for(var j=0;j<cd.freqs.length;j++){
         var f=cd.freqs[j]; if(f<fr.lo||f>fr.hi) continue;
         var fl=(cd.freq_labels&&cd.freq_labels[j])||String(f);
         if(basis==='room'){
           var bucket=(bucketBase?bucketBase+' | ':'')+fl;
           duts.forEach(function(sd){ var v=sd[1].room[j]; if(v==null) return;
-            if(site===PRIMARY_SITE)(prim[bucket]=prim[bucket]||[]).push(v); else others.push({site:site,serial:sd[1].serial||sd[0],bucket:bucket,value:v}); });
+            if(site===PRIMARY_SITE)(prim[bucket]=prim[bucket]||[]).push(v); else others.push({site:site,serial:sd[1].serial||sd[0],bucket:bucket,value:v,specHi:csHi,specLo:csLo}); });
         } else {
           selTemps.forEach(function(temp){
             var bucket=(bucketBase?bucketBase+' | ':'')+temp+' | '+fl;
@@ -3953,13 +4000,15 @@ function updateEcSitePanel(){
     if(!others.length){ el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current selection.</i>'; return; }
     var towardFail=null;
     if(basis==='room'){ var anyHi=false,anyLo=false; ENV_DATA.forEach(function(cd){if(cd.spec_hi!=null)anyHi=true;if(cd.spec_lo!=null)anyLo=true;}); towardFail=(anyHi&&!anyLo)?'high':(anyLo&&!anyHi)?'low':null; }
-    var rows=others.map(function(p){ var f=_spFence(prim[p.bucket]||[],k); if(!f) return {p:p,verdict:'n/a',n:(prim[p.bucket]||[]).length};
-      var dir=null,dist=0; if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
-      var sr=(dir&&towardFail)?(dir===towardFail):null;
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:sr}; });
+    var rows=others.map(function(p){ var f=_spFence(prim[p.bucket]||[],k);
+      var fenceRow=f?(function(){var dir=null,dist=0; if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
+        var sr=(dir&&towardFail)?(dir===towardFail):null;
+        return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:sr};})()
+        :{p:p,verdict:'n/a',n:(prim[p.bucket]||[]).length};
+      return _spRowForBasis(p,fenceRow,cmp,towardFail); });
     var meta={primary:PRIMARY_SITE,k:k,basisLabel:(basis==='room'?'Room baseline':'ΔEnv drift'),
       bucketLabel:(basis==='room'?'condition | freq':'condition | temp | freq'),
-      valueLabel:(basis==='room'?'Room value':(typeof EC_Y_LABEL!=='undefined'&&EC_Y_LABEL?EC_Y_LABEL:'ΔEnv (dB)')),towardFail:towardFail,exportFnName:'saveEcSitePopCsv'};
+      valueLabel:(basis==='room'?'Room value':(typeof EC_Y_LABEL!=='undefined'&&EC_Y_LABEL?EC_Y_LABEL:'ΔEnv (dB)')),towardFail:towardFail,exportFnName:'saveEcSitePopCsv',compareBasis:cmp};
     _ecLastSiteRows=rows; _ecLastSiteMeta=meta;
     el.innerHTML=_spRender(rows,meta);
   }catch(e){ el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>'; }
@@ -5565,6 +5614,12 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
             ' <label><input type="radio" name="dist_site_basis" value="delta" onchange="updateDistSitePanel()">&nbsp;&Delta;Temp</label></label>\n'
             '  <label style="font-size:11px;color:#555" title="Tukey fence multiplier: fence = Q1 - k*IQR .. Q3 + k*IQR. Lower k = stricter.">'
             '&nbsp;k&times;IQR: <input type="number" id="dist_site_k" value="1.5" min="0" step="0.1" style="width:52px" onchange="updateDistSitePanel()"></label>\n'
+            '  <label style="font-size:11px;color:#555" title="How to judge each non-primary point:'
+            ' against the primary site fence (site-population shifts), the datasheet Spec/Limit (real'
+            ' pass/fail; Absolute basis only), or both.">&nbsp;Compare to:'
+            ' <select id="dist_site_cmp" onchange="updateDistSitePanel()">'
+            f'<option value="fence">{_ps_disp} fence</option>'
+            '<option value="spec">Spec/Limit</option><option value="both">Both</option></select></label>\n'
             f'  <span style="color:#888;font-size:11px">(each non-{_ps_disp} point vs the '
             f'{_ps_disp} k&times;IQR fence)</span>\n'
             '</div>\n'
@@ -7403,10 +7458,24 @@ function _siteFence(vals){
   var q1=pct(25),q3=pct(75),iqr=q3-q1;
   return {lo_w:q1-1.5*iqr,hi_w:q3+1.5*iqr,n:n};
 }
+function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
+/* Comparison basis 'spec': judge a non-primary point against its OWN Spec/Limit
+   (per-DUT limit embedded in dut_vals -- prefer derived Limit, fall back to raw
+   Spec), not the primary fence. verdict 'OUTSIDE' == fails spec, so the whole
+   downstream triage is reused verbatim. Identical rule to boxplot/scatter. */
+function _siteSpecClass(p){
+  var hi=(p.limHi!=null?p.limHi:p.specHi), lo=(p.limLo!=null?p.limLo:p.specLo);
+  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
+  var dir=null,dist=0;
+  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
+  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
+  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+}
 var _lastSiteRows=[];
 var _lastSiteMeta={};
 function updateSitePanel(){
   var el=document.getElementById('stat_site_panel');
+  var siteBasis=(document.getElementById('stat_site_basis')||{}).value||'fence';
   if(!el||el.style.display==='none') return;
   try{
     if(!PRIMARY_SITE){el.innerHTML='<i style="color:#888">No comparison site configured for this page.</i>';return;}
@@ -7449,7 +7518,8 @@ function updateSitePanel(){
           if(cd.site===PRIMARY_SITE){
             (primaryBuckets[fs.freq]=primaryBuckets[fs.freq]||[]).push(d.v);
           } else {
-            otherPoints.push({site:cd.site,serial:d.s,port:d.p,freq:fs.freq,value:d.v});
+            otherPoints.push({site:cd.site,serial:d.s,port:d.p,freq:fs.freq,value:d.v,
+              limHi:_siteNum(d.upper_limit),limLo:_siteNum(d.lower_limit),specHi:_siteNum(d.spec_hi),specLo:_siteNum(d.spec_lo)});
           }
         });
       });
@@ -7461,13 +7531,20 @@ function updateSitePanel(){
     }
     var towardFail=_siteTowardFailDir();
     var rows=otherPoints.map(function(p){
+      var sc=_siteSpecClass(p);
+      var specPF=sc.verdict==='n/a'?'n/a':(sc.dir?'FAIL':'PASS');
+      if(siteBasis==='spec'){
+        var srS=(sc.dir&&towardFail)?(sc.dir===towardFail):null;
+        return {p:p,verdict:sc.verdict,dir:sc.dir,dist:sc.dist,lo:sc.lo,hi:sc.hi,n:undefined,specRelevant:srS,specPF:specPF};
+      }
       var pv=primaryBuckets[p.freq]||[];
-      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,specPF:specPF};
       var fen=_siteFence(pv);
       var dir=null,dist=0;
       if(p.value>fen.hi_w){dir='high';dist=p.value-fen.hi_w;}
       else if(p.value<fen.lo_w){dir='low';dist=fen.lo_w-p.value;}
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:fen.lo_w,hi:fen.hi_w,n:fen.n};
+      var srF=(dir&&towardFail)?(dir===towardFail):null;
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:fen.lo_w,hi:fen.hi_w,n:fen.n,specRelevant:srF,specPF:specPF};
     });
 
     /* Per-frequency clusters: multiple independent DUTs failing the same
@@ -7515,9 +7592,15 @@ function updateSitePanel(){
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
       ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations.)';
     var winNote=freqWindowed?' Scoped to the current frequency window ('+fLo.toFixed(3)+'-'+fHi.toFixed(3)+' '+X_UNIT+') -- reset/widen the range to check the full sweep.':'';
-    var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
-      '</b> non-'+PRIMARY_SITE+' Room point(s) fall outside the '+PRIMARY_SITE+' 1.5&times;IQR fence at their own frequency'+
-      (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency, fence not meaningful)':'')+
+    var isSpecBasis=(siteBasis==='spec');
+    var basisPhrase=isSpecBasis?'fail their own datasheet Spec/Limit'
+      :'fall outside the '+PRIMARY_SITE+' 1.5&times;IQR fence at their own frequency';
+    var basisPre=isSpecBasis?'Comparison: each non-'+PRIMARY_SITE+' Room point vs its own Spec/Limit (the primary-site fence is not used).':
+      (siteBasis==='both'?'Comparison: outside = '+PRIMARY_SITE+' fence (drives triage below); a separate Spec/Limit pass/fail is in the last column.':'');
+    var html='<div style="font-size:12px;margin-bottom:6px">'+(basisPre?'<i>'+basisPre+'</i><br>':'')+'<b>'+nOutside+'</b> of <b>'+rows.length+
+      '</b> non-'+PRIMARY_SITE+' Room point(s) '+basisPhrase+
+      (!isSpecBasis&&nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency, fence not meaningful)':'')+
+      (isSpecBasis&&nNA?' ('+nNA+' have no spec/limit configured)':'')+
       '.'+dirNote+winNote+
       ' Scoped to Room temperature only -- stat_summary\'s per-DUT population is Room-only by design, so non-Room points can\'t be compared here (see boxplot\'s Site Population Check for a per-temperature check).</div>';
     html+='<div style="margin:0 0 8px">'+
@@ -7556,21 +7639,29 @@ function updateSitePanel(){
       html+='<div style="font-size:12px;color:#666;margin:6px 0">No frequency shows more than one DUT affected -- no systemic/station-level pattern detected in the current selection.</div>';
     }
 
+    var loLbl=isSpecBasis?'Limit&nbsp;lo':PRIMARY_SITE+' fence lo';
+    var hiLbl=isSpecBasis?'Limit&nbsp;hi':PRIMARY_SITE+' fence hi';
+    var outWord=isSpecBasis?'FAIL':'OUTSIDE';
+    var inWord=isSpecBasis?'PASS':'inside';
+    var showSpecCol=(siteBasis==='both');
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Freq</th>'+
-      '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+      '<th>Value</th><th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th>'+
+      (showSpecCol?'<th title="Independent pass/fail of this point vs its own datasheet Spec/Limit.">Spec&nbsp;P/F</th>':'')+
+      '</tr></thead><tbody>';
     rows.forEach(function(r){
       var p=r.p;
       var vTd=r.verdict==='OUTSIDE'
-        ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>'
-        :r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>';
+        ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>'
+        :r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>'+inWord+'</td>';
+      var specTd=showSpecCol?(r.specPF==='FAIL'?'<td style="color:#c00;font-weight:bold">FAIL</td>':r.specPF==='PASS'?'<td style="color:#2a7a2a">PASS</td>':'<td style="color:#aaa">n/a</td>'):'';
       html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td><td>'+(p.port||'')+'</td>'+
         '<td>'+p.freq+'</td><td>'+p.value.toFixed(4)+'</td>'+
-        '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
-        '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
-        '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
+        '<td>'+(r.lo!==undefined&&r.lo!==null?r.lo.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.hi!==undefined&&r.hi!==null?r.hi.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.n!==undefined&&r.n!==null?r.n:'&mdash;')+'</td>'+
         '<td>'+(r.dir||'&mdash;')+'</td>'+
-        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
+        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+specTd+'</tr>';
     });
     html+='</tbody></table>';
     el.innerHTML=html;
@@ -7599,9 +7690,11 @@ function saveSitePopulationCSV(outsideOnly){
     return;
   }
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var siteBasis=(document.getElementById('stat_site_basis')||{}).value||'fence';
+  var boundLbl=siteBasis==='spec'?'Limit':PRIMARY_SITE+'_fence';
   var hdrs=['Site','Serial','Port','Freq_'+X_UNIT,'Value',
-    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n',
-    'Dir','Dist','Verdict'];
+    boundLbl+'_lo',boundLbl+'_hi',PRIMARY_SITE+'_n',
+    'Dir','Dist','Verdict','Spec_PF'];
   var out=[hdrs.join(',')];
   rows.forEach(function(r){
     var p=r.p;
@@ -7612,12 +7705,13 @@ function saveSitePopulationCSV(outsideOnly){
       r.n!==undefined&&r.n!==null?r.n:'',
       r.dir||'',
       r.dist?r.dist.toFixed(6):'',
-      r.verdict].join(','));
+      r.verdict,r.specPF||''].join(','));
   });
   var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
   var meta=['# PADB Export','# Plot: '+TITLE+' -- Site Population Check','# Generated: '+ts,
     '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),
     '# Primary site: '+PRIMARY_SITE,
+    '# Comparison basis: '+(siteBasis==='spec'?'Spec/Limit (each point vs its own datasheet limit)':siteBasis==='both'?'Primary fence (Verdict) + Spec/Limit (Spec_PF)':'Primary '+PRIMARY_SITE+' 1.5x IQR fence'),
     '# Rows: '+rows.length,
     '# Frequency window: '+(_lastSiteMeta.freqWindowed?(_lastSiteMeta.frLo.toFixed(3)+'-'+_lastSiteMeta.frHi.toFixed(3)+' '+X_UNIT):'full range'),
     '# Note: per-DUT rollup and frequency-cluster summaries are not included -- this is the per-point detail table only.',
@@ -8953,6 +9047,15 @@ def _build_stat_summary_html(
             ' own Room population at that frequency -- stat_summary\'s per-DUT data is Room-only,'
             ' so this check is scoped to Room even on a multi-temp page"'
             ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>'
+            '  <label style="font-size:12px;margin-left:6px"'
+            ' title="How to judge each non-primary point: against the primary site\'s statistical'
+            ' fence (site-population shifts), against the datasheet Spec/Limit (real pass/fail), or'
+            ' both side by side.">Compare&nbsp;to:&nbsp;'
+            '<select id="stat_site_basis" onchange="updateSitePanel()">'
+            '<option value="fence">' + primary_site + ' fence</option>'
+            '<option value="spec">Spec/Limit</option>'
+            '<option value="both">Both</option>'
+            '</select></label>'
         )
 
     noise_disclaimer_html = (
@@ -17144,10 +17247,25 @@ function _siteFence(vals){
   var q1=pct(25),q3=pct(75),iqr=q3-q1;
   return {lo_w:q1-1.5*iqr,hi_w:q3+1.5*iqr,n:n};
 }
+function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
+/* Comparison basis 'spec': judge a non-primary point against the datasheet
+   Spec/Limit (page HI_SPEC/LO_SPEC -- summary's per-DUT value is a cross-temp
+   mean, so this is that mean vs the requirement). verdict 'OUTSIDE' == fails
+   spec; reuses the downstream triage verbatim. Same rule as boxplot/scatter. */
+function _siteSpecClass(p){
+  var hi=(typeof HI_SPEC!=='undefined')?_siteNum(HI_SPEC):null;
+  var lo=(typeof LO_SPEC!=='undefined')?_siteNum(LO_SPEC):null;
+  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
+  var dir=null,dist=0;
+  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
+  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
+  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+}
 var _lastSiteRows=[];
 var _lastSiteMeta={};
 function updateSitePanel(){
   var el=document.getElementById('sum_site_panel');
+  var siteBasis=(document.getElementById('sum_site_basis')||{}).value||'fence';
   if(!el||el.style.display==='none') return;
   try{
     if(!PRIMARY_SITE){el.innerHTML='<i style="color:#888">No comparison site configured for this page.</i>';return;}
@@ -17202,13 +17320,20 @@ function updateSitePanel(){
     }
     var towardFail=_siteTowardFailDir();
     var rows=otherPoints.map(function(p){
+      var sc=_siteSpecClass(p);
+      var specPF=sc.verdict==='n/a'?'n/a':(sc.dir?'FAIL':'PASS');
+      if(siteBasis==='spec'){
+        var srS=(sc.dir&&towardFail)?(sc.dir===towardFail):null;
+        return {p:p,verdict:sc.verdict,dir:sc.dir,dist:sc.dist,lo:sc.lo,hi:sc.hi,n:undefined,specRelevant:srS,specPF:specPF};
+      }
       var pv=primaryBuckets[p.freq]||[];
-      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,specPF:specPF};
       var fen=_siteFence(pv);
       var dir=null,dist=0;
       if(p.value>fen.hi_w){dir='high';dist=p.value-fen.hi_w;}
       else if(p.value<fen.lo_w){dir='low';dist=fen.lo_w-p.value;}
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:fen.lo_w,hi:fen.hi_w,n:fen.n};
+      var srF=(dir&&towardFail)?(dir===towardFail):null;
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:fen.lo_w,hi:fen.hi_w,n:fen.n,specRelevant:srF,specPF:specPF};
     });
 
     var freqMap={};
@@ -17254,9 +17379,15 @@ function updateSitePanel(){
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing.'):
       ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations.)';
     var winNote=freqWindowed?' Scoped to the current frequency window ('+fr.lo.toFixed(3)+'-'+fr.hi.toFixed(3)+' '+X_UNIT+') -- reset/widen the range to check the full sweep.':'';
-    var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
-      '</b> non-'+PRIMARY_SITE+' point(s) fall outside the '+PRIMARY_SITE+' 1.5&times;IQR fence at their own frequency'+
-      (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency, fence not meaningful)':'')+
+    var isSpecBasis=(siteBasis==='spec');
+    var basisPhrase=isSpecBasis?'fail the datasheet Spec/Limit'
+      :'fall outside the '+PRIMARY_SITE+' 1.5&times;IQR fence at their own frequency';
+    var basisPre=isSpecBasis?'Comparison: each non-'+PRIMARY_SITE+' point (a DUT\'s cross-temperature mean) vs the Spec/Limit (the primary-site fence is not used).':
+      (siteBasis==='both'?'Comparison: outside = '+PRIMARY_SITE+' fence (drives triage below); a separate Spec/Limit pass/fail is in the last column.':'');
+    var html='<div style="font-size:12px;margin-bottom:6px">'+(basisPre?'<i>'+basisPre+'</i><br>':'')+'<b>'+nOutside+'</b> of <b>'+rows.length+
+      '</b> non-'+PRIMARY_SITE+' point(s) '+basisPhrase+
+      (!isSpecBasis&&nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points at that frequency, fence not meaningful)':'')+
+      (isSpecBasis&&nNA?' ('+nNA+' have no spec/limit configured)':'')+
       '.'+dirNote+winNote+
       ' Each point is a DUT\'s mean blended across all temperatures present in its condition (this view\'s own per-DUT data has no per-temperature breakdown -- see boxplot\'s Site Population Check for that).</div>';
     html+='<div style="margin:0 0 8px">'+
@@ -17295,21 +17426,29 @@ function updateSitePanel(){
       html+='<div style="font-size:12px;color:#666;margin:6px 0">No frequency shows more than one DUT affected -- no systemic/station-level pattern detected in the current selection.</div>';
     }
 
+    var loLbl=isSpecBasis?'Limit&nbsp;lo':PRIMARY_SITE+' fence lo';
+    var hiLbl=isSpecBasis?'Limit&nbsp;hi':PRIMARY_SITE+' fence hi';
+    var outWord=isSpecBasis?'FAIL':'OUTSIDE';
+    var inWord=isSpecBasis?'PASS':'inside';
+    var showSpecCol=(siteBasis==='both');
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Freq</th>'+
-      '<th>Value</th><th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+      '<th>Value</th><th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th>'+
+      (showSpecCol?'<th title="Independent pass/fail of this point vs the datasheet Spec/Limit.">Spec&nbsp;P/F</th>':'')+
+      '</tr></thead><tbody>';
     rows.forEach(function(r){
       var p=r.p;
       var vTd=r.verdict==='OUTSIDE'
-        ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>'
-        :r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>';
+        ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>'
+        :r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>'+inWord+'</td>';
+      var specTd=showSpecCol?(r.specPF==='FAIL'?'<td style="color:#c00;font-weight:bold">FAIL</td>':r.specPF==='PASS'?'<td style="color:#2a7a2a">PASS</td>':'<td style="color:#aaa">n/a</td>'):'';
       html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td>'+
         '<td>'+p.freq+'</td><td>'+p.value.toFixed(4)+'</td>'+
-        '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td>'+
-        '<td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
-        '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td>'+
+        '<td>'+(r.lo!==undefined&&r.lo!==null?r.lo.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.hi!==undefined&&r.hi!==null?r.hi.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.n!==undefined&&r.n!==null?r.n:'&mdash;')+'</td>'+
         '<td>'+(r.dir||'&mdash;')+'</td>'+
-        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>';
+        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+specTd+'</tr>';
     });
     html+='</tbody></table>';
     el.innerHTML=html;
@@ -17338,9 +17477,11 @@ function saveSitePopulationCSV(outsideOnly){
     return;
   }
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var siteBasis=(document.getElementById('sum_site_basis')||{}).value||'fence';
+  var boundLbl=siteBasis==='spec'?'Limit':PRIMARY_SITE+'_fence';
   var hdrs=['Site','Serial','Freq_'+X_UNIT,'Value',
-    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n',
-    'Dir','Dist','Verdict'];
+    boundLbl+'_lo',boundLbl+'_hi',PRIMARY_SITE+'_n',
+    'Dir','Dist','Verdict','Spec_PF'];
   var out=[hdrs.join(',')];
   rows.forEach(function(r){
     var p=r.p;
@@ -17351,12 +17492,13 @@ function saveSitePopulationCSV(outsideOnly){
       r.n!==undefined&&r.n!==null?r.n:'',
       r.dir||'',
       r.dist?r.dist.toFixed(6):'',
-      r.verdict].join(','));
+      r.verdict,r.specPF||''].join(','));
   });
   var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
   var meta=['# PADB Export','# Plot: '+TITLE+' -- Site Population Check','# Generated: '+ts,
     '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),
     '# Primary site: '+PRIMARY_SITE,
+    '# Comparison basis: '+(siteBasis==='spec'?'Spec/Limit (each point vs the datasheet limit)':siteBasis==='both'?'Primary fence (Verdict) + Spec/Limit (Spec_PF)':'Primary '+PRIMARY_SITE+' 1.5x IQR fence'),
     '# Rows: '+rows.length,
     '# Frequency window: '+(_lastSiteMeta.freqWindowed?(_lastSiteMeta.frLo.toFixed(3)+'-'+_lastSiteMeta.frHi.toFixed(3)+' '+X_UNIT):'full range'),
     '# Note: per-DUT rollup and frequency-cluster summaries are not included -- this is the per-point detail table only.',
@@ -18375,6 +18517,15 @@ def _build_summary_html(
             ' population at that frequency -- summary\'s per-DUT data is blended across temperatures,'
             ' not per-temperature like boxplot\'s version"'
             ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>\n'
+            '  <label style="font-size:12px;margin-left:6px"'
+            ' title="How to judge each non-primary point: against the primary site\'s statistical'
+            ' fence (site-population shifts), against the datasheet Spec/Limit (real pass/fail), or'
+            ' both side by side.">Compare&nbsp;to:&nbsp;'
+            '<select id="sum_site_basis" onchange="updateSitePanel()">'
+            '<option value="fence">' + primary_site + ' fence</option>'
+            '<option value="spec">Spec/Limit</option>'
+            '<option value="both">Both</option>'
+            '</select></label>\n'
         )
 
     html = (
@@ -18864,8 +19015,14 @@ function update(){
   function spec(v,lbl){ if(v===null||!isFinite(v)) return; shapes.push({type:'line',x0:v,x1:v,yref:'paper',y0:0,y1:1,line:{color:'#c00',dash:'dash',width:2}}); ann.push({x:v,yref:'paper',y:1.0,yanchor:'bottom',text:lbl,showarrow:false,font:{color:'#c00',size:11}}); }
   if(!hide){ spec(LIMIT_HI,'Upper limit '+LIMIT_HI); spec(LIMIT_LO,'Lower limit '+LIMIT_LO); }
   var xt=VLABEL+(VUNIT?' ('+VUNIT+')':'');
-  Plotly.react('plot',traces,{barmode:'overlay',bargap:0.02,xaxis:{title:{text:xt}},yaxis:{title:{text:'Count'}},
-      shapes:shapes,annotations:ann,legend:{orientation:'h'},margin:{t:24,r:20},uirevision:'keep'},
+  Plotly.react('plot',traces,{barmode:'overlay',bargap:0.02,
+      xaxis:{title:{text:xt,standoff:8}},yaxis:{title:{text:'Count'}},
+      shapes:shapes,annotations:ann,
+      /* Horizontal legend sits BELOW the x-axis title (y well under the axis, its
+         own top anchored) with bottom margin for both -- otherwise the legend and
+         the x-axis title render in the same band and overwrite each other. */
+      legend:{orientation:'h',x:0.5,xanchor:'center',y:-0.22,yanchor:'top'},
+      margin:{t:24,r:20,b:96},uirevision:'keep'},
       {responsive:true,displaylogo:false});
   var nEl=document.getElementById('h_n'); if(nEl) nEl.textContent=vals.length.toLocaleString()+' measurements'+(multi?' in '+keys.length+' conditions':'');
   buildStats(groups,keys,multi);
@@ -18982,6 +19139,20 @@ function _hApplyImport(text,fname){
 function _hTowardFail(){ if(LIMIT_HI!==null&&LIMIT_LO===null) return 'high'; if(LIMIT_LO!==null&&LIMIT_HI===null) return 'low'; return null; }
 function _hSiteK(){ var el=document.getElementById('h_site_k'); var k=el?parseFloat(el.value):1.5; return (isFinite(k)&&k>=0)?k:1.5; }
 function _hSiteFence(vals,k){ if(vals.length<4) return null; if(k===undefined||k===null) k=1.5; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=_hpct(s,25),q3=_hpct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
+/* Comparison basis 'spec': judge a non-primary measurement against the datasheet
+   Spec/Limit (page LIMIT_HI/LIMIT_LO), not the primary fence. verdict 'OUTSIDE'
+   == fails spec; reuses the downstream triage verbatim. Same rule as the other
+   views (vs Limit, side-aware). */
+function _hSiteSpecClass(p){
+  var hi=(LIMIT_HI!==null&&LIMIT_HI!==undefined)?LIMIT_HI:null;
+  var lo=(LIMIT_LO!==null&&LIMIT_LO!==undefined)?LIMIT_LO:null;
+  if(hi==null&&lo==null) return {verdict:'n/a',dir:null,dist:0,lo:null,hi:null};
+  var dir=null,dist=0;
+  if(hi!=null&&p.value>hi){dir='high';dist=p.value-hi;}
+  else if(lo!=null&&p.value<lo){dir='low';dist=lo-p.value;}
+  return {verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:lo,hi:hi};
+}
+function _hSiteBasis(){ var el=document.getElementById('h_site_basis'); return el?el.value:'fence'; }
 function _hSiteTriage(d,towardFail){ if(!d.outside) return null;
   var mostlyShared=d.sharedCount/d.outside>0.5, mostlyHigh=d.high/d.outside>0.5, mostlyLow=d.low/d.outside>0.5;
   var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
@@ -19012,14 +19183,20 @@ function updateSitePanel(){
       else { others.push({site:site,serial:hasSer?SERIAL[i]:'',bucket:bk,value:VALUES[i]}); }
     }
     if(!others.length){ el.innerHTML='<i style="color:#888">No non-'+PRIMARY_SITE+' data in the current selection.</i>'; return; }
-    var towardFail=_hTowardFail(), kFence=_hSiteK();
+    var towardFail=_hTowardFail(), kFence=_hSiteK(), siteBasis=_hSiteBasis();
     var rows=others.map(function(p){
+      var sc=_hSiteSpecClass(p);
+      var specPF=sc.verdict==='n/a'?'n/a':(sc.dir?'FAIL':'PASS');
+      if(siteBasis==='spec'){
+        var srS=(sc.dir&&towardFail)?(sc.dir===towardFail):null;
+        return {p:p,verdict:sc.verdict,dir:sc.dir,dist:sc.dist,lo:sc.lo,hi:sc.hi,n:undefined,specRelevant:srS,specPF:specPF};
+      }
       var pv=primaryBuckets[p.bucket]||[];
-      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length};
+      if(pv.length<4) return {p:p,verdict:'n/a',n:pv.length,specPF:specPF};
       var f=_hSiteFence(pv,kFence), dir=null,dist=0;
       if(p.value>f.hi){dir='high';dist=p.value-f.hi;} else if(p.value<f.lo){dir='low';dist=f.lo-p.value;}
       var specRelevant=(dir&&towardFail)?(dir===towardFail):null;
-      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:specRelevant};
+      return {p:p,verdict:dir?'OUTSIDE':'inside',dir:dir,dist:dist,lo:f.lo,hi:f.hi,n:f.n,specRelevant:specRelevant,specPF:specPF};
     });
     // Clusters: >1 distinct DUT OUTSIDE in the same (site, bucket) -> station/systemic, not one DUT.
     var clus={}; rows.forEach(function(r){ if(r.verdict!=='OUTSIDE')return; var key=r.p.site+'||'+r.p.bucket;
@@ -19042,10 +19219,15 @@ function updateSitePanel(){
     var dirNote=towardFail?(' Direction shown relative to spec: <b>'+towardFail+'</b> is toward failing -- OUTSIDE points moving the other way can\'t fail this spec and are flagged benign below.'):
       ' (Spec is two-sided or unconfigured here, so "toward failing" can\'t be determined -- both directions shown as plain deviations, none flagged benign.)';
     var bucketLabel=otherDims.length?otherDims.map(function(d){return d.label;}).join(' | '):'(whole population)';
-    var html='<div style="font-size:12px;margin-bottom:6px"><b>'+nOutside+'</b> of <b>'+rows.length+
-      '</b> non-'+PRIMARY_SITE+' measurement(s) fall outside the '+PRIMARY_SITE+' '+kFence+'&times;IQR fence for their own '+bucketLabel+
+    var isSpecBasis=(siteBasis==='spec');
+    var basisPhrase=isSpecBasis?'fail the datasheet Spec/Limit':'fall outside the '+PRIMARY_SITE+' '+kFence+'&times;IQR fence for their own '+bucketLabel;
+    var basisPre=isSpecBasis?'Comparison: each non-'+PRIMARY_SITE+' measurement vs the Spec/Limit (the primary-site fence is not used).':
+      (siteBasis==='both'?'Comparison: outside = '+PRIMARY_SITE+' fence (drives triage below); a separate Spec/Limit pass/fail is in the last column.':'');
+    var html='<div style="font-size:12px;margin-bottom:6px">'+(basisPre?'<i>'+basisPre+'</i><br>':'')+'<b>'+nOutside+'</b> of <b>'+rows.length+
+      '</b> non-'+PRIMARY_SITE+' measurement(s) '+basisPhrase+
       (nBenign?' (<b>'+nBenign+'</b> benign -- away from the spec-fail direction)':'')+
-      (nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points in that group, fence not meaningful)':'')+'.'+dirNote+'</div>';
+      (!isSpecBasis&&nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points in that group, fence not meaningful)':'')+
+      (isSpecBasis&&nNA?' ('+nNA+' have no spec/limit configured)':'')+'.'+dirNote+'</div>';
     html+='<div style="margin:0 0 8px">'+
       '<button class="csv-btn" onclick="hSaveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
       '<button class="csv-btn" onclick="hSaveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button></div>';
@@ -19072,18 +19254,26 @@ function updateSitePanel(){
       html+='</tbody></table>';
     }
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
+    var loLbl=isSpecBasis?'Limit&nbsp;lo':PRIMARY_SITE+' fence lo';
+    var hiLbl=isSpecBasis?'Limit&nbsp;hi':PRIMARY_SITE+' fence hi';
+    var outWord=isSpecBasis?'FAIL':'OUTSIDE';
+    var inWord=isSpecBasis?'PASS':'inside';
+    var showSpecCol=(siteBasis==='both');
     html+='<div style="overflow:auto;max-height:60vh;border:1px solid #eee"><table class="stbl"><thead><tr>'+
       '<th>Site</th><th>Serial</th>'+(otherDims.length?'<th>'+bucketLabel+'</th>':'')+'<th>Value</th>'+
-      '<th>'+PRIMARY_SITE+' fence lo</th><th>'+PRIMARY_SITE+' fence hi</th><th>'+PRIMARY_SITE+' n</th>'+
-      '<th>Dir</th><th>Dist</th><th>Verdict</th></tr></thead><tbody>';
+      '<th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+PRIMARY_SITE+' n</th>'+
+      '<th>Dir</th><th>Dist</th><th>Verdict</th>'+
+      (showSpecCol?'<th title="Independent pass/fail of this measurement vs the datasheet Spec/Limit.">Spec&nbsp;P/F</th>':'')+
+      '</tr></thead><tbody>';
     rows.forEach(function(r){ var p=r.p;
-      var vTd=r.verdict!=='OUTSIDE'?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>inside</td>')
-        :r.specRelevant===false?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only, cannot fail this spec.">OUTSIDE (benign)</td>'
-        :'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">OUTSIDE</td>';
+      var vTd=r.verdict!=='OUTSIDE'?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>'+inWord+'</td>')
+        :r.specRelevant===false?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only, cannot fail this spec.">'+outWord+' (benign)</td>'
+        :'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>';
+      var specTd=showSpecCol?(r.specPF==='FAIL'?'<td style="color:#c00;font-weight:bold">FAIL</td>':r.specPF==='PASS'?'<td style="color:#2a7a2a">PASS</td>':'<td style="color:#aaa">n/a</td>'):'';
       html+='<tr><td>'+p.site+'</td><td>'+p.serial+'</td>'+(otherDims.length?'<td>'+p.bucket+'</td>':'')+'<td>'+p.value.toFixed(4)+'</td>'+
-        '<td>'+(r.lo!==undefined?r.lo.toFixed(4):'&mdash;')+'</td><td>'+(r.hi!==undefined?r.hi.toFixed(4):'&mdash;')+'</td>'+
-        '<td>'+(r.n!==undefined?r.n:'&mdash;')+'</td><td>'+(r.dir||'&mdash;')+'</td>'+
-        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+'</tr>'; });
+        '<td>'+(r.lo!==undefined&&r.lo!==null?r.lo.toFixed(4):'&mdash;')+'</td><td>'+(r.hi!==undefined&&r.hi!==null?r.hi.toFixed(4):'&mdash;')+'</td>'+
+        '<td>'+(r.n!==undefined&&r.n!==null?r.n:'&mdash;')+'</td><td>'+(r.dir||'&mdash;')+'</td>'+
+        '<td>'+(r.dist?r.dist.toFixed(4):'&mdash;')+'</td>'+vTd+specTd+'</tr>'; });
     html+='</tbody></table></div>';
     el.innerHTML=html;
   }catch(e){ el.innerHTML='<span style="color:#c00">Error building Site Population Check: '+e+'</span>'; }
@@ -19093,18 +19283,21 @@ function hSaveSitePopulationCSV(outsideOnly){
   var rows=outsideOnly?_hLastSiteRows.filter(function(r){return r.verdict==='OUTSIDE';}):_hLastSiteRows;
   if(!rows.length){ alert('No OUTSIDE points in the current selection.'); return; }
   function esc(v){var s=String(v==null?'':v);return s.indexOf(',')>=0||s.indexOf('"')>=0?'"'+s.replace(/"/g,'""')+'"':s;}
+  var siteBasis=_hSiteBasis();
+  var boundLbl=siteBasis==='spec'?'Limit':PRIMARY_SITE+'_fence';
   var hdrs=['Site','Serial','Group',VLABEL+(VUNIT?' ('+VUNIT+')':''),
-    PRIMARY_SITE+'_fence_lo',PRIMARY_SITE+'_fence_hi',PRIMARY_SITE+'_n','Dir','Dist','Verdict','Spec_relevant'];
+    boundLbl+'_lo',boundLbl+'_hi',PRIMARY_SITE+'_n','Dir','Dist','Verdict','Spec_relevant','Spec_PF'];
   var out=[hdrs.join(',')];
   rows.forEach(function(r){ var p=r.p;
     out.push([esc(p.site),esc(p.serial),esc(p.bucket),p.value.toFixed(6),
-      r.lo!==undefined?r.lo.toFixed(6):'',r.hi!==undefined?r.hi.toFixed(6):'',r.n!==undefined?r.n:'',
+      r.lo!==undefined&&r.lo!==null?r.lo.toFixed(6):'',r.hi!==undefined&&r.hi!==null?r.hi.toFixed(6):'',r.n!==undefined&&r.n!==null?r.n:'',
       r.dir||'',r.dist?r.dist.toFixed(6):'',r.verdict,
-      r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown'].join(',')); });
+      r.specRelevant===false?'benign':r.specRelevant===true?'yes':'unknown',r.specPF||''].join(',')); });
   var ts=new Date().toISOString().replace('T',' ').replace(/\.\d+Z$/,' UTC');
   var meta=['# PADB Export','# Plot: '+TITLE+' -- Site Population Check','# Generated: '+ts,
     '# Export: '+(outsideOnly?'OUTSIDE-only points':'All checked points'),'# Primary site: '+PRIMARY_SITE,
-    '# Rows: '+rows.length,'# Fence: '+PRIMARY_SITE+' '+_hSiteK()+'xIQR per non-Site dimension combination','#'].join('\r\n');
+    '# Comparison basis: '+(siteBasis==='spec'?'Spec/Limit (each measurement vs the datasheet limit)':siteBasis==='both'?'Primary fence (Verdict) + Spec/Limit (Spec_PF)':'Primary '+PRIMARY_SITE+' '+_hSiteK()+'xIQR per non-Site dimension combination'),
+    '# Rows: '+rows.length,'#'].join('\r\n');
   var blob=new Blob([meta+'\r\n'+out.join('\r\n')],{type:'text/csv;charset=utf-8;'});
   var url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url; a.download=(TITLE+'_site_population_'+(outsideOnly?'outside':'all')).replace(/[^a-zA-Z0-9_\-]/g,'_')+'.csv';
@@ -19355,6 +19548,11 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
             "Lower k = stricter (more points flagged OUTSIDE); higher k = looser. 1.5 is the standard Tukey fence.'>"
             "&nbsp;k&times;IQR: <input type='number' id='h_site_k' value='1.5' min='0' step='0.1' "
             "style='width:52px' onchange='updateSitePanel()'></label> "
+            "<label style='font-size:11px;color:#555' title='How to judge each non-primary measurement: "
+            "against the primary site fence (site-population shifts), the datasheet Spec/Limit (real pass/fail), or both.'>"
+            "&nbsp;Compare to: <select id='h_site_basis' onchange='updateSitePanel()'>"
+            f"<option value='fence'>{html.escape(str(primary_site))} fence</option>"
+            "<option value='spec'>Spec/Limit</option><option value='both'>Both</option></select></label> "
             f"<span style='color:#888;font-size:11px'>(compares each non-{html.escape(str(primary_site))} "
             f"measurement against the {html.escape(str(primary_site))} k&times;IQR fence)</span></div>\n"
             "<div id='h_site_panel' style='display:none;padding:0 2px 16px'></div>\n"

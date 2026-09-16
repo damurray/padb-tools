@@ -966,6 +966,35 @@ def test_site_check_compare_basis() -> None:
               'id="box_site_basis"' not in on.read_text(encoding="utf-8"))
 
 
+def test_site_compare_basis_rollout() -> None:
+    """The Site Population Check "Compare to" selector (fence/spec/both) was rolled
+    out from boxplot to ALL views (2026-09-15): stat_summary, summary, histogram
+    (bespoke panels) and env_coverage + distribution (shared _SITE_PANEL_SHARED_JS).
+    Source-contract drift guard: each view's selector id + spec-classify + basis
+    wiring must be present, and every view must judge spec pass/fail by the same
+    RULE (vs Limit/Spec, side-aware, verdict 'OUTSIDE'==fails)."""
+    ppsrc = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    v2src = (HERE / "padb_v2.py").read_text(encoding="utf-8")
+    # Per-view selector ids (boxplot's box_site_basis is pinned separately).
+    for sid in ('id="stat_site_basis"', 'id="sum_site_basis"', "id='h_site_basis'", 'id="dist_site_cmp"'):
+        check(f"site compare-to selector present: {sid}", sid in ppsrc)
+    check("site compare-to selector present: ec_site_cmp (padb_v2)", 'id="ec_site_cmp"' in v2src)
+    # Bespoke spec classifiers (side-aware, verdict OUTSIDE==fails spec).
+    check("bespoke _siteSpecClass present in >=3 views (box/stat/summary)",
+          ppsrc.count("function _siteSpecClass(p)") >= 3)
+    check("histogram _hSiteSpecClass present", "function _hSiteSpecClass(p)" in ppsrc)
+    # Shared panel: spec classify + per-basis row + basis-aware render/CSV.
+    check("shared _spSpecClass + _spRowForBasis present",
+          "function _spSpecClass(p)" in ppsrc and "function _spRowForBasis(" in ppsrc)
+    check("shared render/CSV honor meta.compareBasis",
+          ppsrc.count("meta.compareBasis||'fence'") >= 2)
+    check("dist + ec supply compareBasis to shared panel",
+          ppsrc.count("compareBasis:cmp") >= 2)
+    # Every classifier uses the same side-aware rule (a bound applied only when present).
+    check("spec classifiers are side-aware (hi!=null&&p.value>hi)",
+          ppsrc.count("if(hi!=null&&p.value>hi)") >= 4)
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -1054,7 +1083,7 @@ def main() -> None:
                test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
-               test_scatter_draw_modes):
+               test_scatter_draw_modes, test_site_compare_basis_rollout):
         try:
             fn()
         except Exception as exc:
