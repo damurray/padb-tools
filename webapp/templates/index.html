@@ -141,30 +141,50 @@
       <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. The report also states a data-driven safe ceiling so you can see if your target is within it.">reduction % <input type="number" id="reducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
       <details style="width:100%;margin-top:4px;font-size:12px;color:#444">
         <summary style="cursor:pointer;color:#0066cc">How test-point reduction works</summary>
-        <div style="padding:6px 4px 2px;line-height:1.5;max-width:70em">
+        <div style="padding:6px 4px 2px;line-height:1.5;max-width:72em">
           <b>What it does:</b> reads a job's extracted CSV and recommends which <i>swept test
-          frequencies</i> are redundant, so the test plan can be shortened. It's <b>advisory and
-          report-only</b> &mdash; it never changes the CSV, pod, or plots. Two files are written next
-          to each CSV (<code>&lt;stem&gt;_testpoint_reduction.txt</code> / <code>.csv</code>) and the
-          full report is shown in the job log below.
+          frequencies</i> add no new information about the behaviour you've already measured, so a
+          test plan can be shortened. <b>Advisory and report-only</b> &mdash; it never changes the CSV,
+          pod, or plots. Writes <code>&lt;stem&gt;_testpoint_reduction.txt</code> / <code>.csv</code>
+          next to each CSV; the full report shows in the job log below.
+
+          <div style="background:#fff5ef;border:1px solid #e0905a;border-radius:4px;padding:6px 9px;margin:7px 0">
+            <b style="color:#c04000">Read this first &mdash; redundancy is NOT the same as dispensable
+            test coverage.</b> "Redundant" here means <i>redundant for characterising this population's
+            behaviour</i>, judged from <b>passing data</b>. A flat, always-passing, high-margin point may
+            still be a <b>dormant fault sentinel</b> &mdash; a trip for a component/cal failure mode that
+            simply hasn't happened yet. (Real case: points that never failed at Santa Rosa started
+            failing at Malaysia on new hardware/cal.) You <b>cannot</b> prove a point unnecessary from
+            passing data alone. So use this as an <b>input to a human/FMEA decision</b>, not an
+            auto-trimmer, and only to trim a <i>production screen</i> that is backed by periodic full
+            characterisation + escape monitoring &mdash; never the characterisation coverage itself.
+          </div>
+
+          <b>How it decides (importance-weighted, not a flat %):</b>
           <ul style="margin:4px 0 4px 18px;padding:0">
-            <li><b>Protected (never dropped):</b> the sweep endpoints, every spec/limit/uncertainty
-              <i>transition</i> edge, any <i>spec fail</i>, and points with <i>thin margin</i> to the
-              limit (where pass/fail is actually decided &mdash; importance beats redundancy).</li>
-            <li><b>Redundant (candidate to drop):</b> interior points whose value is reconstructable
-              from their kept neighbours <i>within that measurement's own noise</i>. The criterion
-              self-calibrates per condition &mdash; a noise-floor-limited spur (high variance) reduces
-              a lot; a low-variance absolute measurement reduces conservatively. A real peak or step
-              is <i>not</i> reconstructable, so it's kept automatically.</li>
-            <li><b>Per-condition floor:</b> every condition keeps at least a minimum number of points,
-              so no condition/band loses coverage.</li>
-            <li><b>Data-driven ceiling:</b> from each condition's fail rate, margin-to-limit, and
-              noise-vs-headroom, the report states the maximum reduction it considers <i>safe</i>, and
-              flags when your target % exceeds it.</li>
+            <li><b>Protected (never dropped):</b> sweep endpoints, every spec/limit/uncertainty
+              <i>transition</i> edge, any <i>spec fail</i>, and <i>thin-margin</i> points near the
+              pass/fail edge &mdash; importance beats redundancy.</li>
+            <li><b>Redundant (candidate):</b> interior points reconstructable from kept neighbours
+              <i>within that measurement's own noise</i>. Self-calibrates per condition &mdash; a
+              noise-floor-limited spur (high variance) trims a lot, a low-variance absolute measurement
+              stays conservative; a real peak/step isn't reconstructable, so it's kept.</li>
+            <li><b>Per-condition floor</b> + a <b>data-driven ceiling</b> (from fail rate, margin, and
+              noise-vs-headroom) &mdash; the report states the max reduction it considers <i>safe</i>
+              and flags when your target % exceeds it.</li>
           </ul>
-          <b>Note:</b> the frequencies come from the measured data, so an analysis pod has no sweep
-          list to edit &mdash; realise the saving by trimming the listed frequencies in the
-          <i>upstream test executive</i>, then re-extract. This is a <b>prototype</b>.
+
+          <b>To trust it, feed it the widest population you have.</b> Run it on <b>all runs</b> of each
+          DUT (so run-to-run behaviour is visible) and on <b>merged multi-site</b> data &mdash; a point
+          any site/run fails is then kept automatically. A companion run-to-run audit (coming with the
+          guided reduction study) marks a point that <i>fails then passes after a repair/cal</i> as a
+          <b>confirmed sentinel</b> (never trim), and a point that <i>passed before but fails now</i> as
+          a <b>re-expansion trigger</b> (add back to the screen) &mdash; the empirical way to catch new
+          fault modes.
+
+          <b>Note:</b> the frequencies come from the measured data, so an analysis pod has no sweep list
+          to edit &mdash; realise the saving by trimming the listed frequencies in the <i>upstream test
+          executive</i>, then re-extract. This is a <b>prototype</b>.
         </div>
       </details>
     </div>
