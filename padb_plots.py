@@ -7295,6 +7295,79 @@ function _maxDevCells(outlierDetail,center){
   }
   return {pos:cell(maxPos,1),neg:cell(maxNeg,-1)};
 }
+/* ---- Per-point / Grouped Statistics Table toggle (2026-09-15, David-approved
+   rollout from boxplot). Grouped = today's pooled per-condition/frequency rows
+   plus a "# fail / n" column; Per-point = one row per DUT (dut_vals are already
+   DUT-averaged here, per _aggregate_stat_data) with PASS/FAIL vs the effective
+   Limit -- the single shared side-aware rule (PADB_isFail), resolved per-DUT as
+   embedded Limit -> raw Spec -> page HI_SPEC/LO_SPEC, identical to the Site
+   spec-mode classifier _siteSpecClass. */
+function _statTableMode(){ var el=document.getElementById('stat_table_mode'); return el?el.value:'grouped'; }
+/* Re-apply the SAME serial/port/GF filter the plot's own "Show points" overlay
+   and recomputeFreqStat use -- recomputeFreqStat deliberately keeps the ORIGINAL
+   full fs.dut_vals (so the overlay can gray-out excluded points), so a table that
+   read fs.dut_vals raw would be decoupled from those filters. This keeps the
+   #fail/n count and the per-point rows tightly coupled to the plotted population
+   (fs.n == this filtered length). */
+function _statActiveDutVals(cond,fs){
+  var allS=getAllSerials(),selS=allS.length>1?getSelectedSerials():[];
+  var useSerFlt=selS.length>0&&selS.length<allS.length;
+  var allP=getSsPorts(),selP=allP.length>1?getSelSsPorts():[];
+  var usePortFlt=selP.length>0&&selP.length<allP.length;
+  var gfTog=document.getElementById('stat_gf_chk');
+  var hasGf=(gfTog?gfTog.checked:true)&&_gfExcluded&&_gfExcluded.size>0;
+  return (fs.dut_vals||[]).filter(function(d){
+    if(useSerFlt&&selS.indexOf(d.s)<0) return false;
+    if(usePortFlt&&selP.indexOf(d.p||'')<0) return false;
+    if(hasGf){ var excl=_isStatGfExcl(d.s,cond,'Room',fs.freq_label,d.p); if(_statGfFocusMode?!excl:excl) return false; }
+    return true;
+  });
+}
+function _statDutLimits(d){
+  var hi=(d.upper_limit!=null?d.upper_limit:(d.spec_hi!=null?d.spec_hi:(typeof HI_SPEC!=='undefined'?HI_SPEC:null)));
+  var lo=(d.lower_limit!=null?d.lower_limit:(d.spec_lo!=null?d.spec_lo:(typeof LO_SPEC!=='undefined'?LO_SPEC:null)));
+  return {hi:_siteNum(hi),lo:_siteNum(lo)};
+}
+function _statDutStatus(d){
+  var lim=_statDutLimits(d), fail=PADB_isFail(d.v,lim.hi,lim.lo);   // single shared rule
+  if(fail===null) return {t:'—',c:'#aaa',lim:lim};
+  return fail?{t:'FAIL',c:'#c00',lim:lim}:{t:'PASS',c:'#2a7a2a',lim:lim};
+}
+function _statFailCell(cond,fs){
+  var dutVals=_statActiveDutVals(cond,fs);
+  if(!dutVals.length) return '<td style="color:#aaa">&mdash;</td>';
+  var n=0,scored=0;
+  dutVals.forEach(function(d){ var lim=_statDutLimits(d); var f=PADB_isFail(d.v,lim.hi,lim.lo); if(f===null) return; scored++; if(f===true) n++; });
+  if(!scored) return '<td style="color:#aaa">&mdash;</td>';
+  return '<td>'+(n>0?'<b style="color:#c00">'+n+'</b>':'0')+' / '+scored+'</td>';
+}
+function _statPerPointTable(conds,params){
+  var pts=[];
+  (conds||[]).forEach(function(cd){
+    (cd.freq_stats||[]).slice().sort(function(a,b){return a.freq-b.freq;}).forEach(function(fs){
+      _statActiveDutVals(cd.condition,fs).forEach(function(d){
+        pts.push({cond:cd.condition,freq:fs.freq,s:d.s,p:d.p||'',v:d.v,st:_statDutStatus(d)});
+      });
+    });
+  });
+  if(!pts.length) return '<p style="color:#888;padding:8px">No points match the current filters.</p>';
+  pts.sort(function(a,b){ if(a.cond!==b.cond)return a.cond<b.cond?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
+  var nFail=pts.filter(function(pt){return pt.st.t==='FAIL';}).length;
+  var cap=5000, shown=pts.slice(0,cap);
+  var out='<div style="font-size:12px;color:#555;padding:2px 2px 4px">'+pts.length.toLocaleString()+' DUT&#8209;point'+(pts.length===1?'':'s')+
+    ' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail limit'+
+    (pts.length>cap?(' &mdash; showing first '+cap.toLocaleString()+'; use Save CSV for all'):'')+
+    ' &mdash; <i>per-point mode (per-DUT mean); Group by sorts/sections rows</i></div>';
+  out+='<table class="stbl"><thead><tr><th>Condition</th><th>Freq ('+X_UNIT+')</th><th>Serial</th><th>Port</th><th>Value</th>'+
+    '<th>Limit&nbsp;lo</th><th>Limit&nbsp;hi</th><th>Status</th></tr></thead><tbody>';
+  var body=[];
+  shown.forEach(function(pt){ var lim=pt.st.lim;
+    body.push('<tr><td>'+pt.cond+'</td><td>'+pt.freq.toFixed(4)+'</td><td>'+pt.s+'</td><td>'+pt.p+'</td><td>'+pt.v.toFixed(4)+'</td>'+
+      '<td>'+(lim.lo!=null?lim.lo.toFixed(4):'&mdash;')+'</td><td>'+(lim.hi!=null?lim.hi.toFixed(4):'&mdash;')+'</td>'+
+      '<td style="color:'+pt.st.c+';font-weight:bold">'+pt.st.t+'</td></tr>'); });
+  out+=body.join('')+'</tbody></table>';
+  return out;
+}
 function updateStatPanel(conds,params,force){
   var el=document.getElementById('stat_panel');if(!el||el.style.display==='none')return;
   var rb=document.getElementById('stat_refresh_table_btn');
@@ -7306,6 +7379,7 @@ function updateStatPanel(conds,params,force){
   }
   _setTableBtnStale(rb,false);
   try{
+  if(_statTableMode()==='perpoint'){ el.innerHTML=_statPerPointTable(conds,params); return; }
   var nFail=0,rows=[];
   var _hasLo=false,_hasHi=false;
   (conds||[]).forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){
@@ -7408,6 +7482,7 @@ function updateStatPanel(conds,params,force){
         '<td>'+normTag(fs)+'</td>'+
         outCells+
         '<td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+
+        _statFailCell(cd.condition,fs)+
         '</tr>');
     });
   });
@@ -7423,6 +7498,7 @@ function updateStatPanel(conds,params,force){
     '<th>Pass</th><th>Method</th><th>Normality</th><th>Outliers</th>'+
     '<th title="Most positive outlier, relative to the median">Max&nbsp;+&#916;</th>'+
     '<th title="Most negative outlier, relative to the median">Max&nbsp;-&#916;</th>'+
+    '<th title="How many DUTs fail the effective go/no-go Limit (per-DUT Limit, else raw Spec, else page Spec Hi/Lo), out of n scored -- distinct from the Pass column, which is vs the computed TLL">#&nbsp;fail&nbsp;/&nbsp;n</th>'+
     '</tr></thead><tbody>';
   el.innerHTML=banner+hdr+rows.join('')+'</tbody></table>';
   }catch(e){
@@ -9107,13 +9183,20 @@ def _build_stat_summary_html(
         + coverage_gap_html
         + '<div id="plot"></div>\n'
         + '<div style="padding:4px 8px 2px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
-        + '<button class="toggle-btn" id="stat_wf_btn" onclick="toggleStatWorkflow()"'
-        + ' title="Pre-analyzes this dataset (DUTs / conditions / temps / compare / spec presence / skew /'
-        + ' population size) and recommends auto-filter settings + a tailored workflow. Includes a one-click,'
-        + ' fully-reversible, audited Run that auto-executes the conservative part of the workflow.">'
-        + '&#9432; Workflow &amp; Recommendations</button>'
+        # Use the shared workflow-button helper (incl. the flipping .wfcaret) so
+        # stat_summary matches every other view -- it previously hardcoded a
+        # caret-less button, so _afToggleWorkflow had no caret to flip here
+        # (surfaced by qa_filters' workflow-toggle caret check).
+        + _af_workflow_button_html('stat', 'toggleStatWorkflow')
         + '<button class="toggle-btn" id="stat_toggle_btn" onclick="toggleStatPanel()">'
         + '&#9658; Statistics Table</button>'
+        + '<label style="font-size:12px" title="Grouped stats = one row per condition/frequency'
+        ' population (Group by pools; a #fail column counts DUTs past the go/no-go limit). Per-point ='
+        ' one row per DUT (per-DUT mean) with PASS/FAIL vs the limit; Group by then just sorts/sections'
+        ' the rows.">Table:<select id="stat_table_mode"'
+        ' onchange="var _r=getFilteredCondsAndParams();updateStatPanel(_r.conds,_r.params,true)">'
+        '<option value="grouped">Grouped stats</option>'
+        '<option value="perpoint">Per-point</option></select></label>'
         + '<button id="stat_refresh_table_btn" class="reset-btn"'
         + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
@@ -17728,6 +17811,85 @@ function _getFilteredActive(useGf){
   return active;
 }
 /* ---- results table helpers ---- */
+/* ---- Per-point / Grouped Results Table toggle (2026-09-15, David-approved
+   rollout from boxplot). Grouped = today's per-condition/frequency rows plus a
+   "# fail / n" column; Per-point = one row per DUT (dut_vals are cross-temperature
+   means here) with PASS/FAIL vs the effective go/no-go Limit -- the single shared
+   side-aware rule (PADB_isFail), resolved per-DUT as embedded Limit -> raw Spec ->
+   the row's effective spec (override-aware). Both respect the same per-frequency
+   serial+GF inclusion the row means use, so counts can't drift from the plot. */
+function _sumTableMode(){ var el=document.getElementById('sum_table_mode'); return el?el.value:'grouped'; }
+function _sumInclAtFi(cd,fi){
+  var selSers=getSumSelectedSerials(),allSers=getSumAllSerials();
+  if(selSers.length===0&&allSers.length>0) selSers=allSers.slice();
+  var serFlt=allSers.length>1&&selSers.length<allSers.length;
+  var gfEl=document.getElementById('sum_gf_chk'); var gfOn=!gfEl||gfEl.checked;
+  var gfActive=gfOn&&_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size>0;
+  var gfMode=localStorage.getItem(GF_MODE_KEY)||'exclude';
+  var lbl=(cd.freq_labels||[])[fi];
+  var idxs=[];
+  (cd.dut_info||[]).forEach(function(di,idx){
+    if(serFlt&&selSers.indexOf(di.s)<0) return;
+    if(gfActive){ var inGf=_isSumGfExcl(cd.dut_info[idx].s,cd.condition,lbl); if(gfMode==='focus'?!inGf:inGf) return; }
+    idxs.push(idx);
+  });
+  return idxs;
+}
+function _sumDutLimit(cd,fi,di,effHi,effLo){
+  function pick(field){ var a=cd.dut_spec_vals&&cd.dut_spec_vals[field]; var row=a&&a[fi]; return (row&&row[di]!=null)?row[di]:null; }
+  var hi=pick('upper_limit'); if(hi==null)hi=pick('spec_hi'); if(hi==null)hi=effHi;
+  var lo=pick('lower_limit'); if(lo==null)lo=pick('spec_lo'); if(lo==null)lo=effLo;
+  return {hi:PADB_num(hi),lo:PADB_num(lo)};
+}
+function _sumFailAt(cd,fi,effHi,effLo){
+  var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[]; var n=0,scored=0;
+  _sumInclAtFi(cd,fi).forEach(function(di){ var v=row[di]; if(v==null) return;
+    var lim=_sumDutLimit(cd,fi,di,effHi,effLo); var f=PADB_isFail(v,lim.hi,lim.lo);
+    if(f===null) return; scored++; if(f===true)n++; });
+  return {fail:n,scored:scored};
+}
+function _sumFailTd(pf){
+  if(!pf||!pf.scored) return '<td style="border:1px solid #eee;padding:2px 8px;text-align:right;color:#aaa">&mdash;</td>';
+  var inner=pf.fail>0?'<b style="color:#c00">'+pf.fail+'</b>':'0';
+  return '<td style="border:1px solid #eee;padding:2px 8px;text-align:right;white-space:nowrap">'+inner+' / '+pf.scored+'</td>';
+}
+function _sumPerPointTable(active,selTemps,params){
+  var _fr=_sumFreqRange(),fLo=_fr.lo,fHi=_fr.hi,pts=[];
+  (active||[]).forEach(function(cd){
+    (cd.freqs||[]).forEach(function(f,fi){
+      if(f<fLo||f>fHi) return;
+      var realHi=(cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:(cd.spec_hi!=null?cd.spec_hi:null);
+      var realLo=(cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:(cd.spec_lo!=null?cd.spec_lo:null);
+      var hiOv=(params.tll_hi_override!==null&&params.tll_hi_override!==undefined);
+      var loOv=(params.tll_lo_override!==null&&params.tll_lo_override!==undefined);
+      var effHi=hiOv?params.tll_hi_override:realHi, effLo=loOv?params.tll_lo_override:realLo;
+      var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[];
+      _sumInclAtFi(cd,fi).forEach(function(di){
+        var v=row[di]; if(v==null) return;
+        var lim=_sumDutLimit(cd,fi,di,effHi,effLo), fail=PADB_isFail(v,lim.hi,lim.lo);
+        var st=fail===null?{t:'—',c:'#aaa'}:(fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'});
+        pts.push({cond:cd.condition,freq:f,s:(cd.dut_info[di]||{}).s||'',v:v,lo:lim.lo,hi:lim.hi,st:st});
+      });
+    });
+  });
+  var wrap=document.getElementById('sum_table_wrap');
+  if(!pts.length){ if(wrap) wrap.innerHTML='<p style="color:#888;font-size:12px;margin:4px 8px">No data in current view.</p>'; return; }
+  pts.sort(function(a,b){ if(a.cond!==b.cond)return a.cond<b.cond?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
+  var nFail=pts.filter(function(pt){return pt.st.t==='FAIL';}).length, cap=5000, shown=pts.slice(0,cap);
+  function td(v){return '<td style="border:1px solid #eee;padding:2px 8px;text-align:right;white-space:nowrap">'+(v==null?'—':Number(v).toFixed(4))+'</td>';}
+  var head='<div style="font-size:12px;color:#555;margin:2px 8px 4px">'+pts.length.toLocaleString()+' DUT&#8209;point'+(pts.length===1?'':'s')+
+    ' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail limit'+
+    (pts.length>cap?(' &mdash; showing first '+cap.toLocaleString()+'; use Export CSV for all'):'')+
+    ' &mdash; <i>per-point mode (per-DUT cross-temperature mean)</i></div>';
+  var cols=['Condition','Freq ('+X_UNIT+')','Serial','Value','Limit lo','Limit hi','Status'];
+  var th=cols.map(function(c){return '<th style="border:1px solid #ccc;padding:3px 8px;background:#f0f2f5;white-space:nowrap">'+c+'</th>';}).join('');
+  var trs=shown.map(function(pt){
+    return '<tr><td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap">'+pt.cond+'</td>'+td(pt.freq)+
+      '<td style="border:1px solid #eee;padding:2px 8px;white-space:nowrap">'+pt.s+'</td>'+td(pt.v)+td(pt.lo)+td(pt.hi)+
+      '<td style="border:1px solid #eee;padding:2px 8px;text-align:center;color:'+pt.st.c+';font-weight:bold">'+pt.st.t+'</td></tr>';
+  });
+  if(wrap) wrap.innerHTML=head+'<table style="border-collapse:collapse;width:100%;font-size:12px"><thead><tr>'+th+'</tr></thead><tbody>'+trs.join('')+'</tbody></table>';
+}
 function _buildCondRows(condList,gfLabel,selTemps,params){
   var _fr4=_sumFreqRange();
   var fLo=_fr4.lo,fHi=_fr4.hi;
@@ -17764,8 +17926,10 @@ function _buildCondRows(condList,gfLabel,selTemps,params){
       var sLo=loOv?params.tll_lo_override:realLo;
       var tUp=stats.uttl[fi];
       var tLo=stats.lttl[fi];
+      var _pf=_sumFailAt(cd,fi,sHi,sLo);
       rows.push({
         condition:cd.condition,freq:f,n:tot_n,gf:gfLabel,
+        n_fail:_pf.fail,n_scored:_pf.scored,
         mean:stats.mean[fi],min:stats.min_data[fi],max:stats.max_data[fi],
         ttl_up:tUp,ttl_lo:tLo,mu:params.mu,denv:params.denv,
         spec_hi:sHi,spec_lo:sLo,
@@ -17784,6 +17948,7 @@ function buildTable(){
   var active=_getFilteredActive();
   var selTemps=getSelTemps();
   var params=getSumParams();
+  if(_sumTableMode()==='perpoint'){ _sumPerPointTable(active,selTemps,params); return; }
   var rows=_buildCondRows(active,'',selTemps,params);
   if(!rows.length){
     wrap.innerHTML='<p style="color:#888;font-size:12px;margin:4px 8px">No data in current view.</p>';
@@ -17796,7 +17961,7 @@ function buildTable(){
   var cols=['Condition','Freq (MHz)','n','Mean','Min','Max'];
   if(showHi) cols=cols.concat(['TTL↑','Spec Hi','Margin↑']);
   if(showLo) cols=cols.concat(['TTL↓','Spec Lo','Margin↓']);
-  cols=cols.concat(['M.U.','ΔEnv']);
+  cols=cols.concat(['M.U.','ΔEnv','# fail / n']);
   var th=cols.map(function(c){
     return '<th style="border:1px solid #ccc;padding:3px 8px;background:#f0f2f5;white-space:nowrap">'
            +c+'</th>';
@@ -17834,7 +17999,7 @@ function buildTable(){
     var cells=tdL(r.condition)+td(r.freq,4)+td(r.n,0)+td(r.mean,4)+td(r.min,4)+td(r.max,4);
     if(showHi) cells+=td(r.ttl_up,4)+specTd(r.spec_hi,r.spec_hi_is_override,r.real_spec_hi)+marginTd(r.margin_up);
     if(showLo) cells+=td(r.ttl_lo,4)+specTd(r.spec_lo,r.spec_lo_is_override,r.real_spec_lo)+marginTd(r.margin_lo);
-    cells+=td(r.mu,4)+td(r.denv,4);
+    cells+=td(r.mu,4)+td(r.denv,4)+_sumFailTd({fail:r.n_fail,scored:r.n_scored});
     return '<tr style="'+bg+'">'+cells+'</tr>';
   });
   wrap.innerHTML='<table style="border-collapse:collapse;width:100%;font-size:12px">'
@@ -18732,6 +18897,11 @@ def _build_summary_html(
         + '<div id="plot"></div>\n'
         + '<div style="margin:4px 8px 2px;display:flex;gap:8px;align-items:center">\n'
         + '  <b style="font-size:13px">Results Table</b>\n'
+        + '  <label style="font-size:12px" title="Grouped stats = one row per condition/frequency'
+        ' (a #fail column counts DUTs past the go/no-go limit). Per-point = one row per DUT (cross-temperature'
+        ' mean) with PASS/FAIL vs the limit.">Table:<select id="sum_table_mode" onchange="buildTable()">'
+        '<option value="grouped">Grouped stats</option>'
+        '<option value="perpoint">Per-point</option></select></label>\n'
         + '  <button id="sum_refresh_table_btn" class="reset-btn"'
         + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'

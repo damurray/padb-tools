@@ -1109,6 +1109,50 @@ def test_box_table_perpoint_mode() -> None:
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 
 
+def test_stat_sum_table_perpoint_rollout() -> None:
+    """The per-point/grouped table toggle was rolled out from boxplot to
+    stat_summary and summary (2026-09-15, completing the tracked rollout).
+    Source-contract drift guard: each view must have the mode selector, a
+    per-point renderer that short-circuits its table builder, a grouped #fail/n
+    column, and -- critically, the part that breaks most often -- the per-point
+    rows + #fail count must be tightly COUPLED to the live serial/port/GF filter
+    (not read raw fs.dut_vals, which recomputeFreqStat deliberately leaves
+    unfiltered). Pins the coupling helper each view uses."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # stat_summary
+    check("stat table: Grouped/Per-point selector present",
+          'id="stat_table_mode"' in src and "function _statTableMode(" in src)
+    check("stat table: per-point mode short-circuits updateStatPanel",
+          "if(_statTableMode()==='perpoint'){ el.innerHTML=_statPerPointTable(" in src)
+    check("stat table: #fail/n via shared PADB_isFail rule + coupled dut_vals",
+          "function _statFailCell(" in src and "function _statActiveDutVals(" in src
+          and "_statFailCell(cd.condition,fs)" in src)
+    check("stat table: per-point + #fail re-apply the live serial/port/GF filter",
+          "_statActiveDutVals(cd.condition,fs)" in src
+          and "if(useSerFlt&&selS.indexOf(d.s)<0) return false;" in src)
+    check("stat table: #fail/n header column present",
+          "How many DUTs fail the effective go/no-go Limit" in src)
+    # stat_summary previously hardcoded a caret-less workflow button (every other
+    # view uses the shared helper's flipping .wfcaret) -- surfaced by qa_filters'
+    # workflow-toggle check. Pin it to the shared helper so it can't drift back.
+    check("stat: workflow button uses the shared helper (flipping .wfcaret)",
+          "_af_workflow_button_html('stat', 'toggleStatWorkflow')" in src
+          and "id=\"stat_wf_btn\" onclick=\"toggleStatWorkflow()\"" not in src)
+    # summary
+    check("sum table: Grouped/Per-point selector present",
+          'id="sum_table_mode"' in src and "function _sumTableMode(" in src)
+    check("sum table: per-point mode short-circuits buildTable",
+          "if(_sumTableMode()==='perpoint'){ _sumPerPointTable(" in src)
+    check("sum table: #fail/n via shared PADB_isFail rule + per-freq inclusion",
+          "function _sumFailAt(" in src and "function _sumInclAtFi(" in src
+          and "PADB_isFail(v,lim.hi,lim.lo)" in src)
+    check("sum table: per-point + #fail re-apply the live serial/GF filter",
+          "_sumInclAtFi(cd,fi)" in src and "_isSumGfExcl(cd.dut_info[idx].s" in src)
+    check("sum table: #fail/n column added to grouped Results Table",
+          "cols=cols.concat(['M.U.','ΔEnv','# fail / n']);" in src
+          and "_sumFailTd({fail:r.n_fail,scored:r.n_scored})" in src)
+
+
 def test_site_compare_basis_rollout() -> None:
     """The Site Population Check "Compare to" selector (fence/spec/both) was rolled
     out from boxplot to ALL views (2026-09-15): stat_summary, summary, histogram
@@ -1228,7 +1272,8 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
-               test_box_table_perpoint_mode, test_common_prelude_and_feature_registry,
+               test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
+               test_common_prelude_and_feature_registry,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()
