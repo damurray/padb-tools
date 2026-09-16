@@ -959,10 +959,10 @@ function _scatterBounds(){
 }
 function _scatterHasBounds(){var b=_scatterBounds();return b.spec||b.limit;}
 function _scatterStatus(r){
-  /* {t:text, c:cssColor} -- Pass/Fail vs the derived Limit (Upper/Lower Limit). */
-  var val=_scatNum(r.Value),hi=_scatNum(r.Upper_Limit),lo=_scatNum(r.Lower_Limit);
-  if(val===null||(hi===null&&lo===null)) return {t:'—',c:'#aaa'};
-  var fail=(hi!==null&&val>hi)||(lo!==null&&val<lo);
+  /* {t:text, c:cssColor} -- Pass/Fail vs the derived Limit (Upper/Lower Limit),
+     via the single shared PADB_isFail rule (see _COMMON_JS). */
+  var fail=PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit);
+  if(fail===null) return {t:'—',c:'#aaa'};
   return fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'};
 }
 function _scatFmt(v){var f=_scatNum(v);return f===null?'':f.toFixed(4);}
@@ -2577,6 +2577,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"
+        + _COMMON_JS + "\n"
         + _AV_FREQ_JS
         + "</script>\n</body>\n</html>"
     )
@@ -3221,6 +3222,24 @@ update();
 # lo, hi, n, specRelevant}; meta is {primary,k,basisLabel,bucketLabel,valueLabel,
 # towardFail,exportFnName}.
 # ---------------------------------------------------------------------------
+_COMMON_JS = r"""
+/* Shared prelude included by EVERY interactive view (hardening 2026-09-15) --
+   single source of truth for cross-view rules, so a fix can't land in one view and
+   silently miss the others (the class of bug behind the GF-table-coupling, the
+   null.toFixed crash, and the Plotly-3 axis-title breakage). Add cross-view helpers
+   HERE, not per-view. Pinned by qa_regressions (common-prelude in every view). */
+function PADB_num(v){ if(v===null||v===undefined||v==='') return null; var f=parseFloat(v); return isFinite(f)?f:null; }
+/* THE pass/fail rule for the whole tool: a point fails when it crosses a bound that
+   is PRESENT. A bound applies only when non-null, so a one-sided (e.g. upper-only)
+   spec fails only on the side that exists. Returns null == "no verdict" (no limit).
+   Every pass/fail -- scatter data-rows table, boxplot per-point + Site spec-mode,
+   stat_summary/summary/histogram Site spec-mode, shared _spSpecClass, grouped
+   #fail columns -- MUST go through this so they can never disagree. */
+function PADB_isFail(v,hi,lo){ v=PADB_num(v); hi=PADB_num(hi); lo=PADB_num(lo);
+  if(v===null||(hi===null&&lo===null)) return null;
+  return (hi!==null&&v>hi)||(lo!==null&&v<lo); }
+"""
+
 _SITE_PANEL_SHARED_JS = r"""
 function _spFence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.5;
   var s=vals.slice().sort(function(a,b){return a-b;});
@@ -5627,7 +5646,7 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
             if dist_site_enabled else ""
         )
         + f"<script>{_get_plotlyjs()}</script>\n"
-        + f"<script>\n{constants}\n{dist_js}\n{_SITE_PANEL_SHARED_JS}\n{_DIST_SITE_JS}</script>\n"
+        + f"<script>\n{constants}\n{_COMMON_JS}\n{dist_js}\n{_SITE_PANEL_SHARED_JS}\n{_DIST_SITE_JS}</script>\n"
         "</body>\n</html>"
     )
     return html
@@ -9108,6 +9127,7 @@ def _build_stat_summary_html(
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"
+        + _COMMON_JS + "\n"
         + _AUTO_FILTER_SHARED_JS + "\n"
         + _STAT_SUMMARY_JS
         + "</script>\n</body>\n</html>"
@@ -11297,7 +11317,7 @@ def _build_env_coverage_html(
         + _af_panels_html('ec')
         + '<div id="ec_stat_panel" style="display:none"></div>\n'
         + ((site_btn_html + '<div id="ec_site_panel" style="display:none;padding:0 2px 16px"></div>\n') if primary_site else "")
-        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_ENV_COVERAGE_JS}\n{_SITE_PANEL_SHARED_JS}\n{_EC_SITE_JS}</script>\n"
+        + f"<script>\n{constants}\n{_COMMON_JS}\n{_AUTO_FILTER_SHARED_JS}\n{_ENV_COVERAGE_JS}\n{_SITE_PANEL_SHARED_JS}\n{_EC_SITE_JS}</script>\n"
         "</body>\n</html>"
     )
 
@@ -12969,14 +12989,14 @@ function _boxPfLimits(yFlt){
   return {hi:_n(hi),lo:_n(lo)};
 }
 function _boxPointStatus(v,lim){
-  if(v==null||(lim.hi==null&&lim.lo==null)) return {t:'—',c:'#aaa'};
-  var fail=(lim.hi!=null&&v>lim.hi)||(lim.lo!=null&&v<lim.lo);
+  var fail=PADB_isFail(v,lim.hi,lim.lo);   // single shared rule (_COMMON_JS)
+  if(fail===null) return {t:'—',c:'#aaa'};
   return fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'};
 }
 /* Count of a population failing the effective limit -- the Grouped-mode "#fail/n"
    column, so a pooled row still carries a pass/fail signal. */
 function _boxFailCount(vals,lim){ if(lim.hi==null&&lim.lo==null) return null; var n=0;
-  vals.forEach(function(v){ if(v!=null&&((lim.hi!=null&&v>lim.hi)||(lim.lo!=null&&v<lim.lo))) n++; }); return n; }
+  vals.forEach(function(v){ if(PADB_isFail(v,lim.hi,lim.lo)===true) n++; }); return n; }   // single shared rule
 function _boxFailCell(vals,lim){ var n=_boxFailCount(vals,lim); if(n===null) return '<td style="color:#aaa">&mdash;</td>';
   return '<td>'+(n>0?'<b style="color:#c00">'+n+'</b>':'0')+' / '+vals.length+'</td>'; }
 function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
@@ -16073,7 +16093,7 @@ def _build_box_interactive_html(
         + '<div id="box_site_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_wf_panel" style="display:none;overflow-x:auto;padding:8px 12px;background:#f7faff;border:1px solid #cdd6e6;border-radius:4px;margin:4px 0"></div>\n'
         + '<div id="auto_gf_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
-        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
+        + f"<script>\n{constants}\n{_COMMON_JS}\n{_AUTO_FILTER_SHARED_JS}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
     )
 
@@ -18729,6 +18749,7 @@ def _build_summary_html(
         + f"<script>{_get_plotlyjs()}</script>\n"
         + "<script>\n"
         + constants + "\n"
+        + _COMMON_JS + "\n"
         + _AUTO_FILTER_SHARED_JS + "\n"
         + _SUMPLOT_JS
         + "</script>\n</body>\n</html>"
@@ -19635,7 +19656,7 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
         f"<script>{_get_plotlyjs()}</script>\n"
         f"<style>{css}</style>\n"
         + body
-        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_HISTOGRAM_JS}</script>\n</body>\n</html>\n"
+        + f"<script>\n{constants}\n{_COMMON_JS}\n{_AUTO_FILTER_SHARED_JS}\n{_HISTOGRAM_JS}</script>\n</body>\n</html>\n"
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html_doc, encoding="utf-8")

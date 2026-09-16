@@ -966,6 +966,43 @@ def test_site_check_compare_basis() -> None:
               'id="box_site_basis"' not in on.read_text(encoding="utf-8"))
 
 
+def test_common_prelude_and_feature_registry() -> None:
+    """HARDENING TRACKER (2026-09-15): the shared JS prelude (_COMMON_JS) that gives
+    every view a SINGLE source of truth for cross-view rules (PADB_num / PADB_isFail)
+    must be defined once and injected into EVERY view -- and pure pass/fail sites must
+    route through it. Plus a cross-view feature REGISTRY: each cross-view marker must
+    appear across the builders, so dropping a feature from one view (the 'one view
+    first' drift David flagged) FAILS QA until propagated."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # 1) Shared prelude defined once with the side-aware single rule.
+    check("_COMMON_JS defines PADB_num + PADB_isFail (single side-aware rule)",
+          '_COMMON_JS = r"""' in src and "function PADB_num(v)" in src
+          and "function PADB_isFail(v,hi,lo)" in src
+          and "return (hi!==null&&v>hi)||(lo!==null&&v<lo);" in src)
+    # 2) Injected into every V2 view's <script> assembly (uses = total minus the def).
+    common_uses = src.count("_COMMON_JS") - 1
+    check(f"_COMMON_JS injected into every V2 view (>=7 uses; found {common_uses})",
+          common_uses >= 7)
+    # 3) Pure pass/fail sites route through the single rule (no divergent inline copy).
+    check("scatter/boxplot pass-fail route through PADB_isFail",
+          "PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit)" in src
+          and "var fail=PADB_isFail(v,lim.hi,lim.lo);" in src
+          and "if(PADB_isFail(v,lim.hi,lim.lo)===true) n++;" in src)
+    # 4) Cross-view feature registry: (label, marker, min occurrences). A feature
+    #    dropped from a view drops the count and trips the check. Grounded in the
+    #    dedicated pins (axis titles / compare-basis / segment-by) but consolidated
+    #    here as the institutional "must be in all views" guard.
+    registry = [
+        ("axis titles use object form (all 6 views + marginals)", "title:{text:", 6),
+        ("Site compare-to selectors present (box/stat/sum/hist/dist/ec)", "site_basis", 3),
+        ("Site spec classifiers (bespoke views)", "function _siteSpecClass(p)", 3),
+        ("shared spec classify present", "function _spSpecClass(p)", 1),
+    ]
+    for label, marker, need in registry:
+        got = src.count(marker)
+        check(f"feature-registry: {label} (>= {need}; found {got})", got >= need)
+
+
 def test_box_table_perpoint_mode() -> None:
     """Boxplot Statistics Table gained a Grouped/Per-point mode toggle (2026-09-15,
     David-approved): per-point mode = one row per measurement + PASS/FAIL vs the
@@ -987,9 +1024,9 @@ def test_box_table_perpoint_mode() -> None:
         h = out.read_text(encoding="utf-8")
         check("box table: Grouped/Per-point mode selector present",
               'id="box_table_mode"' in h and 'value="perpoint"' in h and 'value="grouped"' in h)
-        check("box table: per-point renderer + side-aware status present",
+        check("box table: per-point renderer + status via shared PADB_isFail rule",
               "function _boxPerPointTable(" in h and "function _boxPointStatus(v,lim)" in h
-              and "(lim.hi!=null&&v>lim.hi)||(lim.lo!=null&&v<lim.lo)" in h)
+              and "var fail=PADB_isFail(v,lim.hi,lim.lo);" in h)
         check("box table: grouped #fail/n helper present",
               "function _boxFailCount(" in h and "function _boxFailCell(" in h)
         check("box table: per-point mode short-circuits updateStatsTable",
@@ -1085,9 +1122,9 @@ def test_scatter_table_spec_status() -> None:
         h = out.read_text(encoding="utf-8")
         check("scatter table: bounds gating present (_scatterBounds spec/limit)",
               "function _scatterBounds()" in h and "spec:spec,limit:limit" in h)
-        check("scatter table: Pass/Fail judged vs Limit (Upper/Lower Limit, side-present)",
-              "function _scatterStatus(r)" in h and "_scatNum(r.Upper_Limit)" in h
-              and "(hi!==null&&val>hi)||(lo!==null&&val<lo)" in h)
+        check("scatter table: Pass/Fail judged vs Limit via shared PADB_isFail rule",
+              "function _scatterStatus(r)" in h
+              and "PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit)" in h)
         check("scatter table: Spec/Limit/Status column headers emitted",
               "'Spec Hi','Spec Lo'" in h and "'Limit Hi','Limit Lo'" in h and "extraH.push('Status')" in h)
         check("scatter CSV export carries the same Spec/Limit/Status columns",
@@ -1114,7 +1151,7 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
-               test_box_table_perpoint_mode):
+               test_box_table_perpoint_mode, test_common_prelude_and_feature_registry):
         try:
             fn()
         except Exception as exc:
