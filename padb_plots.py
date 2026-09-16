@@ -12955,6 +12955,67 @@ function _dupBreakdown(items,keyFn,labelFn){
   return order.filter(function(k){return groups[k].count>1;})
     .map(function(k){return groups[k].label+'×'+groups[k].count;});
 }
+/* Per-point / Grouped table modes (2026-09-15). Per-point PASS/FAIL and Group-by
+   pooling are mutually exclusive on one row (a pooled row is a population, not one
+   measurement), so the table has a mode toggle: Grouped stats (pool + a #fail/n
+   column) vs Per-point (one row per measurement + PASS/FAIL; Group by sorts). The
+   pass/fail RULE matches the scatter table / Site spec-mode: vs the effective
+   limit (Passing-only TLL override else page HI_SPEC/LO_SPEC), side-aware. */
+function _boxTableMode(){ var el=document.getElementById('box_table_mode'); return el?el.value:'grouped'; }
+function _boxPfLimits(yFlt){
+  var hi=(yFlt&&yFlt.tll_hi!=null&&yFlt.tll_hi!==undefined)?yFlt.tll_hi:HI_SPEC;
+  var lo=(yFlt&&yFlt.tll_lo!=null&&yFlt.tll_lo!==undefined)?yFlt.tll_lo:LO_SPEC;
+  var _n=function(x){return (x==null||x===undefined||x==='')?null:(isFinite(Number(x))?Number(x):null);};
+  return {hi:_n(hi),lo:_n(lo)};
+}
+function _boxPointStatus(v,lim){
+  if(v==null||(lim.hi==null&&lim.lo==null)) return {t:'—',c:'#aaa'};
+  var fail=(lim.hi!=null&&v>lim.hi)||(lim.lo!=null&&v<lim.lo);
+  return fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'};
+}
+/* Count of a population failing the effective limit -- the Grouped-mode "#fail/n"
+   column, so a pooled row still carries a pass/fail signal. */
+function _boxFailCount(vals,lim){ if(lim.hi==null&&lim.lo==null) return null; var n=0;
+  vals.forEach(function(v){ if(v!=null&&((lim.hi!=null&&v>lim.hi)||(lim.lo!=null&&v<lim.lo))) n++; }); return n; }
+function _boxFailCell(vals,lim){ var n=_boxFailCount(vals,lim); if(n===null) return '<td style="color:#aaa">&mdash;</td>';
+  return '<td>'+(n>0?'<b style="color:#c00">'+n+'</b>':'0')+' / '+vals.length+'</td>'; }
+function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
+  var fr=getBoxFreqRange();
+  var allSers=getAllBoxSerials(), serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
+  var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0, gfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
+  var collapse=isCollapseDup(), grpCols=_boxGroupCols(), lim=_boxPfLimits(yFlt), pts=[];
+  BOX_DATA.forEach(function(cd){
+    if(selConds.indexOf(cd.condition)<0) return;
+    if(selTemps&&selTemps.indexOf(cd.temp)<0) return;
+    (cd.freq_stats||[]).forEach(function(f){
+      if(f.freq<fr.lo||f.freq>fr.hi) return;
+      var det=(f.vals_detail||[]);
+      if(collapse) det=_collapseDupRuns(det,function(d){return d.s+'|'+cd.condition+'|'+(d.p||'')+'|'+cd.temp;});
+      det.forEach(function(d){
+        if(serActive&&selBoxSers.indexOf(d.s)<0) return;
+        if(gfActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);var _ig=_boxIsInGf(_ck);if(gfFocus?!_ig:_ig) return;}
+        pts.push({gk:grpCols.length?_boxGroupKeyForPoint(grpCols,cd,d):cd.condition,temp:cd.temp,freq:f.freq,fl:f.freq_label,s:d.s,p:d.p||'',v:d.v});
+      });
+    });
+  });
+  if(!pts.length) return '<p style="color:#888;padding:8px">No points match the current filters.</p>';
+  pts.sort(function(a,b){ if(a.gk!==b.gk)return a.gk<b.gk?-1:1; if(a.temp!==b.temp)return a.temp<b.temp?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
+  var hasLim=(lim.hi!=null||lim.lo!=null), nFail=0;
+  if(hasLim) pts.forEach(function(pt){ if(_boxPointStatus(pt.v,lim).t==='FAIL')nFail++; });
+  var cap=5000, shown=pts.slice(0,cap);
+  var out='<div style="font-size:12px;color:#555;padding:2px 2px 4px">'+pts.length.toLocaleString()+' point'+(pts.length===1?'':'s')+
+    (hasLim?(' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail limit'):'')+
+    (pts.length>cap?(' &mdash; showing first '+cap.toLocaleString()+'; use Save CSV for all'):'')+
+    ' &mdash; <i>per-point mode; Group by sorts/sections rows</i></div>';
+  out+='<table class="stbl"><thead><tr><th>Group</th><th>Temp</th><th>'+X_SHORT_LABEL+'('+X_UNIT+')</th><th>Serial</th><th>Port</th><th>Value</th>'+
+    (hasLim?'<th>Limit&nbsp;lo</th><th>Limit&nbsp;hi</th><th>Status</th>':'')+'</tr></thead><tbody>';
+  var body=[];
+  shown.forEach(function(pt){ var st=_boxPointStatus(pt.v,lim);
+    body.push('<tr><td>'+pt.gk+'</td><td>'+pt.temp+'</td><td>'+(pt.fl||pt.freq)+'</td><td>'+pt.s+'</td><td>'+pt.p+'</td><td>'+pt.v.toFixed(4)+'</td>'+
+      (hasLim?('<td>'+(lim.lo!=null?lim.lo.toFixed(4):'&mdash;')+'</td><td>'+(lim.hi!=null?lim.hi.toFixed(4):'&mdash;')+'</td><td style="color:'+st.c+';font-weight:bold">'+st.t+'</td>'):'')+'</tr>'); });
+  out+=body.join('')+'</tbody></table>';
+  return out;
+}
 function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var el=document.getElementById('box_stat_panel');
   if(!el||el.style.display==='none') return;
@@ -12966,6 +13027,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
     return;
   }
   _setTableBtnStale(rb,false);
+  if(_boxTableMode()==='perpoint'){ el.innerHTML=_boxPerPointTable(selConds,yFlt,selBoxSers,selTemps); return; }
   var showNp=isBoxNpTI();
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
@@ -15896,6 +15958,13 @@ def _build_box_interactive_html(
         + '&#9432; Workflow &amp; Recommendations</button>\n'
         + '  <button class="toggle-btn" id="box_stat_toggle_btn"'
         ' onclick="toggleStatPanel()">&#9658; Statistics Table</button>\n'
+        + '  <label style="font-size:12px" title="Grouped stats = one row per condition/frequency'
+        ' population (Group by pools; a #fail column counts points past the limit). Per-point = one'
+        ' row per raw measurement with PASS/FAIL vs the limit; Group by then just sorts/sections the'
+        ' rows.">Table:<select id="box_table_mode" onchange="updateStatsTable(getSelectedConds(),'
+        'getYFilter(),getSelectedBoxSerials(),getSelectedTemps(),true)">'
+        '<option value="grouped">Grouped stats</option>'
+        '<option value="perpoint">Per-point</option></select></label>\n'
         + '  <button id="box_refresh_table_btn" class="reset-btn"'
         + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'

@@ -966,6 +966,36 @@ def test_site_check_compare_basis() -> None:
               'id="box_site_basis"' not in on.read_text(encoding="utf-8"))
 
 
+def test_box_table_perpoint_mode() -> None:
+    """Boxplot Statistics Table gained a Grouped/Per-point mode toggle (2026-09-15,
+    David-approved): per-point mode = one row per measurement + PASS/FAIL vs the
+    effective limit (side-aware, same rule as the scatter table / Site spec-mode),
+    Group by sorts/sections; grouped mode keeps pooling (+ a #fail/n column, added
+    next). Pins the toggle + per-point renderer + side-aware status."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "b.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for freq in (100.0, 200.0):
+                for i in range(8):
+                    v = 25.0 if i == 0 else round(10.0 + 0.05 * (i % 4), 4)  # DUT0 fails +20 upper
+                    w.writerow(["Room", freq, v, f"Serial Number: D{i:02d}", 20, -20])
+        out = Path(td) / "b.html"
+        pp.stat_boxplot(p, {"y_label": "P", "title_prefix": "T"}, out)
+        h = out.read_text(encoding="utf-8")
+        check("box table: Grouped/Per-point mode selector present",
+              'id="box_table_mode"' in h and 'value="perpoint"' in h and 'value="grouped"' in h)
+        check("box table: per-point renderer + side-aware status present",
+              "function _boxPerPointTable(" in h and "function _boxPointStatus(v,lim)" in h
+              and "(lim.hi!=null&&v>lim.hi)||(lim.lo!=null&&v<lim.lo)" in h)
+        check("box table: grouped #fail/n helper present",
+              "function _boxFailCount(" in h and "function _boxFailCell(" in h)
+        check("box table: per-point mode short-circuits updateStatsTable",
+              "if(_boxTableMode()==='perpoint'){ el.innerHTML=_boxPerPointTable(" in h)
+
+
 def test_site_compare_basis_rollout() -> None:
     """The Site Population Check "Compare to" selector (fence/spec/both) was rolled
     out from boxplot to ALL views (2026-09-15): stat_summary, summary, histogram
@@ -1083,7 +1113,8 @@ def main() -> None:
                test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
-               test_scatter_draw_modes, test_site_compare_basis_rollout):
+               test_scatter_draw_modes, test_site_compare_basis_rollout,
+               test_box_table_perpoint_mode):
         try:
             fn()
         except Exception as exc:
