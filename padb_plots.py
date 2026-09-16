@@ -13041,6 +13041,7 @@ function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
 function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var el=document.getElementById('box_stat_panel');
   if(!el||el.style.display==='none') return;
+  try{
   var rb=document.getElementById('box_refresh_table_btn');
   if(!force&&(selConds||[]).length>STATS_TABLE_AUTO_THRESHOLD){
     el.innerHTML='<p style="color:#888;padding:8px">Large dataset ('+selConds.length+
@@ -13401,6 +13402,9 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
     '<th title="Most positive outlier, relative to the median">Max&nbsp;+&#916;</th>'+
     '<th title="Most negative outlier, relative to the median">Max&nbsp;-&#916;</th>'+
     '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
+  }catch(e){
+    el.innerHTML='<div style="color:#c00;padding:8px;font-family:monospace">Error building Statistics Table: '+(e&&e.message?e.message:e)+'</div>';
+  }
 }
 function toggleStatPanel(){
   var el=document.getElementById('box_stat_panel');

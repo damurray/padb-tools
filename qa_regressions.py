@@ -966,6 +966,33 @@ def test_site_check_compare_basis() -> None:
               'id="box_site_basis"' not in on.read_text(encoding="utf-8"))
 
 
+def test_plotly_api_lint_and_render_guards() -> None:
+    """RESILIENCE (2026-09-15): (a) a Plotly-API lint so a future version bump can't
+    silently break rendering again -- the bare-string axis title dropped by Plotly
+    3.6 was exactly that class; also flags deprecated 'titlefont' and bare-string
+    colorbar titles. (b) A render-guard audit: every panel renderer that builds HTML
+    into a panel must wrap its body in try/catch so a runtime error surfaces inline
+    instead of leaving a stale/blank panel (the failure mode the null.toFixed crash
+    would have caused if it weren't in a guarded render)."""
+    import re
+    for fn in ("padb_plots.py", "padb_v2.py"):
+        s = (HERE / fn).read_text(encoding="utf-8")
+        bad_axis = re.findall(r"(?:xaxis|yaxis)\d*:(?:Object\.assign\()?\{title:(?!\{)", s)
+        check(f"plotly-lint {fn}: no bare-string axis titles", not bad_axis, str(bad_axis[:4]))
+        check(f"plotly-lint {fn}: no deprecated 'titlefont' (use title.font)", "titlefont" not in s)
+        bad_cb = re.findall(r"colorbar:\{[^}]*title:(?!\{)[^,}]", s)
+        check(f"plotly-lint {fn}: no bare-string colorbar titles", not bad_cb, str(bad_cb[:4]))
+    ps = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # Every HTML-building panel renderer exists and has an error-surfacing catch.
+    for fnname in ("updateStatsTable", "updateStatPanel", "updateSitePanel",
+                   "updateEcSitePanel", "updateDistSitePanel"):
+        check(f"render-guard: {fnname} present", ("function " + fnname + "(") in ps)
+    check("render-guard: Statistics Table renderers catch+surface errors",
+          "Error building Statistics Table" in ps and "Error building statistics table" in ps)
+    check("render-guard: every Site Population Check renderer catches+surfaces (>=4)",
+          ps.count("Error building Site Population Check") >= 4)
+
+
 def test_common_prelude_and_feature_registry() -> None:
     """HARDENING TRACKER (2026-09-15): the shared JS prelude (_COMMON_JS) that gives
     every view a SINGLE source of truth for cross-view rules (PADB_num / PADB_isFail)
@@ -1172,7 +1199,8 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
-               test_box_table_perpoint_mode, test_common_prelude_and_feature_registry):
+               test_box_table_perpoint_mode, test_common_prelude_and_feature_registry,
+               test_plotly_api_lint_and_render_guards):
         try:
             fn()
         except Exception as exc:
