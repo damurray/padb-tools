@@ -136,6 +136,39 @@
       <label title="Compare jobs only: which site the auto-filter cleans in the report. Reference = the trusted baseline (SR); Onboarding = the site under evaluation; Both = clean each against its own peers. Ignored for non-compare jobs and when 'Apply auto-filter' is off.">site <select id="pdfFilterSite"><option value="primary" selected>Reference only</option><option value="onboarding">Onboarding only</option><option value="both">Both sites</option></select></label>
     </div>
     <div class="toolbar">
+      <span title="Prototype feature -- report only, advisory. Nothing is modified." style="background:#fff0e8;border:1px solid #e0905a;color:#c04000;font-weight:700;font-size:11px;padding:1px 6px;border-radius:3px;letter-spacing:.5px">PROTOTYPE</span>
+      <button id="reduceBtn" title="PROTOTYPE. Recommends which swept test frequencies are redundant and could be trimmed from the checked jobs' extracted CSVs, to shorten the test plan. Report only -- never modifies the CSV, pod, or plots. Writes &lt;stem&gt;_testpoint_reduction.txt/.csv beside each CSV; the report is shown in the job log. The frequencies come from the data, so trimming is applied upstream in the test executive, not the .pod.">Test-point Reduce (prototype)</button>
+      <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. The report also states a data-driven safe ceiling so you can see if your target is within it.">reduction % <input type="number" id="reducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
+      <details style="width:100%;margin-top:4px;font-size:12px;color:#444">
+        <summary style="cursor:pointer;color:#0066cc">How test-point reduction works</summary>
+        <div style="padding:6px 4px 2px;line-height:1.5;max-width:70em">
+          <b>What it does:</b> reads a job's extracted CSV and recommends which <i>swept test
+          frequencies</i> are redundant, so the test plan can be shortened. It's <b>advisory and
+          report-only</b> &mdash; it never changes the CSV, pod, or plots. Two files are written next
+          to each CSV (<code>&lt;stem&gt;_testpoint_reduction.txt</code> / <code>.csv</code>) and the
+          full report is shown in the job log below.
+          <ul style="margin:4px 0 4px 18px;padding:0">
+            <li><b>Protected (never dropped):</b> the sweep endpoints, every spec/limit/uncertainty
+              <i>transition</i> edge, any <i>spec fail</i>, and points with <i>thin margin</i> to the
+              limit (where pass/fail is actually decided &mdash; importance beats redundancy).</li>
+            <li><b>Redundant (candidate to drop):</b> interior points whose value is reconstructable
+              from their kept neighbours <i>within that measurement's own noise</i>. The criterion
+              self-calibrates per condition &mdash; a noise-floor-limited spur (high variance) reduces
+              a lot; a low-variance absolute measurement reduces conservatively. A real peak or step
+              is <i>not</i> reconstructable, so it's kept automatically.</li>
+            <li><b>Per-condition floor:</b> every condition keeps at least a minimum number of points,
+              so no condition/band loses coverage.</li>
+            <li><b>Data-driven ceiling:</b> from each condition's fail rate, margin-to-limit, and
+              noise-vs-headroom, the report states the maximum reduction it considers <i>safe</i>, and
+              flags when your target % exceeds it.</li>
+          </ul>
+          <b>Note:</b> the frequencies come from the measured data, so an analysis pod has no sweep
+          list to edit &mdash; realise the saving by trimming the listed frequencies in the
+          <i>upstream test executive</i>, then re-extract. This is a <b>prototype</b>.
+        </div>
+      </details>
+    </div>
+    <div class="toolbar">
       <label title="Weekly runs on the checked days below; Daily runs every day.">Schedule
         <select id="scheduleType">
           <option value="WEEKLY" selected>Weekly</option>

@@ -590,6 +590,54 @@ def _generate_pdf_task(job_path: Path, cfg: dict, job_id: str,
     return ok_all, (str(idx) if idx else None)
 
 
+def _reduce_targets(job_path: Path, cfg: dict) -> list[Path]:
+    """Extracted CSV(s) to analyse for a job. A run job -> every CSV in its
+    results_dir/padb; a plot job -> its own csv_path; a compare job -> the merged
+    CSV. Skips the reducer's own output CSVs so re-runs don't recurse."""
+    csvs: list[Path] = []
+    if "pod" in cfg:
+        rd = cfg.get("results_dir")
+        if rd:
+            pd_dir = job_path.parent / rd / "padb"
+            if pd_dir.exists():
+                csvs = sorted(pd_dir.glob("*.csv"))
+    else:
+        cp = cfg.get("csv_path")
+        if cp:
+            p = Path(cp)
+            if not p.is_absolute():
+                p = job_path.parent / cp
+            if p.exists():
+                csvs = [p]
+        if not csvs:
+            rd = _resolve_results_dir(job_path, cfg)
+            if rd and (rd / "_compare_merged.csv").exists():
+                csvs = [rd / "_compare_merged.csv"]
+    return [c for c in csvs if not c.name.endswith("_testpoint_reduction.csv")]
+
+
+def _generate_reduce_task(job_path: Path, cfg: dict, job_id: str,
+                          target_pct: float) -> tuple[bool, str | None]:
+    """PROTOTYPE. Run padb_testpoint_reduce.py on the job's extracted CSV(s). The
+    full report streams into the job log; per-CSV .txt/.csv are written beside each
+    CSV. Report only -- never modifies data/pod/plots."""
+    targets = _reduce_targets(job_path, cfg)
+    if not targets:
+        _append_log(job_id, "No extracted CSV found for this job -- run/extract it "
+                            "first (a run job needs its results_dir/padb CSVs; a plot "
+                            "job needs its csv_path).")
+        return False, None
+    ok_all = True
+    for csv in targets:
+        _append_log(job_id, f"\n--- Test-point reduce (PROTOTYPE): {csv.name}  "
+                            f"target ~{target_pct:.0f}% ---")
+        cmd = [sys.executable, str(TOOLS_DIR / "padb_testpoint_reduce.py"), str(csv),
+               "--mode", "target", "--target-pct", str(target_pct), "--out", str(csv.parent)]
+        rc = _stream(cmd, job_id)
+        ok_all = ok_all and rc == 0
+    return ok_all, None
+
+
 def _worker() -> None:
     global _worker_current_id
     while True:
@@ -619,6 +667,19 @@ def _worker() -> None:
                 ok, result_index = _generate_pdf_task(
                     job_path, cfg, job_id, bool(job.get("pdf_apply_filter")),
                     job.get("pdf_filter_site", "primary"))
+                with _jobs_lock:
+                    job["status"] = "done" if ok else "failed"
+                    job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
+                    job["result_index"] = result_index
+                _persist_console_log(job_id, job_path, cfg)
+                _worker_current_id = None
+                _job_queue.task_done()
+                continue
+            # Test-point reduce (PROTOTYPE) -- advisory report on an already-
+            # extracted CSV; no PADB-R.exe, no plot rebuild, nothing modified.
+            if job.get("action") == "reduce":
+                ok, result_index = _generate_reduce_task(
+                    job_path, cfg, job_id, float(job.get("reduce_pct", 25.0)))
                 with _jobs_lock:
                     job["status"] = "done" if ok else "failed"
                     job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
@@ -1469,6 +1530,49 @@ def generate_pdf():
             _jobs[job_id] = {
                 "status": "queued", "path": str(job_path), "name": job_path.name,
                 "action": "pdf", "pdf_apply_filter": apply_filter, "pdf_filter_site": filter_site,
+                "log": [], "started": None, "elapsed_s": 0,
+                "result_index": None, "proc": None, "cancel_requested": False,
+            }
+        _job_queue.put(job_id)
+        job_ids.append(job_id)
+    return jsonify(job_ids=job_ids)
+
+
+@app.route("/api/generate-reduce", methods=["POST"])
+def generate_reduce():
+    """PROTOTYPE. Queue a test-point reduction recommendation for each checked
+    job's extracted CSV(s). Report only -- writes <stem>_testpoint_reduction.txt/
+    .csv beside each CSV and streams the report into the job log; never modifies
+    the CSV/pod/plots."""
+    body = request.get_json(force=True) or {}
+    paths = body.get("paths") or []
+    try:
+        target_pct = float(body.get("target_pct", 25.0))
+    except (TypeError, ValueError):
+        target_pct = 25.0
+    target_pct = max(1.0, min(90.0, target_pct))
+    if not paths:
+        return jsonify(error="paths must be a non-empty list"), 400
+    job_ids = []
+    for p in paths:
+        job_path = Path(p)
+        if not job_path.exists():
+            return jsonify(error=f"job not found: {p}"), 400
+        existing_id = None
+        with _jobs_lock:
+            for jid, j in _jobs.items():
+                if (j["path"] == str(job_path) and j.get("action") == "reduce"
+                        and j["status"] in ("queued", "running")):
+                    existing_id = jid
+                    break
+        if existing_id is not None:
+            job_ids.append(existing_id)
+            continue
+        job_id = _new_job_id()
+        with _jobs_lock:
+            _jobs[job_id] = {
+                "status": "queued", "path": str(job_path), "name": job_path.name,
+                "action": "reduce", "reduce_pct": target_pct,
                 "log": [], "started": None, "elapsed_s": 0,
                 "result_index": None, "proc": None, "cancel_requested": False,
             }

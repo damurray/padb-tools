@@ -536,6 +536,37 @@ document.getElementById("generatePdfBtn").addEventListener("click", async () => 
 });
 
 // ---------------------------------------------------------------------------
+// Test-point reduce (PROTOTYPE) -- recommend redundant swept frequencies to trim
+// ---------------------------------------------------------------------------
+document.getElementById("reduceBtn").addEventListener("click", async () => {
+  const paths = selectedJobPaths();
+  if (!paths.length) {
+    alert("Select at least one job (Run or Plot) whose extracted CSV to analyse");
+    return;
+  }
+  const btn = document.getElementById("reduceBtn");
+  const pctEl = document.getElementById("reducePct");
+  const targetPct = pctEl ? parseFloat(pctEl.value) : 25;
+  btn.disabled = true;
+  try {
+    const res = await fetch("/api/generate-reduce", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ paths, target_pct: targetPct }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert("Test-point reduce failed: " + data.error);
+      return;
+    }
+    for (const jobId of data.job_ids) startPolling(jobId);
+    if (data.job_ids.length) scrollJobStatusIntoView(data.job_ids[0]);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Scheduler add/remove
 // ---------------------------------------------------------------------------
 

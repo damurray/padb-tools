@@ -409,6 +409,40 @@ def test_upload_validation():
           client.post("/api/upload-pod", data={}).status_code == 400)
 
 
+def test_generate_reduce():
+    """PROTOTYPE test-point reduce action: /api/generate-reduce resolves the job's
+    extracted CSV, queues a 'reduce' action, and the worker dispatches
+    padb_testpoint_reduce.py --mode target --target-pct (subprocess mocked)."""
+    _clear_jobs_dir()
+    _stream_calls.clear()
+    rd = _TMP / "red_run_results"
+    (rd / "padb").mkdir(parents=True, exist_ok=True)
+    csvp = rd / "padb" / "MyAnalytic.csv"
+    csvp.write_text("Frequency (MHz),Value,Group\n1,-70,Amp State: 0\n", encoding="utf-8")
+    run = _write_job("red_run_job.json", {"pod": "x.pod", "mode": "interactive",
+                                          "results_dir": "red_run_results"})
+    # _reduce_targets resolves the run job's padb CSV (and skips reducer output)
+    tgts = padb_web._reduce_targets(run, json.loads(run.read_text(encoding="utf-8")))
+    check("_reduce_targets finds the run job's extracted CSV",
+          len(tgts) == 1 and tgts[0].name == "MyAnalytic.csv", f"tgts={tgts}")
+    # validation
+    check("POST /api/generate-reduce rejects empty paths",
+          client.post("/api/generate-reduce", json={"paths": []}).status_code == 400)
+    check("POST /api/generate-reduce rejects a missing job path",
+          client.post("/api/generate-reduce", json={"paths": [str(_TMP / "ghost_job.json")]}).status_code == 400)
+    # happy path: queue + worker dispatch
+    r = client.post("/api/generate-reduce", json={"paths": [str(run)], "target_pct": 30})
+    j = r.get_json()
+    ids = j.get("job_ids", [])
+    check("POST /api/generate-reduce returns a job_id", r.status_code == 200 and len(ids) == 1, f"j={j}")
+    state = _wait_terminal(ids[0]) if ids else "?"
+    check("reduce job reaches a terminal state via the worker", state == "done", f"state={state}")
+    call = next((c for c in _stream_calls if any("padb_testpoint_reduce.py" in a for a in c)), None)
+    check("worker dispatches padb_testpoint_reduce.py --mode target --target-pct",
+          call is not None and "--mode" in call and "target" in call
+          and "--target-pct" in call and "30" in " ".join(call), f"call={call}")
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -418,6 +452,7 @@ def main() -> None:
     for fn in (test_index, test_sites, test_config, test_jobs_listing_and_kind,
                test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
+               test_generate_reduce,
                test_generate_job_cmd_build, test_convert_validation,
                test_orphaned_and_active, test_upload_validation):
         try:
