@@ -1486,6 +1486,41 @@ def _log_x_button():
 # accuracy_vs_freq helpers
 # ---------------------------------------------------------------------------
 
+def _derive_run_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Reduction-study support (2026-09-16): when the Group carried 'Test Run
+    Datetime' (an all-runs reduction extraction), derive a per-(site, DUT)
+    CHRONOLOGICAL run index -> a low-cardinality, ordered '_grp_Run' dimension
+    ('Run 01', 'Run 02', ...), so the scatter reduction view can step through a
+    unit's run-to-run (fault-and-fix) timeline. The raw datetime column stays for
+    hover/reference. No-op on any dataset without run-datetime grouping.
+    Per-DUT ordering is the point: a fail that clears on a later run of the SAME
+    unit (after a repair/cal) is a confirmed sentinel; the calendar date alone
+    can't show that, and it differs per unit."""
+    dt_col = next((c for c in df.columns
+                   if c.startswith("_grp_") and "run" in c[5:].lower()
+                   and ("datetime" in c[5:].lower() or "date time" in c[5:].lower())), None)
+    if dt_col is None or df[dt_col].replace("", pd.NA).nunique(dropna=True) < 2:
+        return df
+    df = df.copy()
+    dts = pd.to_datetime(df[dt_col], errors="coerce")
+    if "_serial_id" in df.columns:
+        serial = df["_serial_id"].astype(str)
+    else:
+        ser_col = next((c for c in df.columns if c.startswith("_grp_")
+                        and any(k in c[5:].lower() for k in ("serial", "unit id", "dut id"))), None)
+        serial = (df[ser_col].astype(str) if ser_col
+                  else (df["Serial"].astype(str) if "Serial" in df.columns
+                        else pd.Series([""] * len(df), index=df.index)))
+    site_col = next((c for c in df.columns if c.startswith("_grp_") and c[5:].strip().lower() == "site"), None)
+    key = (df[site_col].astype(str) + "||" + serial) if site_col is not None else serial
+    # dense rank of the datetime WITHIN each (site,DUT) -> 1,2,3... in time order
+    run_no = dts.groupby(key, sort=False).rank(method="dense")
+    mx = int(run_no.max()) if run_no.notna().any() else 0
+    w = max(2, len(str(mx)))
+    df["_grp_Run"] = run_no.map(lambda v: f"Run {int(v):0{w}d}" if pd.notna(v) else None)
+    return df
+
+
 def _parse_group_fields(df: pd.DataFrame) -> pd.DataFrame:
     """
     Parse the 'Group' column (e.g. 'AlcState: FALSE  HarmonicNumber: 0.2  Mode: 0')
@@ -1502,7 +1537,7 @@ def _parse_group_fields(df: pd.DataFrame) -> pd.DataFrame:
         df[f"_grp_{key}"] = df["Group"].apply(
             lambda g: _parse_group_kv(str(g)).get(key) if pd.notna(g) else None
         )
-    return df
+    return _derive_run_index(df)
 
 
 def _detect_group_cols(df: pd.DataFrame) -> list[tuple[str, str]]:

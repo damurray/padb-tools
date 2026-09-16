@@ -1154,6 +1154,47 @@ def test_stat_sum_table_perpoint_rollout() -> None:
           and "_sumFailTd({fail:r.n_fail,scored:r.n_scored})" in src)
 
 
+def test_run_index_derivation() -> None:
+    """Reduction view (b): a reduction-study CSV carries 'Test Run Datetime' in the
+    Group; _parse_group_fields must derive a per-(site, DUT) CHRONOLOGICAL run index
+    -> an ordered, low-cardinality '_grp_Run' group-by dimension, so the scatter can
+    step through a unit's run-to-run timeline. No-op on normal data."""
+    import pandas as _pd
+    def _mk(rows):
+        df = _pd.DataFrame([{"Frequency_MHz": f, "Value": v, "Serial": s,
+                             "Group": g} for (g, s, f, v) in rows])
+        return pp._parse_group_fields(df)
+    # US001's 3 runs appear file-shuffled (06/03, 06/01, 06/02); must map to
+    # Run 01=06/01, Run 02=06/02, Run 03=06/03. US002 ranked independently.
+    def row(site, ser, dt, f, v):
+        return (f"Site: {site}  Serial Number: {ser}  Test Run Datetime: {dt}", ser, f, v)
+    df = _mk([
+        row("SR", "US001", "06/03/2026 09:00:00 AM", 1.0, -70),
+        row("SR", "US001", "06/01/2026 09:00:00 AM", 1.0, -40),
+        row("SR", "US001", "06/02/2026 09:00:00 AM", 1.0, -60),
+        row("SR", "US002", "06/05/2026 09:00:00 AM", 1.0, -71),
+        row("SR", "US002", "06/04/2026 09:00:00 AM", 1.0, -72),
+    ])
+    def run_of(ser, dt):
+        m = df[(df["Serial"] == ser) & (df["_grp_Test Run Datetime"] == dt)]
+        return m["_grp_Run"].iloc[0] if len(m) else None
+    check("run-index: per-DUT chronological (shuffled dates -> ordered runs)",
+          run_of("US001", "06/01/2026 09:00:00 AM") == "Run 01"
+          and run_of("US001", "06/03/2026 09:00:00 AM") == "Run 03")
+    check("run-index: ranked independently per DUT",
+          run_of("US002", "06/04/2026 09:00:00 AM") == "Run 01"
+          and run_of("US002", "06/05/2026 09:00:00 AM") == "Run 02")
+    check("run-index: labels zero-padded so they sort chronologically",
+          sorted(df["_grp_Run"].dropna().unique()) == ["Run 01", "Run 02", "Run 03"])
+    check("run-index: '_grp_Run' offered as a group-by dimension",
+          any(lbl == "Run" for _, lbl in pp._detect_group_cols(df)))
+    # TEETH: no run-datetime grouping -> no _grp_Run at all (pure no-op).
+    df2 = _mk([("Serial Number: US001  SpurType: 2.4GHz", "US001", 1.0, -70),
+               ("Serial Number: US002  SpurType: 2.4GHz", "US002", 1.0, -71)])
+    check("run-index: no-op when the data has no Test Run Datetime grouping",
+          "_grp_Run" not in df2.columns)
+
+
 def test_reduction_extraction() -> None:
     """Test-point-reduction extraction primitive (2026-09-16): a run pod flagged
     for a reduction study must force all-runs (TestRun_RunStatus={All},
@@ -1345,6 +1386,7 @@ def main() -> None:
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
+               test_run_index_derivation,
                test_common_prelude_and_feature_registry,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
