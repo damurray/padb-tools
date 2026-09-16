@@ -269,7 +269,17 @@ _DISABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "0"}
 # it). The prefix for the grouping item is DERIVED from an existing analytic-
 # prefixed grouping item (confirmed real form: "<Analytic>-->...:Test Run
 # Datetime"), never guessed.
-_REDUCTION_EXTRACT_KEYS = {"TestRun_RunStatus": "{All}", "ExtractionOptions_AllRunResults": "True"}
+# ExtractionOptions_LastResult (extract only the last run per DUT) is MUTUALLY
+# EXCLUSIVE with AllRunResults (extract every run). A pod defaults to LastResult
+# for normal use; a reduction study needs all runs, so we must turn LastResult
+# OFF and AllRunResults ON together. Setting AllRunResults=True while leaving
+# LastResult=True gives PADB a contradictory request -> a NullReferenceException
+# in DoAnalysis (rc still 0, no CSV) -- the real failure on the first live run.
+_REDUCTION_EXTRACT_KEYS = {
+    "TestRun_RunStatus": "{All}",
+    "ExtractionOptions_AllRunResults": "True",
+    "ExtractionOptions_LastResult": "False",
+}
 _RUN_GROUP_FIELD = "Test Run Datetime"
 
 

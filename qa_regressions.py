@@ -1220,7 +1220,7 @@ def test_reduction_extraction() -> None:
     c1, c2, out = _run(pod)
     check("reduction: forces all-runs extract keys when missing",
           "TestRun_RunStatus={All}" in out and "ExtractionOptions_AllRunResults=True" in out
-          and c1["extract_forced"] == 2)
+          and "ExtractionOptions_LastResult=False" in out and c1["extract_forced"] == 3)
     check("reduction: adds '<derived-prefix>:Test Run Datetime' grouping on Type=80",
           "Grouping_Item3=Foo-->Foo (dBc):Test Run Datetime" in out
           and "Group_Num=3" in out and c1["analytics_grouped"] == 1)
@@ -1245,6 +1245,17 @@ def test_reduction_extraction() -> None:
             "[PADBAnalytic1]\nType=80\nGrouping_Item1=Foo-->Foo (dBc):AlcState\nGroup_Num=1\n")
     c1d, _c2d, _out4 = _run(pod4)
     check("reduction: flags a pinned TestRun_RunDateTime filter", c1d["pinned_datetime_filter"] is True)
+    # 5) TEETH: ExtractionOptions_LastResult=True (last-run-only) is MUTUALLY
+    #    EXCLUSIVE with all-runs -- must be flipped to False, not left alongside
+    #    AllRunResults=True. Leaving both True crashed PADB's DoAnalysis with a
+    #    NullReferenceException on the first live run (rc 0, no CSV). Regression pin.
+    pod5 = ("[Extract]\nExtractionOptions_LastResult=True\n\n"
+            "[PADBAnalytic1]\nType=80\nGrouping_Item1=Foo-->Foo (dBc):AlcState\nGroup_Num=1\n")
+    _c1e, _c2e, out5 = _run(pod5)
+    check("reduction: turns OFF LastResult when enabling all-runs (no contradiction)",
+          "ExtractionOptions_LastResult=False" in out5
+          and "ExtractionOptions_LastResult=True" not in out5
+          and "ExtractionOptions_AllRunResults=True" in out5)
 
 
 def test_repeat_collapse_is_mean() -> None:
