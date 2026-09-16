@@ -3247,13 +3247,16 @@ function PADB_specClass(v,hi,lo){ v=PADB_num(v); hi=PADB_num(hi); lo=PADB_num(lo
    rule has exactly one definition. Used by the scatter data-rows table, boxplot
    per-point + #fail columns, etc. */
 function PADB_isFail(v,hi,lo){ var c=PADB_specClass(v,hi,lo); return c.verdict==='n/a'?null:(c.dir!==null); }
+/* Linear-interpolation percentile + the single Tukey fence for the whole tool
+   (Q1 - k*IQR .. Q3 + k*IQR; k default 1.5; null when <4 points, where a fence
+   isn't meaningful). Every Site Population Check fence goes through PADB_fence so
+   they can't drift. Returns {lo,hi,n}. */
+function PADB_pct(sorted,p){ if(!sorted.length) return NaN; var i=(p/100)*(sorted.length-1),lo=Math.floor(i); return lo+1<sorted.length?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo]; }
+function PADB_fence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.5; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=PADB_pct(s,25),q3=PADB_pct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
 """
 
 _SITE_PANEL_SHARED_JS = r"""
-function _spFence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.5;
-  var s=vals.slice().sort(function(a,b){return a-b;});
-  function q(p){var i=(p/100)*(s.length-1),lo=Math.floor(i);return lo+1<s.length?s[lo]+(s[lo+1]-s[lo])*(i-lo):s[lo];}
-  var q1=q(25),q3=q(75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
+function _spFence(vals,k){ return PADB_fence(vals,k); }   // single shared Tukey fence (_COMMON_JS)
 function _spNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
 /* Comparison basis 'spec' shared classify: judge a point vs its OWN Spec/Limit --
    per-point limit when the view supplies it (p.limHi/limLo/specHi/specLo), else
@@ -7477,11 +7480,9 @@ function _siteTriageTag(d,towardFail){
    (unlike boxplot's box_iqr_k control, which this view has no equivalent
    of), so the fence here matches whatever this page already calls an
    "outlier" everywhere else on it. */
-function _siteFence(vals){
-  var n=vals.length,sorted=vals.slice().sort(function(a,b){return a-b;});
-  function pct(p){var i=(p/100)*(n-1),lo=Math.floor(i);return lo+1<n?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo];}
-  var q1=pct(25),q3=pct(75),iqr=q3-q1;
-  return {lo_w:q1-1.5*iqr,hi_w:q3+1.5*iqr,n:n};
+function _siteFence(vals){   // single shared Tukey fence (_COMMON_JS); {lo_w,hi_w,n} shape for callers
+  var f=PADB_fence(vals,1.5);
+  return f?{lo_w:f.lo,hi_w:f.hi,n:f.n}:{lo_w:NaN,hi_w:NaN,n:(vals?vals.length:0)};
 }
 function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
 /* Comparison basis 'spec': judge a non-primary point against its OWN Spec/Limit
@@ -17327,11 +17328,9 @@ function _siteTriageTag(d,towardFail){
 /* Same percentile/fence method used throughout this codebase's other Site
    Population Check copies -- 1.5xIQR, fixed (this view has no k-factor-
    style control to make it configurable). */
-function _siteFence(vals){
-  var n=vals.length,sorted=vals.slice().sort(function(a,b){return a-b;});
-  function pct(p){var i=(p/100)*(n-1),lo=Math.floor(i);return lo+1<n?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo];}
-  var q1=pct(25),q3=pct(75),iqr=q3-q1;
-  return {lo_w:q1-1.5*iqr,hi_w:q3+1.5*iqr,n:n};
+function _siteFence(vals){   // single shared Tukey fence (_COMMON_JS); {lo_w,hi_w,n} shape for callers
+  var f=PADB_fence(vals,1.5);
+  return f?{lo_w:f.lo,hi_w:f.hi,n:f.n}:{lo_w:NaN,hi_w:NaN,n:(vals?vals.length:0)};
 }
 function _siteNum(v){if(v===null||v===undefined||v==='')return null;var f=parseFloat(v);return isFinite(f)?f:null;}
 /* Comparison basis 'spec': judge a non-primary point against the datasheet
@@ -19219,7 +19218,7 @@ function _hApplyImport(text,fname){
    tables + CSV export, adapted to the histogram's own data model. */
 function _hTowardFail(){ if(LIMIT_HI!==null&&LIMIT_LO===null) return 'high'; if(LIMIT_LO!==null&&LIMIT_HI===null) return 'low'; return null; }
 function _hSiteK(){ var el=document.getElementById('h_site_k'); var k=el?parseFloat(el.value):1.5; return (isFinite(k)&&k>=0)?k:1.5; }
-function _hSiteFence(vals,k){ if(vals.length<4) return null; if(k===undefined||k===null) k=1.5; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=_hpct(s,25),q3=_hpct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
+function _hSiteFence(vals,k){ return PADB_fence(vals,k); }   // single shared Tukey fence (_COMMON_JS)
 /* Comparison basis 'spec': judge a non-primary measurement against the datasheet
    Spec/Limit (page LIMIT_HI/LIMIT_LO), not the primary fence. verdict 'OUTSIDE'
    == fails spec; reuses the downstream triage verbatim. Same rule as the other

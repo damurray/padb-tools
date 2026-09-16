@@ -985,6 +985,18 @@ def test_common_prelude_and_feature_registry() -> None:
     #     the direction/dist/verdict logic left in any view).
     check(f"all 5 Site spec-classifiers delegate to PADB_specClass (found {src.count('PADB_specClass(p.value')})",
           src.count("PADB_specClass(p.value") >= 5)
+    # 1c) Single Tukey fence: PADB_fence defined once; every per-view fence helper
+    #     (_spFence/_hSiteFence/_siteFence x2) delegates to it -- no copy of the
+    #     Q1-k*IQR math left in a view.
+    check("_COMMON_JS defines the single PADB_fence (Q1-k*IQR) + PADB_pct",
+          "function PADB_fence(vals,k)" in src and "function PADB_pct(sorted,p)" in src
+          and "q3=PADB_pct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr" in src)
+    # _spFence + _hSiteFence delegate (return PADB_fence(vals,k)); the two _siteFence
+    # copies delegate via PADB_fence(vals,1.5). (Box-statistics quartile code that
+    # also uses pct() for the median/Q1/Q3 table columns is a separate concern and
+    # legitimately stays -- it needs quartiles, not a fence.)
+    check("per-view Site fence helpers all delegate to PADB_fence",
+          src.count("return PADB_fence(vals,k); }") >= 2 and src.count("PADB_fence(vals,1.5)") >= 2)
     check("the spec >hi/<lo direction rule exists in exactly one place (PADB_specClass)",
           src.count("if(hi!==null&&v>hi){dir='high'") == 1)
     # 2) Injected into every V2 view's <script> assembly (uses = total minus the def).
