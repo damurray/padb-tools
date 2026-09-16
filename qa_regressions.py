@@ -1100,6 +1100,13 @@ def test_box_table_perpoint_mode() -> None:
               "function _boxFailCount(" in h and "function _boxFailCell(" in h)
         check("box table: per-point mode short-circuits updateStatsTable",
               "if(_boxTableMode()==='perpoint'){ el.innerHTML=_boxPerPointTable(" in h)
+        # Grouped #fail/n column must be wired into EVERY row-push branch (grouped,
+        # else-if filtered, default-Room, default-nonRoom) + the header, or a pooled
+        # row would silently drop its pass/fail signal in one of the 4 branches.
+        check("box table: #fail/n column wired into all 4 grouped push sites",
+              h.count("+_boxFailCell(") >= 4 and "var _pfLim=_boxPfLimits(yFlt);" in h)
+        check("box table: #fail/n header column present",
+              "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 
 
 def test_site_compare_basis_rollout() -> None:

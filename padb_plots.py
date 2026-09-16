@@ -13051,6 +13051,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   }
   _setTableBtnStale(rb,false);
   if(_boxTableMode()==='perpoint'){ el.innerHTML=_boxPerPointTable(selConds,yFlt,selBoxSers,selTemps); return; }
+  var _pfLim=_boxPfLimits(yFlt);   // effective limit for the Grouped-mode "#fail/n" column
   var showNp=isBoxNpTI();
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
@@ -13188,7 +13189,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
           normTd+npTdG+
-          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCell(fv,_pfLim)+'</tr>');
       });
     });
   } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive||_gfActiveSt||isExclRoom()||isExclDEnv()||isCollapseDup()){
@@ -13282,7 +13283,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+bs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+bs.q1.toFixed(4)+'</td><td>'+bs.q2.toFixed(4)+'</td><td>'+bs.q3.toFixed(4)+'</td>'+
           normCell+npCellSt+
-          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCell(bv,_pfLim)+'</tr>');
       });
     });
   } else {
@@ -13349,7 +13350,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+meanV.toFixed(4)+'</td><td>'+stdV.toFixed(4)+'</td>'+
           '<td>'+q1v.toFixed(4)+'</td><td>'+q2v.toFixed(4)+'</td><td>'+q3v.toFixed(4)+'</td>'+
-          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td></tr>');
+          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCell(raw?raw.map(function(d){return d.v;}):[],_pfLim)+'</tr>');
       });
     });
     /* BOX_STATS (above) is _aggregate_stat_data()'s output, built for
@@ -13389,7 +13390,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
           '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(no&nbsp;normality&nbsp;test&nbsp;at&nbsp;non-Room&nbsp;temps)</td>'+
           (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
-          '<td>'+outStr2+'</td><td>'+devCells2.pos+'</td><td>'+devCells2.neg+'</td></tr>');
+          '<td>'+outStr2+'</td><td>'+devCells2.pos+'</td><td>'+devCells2.neg+'</td>'+_boxFailCell(fv,_pfLim)+'</tr>');
       });
     });
   }
@@ -13401,6 +13402,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
     '<th>Normality</th>'+npHdr+'<th>Outliers</th>'+
     '<th title="Most positive outlier, relative to the median">Max&nbsp;+&#916;</th>'+
     '<th title="Most negative outlier, relative to the median">Max&nbsp;-&#916;</th>'+
+    '<th title="How many of this pooled population fail the effective limit (per-point limit, else page Spec Hi/Lo), out of n">#&nbsp;fail&nbsp;/&nbsp;n</th>'+
     '</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
   }catch(e){
     el.innerHTML='<div style="color:#c00;padding:8px;font-family:monospace">Error building Statistics Table: '+(e&&e.message?e.message:e)+'</div>';
