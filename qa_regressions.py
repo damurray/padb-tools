@@ -966,6 +966,28 @@ def test_site_check_compare_basis() -> None:
               'id="box_site_basis"' not in on.read_text(encoding="utf-8"))
 
 
+def test_jsrules_behavioral_gate_present() -> None:
+    """The behavioral cross-view gate qa_jsrules.py executes the SHIPPED shared JS
+    (_COMMON_JS + shared panel) under Playwright and asserts the pass/fail + fence
+    truth table AND that _spSpecClass behaviorally agrees with PADB_specClass -- so,
+    since every view delegates to those (source-pinned above), all views agree by
+    construction. Browser-tier (honest-exits 3 when no browser is reachable, as in
+    this sandbox); pinned here so the behavioral battery can't silently rot.
+    Verified live 14/14 via the in-app browser (2026-09-15)."""
+    p = HERE / "qa_jsrules.py"
+    check("qa_jsrules.py behavioral gate exists", p.exists())
+    if not p.exists():
+        return
+    s = p.read_text(encoding="utf-8")
+    check("qa_jsrules executes the shipped _COMMON_JS + shared panel",
+          "padb_plots._COMMON_JS" in s and "padb_plots._SITE_PANEL_SHARED_JS" in s)
+    check("qa_jsrules battery covers spec-class + fence + cross-view agreement",
+          "PADB_specClass(" in s and "PADB_fence(" in s
+          and "_spSpecClass agrees with PADB_specClass" in s)
+    check("qa_jsrules is an honest browser-tier gate (exit 3 when unavailable)",
+          "sys.exit(3)" in s)
+
+
 def test_plotly_api_lint_and_render_guards() -> None:
     """RESILIENCE (2026-09-15): (a) a Plotly-API lint so a future version bump can't
     silently break rendering again -- the bare-string axis title dropped by Plotly
@@ -1200,7 +1222,7 @@ def main() -> None:
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_box_table_perpoint_mode, test_common_prelude_and_feature_registry,
-               test_plotly_api_lint_and_render_guards):
+               test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()
         except Exception as exc:

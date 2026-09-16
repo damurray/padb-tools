@@ -284,6 +284,21 @@ pages OK + one real extraction completes clean.
 
 ---
 
+## `qa_jsrules.py` — behavioral cross-view rule gate (added 2026-09-15)
+
+`py qa_jsrules.py` — executes the **shipped shared JS rules** (`_COMMON_JS`'s
+`PADB_num`/`PADB_specClass`/`PADB_isFail`/`PADB_fence`, plus `_spSpecClass` from
+the shared Site panel) under Playwright's Chromium and asserts a truth table
+(side-aware pass/fail, strict `>/<`, string-bound coercion, `n/a` cases; Tukey
+fence values, `<4`→null, k-scaling) **and** that `_spSpecClass` behaviorally
+agrees with `PADB_specClass`. Since the hardening passes made every view *delegate*
+to those single definitions (source-pinned in `qa_regressions`), this proves the
+one rule is correct → all views agree by construction. Browser-tier: **honest
+`exit 3` (ENV-UNAVAILABLE)** when no Playwright browser is reachable (e.g. this
+sandbox, where Python can't see the browser) — not a failure; verify via the
+in-app browser instead (done 2026-09-15: 14/14). `qa_regressions.test_jsrules_
+behavioral_gate_present` pins that the gate exists and its battery isn't gutted.
+
 ## `qa_filters.py` — filter / Global-Filter self-consistency gate (added 2026-09-10)
 
 Where `qa_view_sweep.py` proves a page *renders*, `qa_filters.py` proves its
