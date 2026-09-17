@@ -1354,6 +1354,44 @@ def test_reduction_native_render_and_rplots() -> None:
           _collect(reduction=False, fresh=True) is False)
 
 
+def test_publish_and_parquet_index_link() -> None:
+    """Large-dataset access (2026-09-17): _write_index links a parquet sidecar with
+    viewer guidance when one exists, and _publish copies the parquet (+ viewer exe +
+    reduction report) to the share, not just the HTML/PDF -- otherwise the index's
+    viewer/reduction links are dead on the published copy."""
+    import importlib
+    pv = importlib.import_module("padb_v2")
+    # _write_index emits a 'Large-dataset viewer' section iff a .parquet is present.
+    with tempfile.TemporaryDirectory() as td:
+        d = Path(td)
+        (d / "MyAnalytic_scatter.html").write_text("<html></html>", encoding="utf-8")
+        pv._write_index(d, "MyAnalytic", [d / "MyAnalytic_scatter.html"], {})
+        no_pq = (d / "index.html").read_text(encoding="utf-8")
+        check("no parquet -> no viewer section", "Large-dataset viewer" not in no_pq)
+        (d / "MyAnalytic.parquet").write_bytes(b"PAR1data")
+        pv._write_index(d, "MyAnalytic", [d / "MyAnalytic_scatter.html"], {})
+        with_pq = (d / "index.html").read_text(encoding="utf-8")
+        check("parquet present -> 'Large-dataset viewer' section + link + padb_viewer guidance",
+              "Large-dataset viewer" in with_pq
+              and 'href="MyAnalytic.parquet"' in with_pq
+              and "padb_viewer.py" in with_pq)
+    # _publish copies html, *_report.pdf, *.parquet, PADB_Viewer.exe, reduction report.
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "src"; dst = Path(td) / "dst"; src.mkdir()
+        for name in ("a_scatter.html", "a_report.pdf", "a.parquet",
+                     "PADB_Viewer.exe", "a_testpoint_reduction.txt",
+                     "a_testpoint_reduction.csv"):
+            (src / name).write_bytes(b"x")
+        (src / "notes.log").write_bytes(b"x")  # must NOT be published
+        pv._publish(src, dst)
+        published = {p.name for p in dst.iterdir()}
+        check("publish copies html/pdf/parquet/exe/reduction-report",
+              {"a_scatter.html", "a_report.pdf", "a.parquet", "PADB_Viewer.exe",
+               "a_testpoint_reduction.txt", "a_testpoint_reduction.csv"} <= published)
+        check("publish does NOT copy unrelated files (e.g. .log)",
+              "notes.log" not in published)
+
+
 def test_repeat_collapse_is_mean() -> None:
     """Repeat-collapse (multiple values at one point) uses the MEAN everywhere,
     reconciled 2026-09-16: scatter's lines mode previously used median alone while
@@ -1494,6 +1532,7 @@ def main() -> None:
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
                test_reduction_native_render_and_rplots,
+               test_publish_and_parquet_index_link,
                test_run_index_derivation, test_dataset_summary_lines,
                test_common_prelude_and_feature_registry,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):

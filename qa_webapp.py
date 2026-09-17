@@ -441,6 +441,15 @@ def test_generate_reduce():
     check("worker dispatches padb_testpoint_reduce.py --mode target --target-pct",
           call is not None and "--mode" in call and "target" in call
           and "--target-pct" in call and "30" in " ".join(call), f"call={call}")
+    # Auto (adaptive) mode: --mode adaptive, and NO --target-pct (the % is an outcome).
+    _stream_calls.clear()
+    r2 = client.post("/api/generate-reduce", json={"paths": [str(run)], "mode": "adaptive"})
+    ids2 = r2.get_json().get("job_ids", [])
+    if ids2:
+        _wait_terminal(ids2[0])
+    call2 = next((c for c in _stream_calls if any("padb_testpoint_reduce.py" in a for a in c)), None)
+    check("adaptive mode dispatches --mode adaptive with NO --target-pct",
+          call2 is not None and "adaptive" in call2 and "--target-pct" not in call2, f"call2={call2}")
 
 
 def test_compare_reduce_on_merged():
@@ -456,13 +465,15 @@ def test_compare_reduce_on_merged():
         "Frequency (MHz),Value,Group\n1,-69,Amp State: 0\n2,-68,Amp State: 0\n", encoding="utf-8")
     r = client.post("/api/compare-create", json={
         "csv_a": str(a), "site_a": "SR", "csv_b": str(b), "site_b": "AMC",
-        "primary_site": "SR", "reduce_on_merged": True, "reduce_pct": 30})
+        "primary_site": "SR", "reduce_on_merged": True, "reduce_pct": 30,
+        "reduce_mode": "adaptive"})
     j = r.get_json()
     check("compare-create with reduce_on_merged succeeds", r.status_code == 200 and j.get("path"), f"j={j}")
     jobp = Path(j["path"])
     cfg = json.loads(jobp.read_text(encoding="utf-8"))
-    check("compare job persists reduce_on_merged=True and reduce_pct=30",
-          cfg.get("reduce_on_merged") is True and cfg.get("reduce_pct") == 30, f"cfg={cfg}")
+    check("compare job persists reduce_on_merged=True, reduce_pct=30, reduce_mode=adaptive",
+          cfg.get("reduce_on_merged") is True and cfg.get("reduce_pct") == 30
+          and cfg.get("reduce_mode") == "adaptive", f"cfg={cfg}")
     check("compare job persists compare_csv (two sites)",
           isinstance(cfg.get("compare_csv"), dict) and len(cfg["compare_csv"]) == 2, f"cfg={cfg}")
     # _reduce_targets resolves the merged CSV for a compare job once it exists.
@@ -483,6 +494,33 @@ def test_compare_reduce_on_merged():
     check("worker chains the reducer after a successful compare build",
           'cfg.get("reduce_on_merged")' in src and 'cfg.get("compare_csv")' in src
           and "_generate_reduce_task(" in src)
+
+
+def test_link_reduce_report_in_index():
+    """The reduction report must be reachable from the results folder: after the
+    reducer runs, its .txt/.csv is linked into the results index.html. Idempotent --
+    a re-run replaces the marked block, never duplicates it."""
+    rd = _TMP / "rr_link_results"; rd.mkdir(parents=True, exist_ok=True)
+    (rd / "index.html").write_text(
+        "<html><body><h1>Results</h1></body></html>", encoding="utf-8")
+    rep_txt = rd / "_compare_merged_testpoint_reduction.txt"; rep_txt.write_text("report", encoding="utf-8")
+    rep_csv = rd / "_compare_merged_testpoint_reduction.csv"; rep_csv.write_text("a,b\n", encoding="utf-8")
+    padb_web._link_reduce_reports_in_index(rd, [rep_txt, rep_csv])
+    html = (rd / "index.html").read_text(encoding="utf-8")
+    check("reduction report section injected with links to both report files",
+          "Test-point reduction report" in html
+          and 'href="_compare_merged_testpoint_reduction.txt"' in html
+          and 'href="_compare_merged_testpoint_reduction.csv"' in html)
+    # TEETH: a second call must not duplicate the block.
+    padb_web._link_reduce_reports_in_index(rd, [rep_txt, rep_csv])
+    html2 = (rd / "index.html").read_text(encoding="utf-8")
+    check("re-linking is idempotent (single marked block, no duplication)",
+          html2.count("<!--padb-reduce-report-start-->") == 1
+          and html2.count("Test-point reduction report") == 1)
+    # A missing report / missing index is a safe no-op.
+    (rd / "index.html").unlink()
+    padb_web._link_reduce_reports_in_index(rd, [rep_txt])  # no index -> no crash
+    check("no index.html -> safe no-op", not (rd / "index.html").exists())
 
 
 def test_single_instance_guard():
@@ -522,7 +560,7 @@ def main() -> None:
                test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
                test_generate_reduce, test_compare_reduce_on_merged,
-               test_single_instance_guard,
+               test_link_reduce_report_in_index, test_single_instance_guard,
                test_generate_job_cmd_build, test_convert_validation,
                test_orphaned_and_active, test_upload_validation):
         try:

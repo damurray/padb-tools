@@ -323,6 +323,7 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
     override: document.getElementById("compareOverrideChk")?.checked || false,
     reduce_on_merged: document.getElementById("compareReduceChk")?.checked || false,
     reduce_pct: parseFloat(document.getElementById("compareReducePct")?.value) || 25,
+    reduce_mode: document.getElementById("compareReduceMode")?.value || "target",
   };
   // Real reported bug: "Create and Run does not work if another compare job
   // is already running" -- confirmed by direct testing that queuing itself
@@ -549,12 +550,13 @@ document.getElementById("reduceBtn").addEventListener("click", async () => {
   const btn = document.getElementById("reduceBtn");
   const pctEl = document.getElementById("reducePct");
   const targetPct = pctEl ? parseFloat(pctEl.value) : 25;
+  const mode = document.getElementById("reduceMode")?.value || "target";
   btn.disabled = true;
   try {
     const res = await fetch("/api/generate-reduce", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths, target_pct: targetPct }),
+      body: JSON.stringify({ paths, target_pct: targetPct, mode }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -567,6 +569,28 @@ document.getElementById("reduceBtn").addEventListener("click", async () => {
     btn.disabled = false;
   }
 });
+
+// Auto (adaptive) mode ignores the reduction %, so grey the box out to make that
+// obvious. Applies to both the standalone reduce control and the compare-embedded one.
+function _syncReduceModeUi(modeId, pctId) {
+  const m = document.getElementById(modeId), p = document.getElementById(pctId);
+  if (!m || !p) return;
+  const adaptive = m.value === "adaptive";
+  p.disabled = adaptive;
+  p.style.opacity = adaptive ? "0.45" : "";
+  p.title = adaptive ? "Ignored in Auto (adaptive) mode -- the tool chooses the reduction from the data."
+                     : "";
+}
+if (["reduceMode", "reducePct"].every(id => document.getElementById(id))) {
+  document.getElementById("reduceMode").addEventListener("change",
+    () => _syncReduceModeUi("reduceMode", "reducePct"));
+  _syncReduceModeUi("reduceMode", "reducePct");
+}
+if (["compareReduceMode", "compareReducePct"].every(id => document.getElementById(id))) {
+  document.getElementById("compareReduceMode").addEventListener("change",
+    () => _syncReduceModeUi("compareReduceMode", "compareReducePct"));
+  _syncReduceModeUi("compareReduceMode", "compareReducePct");
+}
 
 // ---------------------------------------------------------------------------
 // Scheduler add/remove

@@ -617,25 +617,83 @@ def _reduce_targets(job_path: Path, cfg: dict) -> list[Path]:
 
 
 def _generate_reduce_task(job_path: Path, cfg: dict, job_id: str,
-                          target_pct: float) -> tuple[bool, str | None]:
+                          target_pct: float, mode: str = "target") -> tuple[bool, str | None]:
     """PROTOTYPE. Run padb_testpoint_reduce.py on the job's extracted CSV(s). The
     full report streams into the job log; per-CSV .txt/.csv are written beside each
-    CSV. Report only -- never modifies data/pod/plots."""
+    CSV. Report only -- never modifies data/pod/plots.
+
+    mode: 'target' drops least-important-first until ~target_pct of points are gone
+    (the % is the input); 'adaptive' lets the data choose -- the eps tolerance
+    self-calibrates to each condition's own noise and the % is an OUTCOME, not a
+    knob (target_pct is ignored)."""
     targets = _reduce_targets(job_path, cfg)
     if not targets:
         _append_log(job_id, "No extracted CSV found for this job -- run/extract it "
                             "first (a run job needs its results_dir/padb CSVs; a plot "
                             "job needs its csv_path).")
         return False, None
+    adaptive = (mode == "adaptive")
     ok_all = True
+    reports: list[Path] = []
     for csv in targets:
-        _append_log(job_id, f"\n--- Test-point reduce (PROTOTYPE): {csv.name}  "
-                            f"target ~{target_pct:.0f}% ---")
-        cmd = [sys.executable, str(TOOLS_DIR / "padb_testpoint_reduce.py"), str(csv),
-               "--mode", "target", "--target-pct", str(target_pct), "--out", str(csv.parent)]
+        if adaptive:
+            _append_log(job_id, f"\n--- Test-point reduce: {csv.name}  "
+                                f"mode=adaptive (data-driven -- the % is an outcome) ---")
+            cmd = [sys.executable, str(TOOLS_DIR / "padb_testpoint_reduce.py"), str(csv),
+                   "--mode", "adaptive", "--out", str(csv.parent)]
+        else:
+            _append_log(job_id, f"\n--- Test-point reduce: {csv.name}  "
+                                f"target ~{target_pct:.0f}% ---")
+            cmd = [sys.executable, str(TOOLS_DIR / "padb_testpoint_reduce.py"), str(csv),
+                   "--mode", "target", "--target-pct", str(target_pct), "--out", str(csv.parent)]
         rc = _stream(cmd, job_id)
         ok_all = ok_all and rc == 0
+        # The reducer writes <csv_stem>_testpoint_reduction.txt/.csv next to the CSV.
+        for ext in (".txt", ".csv"):
+            rep = csv.parent / f"{csv.stem}_testpoint_reduction{ext}"
+            if rep.exists():
+                reports.append(rep)
+    # Make the report accessible from the results folder: link it into the results
+    # index.html (idempotent) so it's a click away, not just a path in the log.
+    results_dir = _resolve_results_dir(job_path, cfg)
+    if results_dir:
+        _link_reduce_reports_in_index(results_dir, reports, job_id)
     return ok_all, None
+
+
+def _link_reduce_reports_in_index(results_dir: Path, reports: list[Path],
+                                  job_id: str | None = None) -> None:
+    """Inject a 'Test-point reduction report' section (links to the advisory
+    .txt/.csv the reducer wrote) into the results index.html, so the report is
+    reachable from the results folder. Idempotent -- a marked block is replaced,
+    not duplicated, on a re-run."""
+    idx = results_dir / "index.html"
+    reports = [r for r in reports if r.exists()]
+    if not idx.exists() or not reports:
+        return
+    MARK_A, MARK_B = "<!--padb-reduce-report-start-->", "<!--padb-reduce-report-end-->"
+    try:
+        html = idx.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+    if MARK_A in html and MARK_B in html:  # strip any prior block first
+        html = html[:html.index(MARK_A)] + html[html.index(MARK_B) + len(MARK_B):]
+    lis = "".join(
+        '<li><a href="{href}">&#128203; {name}</a></li>'.format(
+            href=os.path.relpath(r, results_dir).replace(os.sep, "/"), name=r.name)
+        for r in reports)
+    block = (MARK_A
+             + '<h3 style="color:#c04000">Test-point reduction report</h3>'
+             + '<p style="font-size:.9em;color:#555">Advisory recommendation of redundant '
+               'swept test points on this data. Report only -- nothing was modified.</p>'
+             + f"<ul>{lis}</ul>" + MARK_B)
+    html = html.replace("</body>", block + "</body>", 1) if "</body>" in html else html + block
+    try:
+        idx.write_text(html, encoding="utf-8")
+        if job_id is not None:
+            _append_log(job_id, f"Linked the reduction report from the results index: {idx}")
+    except OSError:
+        pass
 
 
 def _worker() -> None:
@@ -679,7 +737,8 @@ def _worker() -> None:
             # extracted CSV; no PADB-R.exe, no plot rebuild, nothing modified.
             if job.get("action") == "reduce":
                 ok, result_index = _generate_reduce_task(
-                    job_path, cfg, job_id, float(job.get("reduce_pct", 25.0)))
+                    job_path, cfg, job_id, float(job.get("reduce_pct", 25.0)),
+                    job.get("reduce_mode", "target"))
                 with _jobs_lock:
                     job["status"] = "done" if ok else "failed"
                     job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
@@ -734,7 +793,8 @@ def _worker() -> None:
                     _append_log(job_id, "\n=== Compare built -- running test-point "
                                         "reduction on the merged (combined) data ===")
                     rok, _ = _generate_reduce_task(
-                        job_path, cfg, job_id, float(cfg.get("reduce_pct", 25.0)))
+                        job_path, cfg, job_id, float(cfg.get("reduce_pct", 25.0)),
+                        cfg.get("reduce_mode", "target"))
                     ok = ok and rok
             if result_index is None:
                 idx = _job_result_index_path(job_path, cfg)
@@ -1217,6 +1277,7 @@ def compare_create():
     # job -- so this just persists the intent; the worker chains it post-build.
     reduce_on_merged = bool(body.get("reduce_on_merged"))
     reduce_pct = float(body.get("reduce_pct") or 25.0)
+    reduce_mode = "adaptive" if body.get("reduce_mode") == "adaptive" else "target"
 
     if not (csv_a and csv_b and site_a and site_b):
         return jsonify(error="csv_a, csv_b, site_a, and site_b are all required"), 400
@@ -1281,6 +1342,7 @@ def compare_create():
         # unchecking on a re-run clears a previously-set flag, unlike publish_to).
         "reduce_on_merged": reduce_on_merged,
         "reduce_pct": reduce_pct,
+        "reduce_mode": reduce_mode,
     }
     if check.get("x_override"):
         # Real incident (2026-08-28): a hand-authored compare job.json for a
@@ -1586,6 +1648,7 @@ def generate_reduce():
     except (TypeError, ValueError):
         target_pct = 25.0
     target_pct = max(1.0, min(90.0, target_pct))
+    mode = "adaptive" if body.get("mode") == "adaptive" else "target"
     if not paths:
         return jsonify(error="paths must be a non-empty list"), 400
     job_ids = []
@@ -1607,7 +1670,7 @@ def generate_reduce():
         with _jobs_lock:
             _jobs[job_id] = {
                 "status": "queued", "path": str(job_path), "name": job_path.name,
-                "action": "reduce", "reduce_pct": target_pct,
+                "action": "reduce", "reduce_pct": target_pct, "reduce_mode": mode,
                 "log": [], "started": None, "elapsed_s": 0,
                 "result_index": None, "proc": None, "cancel_requested": False,
             }

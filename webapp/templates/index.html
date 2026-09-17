@@ -87,9 +87,9 @@
           <label title="Optional -- becomes this job's title/description. Defaults to '&lt;Site A&gt; vs &lt;Site B&gt; compare' if left blank.">Description <input type="text" id="compareDescription" placeholder="optional"></label>
         </div>
         <div class="toolbar">
-          <span title="Prototype feature -- report only, advisory. Nothing is modified." style="background:#fff0e8;border:1px solid #e0905a;color:#c04000;font-weight:700;font-size:11px;padding:1px 6px;border-radius:3px;letter-spacing:.5px">PROTOTYPE</span>
           <label title="After the compare is built, also run the test-point reduction recommender on the MERGED (both sites combined) data. Report only -- recommends which swept test frequencies are redundant across the combined dataset, protecting endpoints, spec-limit transitions, and near-limit points. Writes &lt;stem&gt;_testpoint_reduction.txt/.csv beside the merged CSV; the full report shows in the job log. Never modifies the CSV, pod, or plots."><input type="checkbox" id="compareReduceChk"> Run test-point reduction on merged data</label>
-          <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. The report also states a data-driven safe ceiling so you can see if your target is within it.">reduction % <input type="number" id="compareReducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
+          <label title="Target %: YOU set the fraction of swept points to drop. Auto (adaptive): the TOOL chooses from the data (eps self-calibrates to each condition's noise); the % is an outcome and the 'reduction %' box is ignored.">mode <select id="compareReduceMode"><option value="target" selected>Target %</option><option value="adaptive">Auto (adaptive)</option></select></label>
+          <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. Ignored in Auto (adaptive) mode.">reduction % <input type="number" id="compareReducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
         </div>
         <div class="toolbar">
           <button type="button" id="compareCheckBtn" title="Loads both CSVs and checks compatibility: blocks on a genuine measurement-unit mismatch (e.g. dBc vs dBm), and warns (without blocking) on softer gaps like missing temperatures/ports or non-overlapping frequency ranges. Run this before Create &amp; Run -- it's required once per selection.">Check compatibility</button>
@@ -141,9 +141,9 @@
       <label title="Compare jobs only: which site the auto-filter cleans in the report. Reference = the trusted baseline (SR); Onboarding = the site under evaluation; Both = clean each against its own peers. Ignored for non-compare jobs and when 'Apply auto-filter' is off.">site <select id="pdfFilterSite"><option value="primary" selected>Reference only</option><option value="onboarding">Onboarding only</option><option value="both">Both sites</option></select></label>
     </div>
     <div class="toolbar">
-      <span title="Prototype feature -- report only, advisory. Nothing is modified." style="background:#fff0e8;border:1px solid #e0905a;color:#c04000;font-weight:700;font-size:11px;padding:1px 6px;border-radius:3px;letter-spacing:.5px">PROTOTYPE</span>
-      <button id="reduceBtn" title="PROTOTYPE. Recommends which swept test frequencies are redundant and could be trimmed from the checked jobs' extracted CSVs, to shorten the test plan. Report only -- never modifies the CSV, pod, or plots. Writes &lt;stem&gt;_testpoint_reduction.txt/.csv beside each CSV; the report is shown in the job log. The frequencies come from the data, so trimming is applied upstream in the test executive, not the .pod.">Test-point Reduce (prototype)</button>
-      <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. The report also states a data-driven safe ceiling so you can see if your target is within it.">reduction % <input type="number" id="reducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
+      <button id="reduceBtn" title="Recommends which swept test frequencies are redundant and could be trimmed from the checked jobs' extracted CSVs, to shorten the test plan. Report only -- never modifies the CSV, pod, or plots. Writes &lt;stem&gt;_testpoint_reduction.txt/.csv beside each CSV; the report is shown in the job log. The frequencies come from the data, so trimming is applied upstream in the test executive, not the .pod.">Test-point Reduce</button>
+      <label title="Target %: YOU set the fraction of swept points to drop (least-important first). Auto (adaptive): the TOOL chooses -- the eps tolerance self-calibrates to each condition's own noise, so a noisy spur trims a lot and a low-variance measurement stays conservative; the % becomes an OUTCOME, and the 'reduction %' box is ignored.">mode <select id="reduceMode"><option value="target" selected>Target %</option><option value="adaptive">Auto (adaptive)</option></select></label>
+      <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. The report also states a data-driven safe ceiling so you can see if your target is within it. Ignored in Auto (adaptive) mode.">reduction % <input type="number" id="reducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
       <details style="width:100%;margin-top:4px;font-size:12px;color:#444">
         <summary style="cursor:pointer;color:#0066cc">How test-point reduction works</summary>
         <div style="padding:6px 4px 2px;line-height:1.5;max-width:72em">
@@ -194,7 +194,7 @@
 
           <b>Note:</b> the frequencies come from the measured data, so an analysis pod has no sweep list
           to edit &mdash; realise the saving by trimming the listed frequencies in the <i>upstream test
-          executive</i>, then re-extract. This is a <b>prototype</b>.
+          executive</i>, then re-extract.
         </div>
       </details>
     </div>

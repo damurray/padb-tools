@@ -1453,6 +1453,23 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
         items += "".join(_pdf_link_for(k) for k in sorted(pdf_reports))
         items_html = f"<ul>{items}</ul>"
 
+    # Large-dataset parquet sidecar(s), if any -- not browser-openable HTML, so
+    # link them with viewer guidance rather than as a plain page.
+    parquets = sorted(output_dir.glob("*.parquet"))
+    parquet_html = ""
+    if parquets:
+        plis = "".join(
+            f'<li><a href="{p.name}">&#128202; {p.name}</a> '
+            f'({p.stat().st_size / 1e6:.1f} MB)</li>' for p in parquets)
+        parquet_html = (
+            '<h3>Large-dataset viewer</h3>'
+            '<p style="font-size:.9em;color:#555">Compact <b>parquet</b> sidecar(s) of the '
+            'source data, for datasets too big to open as self-contained HTML. Open with the '
+            'interactive viewer: run <code>py padb_viewer.py "&lt;this folder&gt;"</code>, or '
+            'drop <code>PADB_Viewer.exe</code> into this folder and double-click it '
+            '(it serves whatever parquet sits beside it).</p>'
+            f'<ul>{plis}</ul>')
+
     title = cfg.get("index_title", prefix)
     # Suppress per-job description when multiple jobs share the same output dir
     desc = cfg.get("description", "") if not existing else ""
@@ -1471,6 +1488,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
 <h1>{title}</h1>
 {"<p>"+desc+"</p>" if desc else ""}
 {items_html}
+{parquet_html}
 </body></html>"""
     (output_dir / "index.html").write_text(html, encoding="utf-8")
     print(f"  Index: {output_dir / 'index.html'}", flush=True)
@@ -1491,6 +1509,19 @@ def _publish(source_dir: Path, dest_dir: Path) -> None:
         # Also publish any comprehensive PDF report(s) so the index link works
         # on the share, not just locally.
         for f in source_dir.glob("*_report.pdf"):
+            shutil.copy2(f, dest_dir / f.name)
+            copied += 1
+        # Publish parquet sidecar(s) (tiny -- a giant CSV crushes to ~1 MB) so the
+        # large-dataset viewer works off the share, and the viewer exe if the user
+        # placed one here. Without the parquet, the index's viewer link is dead on
+        # the share even though the HTML views published fine.
+        for pat in ("*.parquet", "PADB_Viewer.exe"):
+            for f in source_dir.glob(pat):
+                shutil.copy2(f, dest_dir / f.name)
+                copied += 1
+        # Test-point reduction report(s), if any (advisory .txt/.csv beside the
+        # data) -- so the published index's reduction link resolves too.
+        for f in source_dir.glob("*_testpoint_reduction.*"):
             shutil.copy2(f, dest_dir / f.name)
             copied += 1
         print(f"  Published {copied} file(s) -> {dest_dir}", flush=True)
