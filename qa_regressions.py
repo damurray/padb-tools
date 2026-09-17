@@ -777,6 +777,15 @@ def test_pdf_report_contract():
     ok, reason = R.check_environment()
     check("pdf report: check_environment returns (bool, reason)",
           isinstance(ok, bool) and isinstance(reason, str) and reason != "")
+    # Print CSS must keep wide tables inside the page (2026-09-17): let cells wrap
+    # (override the live .stbl nowrap), cap table width, and un-clip scroll boxes --
+    # otherwise a many-column compare table runs past the right margin in the PDF.
+    css = R._REPORT_HIDE_CSS
+    check("pdf report: print CSS wraps table cells (overrides nowrap)",
+          "white-space: normal !important" in css
+          and ("overflow-wrap" in css or "word-break" in css))
+    check("pdf report: print CSS caps table width + un-clips scroll boxes",
+          "max-width: 100% !important" in css and "overflow: visible !important" in css)
 
     # _write_index links a "<prefix>_report.pdf" when present, and omits it when not.
     with tempfile.TemporaryDirectory() as td:

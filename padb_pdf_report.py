@@ -102,6 +102,19 @@ button, input, select, textarea { display: none !important; }
 #box_site_panel, #stat_site_panel, #ec_site_panel, #dist_site_panel,
 #h_site_panel, #box_outlier_panel, #box_delta_panel { display: none !important; }
 body { padding: 0 !important; margin: 0 !important; }
+/* Keep wide Statistics/Results tables inside the printable page width. The live
+   pages set `.stbl td { white-space: nowrap }` and sit some tables in fixed-width
+   scroll boxes -- both push a many-column compare table past the right margin when
+   printed. For print: let cells wrap, shrink the type, and un-clip the boxes so the
+   full table renders on the page instead of being cut off at the right edge. */
+table { width: auto !important; max-width: 100% !important;
+        table-layout: auto !important; border-collapse: collapse !important;
+        font-size: 8.5px !important; }
+th, td { white-space: normal !important; overflow-wrap: anywhere !important;
+         word-break: break-word !important; padding: 1px 3px !important;
+         max-width: none !important; }
+[style*="overflow:auto"], [style*="overflow: auto"] {
+        overflow: visible !important; max-height: none !important; }
 """
 
 _METHODOLOGY_NOTE = (
