@@ -2498,6 +2498,61 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         df, group_cols, pod_filter_expression=cfg.get("pod_filter_expression", "")
     )
 
+    # Spec-line caveat (2026-09-17): this scatter can pool multiple measurements /
+    # carriers, each with its OWN per-point Upper/Lower limit, under a SINGLE drawn
+    # spec line. When most points have no limit at all, or limits are heterogeneous
+    # (more than one distinct limit at the same x), that one line governs only a
+    # fraction of the points -- a "pass" point can legitimately sit above it because
+    # it's judged against its own limit. Only shown when a spec line is actually
+    # drawn (hi/lo_spec present) AND the data is heterogeneous/mostly-unlimited, so a
+    # normal per-offset spec mask (one limit per x) never triggers it. Warn + hint
+    # which grouping dimension to filter (per David, 2026-09-17).
+    spec_caveat_banner_html = ""
+    if (pd.notna(hi_spec) or pd.notna(lo_spec)) and "Frequency_MHz" in df.columns and len(df):
+        _ul = pd.to_numeric(df["Upper_Limit"], errors="coerce") if "Upper_Limit" in df.columns else pd.Series(dtype=float)
+        _ll = pd.to_numeric(df["Lower_Limit"], errors="coerce") if "Lower_Limit" in df.columns else pd.Series(dtype=float)
+        _n = len(df)
+        _ul_na = _ul.isna() if len(_ul) else pd.Series([True] * _n)
+        _ll_na = _ll.isna() if len(_ll) else pd.Series([True] * _n)
+        _frac_no_limit = float((_ul_na.values & _ll_na.values).sum()) / _n if _n else 0.0
+        _hetero = False
+        for _col in ("Upper_Limit", "Lower_Limit"):
+            if _col in df.columns:
+                _sub = pd.DataFrame({"x": df["Frequency_MHz"].values,
+                                     "v": pd.to_numeric(df[_col], errors="coerce").round(6).values}).dropna()
+                if len(_sub) and (_sub.groupby("x")["v"].nunique() > 1).any():
+                    _hetero = True
+                    break
+        if _hetero or _frac_no_limit >= 0.5:
+            # NB: `html` is a local page-string var in this function (shadows the html
+            # module -- see the _build_env_distribution_html note), so escape locally.
+            _esc = lambda s: (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+            _n_distinct_ul = int(_ul.dropna().round(6).nunique()) if len(_ul) else 0
+            _meas_hint = ""
+            for _gc, _lbl in group_cols:
+                _nm = _gc[5:] if _gc.startswith("_grp_") else _gc
+                if "meas" in _nm.lower():
+                    _vals = [str(v) for v in list(pd.unique(df[_gc].dropna()))[:6]]
+                    if len(_vals) > 1:
+                        _meas_hint = (f' This plot pools multiple <b>{_esc(_nm)}</b> values (e.g. '
+                                      f'{_esc(", ".join(_vals))}) &mdash; filter <b>{_esc(_nm)}</b> '
+                                      f'to one for a meaningful spec comparison.')
+                    break
+            _parts = []
+            if _frac_no_limit >= 0.5:
+                _parts.append(f"{_frac_no_limit*100:.0f}% of points have no limit at all")
+            if _hetero:
+                _parts.append(f"points carry different per-point limits at the same offset "
+                              f"({_n_distinct_ul} distinct upper limits)")
+            spec_caveat_banner_html = (
+                '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
+                'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
+                '&#9888;&nbsp;<b>Spec-line caveat:</b> ' + " and ".join(_parts) + '. '
+                'The single spec line shown is only one representative value &mdash; each point is '
+                'judged against its <b>own</b> limit, so a passing point can legitimately sit above '
+                'this line.' + _meas_hint + '</div>'
+            )
+
     # Frequency band preset buttons
     freq_bands = cfg.get("freq_bands", [])
     band_btns_html = ""
@@ -2691,6 +2746,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '  <span id="n_points"></span>\n'
         "</div>\n"
         + decimation_banner_html
+        + spec_caveat_banner_html
         + env_bar_html + "\n"
         + '<div id="plot"></div>\n'
         + '<div id="scatter_table_panel" style="display:none"></div>\n'

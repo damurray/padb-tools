@@ -1497,6 +1497,45 @@ def test_control_context_clarity() -> None:
           'id="saveRootBtn" title=' in idx)
 
 
+def test_scatter_spec_line_caveat() -> None:
+    """Scatter spec-line caveat (2026-09-17): when the scatter pools points with
+    heterogeneous per-point limits (multiple limits at the same offset) or mostly-null
+    limits UNDER a single drawn spec line, warn that a 'pass' point can legitimately
+    sit above the line (it's judged against its own limit) and hint which Measurement
+    dim to filter. Must NOT fire on clean one-limit-per-offset data or when no spec
+    line is drawn. (Root cause of a real 'pass line above spec line' report on a
+    phase-noise pod pooling AM Noise + Phase Noise, 98.7% null limits.)"""
+    # (a) heterogeneous limits at the same offset + mostly-null -> banner + Measurement hint.
+    rows = []
+    for off in (10.0, 100.0, 1000.0):
+        rows.append({"Frequency_MHz": off, "Value": -130.0, "Upper_Limit": -120.0, "Lower_Limit": None, "_grp_Measurement": "AM Noise", "Serial": "S1"})
+        rows.append({"Frequency_MHz": off, "Value": -150.0, "Upper_Limit": -145.0, "Lower_Limit": None, "_grp_Measurement": "Phase Noise", "Serial": "S1"})
+        for k in range(8):
+            rows.append({"Frequency_MHz": off, "Value": -140.0, "Upper_Limit": None, "Lower_Limit": None, "_grp_Measurement": "Phase Noise", "Serial": f"S{k}"})
+    df = pd.DataFrame(rows); df["_val_col_name"] = "Value (dBc/Hz)"
+    for _c in ("Upper_Limit", "Lower_Limit"):  # real loader gives numeric NaN, not None
+        df[_c] = pd.to_numeric(df[_c], errors="coerce")
+    html_bad = pp._build_av_freq_html(df, {}, "T")
+    check("scatter caveat fires on heterogeneous/mostly-null limits under a spec line",
+          "Spec-line caveat" in html_bad and "its <b>own</b> limit" in html_bad)
+    check("scatter caveat names the Measurement dim + values to filter",
+          "Measurement" in html_bad and "AM Noise" in html_bad and "filter" in html_bad)
+    # (b) clean: one limit per offset, all limited -> NO banner.
+    rows2 = []
+    for off, lim in ((10.0, -120.0), (100.0, -130.0), (1000.0, -140.0)):
+        for s in range(4):
+            rows2.append({"Frequency_MHz": off, "Value": lim - 5, "Upper_Limit": lim, "Lower_Limit": None, "_grp_Measurement": "Phase Noise", "Serial": f"S{s}"})
+    df2 = pd.DataFrame(rows2); df2["_val_col_name"] = "Value (dBc/Hz)"
+    for _c in ("Upper_Limit", "Lower_Limit"):
+        df2[_c] = pd.to_numeric(df2[_c], errors="coerce")
+    check("scatter caveat does NOT fire on clean one-limit-per-offset data",
+          "Spec-line caveat" not in pp._build_av_freq_html(df2, {}, "T"))
+    # (c) no spec line drawn (all-null limits) -> NO banner even though all null.
+    df3 = df2.copy(); df3["Upper_Limit"] = float("nan")
+    check("scatter caveat does NOT fire when no spec line is drawn",
+          "Spec-line caveat" not in pp._build_av_freq_html(df3, {}, "T"))
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -1586,7 +1625,7 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
-               test_control_context_clarity,
+               test_control_context_clarity, test_scatter_spec_line_caveat,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
                test_reduction_native_render_and_rplots,
