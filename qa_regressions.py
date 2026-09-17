@@ -1267,8 +1267,10 @@ def test_reduction_extraction() -> None:
     check("reduction: forces all-runs extract keys when missing",
           "TestRun_RunStatus={All}" in out and "ExtractionOptions_AllRunResults=True" in out
           and "ExtractionOptions_LastResult=False" in out and c1["extract_forced"] == 3)
-    check("reduction: adds '<derived-prefix>:Test Run Datetime' grouping on Type=80",
-          "Grouping_Item3=Foo-->Foo (dBc):Test Run Datetime" in out
+    check("reduction: adds UNPREFIXED 'Test Run Datetime' grouping on Type=80 "
+          "(prefixed form crashes PADB DoAnalysis)",
+          "Grouping_Item3=Test Run Datetime" in out
+          and "Foo-->Foo (dBc):Test Run Datetime" not in out
           and "Group_Num=3" in out and c1["analytics_grouped"] == 1)
     check("reduction: is idempotent (second pass changes nothing)",
           c2["extract_forced"] == 0 and c2["analytics_grouped"] == 0
@@ -1279,13 +1281,16 @@ def test_reduction_extraction() -> None:
     c1b, _c2b, out2 = _run(pod2)
     check("reduction: non-Type=80 analytic is NOT grouped",
           c1b["analytics_grouped"] == 0 and "Test Run Datetime" not in out2)
-    # 3) TEETH: no analytic-prefixed grouping item -> can't derive a prefix ->
-    #    the analytic is left untouched rather than emitting a guessed field ref.
+    # 3) TEETH: a Type=80 whose grouping items are all UNPREFIXED still gets the
+    #    (unprefixed) run grouping added -- the old code required a derivable prefix
+    #    and wrongly SKIPPED here, so such a pod never got run identity. Corrected
+    #    2026-09-17: no prefix needed; the bare field is what PADB accepts.
     pod3 = ("[Extract]\nDevice_Device='X'\n\n[PADBAnalytic1]\nType=80\n"
             "Grouping_Item1=Serial Number\nGroup_Num=1\n")
     c1c, _c2c, out3 = _run(pod3)
-    check("reduction: safe-skips a Type=80 with no derivable prefix (no guess)",
-          c1c["analytics_grouped"] == 0 and "Test Run Datetime" not in out3)
+    check("reduction: adds unprefixed run grouping even with no prefixed source item",
+          c1c["analytics_grouped"] == 1
+          and "Grouping_Item2=Test Run Datetime" in out3 and "Group_Num=2" in out3)
     # 4) Pinned datetime filter is flagged (would defeat all-runs).
     pod4 = ("[Extract]\nTestRun_RunDateTime='06/01/2026 01:00:00 AM'\n\n"
             "[PADBAnalytic1]\nType=80\nGrouping_Item1=Foo-->Foo (dBc):AlcState\nGroup_Num=1\n")

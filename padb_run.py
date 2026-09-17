@@ -278,9 +278,16 @@ _ENABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "1"}
 # So force all-runs, and add "Test Run Datetime" as a grouping item on every
 # Type=80 analytic so each run is a distinguishable, chronologically-orderable
 # point in the CSV (the scatter reduction view derives a per-DUT run index from
-# it). The prefix for the grouping item is DERIVED from an existing analytic-
-# prefixed grouping item (confirmed real form: "<Analytic>-->...:Test Run
-# Datetime"), never guessed.
+# it). The grouping item is the BARE, UNPREFIXED field name "Test Run Datetime".
+# CORRECTED 2026-09-17: an earlier version emitted an analytic-PREFIXED form
+# ("<Analytic>-->...(unit):Test Run Datetime") -- that field reference makes PADB's
+# DoAnalysis crash with a NullReferenceException (rc 0, 0 CSV). Both known-good
+# reduction pods use the unprefixed form: SR's _run.pod (Grouping_Item = "Test Run
+# Datetime") and the manual AMC2 reduced.pod. SR only ever "worked" because its
+# source pod ALREADY had this grouping, so the buggy add was a no-op there; AMC2's
+# source had none, so the prefixed form got added and crashed. Data_TData is left
+# untouched (SR extracts fine with Test Step; the reduced.pod's Datapack is not
+# required -- the run separation comes from the grouping, not Data_TData).
 # ExtractionOptions_LastResult (extract only the last run per DUT) is MUTUALLY
 # EXCLUSIVE with AllRunResults (extract every run). A pod defaults to LastResult
 # for normal use; a reduction study needs all runs, so we must turn LastResult
@@ -320,25 +327,24 @@ def _force_extract_keys_in_body(body: list[str], eol: str, changed: dict) -> Non
 
 
 def _add_run_grouping_in_body(body: list[str], eol: str, changed: dict) -> None:
-    """Append '<prefix>:Test Run Datetime' as a new Grouping_Item on a Type=80
-    analytic body (idempotent). Prefix derived from an existing analytic-prefixed
-    grouping item; if none can be found, the section is left untouched."""
+    """Append the UNPREFIXED 'Test Run Datetime' as a new Grouping_Item on a Type=80
+    analytic body (idempotent). See the module comment above: the bare field name is
+    what PADB accepts; an analytic-prefixed form crashes DoAnalysis. No prefix is
+    derived or required -- the section is only skipped if it has no grouping items at
+    all (nothing to extend) or is already grouped by run datetime."""
     gi_re = re.compile(r"^\s*Grouping_Item(\d+)\s*=(.*?)\s*$")
     items: list[tuple[int, int, str]] = []
-    prefix = None
     for i, ln in enumerate(body):
         m = gi_re.match(ln)
         if m:
             items.append((i, int(m.group(1)), m.group(2)))
-            if prefix is None and "-->" in m.group(2) and ":" in m.group(2):
-                prefix = m.group(2).rsplit(":", 1)[0]
-    if not items or prefix is None:
-        return
+    if not items:
+        return  # not a grouped analytic -- nothing to extend
     if any(val.rstrip().endswith(_RUN_GROUP_FIELD) for _, _, val in items):
         return  # already grouped by run datetime
     new_num = max(n for _, n, _ in items) + 1
     last_idx = max(i for i, _, _ in items)
-    body.insert(last_idx + 1, f"Grouping_Item{new_num}={prefix}:{_RUN_GROUP_FIELD}{eol}")
+    body.insert(last_idx + 1, f"Grouping_Item{new_num}={_RUN_GROUP_FIELD}{eol}")
     for i, ln in enumerate(body):
         if re.match(r"^\s*Group_Num\s*=\s*\d+\s*$", ln):
             body[i] = f"Group_Num={new_num}{eol}"
