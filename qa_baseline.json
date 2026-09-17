@@ -13,7 +13,7 @@
       "failed": 0
     },
     "qa_js_segments": {
-      "passed": 3,
+      "passed": 10,
       "failed": 0
     },
     "qa_stats_recompute": {
@@ -25,7 +25,7 @@
       "failed": 0
     },
     "qa_regressions": {
-      "passed": 259,
+      "passed": 265,
       "failed": 0
     },
     "qa_subpop": {

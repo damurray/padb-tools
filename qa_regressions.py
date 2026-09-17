@@ -1304,6 +1304,56 @@ def test_reduction_extraction() -> None:
           and "ExtractionOptions_AllRunResults=True" in out5)
 
 
+def test_reduction_native_render_and_rplots() -> None:
+    """Webtool reduction-extraction CSV fix (2026-09-16): a reduction run must keep
+    native render ON (OutputConfig_OutputGraph=1, no GraphFormat forced) so PADB
+    writes the all-runs/grouped Type=80 output at all -- OutputGraph=0 (the normal
+    Interactive disable) suppressed it, giving rc 0 with ZERO CSV via the webtool
+    while a manual GUI pull (native render on) worked. And, ONLY for reduction runs,
+    a tightly-scoped R-Plots sweep pulls a FRESH (mtime>=run_start) matching CSV into
+    results_padb for an analytic that got no -dir output, without reintroducing the
+    cross-site stale-leftover hazard the 2026-08-27 general removal fixed."""
+    import os, time
+    # A) make_run_pod: enable_native_render forces OutputGraph=1, NOT GraphFormat.
+    pod = ("[Extract]\nDevice_Device='X'\n\n[PADBAnalytic1]\nType=80\n"
+           "AnalyticName=My Analytic\nGrouping_Item1=Foo-->Foo (dBc):AlcState\n")
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "src.pod"; src.write_text(pod, encoding="utf-8")
+        d_en = Path(td) / "en.pod"; pr.make_run_pod(src, d_en, {}, enable_native_render=True)
+        d_dis = Path(td) / "dis.pod"; pr.make_run_pod(src, d_dis, {}, disable_native_render=True)
+        en = d_en.read_text(encoding="utf-8"); dis = d_dis.read_text(encoding="utf-8")
+    check("reduction: enable_native_render forces OutputConfig_OutputGraph=1",
+          "OutputConfig_OutputGraph=1" in en and "OutputConfig_OutputGraph=0" not in en)
+    check("reduction: enable_native_render does NOT force GraphFormat (no extra render fmt)",
+          "OutputConfig_GraphFormat" not in en)
+    check("reduction: disable_native_render still sets OutputGraph=0 (distinct path)",
+          "OutputConfig_OutputGraph=0" in dis and "OutputConfig_OutputGraph=1" not in dis)
+
+    # B) _collect_padb_outputs reduction R-Plots fallback.
+    def _collect(reduction: bool, fresh: bool) -> bool:
+        with tempfile.TemporaryDirectory() as td:
+            rplots = Path(td) / "R-Plots"; rplots.mkdir()
+            results = Path(td) / "results_padb"; results.mkdir()
+            run_start = time.time() - 5.0
+            csv = rplots / "My_Analytic.csv"; csv.write_text("x,y\n1,2\n", encoding="utf-8")
+            if not fresh:
+                old = run_start - 3600
+                os.utime(csv, (old, old))
+            cfg = {"padb_output_dir": str(rplots)}
+            if reduction:
+                cfg["reduction_extraction"] = True
+            analytics = [{"index": 1, "type": 80, "name": "My Analytic",
+                          "output_file": "My_Analytic"}]
+            pr._collect_padb_outputs(cfg, analytics, results, run_start=run_start)
+            return (results / "My_Analytic.csv").exists()
+    check("reduction: fresh R-Plots CSV is pulled into results_padb (no -dir output)",
+          _collect(reduction=True, fresh=True) is True)
+    check("reduction TEETH: a STALE R-Plots CSV (predates run) is NOT pulled",
+          _collect(reduction=True, fresh=False) is False)
+    check("reduction TEETH: a non-reduction job never pulls from R-Plots (2026-08-27 policy)",
+          _collect(reduction=False, fresh=True) is False)
+
+
 def test_repeat_collapse_is_mean() -> None:
     """Repeat-collapse (multiple values at one point) uses the MEAN everywhere,
     reconciled 2026-09-16: scatter's lines mode previously used median alone while
@@ -1443,6 +1493,7 @@ def main() -> None:
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
+               test_reduction_native_render_and_rplots,
                test_run_index_derivation, test_dataset_summary_lines,
                test_common_prelude_and_feature_registry,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):

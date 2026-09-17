@@ -259,6 +259,18 @@ _SIMPLE_FORCE_KEYS = {"OutputConfig_OutputGraph": "1", "OutputConfig_GraphFormat
 # to the CSVs a viewer might mistake for the actual result.
 _DISABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "0"}
 
+# A test-point-reduction extraction must keep native render ON. With
+# OutputConfig_OutputGraph=0 (the normal Interactive-mode disable above) PADB-R
+# silently suppresses the all-runs / Test-Run-Datetime-grouped Type=80 output --
+# the webtool returns rc 0 with ZERO CSV, even though a manual PADB GUI pull
+# (native render on by default) writes the CSV fine. Matching that known-good
+# manual config, reduction runs force OutputGraph=1 (graph output produced, and
+# with it the grouped/all-runs CSV) but deliberately do NOT force GraphFormat --
+# leave whatever the pod already has, so this doesn't add PNG/PDF render time
+# beyond what the pod itself asks for. Distinct from _SIMPLE_FORCE_KEYS (which
+# also forces GraphFormat=png,pdf because Simple mode consumes those renders).
+_ENABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "1"}
+
 # --- Test-point-reduction extraction (2026-09-16) --------------------------
 # A reduction study needs EVERY run of each DUT (not last-run/passing only), so
 # the run-to-run behaviour is visible -- a point that fails then passes after a
@@ -379,6 +391,7 @@ def _slugify_name(name: str) -> str:
 def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
                   force_native_render: bool = False,
                   disable_native_render: bool = False,
+                  enable_native_render: bool = False,
                   unique_output_filenames: bool = False,
                   force_output_csv: bool = False) -> None:
     """
@@ -399,6 +412,15 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     otherwise silently re-render a full native PNG/PDF gallery on every run
     for nothing. Mutually exclusive with force_native_render -- callers pass
     at most one based on the job's own mode.
+
+    When enable_native_render is True (test-point-reduction extractions), every
+    [PADBAnalyticN] section instead gets OutputConfig_OutputGraph forced to "1"
+    (but NOT GraphFormat). A reduction extraction must keep native render on, or
+    PADB-R suppresses the all-runs / Test-Run-Datetime-grouped Type=80 output and
+    the webtool gets rc 0 with zero CSV (a manual GUI pull, native render on by
+    default, works). Takes precedence over disable_native_render for these runs;
+    mutually exclusive with the other two in practice (the caller passes exactly
+    one), and force_native_render still wins if both were somehow set.
 
     When unique_output_filenames is True, every [PADBAnalyticN] section's
     AnalyticName and OutputConfig_OutputFile are both forced to the same
@@ -453,6 +475,7 @@ def make_run_pod(src_pod: Path, dest_pod: Path, subex: dict,
     render_force_keys = (
         _SIMPLE_FORCE_KEYS if force_native_render
         else _DISABLE_RENDER_KEYS if disable_native_render
+        else _ENABLE_RENDER_KEYS if enable_native_render
         else None
     )
 
@@ -587,6 +610,14 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
         candidates = [s for s in known_stems if stem == s or stem.startswith(s + "_")]
         return max(candidates, key=len) if candidates else None
 
+    def _own_stems(a: dict) -> set[str]:
+        # An analytic's own candidate filename stems (AnalyticName and
+        # OutputConfig_OutputFile, space->_ with a hyphen->_ fallback) -- the
+        # set used to decide whether that analytic is covered.
+        s = {v.replace(" ", "_") for v in
+             (a.get("output_file") or "", a.get("name") or "") if v}
+        return s | {x.replace("-", "_") for x in s}
+
     present = [f for f in results_padb.iterdir() if f.is_file() and _matched_stem(f.stem)]
     # A lone same-stem .txt is PADB's own error-dump convention (e.g.
     # "Error in aoParsePADB(...): No data were selected by filtering /
@@ -614,12 +645,56 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
     missing_analytics: list[str] = []
     for a in analytics:
         label = a.get("name") or a.get("output_file") or "?"
-        own_stems = {
-            v.replace(" ", "_") for v in (a.get("output_file") or "", a.get("name") or "") if v
-        }
-        own_stems |= {s.replace("-", "_") for s in own_stems}
-        if not (own_stems & present_stems):
+        if not (_own_stems(a) & present_stems):
             missing_analytics.append(label)
+
+    # Test-point-reduction extractions keep native render ON (see
+    # _ENABLE_RENDER_KEYS) so PADB actually writes the all-runs / grouped Type=80
+    # output -- but for some analytic/output types PADB writes that only to its
+    # own default R-Plots folder, not the -dir target, so results_padb comes up
+    # empty even though a CSV exists. ONLY for reduction runs (opt-in, and a
+    # compare study where getting the CSV is the whole point), re-enable a
+    # tightly-scoped R-Plots sweep: copy in a fresh file (mtime >= run_start, so
+    # a stale or other-site leftover can never be picked up -- the exact hazard
+    # the 2026-08-27 general removal was about) that matches a stem which got NO
+    # fresh -dir output. A stem already satisfied via -dir is never touched, and
+    # non-reduction jobs skip this block entirely.
+    if cfg.get("reduction_extraction") and missing_analytics and run_start is not None:
+        rplots = Path(cfg.get("padb_output_dir", "") or "")
+        if rplots.is_dir():
+            missing_stems = {
+                s for a in analytics
+                if (a.get("name") or a.get("output_file") or "?") in missing_analytics
+                for s in _own_stems(a)
+            }
+            pulled: list[str] = []
+            for f in rplots.iterdir():
+                if not (f.is_file() and f.suffix.lower() == ".csv"):
+                    continue
+                if f.stat().st_mtime < run_start:
+                    continue  # predates this run -- a leftover / another session
+                if any(f.stem == s or f.stem.startswith(s + "_") for s in missing_stems):
+                    shutil.copy2(f, results_padb / f.name)
+                    pulled.append(f.name)
+            if pulled:
+                print(f"  Reduction extraction: pulled {len(pulled)} fresh CSV(s) from "
+                      f"R-Plots ({rplots}) for analytic(s) with no -dir output "
+                      f"(reduction runs keep native render on; some output types "
+                      f"write only to R-Plots). Only files newer than this run were taken:")
+                for name in sorted(pulled):
+                    print(f"    {name}")
+                print("  NOTE: R-Plots is shared -- if a manual PADB GUI session for a "
+                      "DIFFERENT site/pod ran concurrently and wrote the same filename, "
+                      "verify the pulled CSV is this run's data.")
+                # Recompute coverage now that fresh files were pulled in.
+                present = [f for f in results_padb.iterdir()
+                           if f.is_file() and _matched_stem(f.stem)]
+                present_stems = {_matched_stem(f.stem) for f in present
+                                 if f.suffix.lower() != ".txt"}
+                missing_analytics = [
+                    (a.get("name") or a.get("output_file") or "?") for a in analytics
+                    if not (_own_stems(a) & present_stems)
+                ]
 
     stale = [f.name for f in present
              if run_start is not None and f.stat().st_mtime < run_start]
@@ -1180,8 +1255,10 @@ def main() -> None:
     subex = cfg.get("subex", {})
     unique_output_filenames = cfg.get("unique_output_filenames", False)
     force_output_csv = cfg.get("force_output_csv", False)
+    is_reduction = bool(cfg.get("reduction_extraction"))
     make_run_pod(pod_path, run_pod, subex, force_native_render=(mode == "simple"),
-                 disable_native_render=(mode != "simple"),
+                 disable_native_render=(mode != "simple") and not is_reduction,
+                 enable_native_render=is_reduction,
                  unique_output_filenames=unique_output_filenames,
                  force_output_csv=force_output_csv)
     # Test-point-reduction study: force all-runs + add Test Run Datetime grouping
