@@ -1281,15 +1281,30 @@ def test_reduction_extraction() -> None:
           "Grouping_Item3=Test Run Datetime" in out
           and "Foo-->Foo (dBc):Test Run Datetime" not in out
           and "Group_Num=3" in out and c1["analytics_grouped"] == 1)
+    check("reduction: forces Data_TData=Datapack on Type=80 (analytic-prefixed "
+          "Data_TData crashes PADB DoAnalysis in all-runs mode)",
+          "Data_TData=Datapack" in out and c1["tdata_forced"] == 1)
     check("reduction: is idempotent (second pass changes nothing)",
           c2["extract_forced"] == 0 and c2["analytics_grouped"] == 0
-          and out.count("Test Run Datetime") == 1)
+          and c2["tdata_forced"] == 0 and out.count("Test Run Datetime") == 1
+          and out.count("Data_TData=Datapack") == 1)
+    # 1b) TEETH: an existing analytic-PREFIXED Data_TData (the real crash trigger) is
+    #     REPLACED with Datapack, not left in place.
+    pod1b = ("[Extract]\nDevice_Device='X'\n\n[PADBAnalytic1]\nType=80\n"
+             "Data_TData=Foo-->Foo (dBc):Test Step\n"
+             "Grouping_Item1=Foo-->Foo (dBc):AlcState\nGroup_Num=1\n")
+    c1x, _c2x, out1b = _run(pod1b)
+    check("reduction: replaces a prefixed Data_TData with Datapack",
+          "Data_TData=Datapack" in out1b
+          and "Data_TData=Foo-->Foo (dBc):Test Step" not in out1b
+          and c1x["tdata_forced"] == 1)
     # 2) Non-Type=80 analytic is left alone.
     pod2 = ("[Extract]\nDevice_Device='X'\n\n[PADBAnalytic1]\nType=70\n"
             "Grouping_Item1=Foo-->Foo (dBc):AlcState\nGroup_Num=1\n")
     c1b, _c2b, out2 = _run(pod2)
-    check("reduction: non-Type=80 analytic is NOT grouped",
-          c1b["analytics_grouped"] == 0 and "Test Run Datetime" not in out2)
+    check("reduction: non-Type=80 analytic is NOT grouped or TData-forced",
+          c1b["analytics_grouped"] == 0 and "Test Run Datetime" not in out2
+          and c1b["tdata_forced"] == 0 and "Data_TData=Datapack" not in out2)
     # 3) TEETH: a Type=80 whose grouping items are all UNPREFIXED still gets the
     #    (unprefixed) run grouping added -- the old code required a derivable prefix
     #    and wrongly SKIPPED here, so such a pod never got run identity. Corrected

@@ -285,9 +285,9 @@ _ENABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "1"}
 # reduction pods use the unprefixed form: SR's _run.pod (Grouping_Item = "Test Run
 # Datetime") and the manual AMC2 reduced.pod. SR only ever "worked" because its
 # source pod ALREADY had this grouping, so the buggy add was a no-op there; AMC2's
-# source had none, so the prefixed form got added and crashed. Data_TData is left
-# untouched (SR extracts fine with Test Step; the reduced.pod's Datapack is not
-# required -- the run separation comes from the grouping, not Data_TData).
+# source had none, so the prefixed form got added and crashed. (The unprefixed
+# grouping alone did NOT fix the crash -- see _RUN_TDATA: an analytic-prefixed
+# Data_TData is the actual all-runs crash trigger, forced to Datapack separately.)
 # ExtractionOptions_LastResult (extract only the last run per DUT) is MUTUALLY
 # EXCLUSIVE with AllRunResults (extract every run). A pod defaults to LastResult
 # for normal use; a reduction study needs all runs, so we must turn LastResult
@@ -300,6 +300,14 @@ _REDUCTION_EXTRACT_KEYS = {
     "ExtractionOptions_LastResult": "False",
 }
 _RUN_GROUP_FIELD = "Test Run Datetime"
+# All-runs reduction also needs Data_TData = "Datapack" (one datapack = one test run,
+# the natural per-run trace dimension). CONFIRMED 2026-09-17 as THE crash trigger: a
+# full input-field diff of the crashing _run.pod vs David's proven-working manual
+# reduced.pod showed exactly ONE difference -- an analytic-PREFIXED Data_TData
+# ("<Analytic>-->...(unit):Test Step"), which makes PADB's DoAnalysis throw a
+# NullReferenceException (rc 0, 0 CSV) in all-runs mode. Forcing Data_TData=Datapack
+# (what the reduced.pod uses) fixes it and is site-consistent for a compare merge.
+_RUN_TDATA = "Datapack"
 
 
 def _force_extract_keys_in_body(body: list[str], eol: str, changed: dict) -> None:
@@ -352,17 +360,39 @@ def _add_run_grouping_in_body(body: list[str], eol: str, changed: dict) -> None:
     changed["analytics_grouped"] += 1
 
 
+def _set_tdata_datapack_in_body(body: list[str], eol: str, changed: dict) -> None:
+    """Force Data_TData=Datapack on a Type=80 analytic body (idempotent). See the
+    _RUN_TDATA note: an analytic-prefixed Data_TData crashes DoAnalysis in all-runs
+    mode; Datapack is the proven-working per-run trace dimension. Replaces an existing
+    Data_TData line in place, else appends one."""
+    want = f"Data_TData={_RUN_TDATA}"
+    for i, ln in enumerate(body):
+        if "=" in ln and ln.split("=", 1)[0].strip() == "Data_TData":
+            if ln.strip() != want:
+                body[i] = want + eol
+                changed["tdata_forced"] += 1
+            return
+    at = len(body)
+    while at > 0 and body[at - 1].strip() == "":
+        at -= 1
+    body.insert(at, want + eol)
+    changed["tdata_forced"] += 1
+
+
 def apply_reduction_extraction(run_pod: Path) -> dict:
     """Post-process a _run.pod for a test-point-reduction study: force all-runs
-    extraction ([Extract]) and add 'Test Run Datetime' grouping to every Type=80
-    analytic. Idempotent. Returns {'extract_forced', 'analytics_grouped',
-    'pinned_datetime_filter'} -- the last flags that the source pod pins specific
+    extraction ([Extract]), add 'Test Run Datetime' grouping to every Type=80 analytic,
+    and force Data_TData=Datapack (an analytic-prefixed Data_TData crashes DoAnalysis in
+    all-runs mode -- see _RUN_TDATA). Idempotent. Returns {'extract_forced',
+    'analytics_grouped', 'tdata_forced', 'pinned_datetime_filter'} -- the last flags
+    that the source pod pins specific
     TestRun_RunDateTime values (a run filter that would defeat all-runs; the
     caller/workflow should clear it via the per-site date window instead)."""
     raw = run_pod.read_text(encoding="utf-8", errors="replace")
     lines = raw.splitlines(keepends=True)
     eol = "\r\n" if "\r\n" in raw else "\n"
-    changed = {"extract_forced": 0, "analytics_grouped": 0, "pinned_datetime_filter": False}
+    changed = {"extract_forced": 0, "analytics_grouped": 0, "tdata_forced": 0,
+               "pinned_datetime_filter": False}
     hdr_re = re.compile(r"^\s*\[(.+?)\]\s*$")
     preamble: list[str] = []
     sections: list[list] = []  # [header_line, name_lower, [body_lines]]
@@ -384,6 +414,7 @@ def apply_reduction_extraction(run_pod: Path) -> dict:
         elif re.match(r"padbanalytic\d+$", name):
             if any(re.match(r"\s*type\s*=\s*80\s*$", b, re.I) for b in body):
                 _add_run_grouping_in_body(body, eol, changed)
+                _set_tdata_datapack_in_body(body, eol, changed)
     run_pod.write_text(
         "".join(preamble) + "".join(hdr + "".join(body) for hdr, _n, body in sections),
         encoding="utf-8")
@@ -1272,7 +1303,8 @@ def main() -> None:
     if cfg.get("reduction_extraction"):
         rc = apply_reduction_extraction(run_pod)
         print(f"Reduction extraction: forced {rc['extract_forced']} extract key(s), "
-              f"added run-datetime grouping to {rc['analytics_grouped']} Type=80 analytic(s).")
+              f"added run-datetime grouping to {rc['analytics_grouped']} Type=80 analytic(s), "
+              f"set Data_TData=Datapack on {rc['tdata_forced']} analytic(s).")
         if rc["pinned_datetime_filter"]:
             print("  WARNING: this pod pins specific TestRun_RunDateTime values -- that "
                   "run filter will restrict extraction to those runs, defeating all-runs. "
