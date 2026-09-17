@@ -1542,6 +1542,26 @@ def test_compare_create_only() -> None:
           bool(seg) and "/api/execute-job" not in seg and "created = true" in seg)
 
 
+def test_webapp_optional_toolbars() -> None:
+    """Optional secondary jobs-toolbar actions (Generate PDF report, Test-point Reduce,
+    Schedule, Convert) are tagged with an 'optional' chip so they're visually distinct
+    from the required drop->generate->run flow (David 2026-09-17). Convert dropdowns also
+    get a neutral placeholder (nothing pre-selected -- an auto-selected site made an
+    optional step look required) + an empty-selection guard."""
+    idx = (HERE / "webapp" / "templates" / "index.html").read_text(encoding="utf-8")
+    css = (HERE / "webapp" / "static" / "style.css").read_text(encoding="utf-8")
+    appjs = (HERE / "webapp" / "static" / "app.js").read_text(encoding="utf-8")
+    check(".opt-chip class defined in style.css", ".opt-chip{" in css or ".opt-chip {" in css)
+    check("optional chip on >=4 secondary toolbars", idx.count('class="opt-chip"') >= 4)
+    for anchor in ('id="generatePdfBtn"', 'id="reduceBtn"', 'id="scheduleType"', 'id="convertJobSite"'):
+        last_toolbar = idx.split(anchor, 1)[0].rsplit('<div class="toolbar">', 1)[-1]
+        check(f"optional chip precedes {anchor}", 'class="opt-chip"' in last_toolbar)
+    check("convert dropdowns get a neutral placeholder (nothing pre-selected)",
+          'ph.value = ""' in appjs and "select site" in appjs)
+    check("convert handlers guard an empty target site",
+          appjs.count("Pick a target site to convert") >= 2)
+
+
 def test_scatter_spec_line_caveat() -> None:
     """Scatter spec-line caveat (2026-09-17): when the scatter pools points with
     heterogeneous per-point limits (multiple limits at the same offset) or mostly-null
@@ -1671,7 +1691,7 @@ def main() -> None:
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_control_context_clarity, test_scatter_spec_line_caveat,
-               test_compare_create_only,
+               test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
                test_reduction_native_render_and_rplots,

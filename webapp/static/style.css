@@ -290,3 +290,9 @@ pre {
   cursor: pointer;
 }
 .abort-btn:hover { background: #fee2e2; }
+
+/* "optional" chip -- marks secondary jobs-toolbar actions that are not part of the
+   required drop -> generate -> run flow (convert, schedule, reduce, PDF report). */
+.opt-chip{display:inline-block;color:#6a6a6a;background:#f0f0f0;border:1px solid #ccc;
+  border-radius:3px;font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;
+  padding:0 5px;margin-right:4px;vertical-align:middle;}

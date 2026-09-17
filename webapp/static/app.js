@@ -719,6 +719,11 @@ async function loadSites() {
   for (const selId of ["convertPodSite", "convertJobSite"]) {
     const sel = document.getElementById(selId);
     sel.innerHTML = "";
+    // Neutral placeholder so no site is pre-selected -- conversion is OPTIONAL, and
+    // an auto-selected site made it look like a required/pending choice.
+    const ph = document.createElement("option");
+    ph.value = ""; ph.textContent = "— select site —";
+    sel.appendChild(ph);
     for (const name of Object.keys(data.sites)) {
       const opt = document.createElement("option");
       opt.value = name;
@@ -734,6 +739,7 @@ document.getElementById("convertPodBtn").addEventListener("click", async () => {
     return;
   }
   const targetSite = document.getElementById("convertPodSite").value;
+  if (!targetSite) { alert("Pick a target site to convert to (optional step -- skip it if you don't need a site conversion)."); return; }
   const force = document.getElementById("convertPodForce").checked;
   const res = await fetch("/api/convert-pod", {
     method: "POST",
@@ -757,6 +763,7 @@ document.getElementById("convertSelectedBtn").addEventListener("click", async ()
     return;
   }
   const targetSite = document.getElementById("convertJobSite").value;
+  if (!targetSite) { alert("Pick a target site to convert to (optional step -- skip it if you don't need a site conversion)."); return; }
   const force = document.getElementById("convertJobForce").checked;
   const res = await fetch("/api/convert-job", {
     method: "POST",

@@ -136,11 +136,13 @@
       <label title="Off by default. Check to also build a comprehensive multi-view PDF report (cover + every view with its stats table) alongside the HTML, saved as &lt;prefix&gt;_report.pdf in the results folder. Interactive plot jobs only. Requires Playwright + Chromium (py -m pip install playwright pypdf && py -m playwright install chromium); if missing, it's skipped with a note and the build still succeeds."><input type="checkbox" id="pdfReportCheckbox"> Build PDF report</label>
     </div>
     <div class="toolbar">
+      <span class="opt-chip" title="Optional -- not part of the required drop &rarr; generate &rarr; run flow.">optional</span>
       <button id="generatePdfBtn" title="Generate the comprehensive multi-view PDF report NOW from the checked jobs' already-built results -- no plot rebuild. Use this to defer the (minutes-long) PDF cost until you actually want it, e.g. after reviewing/filtering. Saved as &lt;prefix&gt;_report.pdf and linked from the results index.">Generate PDF report (on demand)</button>
       <label title="When generating the PDF, run each stats view's auto-filter recommended workflow first, so the box/stat/summary/env/histogram views show the CLEANED (bad-DUT-excluded) population. Raw scatter/distribution still show the full collected data; the cover documents both what was collected and what was excluded."><input type="checkbox" id="pdfFilterAwareCheckbox"> Apply auto-filter (cleaned views)</label>
       <label title="Compare jobs only: which site the auto-filter cleans in the report. Reference = the trusted baseline (SR); Onboarding = the site under evaluation; Both = clean each against its own peers. Ignored for non-compare jobs and when 'Apply auto-filter' is off.">site <select id="pdfFilterSite"><option value="primary" selected>Reference only</option><option value="onboarding">Onboarding only</option><option value="both">Both sites</option></select></label>
     </div>
     <div class="toolbar">
+      <span class="opt-chip" title="Optional -- not part of the required drop &rarr; generate &rarr; run flow.">optional</span>
       <button id="reduceBtn" title="Recommends which swept test frequencies are redundant and could be trimmed from the checked jobs' extracted CSVs, to shorten the test plan. Report only -- never modifies the CSV, pod, or plots. Writes &lt;stem&gt;_testpoint_reduction.txt/.csv beside each CSV; the report is shown in the job log. The frequencies come from the data, so trimming is applied upstream in the test executive, not the .pod.">Test-point Reduce</button>
       <label title="Target %: YOU set the fraction of swept points to drop (least-important first). Auto (adaptive): the TOOL chooses -- the eps tolerance self-calibrates to each condition's own noise, so a noisy spur trims a lot and a low-variance measurement stays conservative; the % becomes an OUTCOME, and the 'reduction %' box is ignored.">mode <select id="reduceMode"><option value="target" selected>Target %</option><option value="adaptive">Auto (adaptive)</option></select></label>
       <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. The report also states a data-driven safe ceiling so you can see if your target is within it. Ignored in Auto (adaptive) mode.">reduction % <input type="number" id="reducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
@@ -199,6 +201,7 @@
       </details>
     </div>
     <div class="toolbar">
+      <span class="opt-chip" title="Optional -- not part of the required drop &rarr; generate &rarr; run flow.">optional</span>
       <label title="Weekly runs on the checked days below; Daily runs every day.">Schedule
         <select id="scheduleType">
           <option value="WEEKLY" selected>Weekly</option>
@@ -219,7 +222,8 @@
       <button id="unscheduleSelectedBtn" class="secondary" title="Removes the Task Scheduler entry for each checked job, if one exists.">Unschedule Selected</button>
     </div>
     <div class="toolbar">
-      <label title="Target database site (e.g. AMC2) to convert the checked job(s) to.">Convert to
+      <span class="opt-chip" title="Optional -- not part of the required drop &rarr; generate &rarr; run flow.">optional</span>
+      <label title="Target database site (e.g. AMC2) to convert the checked job(s) to. Optional -- pick a site only if you want to clone the checked job(s) to another site.">Convert to
         <select id="convertJobSite"></select>
       </label>
       <label class="inline" title="Allow overwriting an already-converted job.json of the same name."><input type="checkbox" id="convertJobForce"> Overwrite existing</label>
