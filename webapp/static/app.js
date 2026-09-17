@@ -321,6 +321,8 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
     primary_site: document.getElementById("comparePrimarySite").value,
     description: document.getElementById("compareDescription").value.trim(),
     override: document.getElementById("compareOverrideChk")?.checked || false,
+    reduce_on_merged: document.getElementById("compareReduceChk")?.checked || false,
+    reduce_pct: parseFloat(document.getElementById("compareReducePct")?.value) || 25,
   };
   // Real reported bug: "Create and Run does not work if another compare job
   // is already running" -- confirmed by direct testing that queuing itself

@@ -87,6 +87,11 @@
           <label title="Optional -- becomes this job's title/description. Defaults to '&lt;Site A&gt; vs &lt;Site B&gt; compare' if left blank.">Description <input type="text" id="compareDescription" placeholder="optional"></label>
         </div>
         <div class="toolbar">
+          <span title="Prototype feature -- report only, advisory. Nothing is modified." style="background:#fff0e8;border:1px solid #e0905a;color:#c04000;font-weight:700;font-size:11px;padding:1px 6px;border-radius:3px;letter-spacing:.5px">PROTOTYPE</span>
+          <label title="After the compare is built, also run the test-point reduction recommender on the MERGED (both sites combined) data. Report only -- recommends which swept test frequencies are redundant across the combined dataset, protecting endpoints, spec-limit transitions, and near-limit points. Writes &lt;stem&gt;_testpoint_reduction.txt/.csv beside the merged CSV; the full report shows in the job log. Never modifies the CSV, pod, or plots."><input type="checkbox" id="compareReduceChk"> Run test-point reduction on merged data</label>
+          <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. The report also states a data-driven safe ceiling so you can see if your target is within it.">reduction % <input type="number" id="compareReducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
+        </div>
+        <div class="toolbar">
           <button type="button" id="compareCheckBtn" title="Loads both CSVs and checks compatibility: blocks on a genuine measurement-unit mismatch (e.g. dBc vs dBm), and warns (without blocking) on softer gaps like missing temperatures/ports or non-overlapping frequency ranges. Run this before Create &amp; Run -- it's required once per selection.">Check compatibility</button>
           <button type="submit" id="compareCreateRunBtn" disabled title="Builds a compare_csv job.json (local-only by default -- publish_to is left empty) and queues it immediately, same as Run Selected below. Disabled until Check compatibility has run against the current selection.">Create &amp; Run</button>
           <span id="compareCreateHint" class="hint">&#8592; Run &ldquo;Check compatibility&rdquo; first to enable Create &amp; Run.</span>

@@ -443,6 +443,48 @@ def test_generate_reduce():
           and "--target-pct" in call and "30" in " ".join(call), f"call={call}")
 
 
+def test_compare_reduce_on_merged():
+    """PROTOTYPE (2026-09-17): the compare panel can request test-point reduction on
+    the MERGED (both-sites-combined) data. compare_create persists reduce_on_merged/
+    reduce_pct (panel authoritative -- unchecking clears it); _reduce_targets resolves
+    _compare_merged.csv for the compare job; and the worker chains the reducer after a
+    successful compare build."""
+    _clear_jobs_dir()
+    a = _TMP / "siteA.csv"; a.write_text(
+        "Frequency (MHz),Value,Group\n1,-70,Amp State: 0\n2,-71,Amp State: 0\n", encoding="utf-8")
+    b = _TMP / "siteB.csv"; b.write_text(
+        "Frequency (MHz),Value,Group\n1,-69,Amp State: 0\n2,-68,Amp State: 0\n", encoding="utf-8")
+    r = client.post("/api/compare-create", json={
+        "csv_a": str(a), "site_a": "SR", "csv_b": str(b), "site_b": "AMC",
+        "primary_site": "SR", "reduce_on_merged": True, "reduce_pct": 30})
+    j = r.get_json()
+    check("compare-create with reduce_on_merged succeeds", r.status_code == 200 and j.get("path"), f"j={j}")
+    jobp = Path(j["path"])
+    cfg = json.loads(jobp.read_text(encoding="utf-8"))
+    check("compare job persists reduce_on_merged=True and reduce_pct=30",
+          cfg.get("reduce_on_merged") is True and cfg.get("reduce_pct") == 30, f"cfg={cfg}")
+    check("compare job persists compare_csv (two sites)",
+          isinstance(cfg.get("compare_csv"), dict) and len(cfg["compare_csv"]) == 2, f"cfg={cfg}")
+    # _reduce_targets resolves the merged CSV for a compare job once it exists.
+    rd = jobp.parent / cfg["results_dir"]; rd.mkdir(parents=True, exist_ok=True)
+    (rd / "_compare_merged.csv").write_text("Frequency (MHz),Value,Group\n1,-70,Site: SR\n", encoding="utf-8")
+    tgts = padb_web._reduce_targets(jobp, cfg)
+    check("_reduce_targets resolves _compare_merged.csv for a compare job",
+          len(tgts) == 1 and tgts[0].name == "_compare_merged.csv", f"tgts={tgts}")
+    # TEETH: unchecking the box on a re-create clears the flag (panel authoritative).
+    r2 = client.post("/api/compare-create", json={
+        "csv_a": str(a), "site_a": "SR", "csv_b": str(b), "site_b": "AMC",
+        "primary_site": "SR", "reduce_on_merged": False})
+    cfg2 = json.loads(Path(r2.get_json()["path"]).read_text(encoding="utf-8"))
+    check("re-create with box unchecked clears reduce_on_merged (panel authoritative)",
+          cfg2.get("reduce_on_merged") is False, f"cfg2={cfg2}")
+    # Worker source pin: the post-build reduce chain exists, gated on compare + flag.
+    src = Path(padb_web.__file__).read_text(encoding="utf-8")
+    check("worker chains the reducer after a successful compare build",
+          'cfg.get("reduce_on_merged")' in src and 'cfg.get("compare_csv")' in src
+          and "_generate_reduce_task(" in src)
+
+
 def test_single_instance_guard():
     """A second webapp instance must NOT linger + run jobs in parallel with the real
     one (the 'multiple webapp generations' hole). main() refuses to start when :5000
@@ -479,7 +521,8 @@ def main() -> None:
     for fn in (test_index, test_sites, test_config, test_jobs_listing_and_kind,
                test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
-               test_generate_reduce, test_single_instance_guard,
+               test_generate_reduce, test_compare_reduce_on_merged,
+               test_single_instance_guard,
                test_generate_job_cmd_build, test_convert_validation,
                test_orphaned_and_active, test_upload_validation):
         try:

@@ -725,6 +725,17 @@ def _worker() -> None:
                     plot_cmd.append("--pdf-report")
                 rc = _stream(plot_cmd, job_id)
                 ok = rc == 0
+                # PROTOTYPE: a compare job may request test-point reduction on the
+                # merged (both-sites-combined) data. Chain it after a successful
+                # build -- _reduce_targets() resolves _compare_merged.csv, which
+                # padb_v2 has just written. Report-only; a reducer failure marks
+                # the job failed but never touches the already-built compare output.
+                if ok and cfg.get("reduce_on_merged") and cfg.get("compare_csv"):
+                    _append_log(job_id, "\n=== Compare built -- running test-point "
+                                        "reduction on the merged (combined) data ===")
+                    rok, _ = _generate_reduce_task(
+                        job_path, cfg, job_id, float(cfg.get("reduce_pct", 25.0)))
+                    ok = ok and rok
             if result_index is None:
                 idx = _job_result_index_path(job_path, cfg)
                 result_index = str(idx) if idx else None
@@ -1200,6 +1211,12 @@ def compare_create():
     primary_site = (body.get("primary_site") or "").strip()
     override = bool(body.get("override"))
     description = (body.get("description") or "").strip()
+    # PROTOTYPE: optionally run the test-point reduction recommender on the merged
+    # (both-sites-combined) data after the compare is built. The reducer runs on
+    # _compare_merged.csv, which _reduce_targets() already resolves for a compare
+    # job -- so this just persists the intent; the worker chains it post-build.
+    reduce_on_merged = bool(body.get("reduce_on_merged"))
+    reduce_pct = float(body.get("reduce_pct") or 25.0)
 
     if not (csv_a and csv_b and site_a and site_b):
         return jsonify(error="csv_a, csv_b, site_a, and site_b are all required"), 400
@@ -1260,6 +1277,10 @@ def compare_create():
         # after confirming the comparison looked right shouldn't have that
         # silently reset back to local-only on the next re-run.
         "publish_to": reused_cfg.get("publish_to", ""),
+        # Panel is authoritative for this per-create choice (explicit True/False so
+        # unchecking on a re-run clears a previously-set flag, unlike publish_to).
+        "reduce_on_merged": reduce_on_merged,
+        "reduce_pct": reduce_pct,
     }
     if check.get("x_override"):
         # Real incident (2026-08-28): a hand-authored compare job.json for a
