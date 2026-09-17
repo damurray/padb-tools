@@ -23,6 +23,29 @@ Determine which swept test frequencies can be trimmed from the harmonics screen,
 - **Merged** the two site CSVs with `Site:` tags → one compare dataset (**125,455 rows**, 9 serials/site, run index up to 17).
 - **Analysed** with `padb_sentinel.py` (run-to-run classification) and `padb_testpoint_reduce.py` (trim recommendation), `--primary-site SR`.
 
+## 2a. Dataset summary statistics
+
+| Metric | Value |
+|---|---|
+| Measurements (rows) | 125,455 |
+| Distinct test frequencies | 373 |
+| Frequency span | 0.009 MHz – 20 GHz |
+| Distinct conditions (AlcState × Harmonic × Mode × Port) | 34 |
+| Harmonics tested | 0.2, 0.25, 0.5, 0.75, 1.5, 2, 3 |
+
+**Per site**
+
+| Site | Measurements | Frequencies | DUTs | Max runs / DUT | Conditions |
+|---|---|---|---|---|---|
+| SR (reference) | 85,248 | 373 | 9 | 16 | 28 |
+| AMC2 (onboarding) | 40,207 | 373 | 9 | 17 | 16 |
+
+**Distinct frequencies by harmonic:** H0.2 372 · H0.25 373 · H0.5 372 · H0.75 373 · **H1.5 101** · H2 373 · **H3 329**.
+
+**Coverage notes** (worth confirming against the intended test plan):
+- **SR exercises 28 condition combinations vs AMC2's 16** — AMC2 tests fewer conditions. Any cross-site comparison only spans the shared conditions.
+- **AlcState=FALSE is sparse** (25 freqs) vs TRUE (372); **H1.5 is partial** (101 freqs) and H3 slightly reduced (329) — expected if those aren't swept at every frequency, but flagged in case it's unintended.
+
 ## 3. Headline result
 
 The raw analysis looked alarming — **137 "cross-site failures"** (clean at SR, failing at AMC2) — which would suggest widespread new AMC2 fault modes and "do not trim." **The triage showed otherwise:**
