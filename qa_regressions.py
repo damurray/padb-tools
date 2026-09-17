@@ -1521,6 +1521,27 @@ def test_control_context_clarity() -> None:
           'id="saveRootBtn" title=' in idx)
 
 
+def test_compare_create_only() -> None:
+    """Compare panel CREATES the job only; running is done from the standard jobs table
+    (the single run path with Publish/PDF/dry-run options). David 2026-09-17: the old
+    'Create & Run' auto-ran and silently bypassed those options. Guard: button relabeled
+    'Create job', tooltip says it does not run, and the compare submit handler no longer
+    POSTs execute-job."""
+    idx = (HERE / "webapp" / "templates" / "index.html").read_text(encoding="utf-8")
+    appjs = (HERE / "webapp" / "static" / "app.js").read_text(encoding="utf-8")
+    check("compare button relabeled 'Create job' (not 'Create & Run')",
+          ">Create job<" in idx and "Create &amp; Run" not in idx)
+    check("compare create-button tooltip states it does NOT run the job",
+          "does NOT run it" in idx)
+    # Isolate the compare submit handler (from its registration up to the next
+    # top-level call) and assert it no longer auto-executes the created job.
+    seg = ""
+    if 'getElementById("compareForm")' in appjs and "loadCompareCsvs()" in appjs:
+        seg = appjs.split('getElementById("compareForm")', 1)[1].split("loadCompareCsvs()", 1)[0]
+    check("compare submit handler no longer auto-runs (no /api/execute-job in it)",
+          bool(seg) and "/api/execute-job" not in seg and "created = true" in seg)
+
+
 def test_scatter_spec_line_caveat() -> None:
     """Scatter spec-line caveat (2026-09-17): when the scatter pools points with
     heterogeneous per-point limits (multiple limits at the same offset) or mostly-null
@@ -1650,6 +1671,7 @@ def main() -> None:
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_control_context_clarity, test_scatter_spec_line_caveat,
+               test_compare_create_only,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
                test_reduction_native_render_and_rplots,

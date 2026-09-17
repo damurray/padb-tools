@@ -92,14 +92,14 @@
           <label title="Target reduction: drop about this % of swept frequencies, least-important first, while protecting endpoints, spec-limit transitions, and near-limit points. Ignored in Auto (adaptive) mode.">reduction % <input type="number" id="compareReducePct" value="25" min="1" max="90" step="5" style="width:4em"></label>
         </div>
         <div class="toolbar">
-          <button type="button" id="compareCheckBtn" title="Loads both CSVs and checks compatibility: blocks on a genuine measurement-unit mismatch (e.g. dBc vs dBm), and warns (without blocking) on softer gaps like missing temperatures/ports or non-overlapping frequency ranges. Run this before Create &amp; Run -- it's required once per selection.">Check compatibility</button>
-          <button type="submit" id="compareCreateRunBtn" disabled title="Builds a compare_csv job.json (local-only by default -- publish_to is left empty) and queues it immediately, same as Run Selected below. Disabled until Check compatibility has run against the current selection.">Create &amp; Run</button>
-          <span id="compareCreateHint" class="hint">&#8592; Run &ldquo;Check compatibility&rdquo; first to enable Create &amp; Run.</span>
+          <button type="button" id="compareCheckBtn" title="Loads both CSVs and checks compatibility: blocks on a genuine measurement-unit mismatch (e.g. dBc vs dBm), and warns (without blocking) on softer gaps like missing temperatures/ports or non-overlapping frequency ranges. Run this before Create job -- it's required once per selection.">Check compatibility</button>
+          <button type="submit" id="compareCreateRunBtn" disabled title="Builds the compare_csv job.json only -- it does NOT run it. Then select it in the Jobs table below and click Run Selected, where you choose Publish to share / Build PDF report / dry-run. (Creating and running are separate so a compare run uses the same, fully-configurable path as every other job.) Disabled until Check compatibility has run against the current selection.">Create job</button>
+          <span id="compareCreateHint" class="hint">&#8592; Run &ldquo;Check compatibility&rdquo; first to enable Create job.</span>
         </div>
       </form>
       <div id="compareResult" class="panel hidden">
         <div id="compareBlock" class="block-banner hidden" title="A hard block -- comparing two genuinely different kinds of measurement isn't meaningful. Check the override box below if you want to proceed anyway."></div>
-        <div id="compareWarnings" class="warn-banner hidden" title="Soft gaps -- these never block Create &amp; Run, they're shown so you can decide whether the comparison still makes sense (e.g. one site missing a temperature/port the other has)."></div>
+        <div id="compareWarnings" class="warn-banner hidden" title="Soft gaps -- these never block Create job, they're shown so you can decide whether the comparison still makes sense (e.g. one site missing a temperature/port the other has)."></div>
         <table id="compareStatsTable" class="hidden" title="Quick side-by-side sanity check of what's actually in each CSV before you commit to running the compare job.">
           <thead><tr><th></th><th>Site A</th><th>Site B</th></tr></thead>
           <tbody></tbody>

@@ -219,7 +219,7 @@ function refreshCompareCreateEnabled() {
   updateCompareCreateHint();
 }
 
-// Spell out WHY Create & Run is disabled, since a greyed button alone doesn't
+// Spell out WHY Create job is disabled, since a greyed button alone doesn't
 // say what to do about it. Shown only while disabled; the message depends on
 // whether the gate is "no compatibility check yet" vs. "a hard block is
 // active" (the block banner above already explains the latter in detail).
@@ -230,8 +230,8 @@ function updateCompareCreateHint() {
   if (!btn.disabled) { hint.classList.add("hidden"); return; }
   hint.classList.remove("hidden");
   hint.textContent = comparePreviewOk
-    ? "Resolve the block above (or check Override) to enable Create & Run."
-    : "← Run “Check compatibility” first to enable Create & Run.";
+    ? "Resolve the block above (or check Override) to enable Create job."
+    : "← Run “Check compatibility” first to enable Create job.";
 }
 
 function fmtCompareStat(s) {
@@ -335,8 +335,13 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
   const btn = document.getElementById("compareCreateRunBtn");
   const origText = btn.textContent;
   btn.disabled = true;
-  btn.textContent = "Creating & queuing...";
+  btn.textContent = "Creating...";
+  let created = false;
   try {
+    // Create the compare job.json only -- do NOT auto-run it. Running from the
+    // standard jobs table is the single, consistent run path with all its options
+    // (Publish to share, Build PDF report, dry-run); auto-running here silently
+    // bypassed them (e.g. never published). David's call 2026-09-17.
     const res = await fetch("/api/compare-create", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -350,22 +355,27 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
     if (data.warnings && data.warnings.length) {
       console.log("Compare job created with warnings:", data.warnings);
     }
-    const execRes = await fetch("/api/execute-job", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths: [data.path], dry_run: false }),
-    });
-    const execData = await execRes.json();
-    if (!execRes.ok) {
-      alert("Compare job created but failed to queue: " + execData.error);
-      return;
+    created = true;
+    await loadJobs();
+    // Surface it: filter the jobs table to the new job so it's easy to find + run.
+    const nameFilterEl = document.getElementById("nameFilter");
+    const stem = (data.path || "").split(/[\\/]/).pop().replace(/_job\.json$/, "");
+    if (nameFilterEl && stem) { nameFilterEl.value = stem; nameFilterEl.dispatchEvent(new Event("input")); }
+    const hint = document.getElementById("compareCreateHint");
+    if (hint) {
+      hint.classList.remove("hidden");
+      hint.innerHTML = "&#10003; Created <b>" + (stem || "compare job") +
+        "</b>. Select it in the Jobs table below and click <b>Run Selected</b> " +
+        "(choose Publish / PDF options there).";
     }
-    for (const jobId of execData.job_ids) startPolling(jobId);
-    if (execData.job_ids.length) scrollJobStatusIntoView(execData.job_ids[0]);
-    loadJobs();
+    const jobsAnchor = document.getElementById("jobsTable") || document.getElementById("refreshJobsBtn");
+    if (jobsAnchor && jobsAnchor.scrollIntoView) jobsAnchor.scrollIntoView({ behavior: "smooth", block: "start" });
   } finally {
     btn.textContent = origText;
-    refreshCompareCreateEnabled();
+    // On success, leave the button enabled + the success hint visible (do NOT call
+    // refreshCompareCreateEnabled, which would hide the hint). On failure, restore
+    // the normal gating hint.
+    if (created) { btn.disabled = false; } else { refreshCompareCreateEnabled(); }
   }
 });
 
@@ -796,7 +806,7 @@ function startPolling(jobId) {
 }
 
 // The Running Jobs panel (section 5) sits well below both the compare
-// "Create & Run" button (section 3) and, less dramatically, "Run Selected"
+// "Run Selected" (section 3) and, less dramatically, "Run Selected"
 // (section 4) -- so a freshly-queued job's status card is created off-screen
 // and the queue/run looks like it did nothing. Scroll the new card into view
 // so the feedback is visible from wherever the triggering button was clicked.
