@@ -740,8 +740,22 @@ def _worker() -> None:
         _job_queue.task_done()
 
 
+# The worker thread starts at import (the hermetic test client in qa_webapp drives
+# jobs through it without calling main()). It idles on an empty queue, so it is
+# harmless in a process that never becomes the real server. The resume scan and
+# app.run(), by contrast, are gated in main() behind a port-ownership check -- a
+# SECOND instance that can't bind :5000 must NOT run resume (which would re-queue
+# and execute jobs IN PARALLEL with the real instance) or linger; it exits. This
+# closes the recurring "multiple webapp generations" parallelism/staleness hole.
 threading.Thread(target=_worker, daemon=True).start()
-_resume_incomplete_v2_chains()
+
+
+def _port_in_use(host: str = "127.0.0.1", port: int = 5000) -> bool:
+    """True if something is already listening on host:port (a live PADB web app)."""
+    import socket
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.settimeout(1.0)
+        return s.connect_ex((host, port)) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1823,6 +1837,18 @@ def job_status(job_id):
 
 def main() -> None:
     url = "http://127.0.0.1:5000"
+    # Refuse to become a SECOND instance: if :5000 is already served, another PADB
+    # web app is running. Starting here would fail to bind the port anyway, but the
+    # real damage is a lingering process whose worker + resume scan run jobs in
+    # PARALLEL with the real instance. Exit before running resume or app.run().
+    if _port_in_use():
+        print("A PADB web app is already running on " + url + " -- open that tab "
+              "instead of starting another instance.\n"
+              "(Start_web.bat frees the port first; if you meant to restart, stop the "
+              "existing one or just run Start_web.bat.)")
+        sys.exit(1)
+    # Only the real server (owns the port) resumes interrupted work.
+    _resume_incomplete_v2_chains()
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
     app.run(host="127.0.0.1", port=5000, threaded=True, debug=False)
 

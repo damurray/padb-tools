@@ -443,6 +443,33 @@ def test_generate_reduce():
           and "--target-pct" in call and "30" in " ".join(call), f"call={call}")
 
 
+def test_single_instance_guard():
+    """A second webapp instance must NOT linger + run jobs in parallel with the real
+    one (the 'multiple webapp generations' hole). main() refuses to start when :5000
+    is already served, and the resume scan (which would re-queue/run jobs) moved out
+    of module-import into main() behind that guard -- so only the port-owning server
+    resumes work. The worker still starts at import (this test client needs it)."""
+    import socket
+    from pathlib import Path as _P
+    # free port -> not in use
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0)); free_port = probe.getsockname()[1]
+    check("_port_in_use False for a free port", padb_web._port_in_use(port=free_port) is False)
+    # a live listener -> in use
+    lsock = socket.socket(); lsock.bind(("127.0.0.1", 0)); lsock.listen(1)
+    used = lsock.getsockname()[1]
+    try:
+        check("_port_in_use True when a server is listening", padb_web._port_in_use(port=used) is True)
+    finally:
+        lsock.close()
+    src = _P(padb_web.__file__).read_text(encoding="utf-8")
+    check("main() refuses a second instance (port guard + exit)",
+          "if _port_in_use():" in src and "sys.exit(1)" in src)
+    check("resume scan is gated in main(), not run at module import",
+          "\n_resume_incomplete_v2_chains()\n" not in src
+          and "    _resume_incomplete_v2_chains()" in src)
+
+
 def main() -> None:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -452,7 +479,7 @@ def main() -> None:
     for fn in (test_index, test_sites, test_config, test_jobs_listing_and_kind,
                test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
-               test_generate_reduce,
+               test_generate_reduce, test_single_instance_guard,
                test_generate_job_cmd_build, test_convert_validation,
                test_orphaned_and_active, test_upload_validation):
         try:
