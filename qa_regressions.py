@@ -1154,6 +1154,52 @@ def test_stat_sum_table_perpoint_rollout() -> None:
           and "_sumFailTd({fail:r.n_fail,scored:r.n_scored})" in src)
 
 
+def test_dataset_summary_lines() -> None:
+    """Shared dataset-summary header (2026-09-16) for the reduce + sentinel reports:
+    totals, per-condition-dimension cardinality, DUTs, all-runs depth, per-site.
+    Must EXCLUDE run-metadata dims (serial/run/datetime/site/event-status) from the
+    condition count, and split per-site when >1 site present."""
+    import pandas as _pd
+    rows = []
+    def row(site, ser, dt, alc, hn, f, v):
+        return {"Frequency_MHz": f, "Value": v,
+                "Group": (f"AlcState: {alc}  HarmonicNumber: {hn}  Serial Number: {ser}  "
+                          f"Test Event Status: P  Site: {site}  Test Run Datetime: {dt}")}
+    # 2 sites, 2 AlcState x 2 Harmonic = 4 real conditions; serial/site/status/run excluded
+    for site, sers in (("SR", ["US001", "US002"]), ("AMC2", ["MY001"])):
+        for ser in sers:
+            for run, dt in enumerate(["2026/07/01 09:00:00", "2026/07/05 09:00:00"], 1):
+                for alc in ("TRUE", "FALSE"):
+                    for hn in ("2", "3"):
+                        for f in (10.0, 20.0, 30.0):
+                            rows.append(row(site, ser, dt, alc, hn, f, -70.0))
+    lines = pp.dataset_summary_lines(_pd.DataFrame(rows))
+    txt = "\n".join(lines)
+    check("summary: has header + core metrics",
+          "Dataset summary:" in txt and "measurements (rows)" in txt
+          and "test frequencies" in txt and "conditions" in txt)
+    check("summary: 3 distinct frequencies", "test frequencies    : 3 " in txt)
+    check("summary: conditions = 4 (AlcState x Harmonic; excludes serial/site/status/run)",
+          "conditions          : 4 " in txt and "AlcState=2" in txt and "HarmonicNumber=2" in txt)
+    check("summary: run-metadata dims are NOT counted as conditions",
+          "Serial" not in txt.split("conditions")[1].split("\n")[0]
+          and "Test Event Status" not in txt.split("conditions")[1].split("\n")[0]
+          and "Datetime" not in txt.split("conditions")[1].split("\n")[0])
+    check("summary: DUTs=3 and all-runs depth reported",
+          "DUTs                : 3" in txt and "runs/DUT (all-runs) : up to 2" in txt)
+    check("summary: per-site breakdown present (2 sites)",
+          "per site:" in txt and "SR " in txt and "AMC2 " in txt)
+    # wiring: both report builders must actually emit the summary header
+    red = (HERE / "padb_testpoint_reduce.py").read_text(encoding="utf-8")
+    sen = (HERE / "padb_sentinel.py").read_text(encoding="utf-8")
+    check("summary: reduce report wires in dataset_summary_lines",
+          "dataset_summary_lines(df)" in red and "summary_lines" in red
+          and "lines.extend(summary_lines)" in red)
+    check("summary: sentinel report wires in dataset_summary_lines",
+          "dataset_summary_lines(df)" in sen and "df.attrs.get(\"summary_lines\")" in sen
+          and "L.extend(summary_lines)" in sen)
+
+
 def test_run_index_derivation() -> None:
     """Reduction view (b): a reduction-study CSV carries 'Test Run Datetime' in the
     Group; _parse_group_fields must derive a per-(site, DUT) CHRONOLOGICAL run index
@@ -1397,7 +1443,7 @@ def main() -> None:
                test_scatter_draw_modes, test_site_compare_basis_rollout,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
-               test_run_index_derivation,
+               test_run_index_derivation, test_dataset_summary_lines,
                test_common_prelude_and_feature_registry,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:

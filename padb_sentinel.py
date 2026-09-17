@@ -78,6 +78,7 @@ def _prep(csv_path: Path, x_col: str | None) -> pd.DataFrame:
            (out["lo"].notna() & (out["value"] < out["lo"]))
     out["scored"] = has
     out["rowfail"] = fail & has
+    out.attrs["summary_lines"] = padb_plots.dataset_summary_lines(df)
     return out
 
 
@@ -161,12 +162,14 @@ def _fmt(v, d=4):
     return f"{v:.{d}f}"
 
 
-def build_report(csv_path: Path, r: dict) -> tuple[str, str]:
+def build_report(csv_path: Path, r: dict, summary_lines=None) -> tuple[str, str]:
     freqs = r["freqs"]
     conf, unres, regr = set(r["confirmed"]), set(r["unresolved"]), set(r["regression"])
     reexp, redun = set(r["reexpansion"]), set(r["redundancy"])
-    L = [f"Sentinel / audit-diff -- {csv_path.name}", "=" * 66,
-         f"Frequencies analysed : {len(freqs)}",
+    L = [f"Sentinel / audit-diff -- {csv_path.name}", "=" * 66]
+    if summary_lines:
+        L.extend(summary_lines); L.append("")
+    L += [f"Frequencies analysed : {len(freqs)}",
          f"Units x runs         : {r['n_units']} units, {r['n_runs']} (unit,run) test events",
          f"Primary site         : {r['primary_site'] or '(single site)'}", ""]
     L.append(f"CONFIRMED SENTINELS  : {len(conf)}   (fail -> pass across a repair/cal -- NEVER trim)")
@@ -240,7 +243,7 @@ def main(argv=None) -> None:
     if r.get("empty"):
         print("[NOTE] no scored (limit-bearing) measurements -- nothing to audit.")
         sys.exit(0)
-    txt, csv_txt = build_report(args.csv, r)
+    txt, csv_txt = build_report(args.csv, r, df.attrs.get("summary_lines"))
     out_dir = args.out or args.csv.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = args.csv.stem

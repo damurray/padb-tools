@@ -412,7 +412,7 @@ def _fragile_ceiling(label: str, frag: list[tuple[str, float]]):
 
 
 def build_report(csv_path: Path, conds, grid, protected, retained, dropped,
-                 eps, ret_count, floor, args, mu_budget) -> tuple[str, str]:
+                 eps, ret_count, floor, args, mu_budget, summary_lines=None) -> tuple[str, str]:
     n = len(grid)
     kept = sorted(retained)
     n_drop = len(dropped)
@@ -424,6 +424,9 @@ def build_report(csv_path: Path, conds, grid, protected, retained, dropped,
     lines: list[str] = []
     lines.append(f"Test-point trim recommendation -- {csv_path.name}")
     lines.append("=" * 68)
+    if summary_lines:
+        lines.extend(summary_lines)
+        lines.append("")
     lines.append(f"Swept frequencies:        {n}")
     lines.append(f"Recommend KEEP:           {len(kept)}")
     lines.append(f"Recommend DROP (redundant): {n_drop}   (~{pct:.1f}% fewer sweep points)")
@@ -580,8 +583,9 @@ def main(argv=None) -> None:
               f"floor_violations={bad_floor[:5]}")
         sys.exit(1)
 
+    summary_lines = padb_plots.dataset_summary_lines(df)
     txt, csv_txt = build_report(args.csv, conds, grid, protected, retained, dropped,
-                                eps, ret_count, floor, args, mu_budget)
+                                eps, ret_count, floor, args, mu_budget, summary_lines)
     out_dir = args.out or args.csv.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = args.csv.stem

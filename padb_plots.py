@@ -1559,6 +1559,75 @@ def _detect_group_cols(df: pd.DataFrame) -> list[tuple[str, str]]:
     return result
 
 
+def dataset_summary_lines(df: pd.DataFrame, x_unit: str = "MHz") -> list[str]:
+    """Dataset summary-statistics block (report header) for a loaded scatter df:
+    totals, per-condition-dimension cardinality, frequencies-per-condition, DUTs,
+    all-runs run depth, and per-site breakdown. Returns plain text lines. Parses
+    Group into _grp_* itself if not already parsed, so a caller can pass the raw
+    _load_scatter_for_stats output. Generic across pods -- shared by
+    padb_testpoint_reduce and padb_sentinel so every run leads with the same
+    counts."""
+    d = df
+    if "Frequency_MHz" in d.columns and "Value" in d.columns:
+        d = d.dropna(subset=["Frequency_MHz", "Value"])
+    if not any(c.startswith("_grp_") for c in d.columns) and "Group" in d.columns:
+        d = _parse_group_fields(d)
+    lines = ["Dataset summary:"]
+    n = len(d)
+    lines.append(f"  measurements (rows) : {n:,}")
+    if "Frequency_MHz" in d.columns and n:
+        fq = d["Frequency_MHz"].round(4)
+        lines.append(f"  test frequencies    : {fq.nunique()}   "
+                     f"(span {d['Frequency_MHz'].min():.6g} .. {d['Frequency_MHz'].max():.6g} {x_unit})")
+
+    def _is_meta(lbl: str) -> bool:
+        # Exclude serial/run/datetime/site AND run-outcome fields (Test Event/Run
+        # Status) -- those are per-run metadata, not measurement conditions, and
+        # would inflate the condition count.
+        l = lbl.lower()
+        return (any(k in l for k in ("serial", "unit id", "dut id", "s/n"))
+                or l == "run" or "datetime" in l or "test run" in l or l == "site"
+                or "event status" in l or "run status" in l)
+    cond_cols = [c for c in d.columns if c.startswith("_grp_") and not _is_meta(c[5:])]
+    if cond_cols and n:
+        d = d.copy()
+        d["_cond_all"] = d[cond_cols].astype(str).agg(" | ".join, axis=1)
+        dims = "; ".join(f"{c[5:]}={d[c].nunique(dropna=True)}" for c in cond_cols)
+        lines.append(f"  conditions          : {d['_cond_all'].nunique()}   ({dims})")
+        fpc = d.groupby("_cond_all")["Frequency_MHz"].apply(lambda s: s.round(4).nunique())
+        if len(fpc):
+            lines.append(f"  frequencies/condition: min {int(fpc.min())} / "
+                         f"median {int(fpc.median())} / max {int(fpc.max())}")
+
+    ser_col = next((c for c in d.columns if c.startswith("_grp_")
+                    and any(k in c[5:].lower() for k in ("serial", "unit id", "dut id"))), None)
+
+    def _duts(g):
+        if ser_col:
+            return g[ser_col].replace("", pd.NA).nunique(dropna=True)
+        return g["Serial"].replace("", pd.NA).nunique(dropna=True) if "Serial" in g.columns else 0
+
+    def _maxrun(g):
+        if "_grp_Run" not in g.columns:
+            return None
+        rr = g["_grp_Run"].str.extract(r"(\d+)")[0].astype(float)
+        return int(rr.max()) if rr.notna().any() else None
+    if n:
+        lines.append(f"  DUTs                : {_duts(d)}")
+        mr = _maxrun(d)
+        if mr is not None:
+            lines.append(f"  runs/DUT (all-runs) : up to {mr}")
+        site_col = next((c for c in d.columns if c.startswith("_grp_") and c[5:].strip().lower() == "site"), None)
+        if site_col is not None and d[site_col].nunique(dropna=True) > 1:
+            lines.append("  per site:")
+            for site, g in d.groupby(site_col):
+                gc = g["_cond_all"].nunique() if "_cond_all" in g.columns else 0
+                gmr = _maxrun(g)
+                lines.append(f"    {str(site):<6}: rows={len(g):,}  freqs={g['Frequency_MHz'].round(4).nunique()}"
+                             f"  DUTs={_duts(g)}  conds={gc}" + (f"  maxruns={gmr}" if gmr is not None else ""))
+    return lines
+
+
 def _floor_dec(v: float, ndigits: int) -> float:
     """Round DOWN to ndigits decimals. Used for the displayed/default lower
     frequency-filter bound: rounding a real min *up* (plain round()/f-string
