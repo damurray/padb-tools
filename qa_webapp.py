@@ -101,6 +101,11 @@ def _fake_run(cmd, *a, **k):
 
 padb_web.subprocess.run = _fake_run   # generate-job cmd build, taskkill, _pid_running
 
+_popen_calls: list[list[str]] = []
+# Mock the viewer-launch helper (NOT subprocess.Popen globally -- asyncio subclasses
+# subprocess.Popen, so replacing it with a function breaks unrelated imports).
+padb_web._launch_detached = lambda cmd, cwd: _popen_calls.append([str(x) for x in cmd])
+
 padb_web.DATA_DIR = _TMP
 client = padb_web.app.test_client()
 
@@ -523,6 +528,27 @@ def test_link_reduce_report_in_index():
     check("no index.html -> safe no-op", not (rd / "index.html").exists())
 
 
+def test_open_viewer():
+    """POST /api/open-viewer launches the large-dataset viewer server-side for a results
+    token -- a browser can't execute Open_in_viewer.bat from a link, so the local web app
+    launches it. Validates the token + that the folder actually has a parquet; the
+    subprocess launch is mocked (_fake_popen)."""
+    _popen_calls.clear()
+    rd = _TMP / "ov_results"; rd.mkdir(parents=True, exist_ok=True)
+    (rd / "x.parquet").write_bytes(b"PAR1")
+    token = padb_web._result_url(str(rd / "index.html")).split("/")[2]  # registers token
+    check("open-viewer rejects an unknown token",
+          client.post("/api/open-viewer", json={"token": "nope"}).status_code == 400)
+    r = client.post("/api/open-viewer", json={"token": token})
+    check("open-viewer launches the viewer for a token with a parquet",
+          r.status_code == 200 and r.get_json().get("ok") is True
+          and any("padb_viewer" in " ".join(c).lower() for c in _popen_calls))
+    rd2 = _TMP / "ov_noparq"; rd2.mkdir(parents=True, exist_ok=True)
+    token2 = padb_web._result_url(str(rd2 / "index.html")).split("/")[2]
+    check("open-viewer rejects a results folder with no parquet",
+          client.post("/api/open-viewer", json={"token": token2}).status_code == 400)
+
+
 def test_single_instance_guard():
     """A second webapp instance must NOT linger + run jobs in parallel with the real
     one (the 'multiple webapp generations' hole). main() refuses to start when :5000
@@ -560,7 +586,8 @@ def main() -> None:
                test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
                test_generate_reduce, test_compare_reduce_on_merged,
-               test_link_reduce_report_in_index, test_single_instance_guard,
+               test_link_reduce_report_in_index, test_open_viewer,
+               test_single_instance_guard,
                test_generate_job_cmd_build, test_convert_validation,
                test_orphaned_and_active, test_upload_validation):
         try:

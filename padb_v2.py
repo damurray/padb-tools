@@ -1482,22 +1482,45 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
             (output_dir / "Open_in_viewer.bat").write_text(_bat, encoding="utf-8")
         except OSError:
             pass
-        _bat_link = ("&#9654; <b><a href=\"Open_in_viewer.bat\">Open_in_viewer.bat</a></b> "
-                     "&mdash; a ready-to-run launcher is in this folder; <b>double-click it</b> "
-                     "to open the viewer (no command typing). "
-                     if (output_dir / "Open_in_viewer.bat").exists() else "")
         plis = "".join(
             f'<li><a href="{p.name}">&#128202; {p.name}</a> '
             f'({p.stat().st_size / 1e6:.1f} MB)</li>' for p in parquets)
+        # Primary path: an "Open in viewer" button that asks the (local) web app to
+        # launch the viewer server-side -- a browser can't run a .bat from a link (it
+        # just shows/downloads the text), and a downloaded .bat would run against the
+        # wrong folder anyway. Falls back to the folder's Open_in_viewer.bat when this
+        # page is opened off the share (file://) rather than through the web app.
+        _viewer_script = (
+            "<script>\n"
+            "function _pnqOpenViewer(){\n"
+            "  var m=document.getElementById('pnq_viewer_msg');\n"
+            "  var parts=location.pathname.split('/').filter(Boolean);\n"
+            "  var token=(parts[0]==='results')?parts[1]:null;\n"
+            "  if(location.protocol==='file:'||!token){ m.textContent="
+            "'Open this folder and double-click Open_in_viewer.bat to launch the viewer.'; return; }\n"
+            "  m.textContent='Launching viewer...';\n"
+            "  fetch('/api/open-viewer',{method:'POST',headers:{'Content-Type':'application/json'},"
+            "body:JSON.stringify({token:token})})\n"
+            "    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})\n"
+            "    .then(function(x){ m.textContent = x.ok ? (x.d.msg||'Viewer launching in a new window.')"
+            " : ('Could not launch: '+((x.d&&x.d.error)||'error')); })\n"
+            "    .catch(function(){ m.textContent="
+            "'Open this folder and double-click Open_in_viewer.bat to launch the viewer.'; });\n"
+            "}\n</script>\n")
         parquet_html = (
             '<h3>Large-dataset viewer</h3>'
             '<p style="font-size:.9em;color:#555">Compact <b>parquet</b> sidecar(s) of the '
-            'source data, for datasets too big to open as self-contained HTML. '
-            + _bat_link +
-            'Or run <code>py padb_viewer.py "&lt;this folder&gt;"</code>, or drop '
-            '<code>PADB_Viewer.exe</code> into this folder and double-click it '
-            '(it serves whatever parquet sits beside it).</p>'
-            f'<ul>{plis}</ul>')
+            'source data, for datasets too big to open as self-contained HTML.</p>'
+            '<p><button type="button" onclick="_pnqOpenViewer()" style="font-size:14px;'
+            'padding:4px 12px;cursor:pointer">&#9654; Open in viewer</button> '
+            '<span id="pnq_viewer_msg" style="font-size:.85em;color:#555"></span></p>'
+            '<p style="font-size:.85em;color:#555">The button works when this page is open '
+            'through the web app (127.0.0.1:5000). Otherwise open <b>this folder</b> and '
+            '<b>double-click Open_in_viewer.bat</b> (a browser can&rsquo;t run a .bat from a '
+            'link), or run <code>py padb_viewer.py "&lt;this folder&gt;"</code>, or drop '
+            '<code>PADB_Viewer.exe</code> here and double-click it.</p>'
+            f'<ul>{plis}</ul>'
+            + _viewer_script)
 
     title = cfg.get("index_title", prefix)
     # Suppress per-job description when multiple jobs share the same output dir

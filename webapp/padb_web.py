@@ -846,6 +846,46 @@ def serve_result(token, filename):
     return send_from_directory(dir_path, filename)
 
 
+def _launch_detached(cmd: list[str], cwd: str) -> None:
+    """Launch a process in its own console, detached from our stdout so it survives a
+    web-app restart (same lesson as the _stream pipe fix). Isolated in a helper so tests
+    can mock the launch without touching the global subprocess.Popen (asyncio subclasses
+    that, so it must stay a class)."""
+    subprocess.Popen(cmd, cwd=cwd, stdin=subprocess.DEVNULL,
+                     creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
+
+
+@app.route("/api/open-viewer", methods=["POST"])
+def open_viewer():
+    """Launch the large-dataset parquet viewer on a results folder, server-side. A
+    browser can't execute the Open_in_viewer.bat from a link (it just shows/downloads
+    it), but the web app runs locally, so it can start the viewer for the user. The
+    folder is resolved from the results token (only already-served results dirs), and
+    only launched if it actually has a parquet sidecar. Prefers a co-located
+    PADB_Viewer.exe, else runs padb_viewer.py; the viewer opens its own browser tab."""
+    body = request.get_json(force=True) or {}
+    token = (body.get("token") or "").strip()
+    dir_path = _RESULT_DIRS.get(token)
+    if not dir_path:
+        return jsonify(error="unknown results token -- open this page through the web app"), 400
+    d = Path(dir_path)
+    if not any(d.glob("*.parquet")):
+        return jsonify(error="no parquet sidecar in this results folder"), 400
+    exe = d / "PADB_Viewer.exe"
+    if exe.exists():
+        cmd = [str(exe)]
+    else:
+        vpy = TOOLS_DIR / "padb_viewer.py"
+        if not vpy.exists():
+            return jsonify(error="PADB_Viewer.exe not present and padb_viewer.py not found"), 400
+        cmd = [sys.executable, str(vpy), str(d)]
+    try:
+        _launch_detached(cmd, str(d))
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(error=f"failed to launch viewer: {exc}"), 500
+    return jsonify(ok=True, msg="Viewer launching in a new window -- it opens the data in your browser.")
+
+
 @app.route("/api/upload-pod", methods=["POST"])
 def upload_pod():
     f = request.files.get("pod")

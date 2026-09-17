@@ -1404,10 +1404,15 @@ def test_publish_and_parquet_index_link() -> None:
               "Large-dataset viewer" in with_pq
               and 'href="MyAnalytic.parquet"' in with_pq
               and "padb_viewer.py" in with_pq)
-        # One-click launcher: Open_in_viewer.bat is written + linked when a parquet exists.
+        # One-click launcher: an "Open in viewer" button (fetches /api/open-viewer so
+        # the local web app launches the viewer -- a browser can't run a .bat from a
+        # link), plus the Open_in_viewer.bat written to the folder for the file:// case.
         bat = d / "Open_in_viewer.bat"
-        check("parquet present -> Open_in_viewer.bat written + linked",
-              bat.exists() and 'href="Open_in_viewer.bat"' in with_pq)
+        check("parquet present -> 'Open in viewer' button wired to /api/open-viewer",
+              "Open in viewer" in with_pq and "_pnqOpenViewer" in with_pq
+              and "/api/open-viewer" in with_pq)
+        check("parquet present -> Open_in_viewer.bat written (file:// fallback), not a browser link",
+              bat.exists() and 'href="Open_in_viewer.bat"' not in with_pq)
         bat_txt = bat.read_text(encoding="utf-8")
         check("launcher bat prefers PADB_Viewer.exe then falls back to padb_viewer.py",
               "PADB_Viewer.exe" in bat_txt and "padb_viewer.py" in bat_txt
