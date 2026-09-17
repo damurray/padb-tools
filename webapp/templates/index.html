@@ -230,6 +230,7 @@
       <button id="convertSelectedBtn" title="Repoints each checked job's pod/results_dir/publish path to the target site -- auto-creates the site-converted pod first if it doesn't exist yet (prints when it does).">Convert Selected</button>
     </div>
     <div class="toolbar">
+      <span class="danger-chip" title="Destructive -- permanently deletes the checked job.json file(s) and (if ticked) their local results. Cannot be undone.">destructive</span>
       <label class="inline" title="If unchecked, only the job.json file itself is deleted -- its results_dir is left on disk."><input type="checkbox" id="deleteDataCheckbox" checked> Also delete local results data</label>
       <button id="deleteSelectedBtn" class="danger" title="Deletes the checked job.json file(s) and, optionally, their local results. Skips removing a results_dir that another surviving job.json still references (e.g. sibling plot jobs sharing one results_dir), so a shared directory is never pulled out from under a job you didn't select. Unschedules each job's Task Scheduler entry first if one exists.">Delete Selected</button>
       <span class="hint">Never removes the source .pod file or any already-published copy on the network share.</span>

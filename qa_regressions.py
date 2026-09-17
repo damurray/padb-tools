@@ -1560,6 +1560,12 @@ def test_webapp_optional_toolbars() -> None:
           'ph.value = ""' in appjs and "select site" in appjs)
     check("convert handlers guard an empty target site",
           appjs.count("Pick a target site to convert") >= 2)
+    # The Delete row is tagged 'destructive' (red chip), not 'optional' -- it's an
+    # irreversible action, so it gets a distinct warning marker.
+    check(".danger-chip class defined in style.css", ".danger-chip{" in css or ".danger-chip {" in css)
+    del_toolbar = idx.split('id="deleteSelectedBtn"', 1)[0].rsplit('<div class="toolbar">', 1)[-1]
+    check("destructive chip precedes Delete Selected (and it's not mislabeled optional)",
+          'class="danger-chip"' in del_toolbar and 'class="opt-chip"' not in del_toolbar)
 
 
 def test_scatter_spec_line_caveat() -> None:
