@@ -179,12 +179,17 @@
               and flags when your target % exceeds it.</li>
           </ul>
 
-          <b>To trust it, feed it the widest population you have.</b> Run it on <b>all runs</b> of each
-          DUT (so run-to-run behaviour is visible) and on <b>merged multi-site</b> data &mdash; a point
-          any site/run fails is then kept automatically. A companion run-to-run audit (coming with the
-          guided reduction study) marks a point that <i>fails then passes after a repair/cal</i> as a
-          <b>confirmed sentinel</b> (never trim), and a point that <i>passed before but fails now</i> as
-          a <b>re-expansion trigger</b> (add back to the screen) &mdash; the empirical way to catch new
+          <b>Extract ALL runs &mdash; that is where the failure mechanisms live.</b> A normal
+          last-run/passing-only extraction hides the very failures the reducer needs to see: it shows
+          each DUT only after it was already good. Pulling <b>every run</b> of each DUT (all-runs
+          extraction) brings the real <i>failure mechanisms</i> into the dataset, and that
+          <b>run history becomes part of the heuristics</b> &mdash; a point some run fails is kept
+          automatically, and each point's margin/variance then reflect its true run-to-run spread, not a
+          survivor snapshot. Feed it the widest population you have: all-runs <i>and</i> <b>merged
+          multi-site</b> data (a point any site/run fails is kept). The companion run-to-run audit reads
+          that same history to mark a point that <i>fails then passes after a repair/cal</i> as a
+          <b>confirmed sentinel</b> (never trim), and one that <i>passed before but fails now</i> as a
+          <b>re-expansion trigger</b> (add back to the screen) &mdash; the empirical way to catch new
           fault modes.
 
           <b>Note:</b> the frequencies come from the measured data, so an analysis pod has no sweep list
