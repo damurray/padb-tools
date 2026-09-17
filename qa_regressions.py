@@ -1437,6 +1437,15 @@ def test_site_compare_basis_rollout() -> None:
     for sid in ('id="stat_site_basis"', 'id="sum_site_basis"', "id='h_site_basis'", 'id="dist_site_cmp"'):
         check(f"site compare-to selector present: {sid}", sid in ppsrc)
     check("site compare-to selector present: ec_site_cmp (padb_v2)", 'id="ec_site_cmp"' in v2src)
+    # Label scoping (2026-09-17): the selector governs the Site Population Check
+    # panel, not the main stats table -- relabeled "Compare to:" -> "Site check vs:"
+    # so it doesn't read like a main-table control (user-reported confusion).
+    check("site basis selector relabeled 'Site check vs' (not 'Compare to')",
+          ("Site check vs" in ppsrc or "Site&nbsp;check&nbsp;vs" in ppsrc)
+          and "Site check vs" in v2src)
+    check("no stale 'Compare to' site-basis label remains",
+          "Compare to:" not in ppsrc and "Compare&nbsp;to:" not in ppsrc
+          and "Compare to:" not in v2src)
     # Bespoke spec classifiers (side-aware, verdict OUTSIDE==fails spec).
     check("bespoke _siteSpecClass present in >=3 views (box/stat/summary)",
           ppsrc.count("function _siteSpecClass(p)") >= 3)

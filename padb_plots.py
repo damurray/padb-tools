@@ -5761,7 +5761,7 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
             '&nbsp;k&times;IQR: <input type="number" id="dist_site_k" value="1.5" min="0" step="0.1" style="width:52px" onchange="updateDistSitePanel()"></label>\n'
             '  <label style="font-size:11px;color:#555" title="How to judge each non-primary point:'
             ' against the primary site fence (site-population shifts), the datasheet Spec/Limit (real'
-            ' pass/fail; Absolute basis only), or both.">&nbsp;Compare to:'
+            ' pass/fail; Absolute basis only), or both.">&nbsp;Site check vs:'
             ' <select id="dist_site_cmp" onchange="updateDistSitePanel()">'
             f'<option value="fence">{_ps_disp} fence</option>'
             '<option value="spec">Spec/Limit</option><option value="both">Both</option></select></label>\n'
@@ -9264,7 +9264,7 @@ def _build_stat_summary_html(
             '  <label style="font-size:12px;margin-left:6px"'
             ' title="How to judge each non-primary point: against the primary site\'s statistical'
             ' fence (site-population shifts), against the datasheet Spec/Limit (real pass/fail), or'
-            ' both side by side.">Compare&nbsp;to:&nbsp;'
+            ' both side by side. Governs the Site Population Check panel above, not the main Statistics Table.">Site&nbsp;check&nbsp;vs:&nbsp;'
             '<select id="stat_site_basis" onchange="updateSitePanel()">'
             '<option value="fence">' + primary_site + ' fence</option>'
             '<option value="spec">Spec/Limit</option>'
@@ -16133,7 +16133,7 @@ def _build_box_interactive_html(
             '  <label style="font-size:12px;margin-left:6px"'
             ' title="How to judge each non-primary point: against the primary site\'s statistical'
             ' fence (finds site-population shifts), against the datasheet Spec/Limit (real pass/fail),'
-            ' or both side by side.">Compare&nbsp;to:&nbsp;'
+            ' or both side by side. Governs the Site Population Check panel above, not the main Statistics Table.">Site&nbsp;check&nbsp;vs:&nbsp;'
             '<select id="box_site_basis" onchange="updateSitePanel()">'
             '<option value="fence">' + primary_site + ' fence</option>'
             '<option value="spec">Spec/Limit</option>'
@@ -18891,7 +18891,7 @@ def _build_summary_html(
             '  <label style="font-size:12px;margin-left:6px"'
             ' title="How to judge each non-primary point: against the primary site\'s statistical'
             ' fence (site-population shifts), against the datasheet Spec/Limit (real pass/fail), or'
-            ' both side by side.">Compare&nbsp;to:&nbsp;'
+            ' both side by side. Governs the Site Population Check panel above, not the main Results Table.">Site&nbsp;check&nbsp;vs:&nbsp;'
             '<select id="sum_site_basis" onchange="updateSitePanel()">'
             '<option value="fence">' + primary_site + ' fence</option>'
             '<option value="spec">Spec/Limit</option>'
@@ -19921,7 +19921,7 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
             "style='width:52px' onchange='updateSitePanel()'></label> "
             "<label style='font-size:11px;color:#555' title='How to judge each non-primary measurement: "
             "against the primary site fence (site-population shifts), the datasheet Spec/Limit (real pass/fail), or both.'>"
-            "&nbsp;Compare to: <select id='h_site_basis' onchange='updateSitePanel()'>"
+            "&nbsp;Site check vs: <select id='h_site_basis' onchange='updateSitePanel()'>"
             f"<option value='fence'>{html.escape(str(primary_site))} fence</option>"
             "<option value='spec'>Spec/Limit</option><option value='both'>Both</option></select></label> "
             f"<span style='color:#888;font-size:11px'>(compares each non-{html.escape(str(primary_site))} "
