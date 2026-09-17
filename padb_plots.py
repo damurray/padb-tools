@@ -1843,7 +1843,10 @@ def _af_control_html(prefix: str, preview_fn: str, clear_fn: str,
         '<option value="spec">Spec</option>'
         '<option value="tll">TLL/limit</option></select>'
         ' level '
-        f'<select id="{prefix}_auto_level" onchange="{preview_fn}()">'
+        f'<select id="{prefix}_auto_level" onchange="{preview_fn}()"'
+        ' title="How aggressively to auto-exclude bad DUTs: Off = inactive (nothing is'
+        ' auto-filtered); Conservative &lt; Moderate &lt; Aggressive flag progressively more'
+        ' borderline DUTs. Always previewed before anything is applied.">'
         '<option value="off" selected>Off</option>'
         '<option value="conservative">Conservative</option>'
         '<option value="moderate">Moderate</option>'
@@ -2616,7 +2619,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '<div class="ctrl-bar">\n'
         f'  {panels_html}\n'
         '  <div class="sep"></div>\n'
-        f'  <label title="Ctrl/Cmd-click to group by multiple parameters">Group&nbsp;by:'
+        f'  <label title="Ctrl/Cmd-click to split/colour the scatter traces by multiple parameters; none = one combined trace.">Group&nbsp;by:'
         f'<select id="groupby" multiple size="{_scat_grp_size}" style="vertical-align:middle" '
         f'onchange="update()">{grp_opts}</select></label>\n'
         '  <label>Sort:<select id="sortby" onchange="update()">\n'
@@ -2671,7 +2674,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  {hover_panel_html}\n'
         f'  {help_panel_html}\n'
         '  <div class="sep"></div>\n'
-        '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        '  <button class="reset-btn" title="Reset this view&#39;s filters and controls to their defaults. Does NOT clear the Global Filter -- use &quot;Clear global filter&quot; for that." onclick="resetFilters()">Reset</button>\n'
         '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
         ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         f'  {_csv_btn("saveCSV")}\n'
@@ -3315,7 +3318,7 @@ update();
         '    <button class="reset-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
         '  </div>\n'
         '  <div class="sep"></div>\n'
-        '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        '  <button class="reset-btn" title="Reset this view&#39;s filters and controls to their defaults. Does NOT clear the Global Filter -- use &quot;Clear global filter&quot; for that." onclick="resetFilters()">Reset</button>\n'
         '  <span id="n_points"></span>\n'
         "</div>\n"
         '<div id="plot"></div>\n'
@@ -3427,7 +3430,7 @@ function _spRender(rows,meta){
     (showSpecCol?'<i>Comparison: outside = '+primary+' fence (drives triage below); a separate Spec/Limit pass/fail is in the last column.</i><br>':'');
   var summaryPhrase=isSpec?('fail their own Spec/Limit'):('fall outside the '+primary+' '+meta.k+'&times;IQR fence ('+meta.basisLabel+') for their own '+meta.bucketLabel);
   var html='<div style="font-size:12px;margin-bottom:6px">'+basisPre+'<b>'+outside.length+'</b> of <b>'+rows.length+'</b> non-'+primary+' point(s) '+summaryPhrase+(nBenign?' (<b>'+nBenign+'</b> benign)':'')+(!isSpec&&nNA?' ('+nNA+' skipped -- <4 '+primary+' points in that group)':'')+(isSpec&&nNA?' ('+nNA+' have no spec/limit)':'')+'.'+dirNote+'</div>';
-  html+='<div style="margin:0 0 8px"><button class="csv-btn" onclick="'+meta.exportFnName+'(false)">&#8595; Export CSV (All)</button>&nbsp;&nbsp;<button class="csv-btn" onclick="'+meta.exportFnName+'(true)">&#8595; Export CSV (Outside only)</button></div>';
+  html+='<div style="margin:0 0 8px"><button class="csv-btn" onclick="'+meta.exportFnName+'(false)">&#8595; Export site-check CSV (All)</button>&nbsp;&nbsp;<button class="csv-btn" onclick="'+meta.exportFnName+'(true)">&#8595; Export site-check CSV (Outside only)</button></div>';
   var dutRows=Object.keys(roll.dutMap).map(function(k){return roll.dutMap[k];}).filter(function(d){return d.outside>0;}).sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
   if(dutRows.length){ html+='<div style="font-weight:600;margin:8px 0 2px">Per-DUT summary (suggested triage, not a verdict)</div><table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Checked</th><th>Outside</th><th>%</th><th>High</th><th>Low</th><th>Max dist</th><th>Shared w/ others</th><th>Suggested triage</th></tr></thead><tbody>';
     dutRows.forEach(function(d){var pct=(100*d.outside/d.checked).toFixed(0)+'%';var tag=d.tag?'<td class="'+d.tag.cls+'">'+d.tag.label+'</td>':'<td>&mdash;</td>';html+='<tr><td>'+d.site+'</td><td>'+d.serial+'</td><td>'+d.checked+'</td><td>'+d.outside+'</td><td>'+pct+'</td><td>'+d.high+'</td><td>'+d.low+'</td><td>'+d.maxDist.toFixed(4)+'</td><td>'+(d.sharedCount?d.sharedCount+' of '+d.outside:'&mdash;')+'</td>'+tag+'</tr>';});
@@ -5660,7 +5663,7 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
         + ser_panel_html + "\n"
         + (port_panel_html + "\n" if port_panel_html else "")
         + help_panel_html + "\n"
-        + '<button class="sel-btn" style="margin-left:6px" onclick="resetView()">Reset</button>\n'
+        + '<button class="sel-btn" style="margin-left:6px" title="Reset this view&#39;s filters and controls to their defaults. Does NOT clear the Global Filter -- use &quot;Clear global filter&quot; for that." onclick="resetView()">Reset</button>\n'
         + '<button class="sel-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
           ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         + "</div>\n"
@@ -5695,14 +5698,14 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
         '    <button class="sel-btn" id="segTabNext" onclick="segTab(1)">Next &#8594;</button>\n'
         '  </span>\n'
         '  <div class="sep"></div>\n'
-        '  <label>P:&nbsp;<select id="dist_P" onchange="update()" oninput="update()">'
+        '  <label title="P (coverage): the proportion of the population the tolerance interval is built to contain.">P&nbsp;(coverage):&nbsp;<select id="dist_P" onchange="update()" oninput="update()">'
         '<option value="0.80">80%</option>'
         '<option value="0.90">90%</option>'
         '<option value="0.95" selected>95%</option>'
         '<option value="0.99">99%</option>'
         '<option value="0.9973">99.73%</option>'
         '</select></label>\n'
-        '  <label>C:&nbsp;<select id="dist_C" onchange="update()" oninput="update()">'
+        '  <label title="C (confidence): the probability the tolerance interval really covers proportion P.">C&nbsp;(confidence):&nbsp;<select id="dist_C" onchange="update()" oninput="update()">'
         '<option value="0.90" selected>90%</option>'
         '<option value="0.95">95%</option>'
         '</select></label>\n'
@@ -7818,8 +7821,8 @@ function updateSitePanel(){
       '.'+dirNote+winNote+
       ' Scoped to Room temperature only -- stat_summary\'s per-DUT population is Room-only by design, so non-Room points can\'t be compared here (see boxplot\'s Site Population Check for a per-temperature check).</div>';
     html+='<div style="margin:0 0 8px">'+
-      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
-      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button>'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export site-check CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export site-check CSV (Outside only)</button>'+
       '</div>';
 
     var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
@@ -9048,7 +9051,7 @@ def _build_stat_summary_html(
     )
     _stat_grp_size = min(6, max(3, len(cond_dims) + 1))
     group_by_html = (
-        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition">'
+        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition. Regroups BOTH the plot traces and the Statistics/Results table below.">'
         f'Group&nbsp;by:<select id="statGroupBySel" multiple size="{_stat_grp_size}" '
         f'style="vertical-align:middle" onchange="_statGrpChanged();update()">\n{group_by_opts}\n</select></label>'
         if cond_dims else ""
@@ -9087,14 +9090,14 @@ def _build_stat_summary_html(
     _snap_C = min([0.90, 0.95], key=lambda x: abs(x - default_C))
     stat_bar = (
         '<div class="stat-bar" onclick="event.stopPropagation()">\n'
-        f'  <label><b>P:</b>&nbsp;<select id="stat_P" onchange="update()">'
+        f'  <label title="P (coverage): the proportion of the population the tolerance interval is built to contain."><b>P&nbsp;(coverage):</b>&nbsp;<select id="stat_P" onchange="update()">'
         f'<option value="0.80"{"  selected" if abs(_snap_P-0.80)<0.001 else ""}>80%</option>'
         f'<option value="0.90"{"  selected" if abs(_snap_P-0.90)<0.001 else ""}>90%</option>'
         f'<option value="0.95"{"  selected" if abs(_snap_P-0.95)<0.001 else ""}>95%</option>'
         f'<option value="0.99"{"  selected" if abs(_snap_P-0.99)<0.001 else ""}>99%</option>'
         f'<option value="0.9973"{"  selected" if abs(_snap_P-0.9973)<0.001 else ""}>99.73%</option>'
         f'</select></label>\n'
-        f'  <label><b>C:</b>&nbsp;<select id="stat_C" onchange="update()">'
+        f'  <label title="C (confidence): the probability the tolerance interval really covers proportion P."><b>C&nbsp;(confidence):</b>&nbsp;<select id="stat_C" onchange="update()">'
         f'<option value="0.90"{"  selected" if abs(_snap_C-0.90)<0.001 else ""}>90%</option>'
         f'<option value="0.95"{"  selected" if abs(_snap_C-0.95)<0.001 else ""}>95%</option>'
         f'</select></label>\n'
@@ -9226,7 +9229,10 @@ def _build_stat_summary_html(
         '<option value="spec">Spec</option>'
         '<option value="tll">TLL/limit</option></select>'
         ' level '
-        '<select id="stat_auto_level" onchange="statAutoFilterPreview()">'
+        '<select id="stat_auto_level" onchange="statAutoFilterPreview()"'
+        ' title="How aggressively to auto-exclude bad DUTs: Off = inactive (nothing is'
+        ' auto-filtered); Conservative &lt; Moderate &lt; Aggressive flag progressively more'
+        ' borderline DUTs. Always previewed before anything is applied.">'
         '<option value="off" selected>Off</option>'
         '<option value="conservative">Conservative</option>'
         '<option value="moderate">Moderate</option>'
@@ -9245,7 +9251,7 @@ def _build_stat_summary_html(
         ' across all views, so this clears the auto-filter (and any manual exclusion) for every view at'
         ' once -- the one-click undo for an auto-filter you did not want."'
         ' onclick="clearStatGlobalFilter()">Clear global filter</button>\n'
-        '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        '  <button class="reset-btn" title="Reset this view&#39;s filters and controls to their defaults. Does NOT clear the Global Filter -- use &quot;Clear global filter&quot; for that." onclick="resetFilters()">Reset</button>\n'
         '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
         ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         f'  {_csv_btn("saveCSV")}\n'
@@ -11237,7 +11243,7 @@ def _build_env_coverage_html(
     )
     _ec_grp_size = min(6, max(3, len(cond_dims) + 1))
     group_by_html = (
-        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition">'
+        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition. Regroups BOTH the plot traces and the Statistics/Results table below.">'
         f'Group&nbsp;by:<select id="ecGroupBySel" multiple size="{_ec_grp_size}" '
         f'style="vertical-align:middle" onchange="_ecGrpChanged();update()">\n{group_by_opts}\n</select></label>'
         if cond_dims else ""
@@ -11354,7 +11360,7 @@ def _build_env_coverage_html(
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
         + ' this click instead"'
         + ' onclick="updateStatsTable(getGroupedConditions(),true)">Refresh&nbsp;table</button>\n'
-        + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        + '  <button class="reset-btn" title="Reset this view&#39;s filters and controls to their defaults. Does NOT clear the Global Filter -- use &quot;Clear global filter&quot; for that." onclick="resetFilters()">Reset</button>\n'
         + '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
           ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         + f'  <button class="gf-toggle-btn" id="ec_gf_toggle_btn" onclick="toggleEcGf()">GF:&nbsp;ON</button>\n'
@@ -11406,8 +11412,8 @@ def _build_env_coverage_html(
     room_bar = (
         '<div class="pc-bar room-bar">\n'
         f'  <b>Room:</b>\n'
-        f'  {_slider("ec_P_room", "P", default_P, _update_lbl("ec_P_room", 4), "Proportion for Room TI")}\n'
-        f'  {_c_slider("ec_C_room", "C", default_C, _update_lbl("ec_C_room", 2), "Confidence for Room TI")}\n'
+        f'  {_slider("ec_P_room", "P", default_P, _update_lbl("ec_P_room", 4), "P (coverage): proportion of the population the Room tolerance interval is built to contain.")}\n'
+        f'  {_c_slider("ec_C_room", "C", default_C, _update_lbl("ec_C_room", 2), "C (confidence): probability the Room tolerance interval really covers proportion P.")}\n'
         f'  {_n_ovr("ec_n_room", "Override n used for k-factor lookup (extrapolation to larger population)")}\n'
         '</div>\n'
     )
@@ -11415,8 +11421,8 @@ def _build_env_coverage_html(
     env_bar = (
         '<div class="pc-bar env-bar">\n'
         f'  <b>&#916;Env:</b>\n'
-        f'  {_slider("ec_P_env", "P", default_P, _update_lbl("ec_P_env", 4), "Proportion for ΔEnv TI")}\n'
-        f'  {_c_slider("ec_C_env", "C", default_C, _update_lbl("ec_C_env", 2), "Confidence for ΔEnv TI")}\n'
+        f'  {_slider("ec_P_env", "P", default_P, _update_lbl("ec_P_env", 4), "P (coverage): proportion of the population the ΔEnv tolerance interval is built to contain.")}\n'
+        f'  {_c_slider("ec_C_env", "C", default_C, _update_lbl("ec_C_env", 2), "C (confidence): probability the ΔEnv tolerance interval really covers proportion P.")}\n'
         f'  {_n_ovr("ec_n_env", "Override n used for k-factor lookup (extrapolation to larger population)")}\n'
         f'  <label title="Measurement Uncertainty (dB) — subtracted from spec limits to give TTU/TTL">'
         f'M.U.:&nbsp;<input type="number" id="ec_mu" value="0" min="0" step="0.001"'
@@ -14232,8 +14238,8 @@ function updateSitePanel(){
       (isSpecBasis&&nNA?' ('+nNA+' have no spec/limit configured)':'')+
       '.'+dirNote+winNote+'</div>';
     html+='<div style="margin:0 0 8px">'+
-      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
-      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button>'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export site-check CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export site-check CSV (Outside only)</button>'+
       '</div>';
 
     var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
@@ -16237,7 +16243,10 @@ def _build_box_interactive_html(
         '<option value="spec">Spec</option>'
         '<option value="tll">TLL/limit</option></select>'
         ' level '
-        '<select id="auto_gf_level" onchange="autoFilterPreview()">'
+        '<select id="auto_gf_level" onchange="autoFilterPreview()"'
+        ' title="How aggressively to auto-exclude bad DUTs: Off = inactive (nothing is'
+        ' auto-filtered); Conservative &lt; Moderate &lt; Aggressive flag progressively more'
+        ' borderline DUTs. Always previewed before anything is applied.">'
         '<option value="off" selected>Off</option>'
         '<option value="conservative">Conservative</option>'
         '<option value="moderate">Moderate</option>'
@@ -16286,6 +16295,7 @@ def _build_box_interactive_html(
         'pick can make the filter broader than the plot.</span>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff0f0;border-color:#c00;color:#c00;font-weight:600"'
+        ' title="Reset this view&#39;s filters and controls to their defaults. Does NOT clear the Global Filter -- use &quot;Clear global filter&quot; for that."'
         ' onclick="clearEverything()">Clear everything</button>\n'
         + '  <button class="toggle-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
           ' boxes are currently visible, without changing any X (frequency) zoom">Autoscale&nbsp;Y</button>\n'
@@ -17680,8 +17690,8 @@ function updateSitePanel(){
       '.'+dirNote+winNote+
       ' Each point is a DUT\'s mean blended across all temperatures present in its condition (this view\'s own per-DUT data has no per-temperature breakdown -- see boxplot\'s Site Population Check for that).</div>';
     html+='<div style="margin:0 0 8px">'+
-      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
-      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button>'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(false)">&#8595;&nbsp;Export site-check CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="saveSitePopulationCSV(true)">&#8595;&nbsp;Export site-check CSV (Outside only)</button>'+
       '</div>';
 
     var dutRows=Object.values(dutMap).filter(function(d){return d.outside>0;})
@@ -18720,7 +18730,7 @@ def _build_summary_html(
     )
     _sum_grp_size = min(6, max(3, len(cond_dims) + 1))
     group_by_html = (
-        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition">'
+        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition. Regroups BOTH the plot traces and the Statistics/Results table below.">'
         f'Group&nbsp;by:<select id="sumGroupBySel" multiple size="{_sum_grp_size}" '
         f'style="vertical-align:middle" onchange="_sumGrpChanged();update()">\n{group_by_opts}\n</select></label>'
         if cond_dims else ""
@@ -18852,14 +18862,14 @@ def _build_summary_html(
             '<div class="flt-bar" onclick="event.stopPropagation()">\n'
             + _temp_section
             + '  <b>Stat:</b>&nbsp;\n'
-            + '  <label>P:&nbsp;<select id="sum_P" onchange="update()">'
+            + '  <label title="P (coverage): the proportion of the population the tolerance interval is built to contain.">P&nbsp;(coverage):&nbsp;<select id="sum_P" onchange="update()">'
             + '<option value="0.80">80%</option>'
             + '<option value="0.90">90%</option>'
             + '<option value="0.95" selected>95%</option>'
             + '<option value="0.99">99%</option>'
             + '<option value="0.9973">99.73%</option>'
             + '</select></label>\n'
-            + '  <label>C:&nbsp;<select id="sum_C" onchange="update()">'
+            + '  <label title="C (confidence): the probability the tolerance interval really covers proportion P.">C&nbsp;(confidence):&nbsp;<select id="sum_C" onchange="update()">'
             + '<option value="0.90" selected>90%</option>'
             + '<option value="0.95">95%</option>'
             + '</select></label>\n'
@@ -18945,7 +18955,7 @@ def _build_summary_html(
         )
         + f'  {sep}\n'
         + f'  {help_panel_html}\n'
-        + '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
+        + '  <button class="reset-btn" title="Reset this view&#39;s filters and controls to their defaults. Does NOT clear the Global Filter -- use &quot;Clear global filter&quot; for that." onclick="resetFilters()">Reset</button>\n'
         + '  <button class="reset-btn" onclick="autoscaleY()" title="Fit the Y axis to whatever'
           ' is currently visible in the X range, without changing the X zoom">Autoscale&nbsp;Y</button>\n'
         + '  <span id="n_groups"></span>\n'
@@ -19600,8 +19610,8 @@ function updateSitePanel(){
       (!isSpecBasis&&nNA?' ('+nNA+' skipped -- fewer than 4 '+PRIMARY_SITE+' points in that group, fence not meaningful)':'')+
       (isSpecBasis&&nNA?' ('+nNA+' have no spec/limit configured)':'')+'.'+dirNote+'</div>';
     html+='<div style="margin:0 0 8px">'+
-      '<button class="csv-btn" onclick="hSaveSitePopulationCSV(false)">&#8595;&nbsp;Export CSV (All)</button>&nbsp;&nbsp;'+
-      '<button class="csv-btn" onclick="hSaveSitePopulationCSV(true)">&#8595;&nbsp;Export CSV (Outside only)</button></div>';
+      '<button class="csv-btn" onclick="hSaveSitePopulationCSV(false)">&#8595;&nbsp;Export site-check CSV (All)</button>&nbsp;&nbsp;'+
+      '<button class="csv-btn" onclick="hSaveSitePopulationCSV(true)">&#8595;&nbsp;Export site-check CSV (Outside only)</button></div>';
     var dutRows=Object.keys(dutMap).map(function(k){return dutMap[k];}).filter(function(d){return d.outside>0;})
       .sort(function(a,b){return b.outside-a.outside||b.maxDist-a.maxDist;});
     if(dutRows.length){

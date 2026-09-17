@@ -41,7 +41,7 @@
     <div id="publishRootRow" title="Your saved default publish root (padb_config.json's publish_root, per user). Blank 'Folder name' below publishes to &lt;this root&gt;\&lt;folder name&gt;\&lt;pod name&gt;. By convention it ends in 'PADB-Simple'; the Interactive tier is derived by swapping in 'PADB-Interactive'. Change it once here for a different product/share tree -- the generators pick it up on the next Generate.">
       <strong>Default share root:</strong>
       <input type="text" id="publishRootInput" size="58" placeholder="loading…">
-      <button type="button" id="saveRootBtn">Save default</button>
+      <button type="button" id="saveRootBtn" title="Save the path above as the default network share root for published results. Persists in padb_config and applies to future Generate Job / publish actions (per-user; does not move already-published files).">Save default</button>
       <span id="rootHint" class="hint"></span>
     </div>
     <form id="generateForm">

@@ -1463,6 +1463,40 @@ def test_site_compare_basis_rollout() -> None:
           ppsrc.count("PADB_specClass(p.value") >= 5)
 
 
+def test_control_context_clarity() -> None:
+    """Control-context clarity pass (2026-09-17, David: 'context for button, tables and
+    plots as obvious as possible'). Drift guard for the P1+P2 label/tooltip fixes:
+    P/C expanded + explained, Reset scope-tooltip'd, Group-by says what it regroups,
+    auto-filter level explained, Site-panel CSV disambiguated, webapp Save-default
+    tooltip'd."""
+    pp = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    idx = (HERE / "webapp" / "templates" / "index.html").read_text(encoding="utf-8")
+    # P1.1 P/C -- expanded label + coverage/confidence explanation (stat/sum/dist labels
+    # + env_coverage tooltips).
+    check("P/C explained as coverage/confidence",
+          "P (coverage)" in pp and "C (confidence)" in pp
+          and pp.count("P&nbsp;(coverage)") >= 3)
+    # P1.2 Reset -- scope tooltip on every reset/clear control (resetFilters x5,
+    # resetView, clearEverything).
+    check("Reset controls state they do NOT clear the Global Filter",
+          pp.count("Does NOT clear the Global Filter") >= 6)
+    # P2.3 Group-by -- says it regroups both plot and table.
+    check("Group-by tooltip states it regroups plot + table",
+          "Regroups BOTH the plot traces and the Statistics/Results table" in pp)
+    # P2.4 auto-filter level -- Off=inactive + aggressiveness explained (shared helper +
+    # stat + boxplot).
+    check("auto-filter level explains Off/aggressiveness",
+          pp.count("How aggressively to auto-exclude bad DUTs") >= 3)
+    # P2.5 Site-panel CSV disambiguated from the main CSV export.
+    check("Site-panel CSV export relabeled 'Export site-check CSV'",
+          "Export site-check CSV (All)" in pp
+          and "Export site-check CSV (Outside only)" in pp
+          and "Export CSV (All)" not in pp)
+    # Webapp: Save-default (share root) button now has a tooltip.
+    check("webapp Save-default button has a scope tooltip",
+          'id="saveRootBtn" title=' in idx)
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -1552,6 +1586,7 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_site_compare_basis_rollout,
+               test_control_context_clarity,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
                test_reduction_native_render_and_rplots,
