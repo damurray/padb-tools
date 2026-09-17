@@ -955,6 +955,14 @@ If loaded after the plot div, `Plotly.newPlot()` inline scripts inside the div r
 
 `fill:'tonexty'` is silently ignored by WebGL (`scattergl`) traces. All TI band and fill traces must use `type:'scatter'`.
 
+### scattergl markers can *look* like they cross the spec line when zoomed out — WebGL artifact, NOT a bug (documented 2026-09-17)
+
+Reported on `SG6311A_Phase_Noise_Pre_YS_check_scatter.html`: zoomed out, points appear to sit above the spec (Hi) line ("looks like TLL fails"); zoomed in, they're clearly below. **Verified this is a rendering artifact, not a data or coordinate error** — David chose to leave it documented rather than change rendering (WebGL is what lets the 56k-point phase-noise pages open at all; a global switch to SVG `scatter` would make big pods sluggish).
+
+What was checked on the live plot and found correct: the spec line is a data-space trace (`yref:'y'`), a proper `line.shape:'hv'` step mask following the real per-offset limits; every trace (markers + spec line) is `scattergl`, so there's no SVG-vs-WebGL cross-layer offset. The zoom dependence comes from two compounding WebGL/pixel facts: (1) the full Y range is huge (measured `[-188.5, -81.6]` ≈ **107 dB over ~480 px ≈ 0.22 dB/px**), so a 3 px marker covers ~0.6 dB — a point within ~½ dB below the line visually touches it; (2) `scattergl` positions markers with **float32** precision, which at a 107 dB span around −145 adds a sub-pixel wobble. Zooming in shrinks dB/px *and* restores precision, so the marker sits correctly — which is exactly why zoomed-in is fine. The marker's data value was always right.
+
+**Guidance:** judge pass/fail from the numbers (the Statistics Table, computed numerically), not by eyeballing markers vs the line at full zoom-out. (This often compounds with the spec-line caveat below — many "above the line" points belong to a *different measurement* with its own/absent limit.) If pixel-accurate near-limit inspection is ever genuinely needed, the fix would be an opt-in SVG-`scatter` render for small datasets — deliberately not built (perf).
+
 ---
 
 ## job.json: csv vs csv_file
