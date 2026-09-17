@@ -1404,19 +1404,28 @@ def test_publish_and_parquet_index_link() -> None:
               "Large-dataset viewer" in with_pq
               and 'href="MyAnalytic.parquet"' in with_pq
               and "padb_viewer.py" in with_pq)
-    # _publish copies html, *_report.pdf, *.parquet, PADB_Viewer.exe, reduction report.
+        # One-click launcher: Open_in_viewer.bat is written + linked when a parquet exists.
+        bat = d / "Open_in_viewer.bat"
+        check("parquet present -> Open_in_viewer.bat written + linked",
+              bat.exists() and 'href="Open_in_viewer.bat"' in with_pq)
+        bat_txt = bat.read_text(encoding="utf-8")
+        check("launcher bat prefers PADB_Viewer.exe then falls back to padb_viewer.py",
+              "PADB_Viewer.exe" in bat_txt and "padb_viewer.py" in bat_txt
+              and bat_txt.index("PADB_Viewer.exe") < bat_txt.index("padb_viewer.py"))
+    # _publish copies html, *_report.pdf, *.parquet, PADB_Viewer.exe, .bat, reduction report.
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "src"; dst = Path(td) / "dst"; src.mkdir()
         for name in ("a_scatter.html", "a_report.pdf", "a.parquet",
-                     "PADB_Viewer.exe", "a_testpoint_reduction.txt",
-                     "a_testpoint_reduction.csv"):
+                     "PADB_Viewer.exe", "Open_in_viewer.bat",
+                     "a_testpoint_reduction.txt", "a_testpoint_reduction.csv"):
             (src / name).write_bytes(b"x")
         (src / "notes.log").write_bytes(b"x")  # must NOT be published
         pv._publish(src, dst)
         published = {p.name for p in dst.iterdir()}
-        check("publish copies html/pdf/parquet/exe/reduction-report",
+        check("publish copies html/pdf/parquet/exe/bat/reduction-report",
               {"a_scatter.html", "a_report.pdf", "a.parquet", "PADB_Viewer.exe",
-               "a_testpoint_reduction.txt", "a_testpoint_reduction.csv"} <= published)
+               "Open_in_viewer.bat", "a_testpoint_reduction.txt",
+               "a_testpoint_reduction.csv"} <= published)
         check("publish does NOT copy unrelated files (e.g. .log)",
               "notes.log" not in published)
 
