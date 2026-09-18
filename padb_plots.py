@@ -7568,9 +7568,22 @@ function _statActiveDutVals(cond,fs){
     return true;
   });
 }
+/* Live manual Spec entry (stat_spec_hi / stat_spec_lo) -- the value a user types
+   when the CSV/pod carries no spec (the common case on a cross-site compare like
+   Absolute_Accuracy_NA, whose limits are all null). Read straight from the DOM so
+   it's always current, matching computeFreqResult's spec_hi_override/spec_lo_override. */
+function _statSpecEntry(){
+  function n(id){ var e=document.getElementById(id); if(!e) return null; var v=parseFloat(e.value); return isFinite(v)?v:null; }
+  return {hi:n('stat_spec_hi'), lo:n('stat_spec_lo')};
+}
+/* Effective per-DUT go/no-go limit: embedded per-DUT Limit -> raw Spec -> the manual
+   Spec entry -> page HI_SPEC/LO_SPEC. The manual entry was previously skipped, so the
+   per-point table's Limit hi/lo + Status (and the grouped "# fail / n" cell) stayed
+   "—" even after a spec was typed on a no-spec-in-data compare (David 2026-09-18). */
 function _statDutLimits(d){
-  var hi=(d.upper_limit!=null?d.upper_limit:(d.spec_hi!=null?d.spec_hi:(typeof HI_SPEC!=='undefined'?HI_SPEC:null)));
-  var lo=(d.lower_limit!=null?d.lower_limit:(d.spec_lo!=null?d.spec_lo:(typeof LO_SPEC!=='undefined'?LO_SPEC:null)));
+  var man=_statSpecEntry();
+  var hi=(d.upper_limit!=null?d.upper_limit:(d.spec_hi!=null?d.spec_hi:(man.hi!=null?man.hi:(typeof HI_SPEC!=='undefined'?HI_SPEC:null))));
+  var lo=(d.lower_limit!=null?d.lower_limit:(d.spec_lo!=null?d.spec_lo:(man.lo!=null?man.lo:(typeof LO_SPEC!=='undefined'?LO_SPEC:null))));
   return {hi:_siteNum(hi),lo:_siteNum(lo)};
 }
 function _statDutStatus(d){

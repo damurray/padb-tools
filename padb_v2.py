@@ -1520,8 +1520,23 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
             " : ('Could not open folder: '+((x.d&&x.d.error)||'error')); })\n"
             "    .catch(function(){ m.textContent='Open the results folder on disk to find the files.'; });\n"
             "}\n</script>\n")
+        # Collapsed by default (the viewer is optional). Auto-expand ONLY when a
+        # published view page is genuinely huge (>= VIEW_SIZE_WARN_MB) -- i.e. the
+        # self-contained HTML is actually hard to open, so the viewer is worth
+        # surfacing up front. Otherwise it stays a one-line collapsible entry.
+        _view_htmls = [p for p in output_dir.glob("*.html") if p.name != "index.html"]
+        _max_html_mb = max((p.stat().st_size / 1e6 for p in _view_htmls), default=0.0)
+        _auto_open = _max_html_mb >= VIEW_SIZE_WARN_MB
+        _open_attr = " open" if _auto_open else ""
+        _big_note = (f' &mdash; <span style="color:#b02a37;font-weight:600">large pages '
+                     f'detected (~{_max_html_mb:.0f} MB); use the viewer</span>'
+                     if _auto_open else
+                     ' <span style="font-weight:400;color:#888">&mdash; only needed if a '
+                     'page is too big to open</span>')
         parquet_html = (
-            '<h3>Large-dataset viewer (optional)</h3>'
+            f'<details{_open_attr} style="margin:18px 0 4px">'
+            f'<summary style="font-size:1.05em;color:#444;font-weight:bold;cursor:pointer">'
+            f'Large-dataset viewer (optional){_big_note}</summary>'
             '<p style="font-size:.9em;color:#555"><b>You only need this if the interactive '
             'HTML plots above are too slow or too large to open comfortably.</b> The HTML '
             'plots have all the same analysis &mdash; the viewer just serves the data from a '
@@ -1539,7 +1554,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
             'link), or run <code>py padb_viewer.py "&lt;this folder&gt;"</code>, or drop '
             '<code>PADB_Viewer.exe</code> here and double-click it.</p>'
             f'<ul>{plis}</ul>'
-            + _viewer_script)
+            + _viewer_script + '</details>')
 
     title = cfg.get("index_title", prefix)
     # Suppress per-job description when multiple jobs share the same output dir

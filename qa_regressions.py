@@ -1185,6 +1185,16 @@ def test_stat_sum_table_perpoint_rollout() -> None:
           and "if(useSerFlt&&selS.indexOf(d.s)<0) return false;" in src)
     check("stat table: #fail/n header column present",
           "How many DUTs fail the effective go/no-go Limit" in src)
+    # Per-point Limit hi/lo + Status (and the #fail cell) must fall back to the manual
+    # Spec entry (stat_spec_hi/lo) when the data carries no spec -- otherwise a compare
+    # with null CSV limits (e.g. Absolute_Accuracy_NA) shows "—" forever even after a
+    # spec is typed (David 2026-09-18). Pin the fallback in _statDutLimits.
+    check("stat table: per-DUT limit falls back to the manual Spec entry (_statSpecEntry)",
+          "function _statSpecEntry(" in src
+          and "getElementById('stat_spec_hi')" in src and "getElementById('stat_spec_lo')" in src)
+    check("stat table: _statDutLimits consults the manual entry (man.hi/man.lo) before page spec",
+          "var man=_statSpecEntry();" in src
+          and "man.hi!=null?man.hi:" in src and "man.lo!=null?man.lo:" in src)
     # stat_summary previously hardcoded a caret-less workflow button (every other
     # view uses the shared helper's flipping .wfcaret) -- surfaced by qa_filters'
     # workflow-toggle check. Pin it to the shared helper so it can't drift back.
@@ -1452,6 +1462,25 @@ def test_publish_and_parquet_index_link() -> None:
         # too slow/large to open.
         check("viewer section framed as optional / performance fallback",
               "(optional)" in with_pq and "only need this if" in with_pq)
+        # Collapsible (David 2026-09-18): the viewer section is a <details>/<summary>,
+        # collapsed by default (small pages here), auto-expanded only when a view page
+        # is very large (>= VIEW_SIZE_WARN_MB).
+        import re as _re
+        _m = _re.search(r"<details([^>]*)>", with_pq)
+        check("viewer section is a collapsible <details> with a <summary>",
+              _m is not None and "<summary" in with_pq)
+        check("viewer section collapsed by default for small pages (no auto-open)",
+              _m is not None and " open" not in _m.group(1))
+        _orig_warn = pv.VIEW_SIZE_WARN_MB
+        try:
+            pv.VIEW_SIZE_WARN_MB = 1e-9   # any nonzero view page now counts as "very large"
+            pv._write_index(d, "MyAnalytic", [d / "MyAnalytic_scatter.html"], {})
+            big_pq = (d / "index.html").read_text(encoding="utf-8")
+        finally:
+            pv.VIEW_SIZE_WARN_MB = _orig_warn
+        _mb = _re.search(r"<details([^>]*)>", big_pq)
+        check("viewer section auto-expands when a view page is very large",
+              _mb is not None and " open" in _mb.group(1) and "large pages detected" in big_pq)
         # One-click launcher: an "Open in viewer" button (fetches /api/open-viewer so
         # the local web app launches the viewer -- a browser can't run a .bat from a
         # link), plus the Open_in_viewer.bat written to the folder for the file:// case.
