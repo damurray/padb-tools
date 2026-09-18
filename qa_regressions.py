@@ -1533,6 +1533,28 @@ def test_repeat_collapse_is_mean() -> None:
           "function _collapseDupRuns(" in src and "out.v=sum/g.length;" in src)
 
 
+def test_site_check_table_cap_and_spinner() -> None:
+    """Site Population Check per-point detail tables (boxplot/stat_summary/summary/
+    histogram) render a <tr> per non-primary measurement -- on a large, high-
+    dimensional compare (e.g. 62-dim YIG switching, ~12k+ non-primary rows) that's
+    a huge uncapped DOM build. Cap the rendered rows at 5000 (summary counts + CSV
+    still cover ALL rows), and show a spinner while the panel computes/renders
+    (David 2026-09-18)."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # All 4 Site-check detail tables iterate a capped slice, not raw rows.
+    check("all 4 Site-check detail tables cap at 5000 (_siteShown)",
+          src.count("var _siteCapN=5000") >= 4 and src.count("_siteShown.forEach") >= 4)
+    check("Site-check cap shows a 'Showing first N of M' note; counts stay over all rows",
+          "Showing first '+_siteCapN.toLocaleString()+' of '+rows.length.toLocaleString()" in src
+          and "summary counts above are over all rows" in src)
+    # Busy spinner on slow panel render, deferred one frame so it paints first.
+    check("shared spinner + deferred-render helpers present",
+          "function PADB_spinnerHtml(" in src and "function PADB_deferRender(" in src
+          and "requestAnimationFrame(function(){ requestAnimationFrame(buildFn); })" in src)
+    check("all 4 Site-panel toggles render via PADB_deferRender (spinner then build)",
+          src.count("PADB_deferRender(") >= 5)   # 1 def + 4 toggle call sites
+
+
 def test_site_compare_basis_rollout() -> None:
     """The Site Population Check "Compare to" selector (fence/spec/both) was rolled
     out from boxplot to ALL views (2026-09-15): stat_summary, summary, histogram
@@ -1781,6 +1803,7 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
+               test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,

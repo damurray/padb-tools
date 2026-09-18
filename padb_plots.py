@@ -3473,6 +3473,20 @@ function PADB_fence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=
    div has actually rendered (SVG or WebGL layer present), with a ~60s safety timeout
    so it can never get stuck on. Single definition here -> every view behaves the same. */
 function PADB_busyHide(){ var b=document.getElementById('padb_busy'); if(b&&b.parentNode) b.parentNode.removeChild(b); }
+/* Small inline spinner for a slow table/panel render: paint this into the panel,
+   then build on the next frame (double-rAF) so a heavy table shows progress instead
+   of freezing. Reuses the @keyframes padbspin injected by _BUSY_OVERLAY_HTML (its
+   <style> stays in the DOM after PADB_busyHide removes only the #padb_busy div). */
+function PADB_spinnerHtml(msg){ return '<div style="padding:14px;color:#555;font:13px system-ui,Segoe UI,sans-serif">'+
+  '<span style="display:inline-block;width:16px;height:16px;border:3px solid #cfe0f5;border-top-color:#0066cc;'+
+  'border-radius:50%;animation:padbspin .8s linear infinite;vertical-align:-3px;margin-right:8px"></span>'+
+  (msg||'Rendering&hellip;')+'</div>'; }
+/* Show the spinner in `el`, then run buildFn on the next frame so the spinner paints
+   first. Used by user-initiated panel opens; the compute functions themselves stay
+   synchronous (so QA / programmatic callers are unaffected). */
+function PADB_deferRender(el,buildFn,msg){ if(!el){ buildFn(); return; }
+  el.innerHTML=PADB_spinnerHtml(msg);
+  requestAnimationFrame(function(){ requestAnimationFrame(buildFn); }); }
 (function(){
   var ids=['plot','kde_plot'],tries=0;
   function rendered(){ for(var i=0;i<ids.length;i++){ var gd=document.getElementById(ids[i]);
@@ -7783,7 +7797,7 @@ function toggleSitePanel(){
   var show=panel.style.display==='none';
   panel.style.display=show?'':'none';
   btn.textContent=(show?'▼':'▸')+' Site Population Check';
-  if(show) updateSitePanel();
+  if(show) PADB_deferRender(panel, updateSitePanel, 'Computing Site Population Check&hellip;');
 }
 /* Which direction is "toward failing" for this measurement, if determinable.
    Unlike boxplot/summary, stat_summary has no live TLL-direction selector
@@ -7999,12 +8013,14 @@ function updateSitePanel(){
     var outWord=isSpecBasis?'FAIL':'OUTSIDE';
     var inWord=isSpecBasis?'PASS':'inside';
     var showSpecCol=(siteBasis==='both');
+    var _siteCapN=5000, _siteShown=rows.length>_siteCapN?rows.slice(0,_siteCapN):rows;
+    if(rows.length>_siteCapN) html+='<div style="font-size:11px;color:#a06000;padding:2px 0">Showing first '+_siteCapN.toLocaleString()+' of '+rows.length.toLocaleString()+' rows &mdash; summary counts above are over all rows; use Export site-check CSV for the full detail.</div>';
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Freq</th>'+
       '<th>Value</th><th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th>'+
       (showSpecCol?'<th title="Independent pass/fail of this point vs its own datasheet Spec/Limit.">Spec&nbsp;P/F</th>':'')+
       '</tr></thead><tbody>';
-    rows.forEach(function(r){
+    _siteShown.forEach(function(r){
       var p=r.p;
       var vTd=r.verdict==='OUTSIDE'
         ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>'
@@ -14029,7 +14045,7 @@ function toggleSitePanel(){
   var show=panel.style.display==='none';
   panel.style.display=show?'':'none';
   btn.textContent=(show?'▼':'▸')+' Site Population Check';
-  if(show) updateSitePanel();
+  if(show) PADB_deferRender(panel, updateSitePanel, 'Computing Site Population Check&hellip;');
 }
 /* Which direction is "toward failing" for this measurement, if determinable.
    Reuses getTllDirection() (data-beats-config, respects a live TLL-selector
@@ -14435,6 +14451,8 @@ function updateSitePanel(){
     var outWord=isSpecBasis?'FAIL':'OUTSIDE';
     var inWord=isSpecBasis?'PASS':'inside';
     var showSpecCol=(siteBasis==='both');
+    var _siteCapN=5000, _siteShown=rows.length>_siteCapN?rows.slice(0,_siteCapN):rows;
+    if(rows.length>_siteCapN) html+='<div style="font-size:11px;color:#a06000;padding:2px 0">Showing first '+_siteCapN.toLocaleString()+' of '+rows.length.toLocaleString()+' rows &mdash; summary counts above are over all rows; use Export site-check CSV for the full detail.</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Port</th><th>Temp</th><th>Freq</th>'+
       '<th>Value</th>'+
       '<th title="Extra raw rows sharing this exact (site, serial, port, condition, temp, frequency) beyond one -- a genuine repeat test run on the point being checked itself, not the '+PRIMARY_SITE+' fence\'s population. A real, confirmed case: some datasets ran every point twice, universally -- the same (Serial, Freq) then legitimately appears as two separate rows with two different real values, which is not a data error.">Site&nbsp;dup&nbsp;pts</th>'+
@@ -14444,7 +14462,7 @@ function updateSitePanel(){
       '<th>Dir</th><th>Dist</th><th title="OUTSIDE (benign) means this point is outside the fence in the direction AWAY from a one-sided spec\'s fail side -- a real population difference, but not something that can fail spec.">Verdict</th>'+
       (showSpecCol?'<th title="Independent pass/fail of this point against its own datasheet Spec/Limit (the actual requirement), shown alongside the fence verdict.">Spec&nbsp;P/F</th>':'')+
       '</tr></thead><tbody>';
-    rows.forEach(function(r){
+    _siteShown.forEach(function(r){
       var p=r.p;
       var vTd=r.verdict!=='OUTSIDE'
         ?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>'+inWord+'</td>')
@@ -17659,7 +17677,7 @@ function toggleSitePanel(){
   var show=panel.style.display==='none';
   panel.style.display=show?'':'none';
   btn.textContent=(show?'▼':'▸')+' Site Population Check';
-  if(show) updateSitePanel();
+  if(show) PADB_deferRender(panel, updateSitePanel, 'Computing Site Population Check&hellip;');
 }
 /* Which direction is "toward failing" for this measurement, if determinable.
    Reuses getTllDirection() (data-beats-config, respects this view's own
@@ -17871,12 +17889,14 @@ function updateSitePanel(){
     var outWord=isSpecBasis?'FAIL':'OUTSIDE';
     var inWord=isSpecBasis?'PASS':'inside';
     var showSpecCol=(siteBasis==='both');
+    var _siteCapN=5000, _siteShown=rows.length>_siteCapN?rows.slice(0,_siteCapN):rows;
+    if(rows.length>_siteCapN) html+='<div style="font-size:11px;color:#a06000;padding:2px 0">Showing first '+_siteCapN.toLocaleString()+' of '+rows.length.toLocaleString()+' rows &mdash; summary counts above are over all rows; use Export site-check CSV for the full detail.</div>';
     html+='<div style="font-weight:600;margin:8px 0 2px">Per-point detail</div>';
     html+='<table class="stbl"><thead><tr><th>Site</th><th>Serial</th><th>Freq</th>'+
       '<th>Value</th><th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+PRIMARY_SITE+' n</th><th>Dir</th><th>Dist</th><th>Verdict</th>'+
       (showSpecCol?'<th title="Independent pass/fail of this point vs the datasheet Spec/Limit.">Spec&nbsp;P/F</th>':'')+
       '</tr></thead><tbody>';
-    rows.forEach(function(r){
+    _siteShown.forEach(function(r){
       var p=r.p;
       var vTd=r.verdict==='OUTSIDE'
         ?'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>'
@@ -19687,7 +19707,7 @@ function _hSiteTriage(d,towardFail){ if(!d.outside) return null;
 }
 var _hLastSiteRows=[], _hLastSiteMeta={};
 function toggleSitePanel(){ var p=document.getElementById('h_site_panel'),b=document.getElementById('h_site_btn'); if(!p||!b) return;
-  var show=p.style.display==='none'; p.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Site Population Check'; if(show) updateSitePanel(); }
+  var show=p.style.display==='none'; p.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Site Population Check'; if(show) PADB_deferRender(p, updateSitePanel, 'Computing Site Population Check&hellip;'); }
 function updateSitePanel(){
   var el=document.getElementById('h_site_panel'); if(!el||el.style.display==='none') return;
   try{
@@ -19782,13 +19802,15 @@ function updateSitePanel(){
     var outWord=isSpecBasis?'FAIL':'OUTSIDE';
     var inWord=isSpecBasis?'PASS':'inside';
     var showSpecCol=(siteBasis==='both');
+    var _siteCapN=5000, _siteShown=rows.length>_siteCapN?rows.slice(0,_siteCapN):rows;
+    if(rows.length>_siteCapN) html+='<div style="font-size:11px;color:#a06000;padding:2px 0">Showing first '+_siteCapN.toLocaleString()+' of '+rows.length.toLocaleString()+' rows &mdash; summary counts above are over all rows; use Export site-check CSV for the full detail.</div>';
     html+='<div style="overflow:auto;max-height:60vh;border:1px solid #eee"><table class="stbl"><thead><tr>'+
       '<th>Site</th><th>Serial</th>'+(otherDims.length?'<th>'+bucketLabel+'</th>':'')+'<th>Value</th>'+
       '<th>'+loLbl+'</th><th>'+hiLbl+'</th><th>'+PRIMARY_SITE+' n</th>'+
       '<th>Dir</th><th>Dist</th><th>Verdict</th>'+
       (showSpecCol?'<th title="Independent pass/fail of this measurement vs the datasheet Spec/Limit.">Spec&nbsp;P/F</th>':'')+
       '</tr></thead><tbody>';
-    rows.forEach(function(r){ var p=r.p;
+    _siteShown.forEach(function(r){ var p=r.p;
       var vTd=r.verdict!=='OUTSIDE'?(r.verdict==='n/a'?'<td style="color:#aaa">n/a</td>':'<td>'+inWord+'</td>')
         :r.specRelevant===false?'<td style="background:#eef3fb;border-left:2px solid #7a9cc6;color:#2c5c96" title="Away from the spec-fail direction -- population difference only, cannot fail this spec.">'+outWord+' (benign)</td>'
         :'<td style="background:#fff0e8;border-left:2px solid #e0905a;color:#c04000;font-weight:bold">'+outWord+'</td>';
