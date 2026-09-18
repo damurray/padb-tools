@@ -846,6 +846,30 @@ def serve_result(token, filename):
     return send_from_directory(dir_path, filename)
 
 
+@app.route("/api/open-folder", methods=["POST"])
+def open_folder():
+    """Open the results folder in Windows Explorer, server-side. A browser can't open a
+    local folder from a link; the web app runs locally so it can. Folder resolved from
+    the results token (only already-served dirs)."""
+    body = request.get_json(force=True) or {}
+    token = (body.get("token") or "").strip()
+    dir_path = _RESULT_DIRS.get(token)
+    if not dir_path or not Path(dir_path).is_dir():
+        return jsonify(error="unknown results token -- open this page through the web app"), 400
+    try:
+        _open_in_explorer(dir_path)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify(error=f"failed to open folder: {exc}"), 500
+    return jsonify(ok=True, msg="Opened the results folder in Explorer.")
+
+
+def _open_in_explorer(path: str) -> None:
+    """Open a folder in Windows Explorer. Isolated helper so tests mock it without
+    touching the global subprocess.Popen. explorer.exe returns exit 1 even on success,
+    so we don't check the result."""
+    subprocess.Popen(["explorer", os.path.normpath(path)])
+
+
 def _launch_detached(cmd: list[str], cwd: str) -> None:
     """Launch a process in its own console, detached from our stdout so it survives a
     web-app restart (same lesson as the _stream pipe fix). Isolated in a helper so tests

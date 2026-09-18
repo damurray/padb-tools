@@ -105,6 +105,7 @@ _popen_calls: list[list[str]] = []
 # Mock the viewer-launch helper (NOT subprocess.Popen globally -- asyncio subclasses
 # subprocess.Popen, so replacing it with a function breaks unrelated imports).
 padb_web._launch_detached = lambda cmd, cwd: _popen_calls.append([str(x) for x in cmd])
+padb_web._open_in_explorer = lambda path: _popen_calls.append(["explorer", str(path)])
 
 padb_web.DATA_DIR = _TMP
 client = padb_web.app.test_client()
@@ -547,6 +548,14 @@ def test_open_viewer():
     token2 = padb_web._result_url(str(rd2 / "index.html")).split("/")[2]
     check("open-viewer rejects a results folder with no parquet",
           client.post("/api/open-viewer", json={"token": token2}).status_code == 400)
+    # /api/open-folder opens the results dir in Explorer (launch mocked via Popen stub).
+    _popen_calls.clear()
+    check("open-folder rejects an unknown token",
+          client.post("/api/open-folder", json={"token": "nope"}).status_code == 400)
+    r3 = client.post("/api/open-folder", json={"token": token2})  # any real dir works
+    check("open-folder opens the folder for a valid token",
+          r3.status_code == 200 and r3.get_json().get("ok") is True
+          and any("explorer" in " ".join(c).lower() for c in _popen_calls))
 
 
 def test_single_instance_guard():

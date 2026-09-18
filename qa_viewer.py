@@ -106,6 +106,9 @@ def main() -> None:
     check("meta: bands present", len(m.get("bands", [])) == 2)
     check("meta: x_unit present", bool(m.get("x_unit")))
     check("meta: both sites", set(m.get("sites", [])) >= {"SR", "AMC"})
+    # Temperature read from the real Test Step column (not Group-parsed) -> reliable.
+    check("meta: multi-temp temps present", len(m.get("temps", [])) >= 2, str(m.get("temps")))
+    check("meta: is_room_only False for multi-temp data", m.get("is_room_only") is False)
 
     # --- scatter decimation + per-site traces ------------------------------
     s = client.get(f"/api/scatter?flo={xmin}&fhi={xmax}&maxpts=50&sites=SR,AMC").get_json()
@@ -113,6 +116,11 @@ def main() -> None:
     check("scatter: decimation cap respected", s["n_returned"] <= 50 * 2 + 4,
           f"n_returned={s['n_returned']}")
     check("scatter: n_total is full band", s["n_total"] == n_rows, str(s["n_total"]))
+    # Temperature filter actually narrows the data (one temp < all temps).
+    one_t = m["temps"][0]
+    st = client.get(f"/api/scatter?flo={xmin}&fhi={xmax}&maxpts=50&temps={one_t}").get_json()
+    check("scatter: temp filter narrows n_total", 0 < st["n_total"] < s["n_total"],
+          f"one_temp={st['n_total']} all={s['n_total']}")
 
     # --- band-windowed render of every view (lite) -------------------------
     blo, bhi = xmin, mid

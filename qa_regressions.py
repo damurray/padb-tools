@@ -1411,6 +1411,9 @@ def test_publish_and_parquet_index_link() -> None:
         check("parquet present -> 'Open in viewer' button wired to /api/open-viewer",
               "Open in viewer" in with_pq and "_pnqOpenViewer" in with_pq
               and "/api/open-viewer" in with_pq)
+        check("parquet present -> 'Open folder' button wired to /api/open-folder",
+              "Open folder" in with_pq and "_pnqOpenFolder" in with_pq
+              and "/api/open-folder" in with_pq)
         check("parquet present -> Open_in_viewer.bat written (file:// fallback), not a browser link",
               bat.exists() and 'href="Open_in_viewer.bat"' not in with_pq)
         bat_txt = bat.read_text(encoding="utf-8")

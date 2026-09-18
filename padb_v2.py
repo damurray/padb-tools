@@ -1506,6 +1506,19 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
             " : ('Could not launch: '+((x.d&&x.d.error)||'error')); })\n"
             "    .catch(function(){ m.textContent="
             "'Open this folder and double-click Open_in_viewer.bat to launch the viewer.'; });\n"
+            "}\n"
+            "function _pnqOpenFolder(){\n"
+            "  var m=document.getElementById('pnq_viewer_msg');\n"
+            "  var parts=location.pathname.split('/').filter(Boolean);\n"
+            "  var token=(parts[0]==='results')?parts[1]:null;\n"
+            "  if(location.protocol==='file:'||!token){ m.textContent="
+            "'This folder is on disk beside the parquet file.'; return; }\n"
+            "  fetch('/api/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},"
+            "body:JSON.stringify({token:token})})\n"
+            "    .then(function(r){return r.json().then(function(d){return {ok:r.ok,d:d};});})\n"
+            "    .then(function(x){ m.textContent = x.ok ? (x.d.msg||'Opened the folder.')"
+            " : ('Could not open folder: '+((x.d&&x.d.error)||'error')); })\n"
+            "    .catch(function(){ m.textContent='Open the results folder on disk to find the files.'; });\n"
             "}\n</script>\n")
         parquet_html = (
             '<h3>Large-dataset viewer</h3>'
@@ -1513,6 +1526,8 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
             'source data, for datasets too big to open as self-contained HTML.</p>'
             '<p><button type="button" onclick="_pnqOpenViewer()" style="font-size:14px;'
             'padding:4px 12px;cursor:pointer">&#9654; Open in viewer</button> '
+            '<button type="button" onclick="_pnqOpenFolder()" style="font-size:14px;'
+            'padding:4px 12px;cursor:pointer;margin-left:6px">&#128193; Open folder</button> '
             '<span id="pnq_viewer_msg" style="font-size:.85em;color:#555"></span></p>'
             '<p style="font-size:.85em;color:#555">The button works when this page is open '
             'through the web app (127.0.0.1:5000). Otherwise open <b>this folder</b> and '

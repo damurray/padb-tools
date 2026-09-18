@@ -140,16 +140,20 @@ def _detect_columns(schema_names, x_override=None, value_override=None):
     serial_col = first(lambda l: "serial num" in l or "serial no" in l
                        or l == "serial number" or l == "serial")
     group_col = lower.get("group")
+    # Temperature is a real column (PADB writes it as "Test Step"; some pods use a
+    # "temp"-named key) -- reading it is reliable, unlike parsing it out of Group.
+    temp_col = first(lambda l: l == "test step" or "temp" in l)
     value_col = value_override
     if not value_col:
-        skip = _META_COLS | {"", (x_col or "").lower(), (serial_col or "").lower()}
+        skip = _META_COLS | {"", (x_col or "").lower(), (serial_col or "").lower(),
+                             (temp_col or "").lower()}
         for n in schema_names:
             l = n.lower()
             if l in skip or "limit" in l:
                 continue
             value_col = n  # first plausible non-meta, non-limit column
             break
-    return x_col, value_col, serial_col, group_col
+    return x_col, value_col, serial_col, group_col, temp_col
 
 
 class DataSet:
@@ -160,12 +164,13 @@ class DataSet:
     def __init__(self, parquet_path: Path, x_override=None, value_override=None):
         self.path = parquet_path
         names = pq.ParquetFile(parquet_path).schema.names
-        self.x_col, self.value_col, self.serial_col, self.group_col = _detect_columns(
-            names, x_override, value_override)
+        self.x_col, self.value_col, self.serial_col, self.group_col, self.temp_col = \
+            _detect_columns(names, x_override, value_override)
         if not self.x_col or not self.value_col:
             sys.exit(f"Could not detect x/value columns in {parquet_path.name} "
                      f"(cols: {names}). Use --x / --value to set them.")
-        cols = [c for c in (self.x_col, self.value_col, self.serial_col, self.group_col) if c]
+        cols = [c for c in (self.x_col, self.value_col, self.serial_col,
+                            self.group_col, self.temp_col) if c]
         df = pq.read_table(parquet_path, columns=cols).to_pandas()
         df = df.rename(columns={self.x_col: "x", self.value_col: "y"})
         df["x"] = pd.to_numeric(df["x"], errors="coerce")
@@ -182,10 +187,21 @@ class DataSet:
             df["serial"] = df[self.serial_col].astype("category")
         else:
             df["serial"] = pd.Categorical(["?"] * len(df))
-        self.df = df[["x", "y", "site", "serial"]].sort_values("x").reset_index(drop=True)
+        # Temperature is read from its real column (Test Step / temp-named), NOT parsed
+        # out of Group -- the reliable source (David 2026-09-17). env_coverage &
+        # distribution need >=2 temperatures (a Room baseline + non-Room); room-only if
+        # there are fewer than 2 distinct temperatures -- matches the html build's own
+        # auto view-selection, which omits env/distribution for Room-only.
+        if self.temp_col and self.temp_col in df.columns:
+            df["temp"] = df[self.temp_col].astype(str).str.strip().replace("", "Room").astype("category")
+        else:
+            df["temp"] = pd.Categorical(["Room"] * len(df))
+        self.df = df[["x", "y", "site", "serial", "temp"]].sort_values("x").reset_index(drop=True)
         self.x_min = float(self.df["x"].min())
         self.x_max = float(self.df["x"].max())
         self.sites = list(map(str, self.df["site"].cat.categories))
+        self.temps = list(map(str, self.df["temp"].cat.categories))
+        self.is_room_only = len(self.temps) < 2
         self.value_label = self.value_col
         self.x_label = self.x_col
         m = re.search(r"\(([^)]+)\)", self.x_label)
@@ -201,16 +217,20 @@ class DataSet:
             "x_min": self.x_min,
             "x_max": self.x_max,
             "sites": self.sites,
+            "temps": self.temps,
             "n_serials": int(self.df["serial"].cat.categories.size),
             "x_unit": self.x_unit,
             "bands": self.bands,
+            "is_room_only": bool(self.is_room_only),
         }
 
-    def scatter(self, flo, fhi, sites, maxpts):
+    def scatter(self, flo, fhi, sites, maxpts, temps=None):
         d = self.df
         m = (d["x"] >= flo) & (d["x"] <= fhi)
         if sites:
             m &= d["site"].isin(sites)
+        if temps:
+            m &= d["temp"].isin(temps)
         sub = d[m]
         n_total = int(len(sub))
         traces = []
@@ -279,17 +299,14 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span>max <input type="number" id="fhi" step="any"></span>
   <span>max points <input type="number" id="maxpts" value="4000" step="500"></span>
   <span class="sitebox" id="sites"></span>
+  <span class="sitebox" id="temps"></span>
   <button onclick="update()">Update</button>
   <button onclick="resetView()">Reset</button>
   <span id="status"></span>
 </div>
 <div id="viewbar" style="padding:6px 14px;background:#eef4ff;border-bottom:1px solid #ddd;font-size:12px">
-  <b>Band view:</b>
-  <button onclick="openView('boxplot')">Boxplot</button>
-  <button onclick="openView('stat_summary')">Stat&nbsp;Summary</button>
-  <button onclick="openView('summary')">Summary</button>
-  <button onclick="openView('env_coverage')">Env&nbsp;Coverage</button>
-  <button onclick="openView('distribution')">Distribution</button>
+  <b>Band view</b> <span style="color:#888">(the full interactive plot, with all filters, for the current x-range):</span>
+  <span id="viewbtns"></span>
   <label style="margin-left:10px" title="Full render embeds every point -- enables Show-points, live serial/Y re-filtering, and the Site Population Check, but is slower and larger. Off (default) = fast lite render: exact boxes/stats/outliers, no per-point overlay.">
     <input type="checkbox" id="fullrender"> Full render (all points / Site check &mdash; slower)</label>
 </div>
@@ -318,6 +335,25 @@ async function boot(){
     sb.insertAdjacentHTML('beforeend',
       '<label><input type="checkbox" checked value="'+s+'" class="sitechk"> '+s+'</label>');
   });
+  // Temperature filter (only meaningful with >1 temp) -- read from the real Test Step
+  // column in the parquet, so it's reliable.
+  if(META.temps && META.temps.length>1){
+    const tb=document.getElementById('temps');
+    tb.insertAdjacentHTML('beforeend','<b style="margin-left:8px">Temp:</b> ');
+    META.temps.forEach(function(tp){
+      tb.insertAdjacentHTML('beforeend',
+        '<label><input type="checkbox" checked value="'+tp+'" class="tempchk"> '+tp+'</label>');
+    });
+  }
+  // Band-view buttons render the full interactive view for the current x-range.
+  // scatter/boxplot/stat_summary/summary always; env_coverage/distribution only for
+  // multi-temp data (they need a Room baseline + non-Room) -- matches the html build's
+  // auto view-selection, which omits them for Room-only.
+  var vbtns=[['scatter','Scatter'],['boxplot','Boxplot'],['stat_summary','Stat Summary'],['summary','Summary']];
+  if(META.is_room_only===false){ vbtns.push(['env_coverage','Env Coverage'],['distribution','Distribution']); }
+  var vb=document.getElementById('viewbtns');
+  vbtns.forEach(function(v){ var b=document.createElement('button'); b.textContent=v[1];
+    b.style.marginRight='6px'; b.onclick=function(){openView(v[0]);}; vb.appendChild(b); });
   if(META.bands && META.bands.length){
     const bb=document.getElementById('bands');
     META.bands.forEach((b,i)=>{
@@ -338,6 +374,7 @@ function setBand(lo,hi){
   update();
 }
 function selectedSites(){return [...document.querySelectorAll('.sitechk:checked')].map(c=>c.value);}
+function selectedTemps(){return [...document.querySelectorAll('.tempchk:checked')].map(c=>c.value);}
 function resetView(){document.getElementById('flo').value=META.x_min;document.getElementById('fhi').value=META.x_max;update();}
 function openView(v){
   const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
@@ -355,9 +392,10 @@ async function update(){
   const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
   const maxpts=document.getElementById('maxpts').value;
   const sites=selectedSites().join(',');
+  const temps=selectedTemps().join('|');
   document.getElementById('status').textContent='querying...';
   const t0=performance.now();
-  const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&sites=${encodeURIComponent(sites)}`)).json();
+  const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&sites=${encodeURIComponent(sites)}&temps=${encodeURIComponent(temps)}`)).json();
   const traces=r.traces.map(t=>({x:t.x,y:t.y,mode:'markers',type:'scattergl',
       name:t.site+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55}}));
   Plotly.react('plot',traces,{margin:{t:10,r:10},xaxis:{title:{text:META.x_label}},
@@ -391,7 +429,8 @@ def api_scatter():
     fhi = float(request.args.get("fhi", DS.x_max))
     maxpts = max(100, min(50000, int(float(request.args.get("maxpts", 4000)))))
     sites = [s for s in (request.args.get("sites", "") or "").split(",") if s]
-    return jsonify(DS.scatter(flo, fhi, sites, maxpts))
+    temps = [t for t in (request.args.get("temps", "") or "").split("|") if t]
+    return jsonify(DS.scatter(flo, fhi, sites, maxpts, temps))
 
 
 # --- Band-windowed rendering of the EXISTING interactive views (option B) -----
@@ -457,6 +496,11 @@ def api_view():
     flo = float(request.args.get("flo", DS.x_min))
     fhi = float(request.args.get("fhi", DS.x_max))
     full = request.args.get("full", "0") in ("1", "true", "True")
+    if view in ("env_coverage", "distribution") and getattr(DS, "is_room_only", False):
+        return Response(
+            f"<pre>{view} needs multi-temperature data (a Room baseline + non-Room "
+            f"readings) -- this dataset is Room-only, so it isn't available (same as the "
+            f"html build, which omits it for Room-only data).</pre>", mimetype="text/html")
     try:
         path, n = _render_view_band(view, flo, fhi, full=full)
     except Exception as exc:  # surface the real error in the iframe
