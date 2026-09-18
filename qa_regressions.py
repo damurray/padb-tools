@@ -1094,6 +1094,17 @@ def test_common_prelude_and_feature_registry() -> None:
     common_uses = src.count("_COMMON_JS") - 1
     check(f"_COMMON_JS injected into every V2 view (>=7 uses; found {common_uses})",
           common_uses >= 7)
+    # 2b) Busy/loading overlay (2026-09-18): a static #padb_busy div painted BEFORE the
+    #     big embedded-data <script>, hidden by PADB_busyHide (single def in _COMMON_JS)
+    #     once any plot div has rendered -- added to every interactive view so a large
+    #     page never just looks dead while the data parses/first render runs.
+    check("busy overlay: _BUSY_OVERLAY_HTML defined with #padb_busy spinner",
+          "_BUSY_OVERLAY_HTML = (" in src and 'id="padb_busy"' in src and "padbspin" in src)
+    check("busy overlay: single PADB_busyHide in _COMMON_JS + poll covers #plot and #kde_plot",
+          "function PADB_busyHide()" in src and "ids=['plot','kde_plot']" in src)
+    busy_inserts = src.count("+ _BUSY_OVERLAY_HTML")
+    check(f"busy overlay: inserted into all 7 interactive views (>=7; found {busy_inserts})",
+          busy_inserts >= 7)
     # 3) Pure pass/fail sites route through the single rule (no divergent inline copy).
     check("scatter/boxplot pass-fail route through PADB_isFail",
           "PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit)" in src

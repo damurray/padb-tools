@@ -2785,6 +2785,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + decimation_banner_html
         + spec_caveat_banner_html
         + env_bar_html + "\n"
+        + _BUSY_OVERLAY_HTML
         + '<div id="plot"></div>\n'
         + '<div id="scatter_table_panel" style="display:none"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
@@ -3466,7 +3467,37 @@ function PADB_isFail(v,hi,lo){ var c=PADB_specClass(v,hi,lo); return c.verdict==
    they can't drift. Returns {lo,hi,n}. */
 function PADB_pct(sorted,p){ if(!sorted.length) return NaN; var i=(p/100)*(sorted.length-1),lo=Math.floor(i); return lo+1<sorted.length?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo]; }
 function PADB_fence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.5; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=PADB_pct(s,25),q3=PADB_pct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
+/* Busy overlay (2026-09-18): a static #padb_busy div (see _BUSY_OVERLAY_HTML) is
+   painted before the big embedded-data <script>, so a large page doesn't look dead
+   while the data parses and the first Plotly render runs. Hidden once ANY known plot
+   div has actually rendered (SVG or WebGL layer present), with a ~60s safety timeout
+   so it can never get stuck on. Single definition here -> every view behaves the same. */
+function PADB_busyHide(){ var b=document.getElementById('padb_busy'); if(b&&b.parentNode) b.parentNode.removeChild(b); }
+(function(){
+  var ids=['plot','kde_plot'],tries=0;
+  function rendered(){ for(var i=0;i<ids.length;i++){ var gd=document.getElementById(ids[i]);
+    if(gd&&gd._fullLayout&&(gd.querySelector('.main-svg')||gd.querySelector('.gl-container'))) return true; } return false; }
+  function poll(){ tries++;
+    if(rendered()){ requestAnimationFrame(function(){ requestAnimationFrame(PADB_busyHide); }); return; }
+    if(tries>600){ PADB_busyHide(); return; }
+    setTimeout(poll,100); }
+  if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(poll,50);});
+  else setTimeout(poll,50);
+})();
 """
+
+# Static loading overlay, painted before the giant data <script> parses (so the page
+# never just looks dead). Hidden by PADB_busyHide (_COMMON_JS) after the first render.
+# Self-contained (own <style> for the keyframes) so any view can drop it in its body.
+_BUSY_OVERLAY_HTML = (
+    "<style>@keyframes padbspin{to{transform:rotate(360deg)}}"
+    "#padb_busy{position:fixed;inset:0;z-index:99999;display:flex;flex-direction:column;"
+    "align-items:center;justify-content:center;background:rgba(247,247,248,.92);"
+    "font:14px system-ui,Segoe UI,sans-serif;color:#333}"
+    "#padb_busy .sp{width:40px;height:40px;border:4px solid #cfe0f5;border-top-color:#0066cc;"
+    "border-radius:50%;animation:padbspin .8s linear infinite;margin-bottom:12px}</style>"
+    '<div id="padb_busy"><div class="sp"></div><div>Loading plot data&hellip;</div></div>\n'
+)
 
 _SITE_PANEL_SHARED_JS = r"""
 function _spFence(vals,k){ return PADB_fence(vals,k); }   // single shared Tukey fence (_COMMON_JS)
@@ -5745,6 +5776,7 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
+        + _BUSY_OVERLAY_HTML +
         '<div class="env-bar">\n'
         '<span style="font-size:12px;font-weight:600;color:#2e7d32;margin-right:8px">'
         "Temperatures:</span>\n"
@@ -9387,6 +9419,7 @@ def _build_stat_summary_html(
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
+        + _BUSY_OVERLAY_HTML
         + '<div style="padding:6px 8px 3px;font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px">'
         + '<b>Statistical Summary</b> &middot; <b>Room temperature only</b> &mdash; '
         + 'population mean, tolerance interval (TI) and pass/fail vs. limit, per frequency. '
@@ -11603,6 +11636,7 @@ def _build_env_coverage_html(
         f"<style>{css}</style>\n"
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
+        + _BUSY_OVERLAY_HTML +
         '<div id="filter-backdrop" onclick="closeAllFilterPanels()"></div>\n'
         + ctrl_bar
         + noise_disclaimer_html
@@ -16246,6 +16280,7 @@ def _build_box_interactive_html(
         f"<style>{css}</style>\n"
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
+        + _BUSY_OVERLAY_HTML
         + (
             (
                 (
@@ -19007,6 +19042,7 @@ def _build_summary_html(
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
+        + _BUSY_OVERLAY_HTML +
         '<div style="padding:6px 8px 3px;font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px">'
         '<b>Summary</b> &middot; <b>All temperatures combined</b> &mdash; '
         'worst-case min/max/mean and TTL (Total Tolerance Limit) band per condition, across every temperature. '
@@ -19977,6 +20013,7 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
 
     body = (
         "</head>\n<body>\n"
+        + _BUSY_OVERLAY_HTML +
         f"<div style='font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px;padding:4px 2px'>"
         f"<b>{html.escape(title)}</b> &mdash; value distribution (histogram). Overlaid per condition; "
         f"auto bins (Freedman&ndash;Diaconis){spec_note}. This test has no swept axis, so it's shown "
