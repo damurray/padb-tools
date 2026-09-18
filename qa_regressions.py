@@ -1553,6 +1553,10 @@ def test_site_check_table_cap_and_spinner() -> None:
           and "requestAnimationFrame(function(){ requestAnimationFrame(buildFn); })" in src)
     check("all 4 Site-panel toggles render via PADB_deferRender (spinner then build)",
           src.count("PADB_deferRender(") >= 5)   # 1 def + 4 toggle call sites
+    # Extended 2026-09-18: the 4 Statistics/Results table "Refresh" buttons (the
+    # explicit large-rebuild above the size-gate) also spinner-wrap via PADB_deferRender.
+    check("Statistics/Results Refresh buttons wrap the build in PADB_deferRender (spinner)",
+          src.count("PADB_deferRender(document.getElementById(") >= 4)
 
 
 def test_site_compare_basis_rollout() -> None:
