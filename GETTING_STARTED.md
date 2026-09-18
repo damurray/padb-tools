@@ -23,6 +23,7 @@ You're looking at this because you've been handed a `.pod` file and need interac
 | "Just give me the exact steps to run Interactive/V2 mode, one page, nothing else" | `Interactive_Mode_Cheatsheet.md` |
 | "Just give me the exact steps to compare two sites' data, one page, nothing else" | `Compare_Mode_Cheatsheet.md` |
 | "I was just sent a results link — how do I use the interactive plot controls?" | `Interactive_Plots_User_Guide.md` (no pipeline/job.json knowledge assumed) |
+| "A results page is too huge to open in a browser" | `padb_viewer.py` — the large-dataset (parquet) viewer; see `PADB_Tools_Guide.md` → **Large-dataset viewer** and the results `index.html` "Open in viewer" button |
 | "I just want a job.json generated from a pod, not written by hand" | `padb_make_job.py` (Simple/Legacy/Interactive extract job) — see `CLAUDE.md` → **`padb_make_job.py`** |
 | "I want the full Interactive/V2 job set generated from a pod, not hand-written" | `padb_make_v2_job.py` — see `CLAUDE.md` → **`padb_make_v2_job.py`** |
 | "I have the same test pulling from a different site's database (e.g. Santa Rosa vs. AMC2/Malaysia) and need a matching pod/job.json" | `padb_convert_site.py` — see `PADB_Tools_Guide.md` → **Converting Between Database Sites** |

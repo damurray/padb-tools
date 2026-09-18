@@ -10,6 +10,8 @@ Every page is a single, self-contained HTML file — no server, no login, no ins
 
 Most results are organized as a gallery: an `index.html` page with links to every individual view. If you were sent a direct link to one view (e.g. `..._scatter.html`), you can still get to the others — look for a link back to the index near the top of the page, or ask whoever sent it for the gallery link.
 
+A large view can take a few seconds to parse and draw its data. While it does, the page shows a **"Loading plot data…" spinner** so it never just looks dead — the spinner clears automatically once the plot has rendered. If a page is genuinely enormous (hundreds of MB), see **Large-dataset viewer** below.
+
 There are up to six kinds of view. Not every result has all six — which ones exist depends on the data (see **"Why don't I see a Distribution/Env Coverage/Summary view?"** below):
 
 | View | One-line summary |
@@ -51,7 +53,7 @@ None of these controls change the underlying result file — you're only changin
 
 **Controls specific to this view:**
 - **Group by** *(a different one from the shared list above — this is a display grouping, e.g. by serial number or by test step, not a statistical pooling)* — changes how traces are colored/split. Defaults to whichever dimension has the fewest distinct values, so the legend starts out as small as possible — switch it if you want a different breakdown.
-- **Sort** — reorders traces by name, by "worst" value, or by median.
+- **Sort** — reorders traces by name, by "worst first", or by median. **Worst first** ranks by the largest *error relative to spec* — the trace whose worst point sits furthest past (or closest to) its limit comes first. When the data has no spec limits at all, it falls back to ordering by highest raw value.
 - A dashed (or, for a frequency-varying spec, stepped) red line marks the spec limit(s), when the data has them.
 
 **Hover** over any point to see its exact frequency, value, and group label.
@@ -173,6 +175,18 @@ There's also an always-visible amber banner near the top noting anything one sit
 **On the Boxplot page specifically**, two extra columns help tell apart "this DUT was measured under more real test conditions than others" from "this DUT's own measurement was genuinely repeated": **Dup runs** / **Genuinely repeated freqs** in the per-DUT table, and **"SR dup pts"** in the per-point detail table (listing which established-site units, if any, have more than one raw measurement at that exact point, e.g. `US65080419×2`). See the FAQ below for why this distinction matters.
 
 **Export CSV (All)** / **Export CSV (Outside only)** buttons (Boxplot, Stat Summary, and Summary) download the per-point detail table exactly as shown, so you can take the flagged points into Excel or elsewhere.
+
+---
+
+## Large-dataset viewer (optional)
+
+Every view above is a single self-contained HTML file, which is what makes it so easy to open and share. The trade-off is that all the data is embedded in that one file — so a genuinely huge analytic (a wide phase-noise offset sweep, a big cross-site compare, millions of points) can produce a page too large for a browser to open comfortably.
+
+For those cases only, a results folder may include a **compact `.parquet` sidecar** and a **"Large-dataset viewer (optional)"** section on its `index.html`, with **Open in viewer** and **Open folder** buttons. The viewer is a small local program that reads the parquet and draws only the slice you're looking at, so it stays fast no matter how big the dataset is.
+
+- **You only need this if the interactive HTML plots are too slow or too large to open comfortably.** The HTML plots have all the same analysis — if they open fine for you, ignore the viewer entirely.
+- **Open in viewer** works when the page is opened through the local web app. Otherwise, open the folder and double-click **`Open_in_viewer.bat`**, or drop **`PADB_Viewer.exe`** into the folder and double-click it (a browser can't launch a program from a link).
+- The viewer opens in your browser at a `localhost` address. Its main scatter has a **frequency range** filter, **Site** and **temperature** checkboxes, and **band-view buttons** that render any of the full interactive views (Boxplot, Stat Summary, etc.) for just the frequency range you're looking at. **Autoscale / Reset axes** and drag-zoom on its main plot drive the frequency filter (and re-query), so zooming in refines detail rather than just magnifying.
 
 ---
 

@@ -1,16 +1,17 @@
 """Regenerate the local PDF copies of the *.md help docs (not tracked in git --
 see .gitignore -- these are personal, local-only build artifacts). Converts
-each Markdown source to styled HTML, then uses headless Edge's own
---print-to-pdf (the same Edge binary already used throughout this repo's own
-headless verification workflow) to render that HTML to PDF. Run again any
-time the underlying .md files change; safe to delete the output PDFs and
-re-run, they're not referenced by anything else in the pipeline.
+each Markdown source to styled HTML, then renders that HTML to PDF with
+**Playwright's bundled Chromium** (headless Edge's --print-to-pdf is dead on
+this workstation -- exits 0 and writes nothing -- which is also why
+padb_pdf_report.py moved to Playwright). Run again any time the underlying .md
+files change; safe to delete the output PDFs and re-run, they're not referenced
+by anything else in the pipeline.
+
+One-time engine setup (heavyweight Chromium download):
+    py -m pip install playwright markdown
+    py -m playwright install chromium
 """
-import re
-import shutil
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import markdown
@@ -20,11 +21,6 @@ DOCS = [
     "GETTING_STARTED.md",
     "Interactive_Plots_User_Guide.md",
     "PADB_Tools_Guide.md",
-]
-
-EDGE_CANDIDATES = [
-    r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-    r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
 ]
 
 CSS = """
@@ -51,43 +47,53 @@ a{color:#0066cc;}
 MD_EXTENSIONS = ["extra", "tables", "fenced_code", "toc", "sane_lists"]
 
 
-def find_edge() -> str:
-    for c in EDGE_CANDIDATES:
-        if Path(c).exists():
-            return c
-    sys.exit("Edge not found in any known location")
-
-
-def build_one(md_name: str, edge: str, out_dir: Path) -> Path:
+def _md_to_html(md_name: str) -> tuple[str, Path]:
     md_path = TOOLS_DIR / md_name
-    text = md_path.read_text(encoding="utf-8")
-    body = markdown.markdown(text, extensions=MD_EXTENSIONS)
+    body = markdown.markdown(md_path.read_text(encoding="utf-8"), extensions=MD_EXTENSIONS)
     title = md_name.replace(".md", "").replace("_", " ")
-    html = f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{title}</title>{CSS}</head><body>{body}</body></html>"
+    html = (f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{title}</title>"
+            f"{CSS}</head><body>{body}</body></html>")
+    return html, md_path
+
+
+def build_one(md_name: str, browser, out_dir: Path) -> Path:
+    """Render one .md to a styled PDF via Playwright's Chromium (page.pdf)."""
+    html, md_path = _md_to_html(md_name)
     html_path = out_dir / (md_path.stem + ".html")
     html_path.write_text(html, encoding="utf-8")
-
     pdf_path = TOOLS_DIR / (md_path.stem + ".pdf")
-    profile_dir = out_dir / (md_path.stem + "_profile")
-    cmd = [
-        edge, "--headless", "--disable-gpu", "--disable-crash-reporter",
-        f"--user-data-dir={profile_dir}",
-        "--print-to-pdf-no-header",
-        f"--print-to-pdf={pdf_path}",
-        f"file:///{html_path.as_posix()}",
-    ]
-    subprocess.run(cmd, check=True, capture_output=True, timeout=60)
+    page = browser.new_page()
+    try:
+        page.goto(html_path.as_uri(), wait_until="load")
+        page.emulate_media(media="print")
+        page.pdf(path=str(pdf_path), print_background=True, format="A4",
+                 margin={"top": "12mm", "bottom": "14mm", "left": "10mm", "right": "10mm"})
+    finally:
+        page.close()
     return pdf_path
 
 
 def main() -> None:
-    edge = find_edge()
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        sys.exit("Playwright not installed. Run: py -m pip install playwright markdown  "
+                 "&&  py -m playwright install chromium")
+    import tempfile
     with tempfile.TemporaryDirectory(prefix="padb_pdf_build_") as tmp:
         out_dir = Path(tmp)
-        for md_name in DOCS:
-            pdf_path = build_one(md_name, edge, out_dir)
-            size = pdf_path.stat().st_size
-            print(f"Wrote {pdf_path.name} ({size:,} bytes)")
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(args=["--no-sandbox", "--disable-gpu"])
+                try:
+                    for md_name in DOCS:
+                        pdf_path = build_one(md_name, browser, out_dir)
+                        print(f"Wrote {pdf_path.name} ({pdf_path.stat().st_size:,} bytes)")
+                finally:
+                    browser.close()
+        except Exception as exc:  # most likely: Chromium not downloaded
+            sys.exit(f"PDF build failed ({exc}).\n"
+                     f"If Chromium is missing, run: py -m playwright install chromium")
 
 
 if __name__ == "__main__":

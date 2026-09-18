@@ -534,6 +534,19 @@ Open `results\index.html` in any browser. Works from a network share — no serv
 - **Analytics card** — all analytics found in the pod, with a checkmark for each CSV collected
 - **Interactive Plots** — each secondary plot embedded as an iframe; click **Open full-screen** for full interactivity
 - **Downloads** — links to PDF reports, raw CSVs, `run.log`, and `_run.pod`
+- **Large-dataset viewer (optional)** — shown only when a `.parquet` sidecar is present; see below.
+
+---
+
+## Large-dataset viewer (parquet + `padb_viewer.py`)
+
+Self-contained HTML embeds every point, so a genuinely huge analytic (wide phase-noise offset sweeps, big cross-site compares, millions of points) can exceed what a browser can open. For those cases the pipeline writes a compact **parquet sidecar** next to the results and offers a small **local-server viewer** that serves only the slice being viewed.
+
+- **Parquet export** — `padb_v2.py` writes `<csv_stem>.parquet` (zstd, typically 80–140× smaller than the CSV) when a job sets `"export_parquet": true`, and **automatically** for compare jobs or when the source CSV is large (≥25 MB or ≥250k rows; per-job overridable via `export_parquet_auto_mb` / `export_parquet_auto_rows`). It never fails the build — a parquet error is logged and skipped.
+- **The viewer** — `py padb_viewer.py <folder-or-parquet>` starts a local Flask server (`http://127.0.0.1:<port>`) that reads the parquet once and answers server-side-decimated, filtered queries, so the browser never loads the whole dataset. Its main scatter has a frequency-range filter, Site and temperature checkboxes, and **band-view buttons** that render any full interactive view (boxplot/stat_summary/…) for the current frequency band. Autoscale / Reset-axes / drag-zoom on the main plot drive the frequency filter and re-query.
+- **`PADB_Viewer.exe`** — `py build_viewer.py` freezes the viewer to a single `.exe` (PyInstaller) so users without Python can drop it into a results folder and double-click it. The `.exe`/`.parquet`/build dirs are git-ignored — rebuild, never commit the binary.
+- **The results `index.html` links it** — an "Open in viewer" / "Open folder" section plus an `Open_in_viewer.bat`. `_publish()` copies the parquet, exe, and bat to the share so the link works there too.
+- **Keep the self-contained HTML for normal small/medium analytics** — it needs nothing. The viewer + parquet are only for the giants a browser can't open; the HTML plots carry all the same analysis.
 
 ---
 

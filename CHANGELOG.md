@@ -1,6 +1,32 @@
-# Changelog — 2026-08-17 to 2026-09-03
+# Changelog — 2026-08-17 to 2026-09-18
 
-Pulled directly from git history. A consolidated **week-of-Aug-27 summary** is first; the full day-by-day log follows.
+Pulled directly from git history. Newest summary first; the full day-by-day log follows.
+
+---
+
+## 2026-09-04 → 2026-09-18
+
+### Large-dataset viewer (parquet)
+- **Compact `.parquet` sidecar + `padb_viewer.py`** — self-contained HTML can't open a giant analytic (wide phase-noise sweeps, big compares, millions of points). `padb_v2.py` now writes a zstd parquet sidecar (80–140× smaller than the CSV) for compare jobs and large inputs; `padb_viewer.py` is a local Flask server that serves only the decimated/filtered slice being viewed, with a frequency filter, Site/temperature checkboxes, and band-view buttons that render any full view for the current range. `build_viewer.py` freezes it to `PADB_Viewer.exe`. The results `index.html` links it ("Open in viewer" / "Open folder" / `Open_in_viewer.bat`) and flags it **optional** — the HTML plots carry the same analysis; only reach for the viewer if they're too big to open.
+- **Viewer main-plot Autoscale / Reset axes / drag-zoom now drive the frequency filter** (and re-query), so zooming refines detail and the band-view buttons stay scoped.
+
+### Interactive views
+- **Busy/loading overlay on every view** — a "Loading plot data…" spinner painted before the data parses, cleared once the plot renders, so a large page never looks dead.
+- **Scatter "Worst first" sort** now ranks by largest **error relative to spec** (furthest past the limit), falling back to raw value only when the data has no spec.
+- **Compare-to selector (fence / Spec-Limit / both)** rolled out to all six views; **Site Population Check** selectable comparison basis; extended to env_coverage/distribution/histogram (with edit-reimport for the histogram, which has no Global Filter).
+- **Auto-filter bad DUTs + ⚙ Workflow & Recommendations** matured: per-site risk + reference/onboarding/both **site scope** on compares, **"Remove auto-filter"** (subtract only the auto increment), a **subpopulation / dual-distribution advisory** rolled out across the population views, and a "why no Apply button" explainer.
+- **Statistics/Results tables**: Grouped/Per-point toggle + **"# fail / n"** column (boxplot → stat_summary → summary); per-point Pass/Fail vs the effective limit; scatter data-rows table shows Spec/Limit bounds + per-point Pass/Fail. Per-point Limit/Status now honour a **manually-typed Spec** on data with no CSV spec.
+- **Scatter**: per-DUT line view + Draw modes + Smooth (phase-noise style); Room temperature is filterable.
+
+### Test-point reduction & sentinel
+- **`padb_testpoint_reduce.py`** (report-only test-plan trimmer, adaptive-noise ε + data-driven ceiling) and **`padb_sentinel.py`** (run-to-run audit-diff) added, with a reduction-study extraction primitive (all-runs + run-datetime grouping), a run-aware per-DUT scatter view, and a worked example. Wired into the webapp compare menu (reduce on merged data).
+
+### Comprehensive PDF report
+- **`padb_pdf_report.py`** — opt-in multi-view PDF (cover + every view with its table) built at build time via Playwright/Chromium (headless Edge is dead on this box); filter-aware and on-demand variants; site-scope option; index links + publishes the PDF.
+
+### Hardening & QA
+- **Shared JS prelude** (`_COMMON_JS`) — single `PADB_isFail` / `PADB_specClass` / `PADB_fence` for every view; Site spec-classifiers and fence helpers collapsed onto the shared rules. Plotly 3.6 axis-title fix across all views. New behavioral gate `qa_jsrules.py`, cross-view `qa_gf_crossview`, and a feature registry that fails until a feature is in all views.
+- **Webapp**: control-context clarity pass (optional/destructive tagging); compare panel creates-the-job-only; single-instance guard; `Start_web.bat` frees port 5000.
 
 ---
 

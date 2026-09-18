@@ -19,6 +19,8 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_config.py` | Shared per-user defaults (padb_exe, R-Plots/Logs/Data paths, publish root), optionally overridden via `padb_config.json` |
 | `padb_convert_site.py` | Converts a `.pod`/job.json between PADB database sites (e.g. Santa Rosa ↔ AMC2/Malaysia) — site registry in `padb_sites.json` — `py padb_convert_site.py --pod MyPod.pod --to AMC2` |
 | `padb_csv_check.py` | Pre-flight CSV sanity check — run between extraction and `padb_v2.py` to catch orphaned columns, inverted spec rows, and high Group cardinality before building plots — `py padb_csv_check.py path\to\Scatter.csv` |
+| `padb_viewer.py` | Local-server viewer for datasets too big to open as self-contained HTML — reads a compact `.parquet` sidecar (written automatically by `padb_v2.py` for compares / large data) and serves only the decimated slice being viewed — `py padb_viewer.py <results-folder>`. `build_viewer.py` freezes it to `PADB_Viewer.exe`. Optional: the HTML plots have the same analysis; use the viewer only when they're too large to open. |
+| `padb_pdf_report.py` | Opt-in comprehensive multi-view PDF report (cover + every view with its table), built via Playwright/Chromium; filter-aware and on-demand variants |
 | `padb_scheduler.py` | tkinter GUI for managing Windows Task Scheduler entries |
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
 | `padb_batch.py` | Shared PADB-R.exe launcher used by every entry point (CLI and web app) — enforces cross-process exclusivity so two PADB-R.exe instances never run concurrently and stall each other |
