@@ -21,6 +21,7 @@ DOCS = [
     "GETTING_STARTED.md",
     "Interactive_Plots_User_Guide.md",
     "PADB_Tools_Guide.md",
+    "CHANGELOG.md",
 ]
 
 CSS = """
