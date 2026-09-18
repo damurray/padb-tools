@@ -98,6 +98,24 @@ def main() -> None:
           V.DS.bands and abs(V.DS.bands[0]["hi"] - mid) < 1e-6,
           str(V.DS.bands[:1]))
 
+    # --- main-plot zoom/reset drives the frequency filter (JS in _PAGE) --------
+    # The scatter is server-side decimated per [flo,fhi], so a drag-zoom / Autoscale /
+    # Reset-axes must drive flo/fhi + re-query -- not just re-viewport the decimated
+    # points. Without this, band-view buttons inherit the full (giant) range and the
+    # "other plots" appear to show no data. Can't drive Plotly's modebar through the
+    # in-process test client, so pin the wiring in the page source.
+    page = V._PAGE
+    check("main plot: plotly_relayout listener wired", "plotly_relayout" in page)
+    check("main plot: _onRelayout handler present",
+          "_onRelayout" in page and "function _onRelayout" in page)
+    check("main plot: Autoscale/Reset -> full range (handles xaxis.autorange)",
+          "xaxis.autorange" in page)
+    check("main plot: drag-zoom reads xaxis.range", "xaxis.range" in page)
+    check("main plot: update() pins x-range to the queried band (range:[flo,fhi])",
+          "range:[flo,fhi]" in page)
+    check("main plot: react re-query guarded against relayout loop (_syncing)",
+          "_syncing" in page)
+
     client = V.app.test_client()
 
     # --- meta ---------------------------------------------------------------

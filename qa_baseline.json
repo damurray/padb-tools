@@ -9,7 +9,7 @@
       "failed": 4
     },
     "qa_viewer": {
-      "passed": 36,
+      "passed": 42,
       "failed": 0
     },
     "qa_js_segments": {
@@ -25,7 +25,7 @@
       "failed": 0
     },
     "qa_regressions": {
-      "passed": 302,
+      "passed": 303,
       "failed": 0
     },
     "qa_subpop": {

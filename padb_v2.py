@@ -1521,9 +1521,13 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
             "    .catch(function(){ m.textContent='Open the results folder on disk to find the files.'; });\n"
             "}\n</script>\n")
         parquet_html = (
-            '<h3>Large-dataset viewer</h3>'
-            '<p style="font-size:.9em;color:#555">Compact <b>parquet</b> sidecar(s) of the '
-            'source data, for datasets too big to open as self-contained HTML.</p>'
+            '<h3>Large-dataset viewer (optional)</h3>'
+            '<p style="font-size:.9em;color:#555"><b>You only need this if the interactive '
+            'HTML plots above are too slow or too large to open comfortably.</b> The HTML '
+            'plots have all the same analysis &mdash; the viewer just serves the data from a '
+            'compact <b>parquet</b> sidecar and draws only the slice you’re looking at, so '
+            'it stays fast on very large datasets. If the HTML plots open fine for you, you '
+            'can ignore this.</p>'
             '<p><button type="button" onclick="_pnqOpenViewer()" style="font-size:14px;'
             'padding:4px 12px;cursor:pointer">&#9654; Open in viewer</button> '
             '<button type="button" onclick="_pnqOpenFolder()" style="font-size:14px;'

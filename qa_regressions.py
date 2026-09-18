@@ -1404,6 +1404,11 @@ def test_publish_and_parquet_index_link() -> None:
               "Large-dataset viewer" in with_pq
               and 'href="MyAnalytic.parquet"' in with_pq
               and "padb_viewer.py" in with_pq)
+        # The viewer is a performance fallback, not a required step (David 2026-09-18):
+        # the HTML plots have the same analysis; only reach for the viewer if they're
+        # too slow/large to open.
+        check("viewer section framed as optional / performance fallback",
+              "(optional)" in with_pq and "only need this if" in with_pq)
         # One-click launcher: an "Open in viewer" button (fetches /api/open-viewer so
         # the local web app launches the viewer -- a browser can't run a .bat from a
         # link), plus the Open_in_viewer.bat written to the folder for the file:// case.

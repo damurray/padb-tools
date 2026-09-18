@@ -376,6 +376,32 @@ function setBand(lo,hi){
 function selectedSites(){return [...document.querySelectorAll('.sitechk:checked')].map(c=>c.value);}
 function selectedTemps(){return [...document.querySelectorAll('.tempchk:checked')].map(c=>c.value);}
 function resetView(){document.getElementById('flo').value=META.x_min;document.getElementById('fhi').value=META.x_max;update();}
+// The main plot is server-side decimated for the current [flo,fhi] band, so a
+// drag-zoom / Autoscale / Reset-axes must drive the frequency filter (and re-query)
+// rather than just re-viewport the already-drawn points. Mirrors the html views'
+// _onPlotRelayout. _syncing swallows the react-induced relayout so it can't loop.
+let _relayoutHooked=false, _syncing=false;
+function _onRelayout(ed){
+  if(_syncing||!ed) return;
+  // Modebar Autoscale / Reset axes -> return the frequency filter to the full range.
+  if(ed['xaxis.autorange']){
+    document.getElementById('flo').value=META.x_min;
+    document.getElementById('fhi').value=META.x_max;
+    update();
+    return;
+  }
+  // Drag-zoom on x -> narrow the frequency filter to the zoomed band and re-query,
+  // so server-side decimation refines detail instead of just magnifying the envelope.
+  let lo,hi;
+  if(ed['xaxis.range']){ lo=ed['xaxis.range'][0]; hi=ed['xaxis.range'][1]; }
+  else if(ed['xaxis.range[0]']!==undefined){ lo=ed['xaxis.range[0]']; hi=ed['xaxis.range[1]']; }
+  if(lo!==undefined&&hi!==undefined&&isFinite(+lo)&&isFinite(+hi)){
+    if(+hi<+lo){ const t=lo; lo=hi; hi=t; }
+    document.getElementById('flo').value=+lo;
+    document.getElementById('fhi').value=+hi;
+    update();
+  }
+}
 function openView(v){
   const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
   const full=document.getElementById('fullrender').checked?1:0;
@@ -389,7 +415,9 @@ function openView(v){
   wrap.scrollIntoView({behavior:'smooth'});
 }
 async function update(){
-  const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
+  const floN=parseFloat(document.getElementById('flo').value),
+        fhiN=parseFloat(document.getElementById('fhi').value);
+  const flo=isFinite(floN)?floN:META.x_min, fhi=isFinite(fhiN)?fhiN:META.x_max;
   const maxpts=document.getElementById('maxpts').value;
   const sites=selectedSites().join(',');
   const temps=selectedTemps().join('|');
@@ -398,8 +426,15 @@ async function update(){
   const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&sites=${encodeURIComponent(sites)}&temps=${encodeURIComponent(temps)}`)).json();
   const traces=r.traces.map(t=>({x:t.x,y:t.y,mode:'markers',type:'scattergl',
       name:t.site+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55}}));
-  Plotly.react('plot',traces,{margin:{t:10,r:10},xaxis:{title:{text:META.x_label}},
+  _syncing=true;
+  // Pin x to the queried band so react() doesn't autorange-fire a spurious relayout
+  // that _onRelayout would read as a Reset. Modebar Autoscale/Reset still emit
+  // xaxis.autorange and are handled above.
+  Plotly.react('plot',traces,{margin:{t:10,r:10},
+      xaxis:{title:{text:META.x_label},range:[flo,fhi]},
       yaxis:{title:{text:META.value_label}},legend:{orientation:'h'}},{responsive:true});
+  if(!_relayoutHooked){ document.getElementById('plot').on('plotly_relayout',_onRelayout); _relayoutHooked=true; }
+  setTimeout(()=>{_syncing=false;},0);
   document.getElementById('status').textContent =
      r.n_total.toLocaleString()+' pts in view -> '+r.n_returned.toLocaleString()+
      ' drawn ('+Math.round(performance.now()-t0)+' ms)';
