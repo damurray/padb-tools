@@ -1,14 +1,14 @@
 # PADB Tools — Developer Context for Claude Code
 
-This file is read automatically by Claude Code at session start. It captures the non-obvious implementation decisions, file layout, active work, and gotchas that are not apparent from reading the code alone.
+Read automatically at session start. Captures non-obvious decisions, layout, and gotchas not apparent from the code. **Detailed fix history lives in `CHANGELOG.md` and git**; this file keeps the durable *rules*. Dates in parentheses are when a rule landed.
 
 ---
 
 ## What this repo is
 
-`padb-tools` automates PADB-R.exe — Keysight's RF characterisation database tool — to run headlessly, collect CSV outputs, and generate self-contained interactive HTML plots for SG6311A signal generator data. The goal is to replace PADB::Simple (an internal Keysight tool) with a modern, reproducible, publishable analysis pipeline.
+`padb-tools` automates PADB-R.exe — Keysight's RF characterisation database tool — to run headlessly, collect CSV outputs, and generate self-contained interactive HTML plots for SG6311A signal-generator data. It replaces the internal PADB::Simple tool with a modern, reproducible, publishable pipeline.
 
-**Key constraint:** Every HTML plot must be fully self-contained (no server, no CDN). Plotly.js is embedded inline. Engineers open results directly from a Windows network share (`\\srsnas01...`).
+**Key constraint:** every HTML plot is fully self-contained (no server, no CDN — Plotly.js embedded inline). Engineers open results directly from a Windows share (`\\srsnas01...`). This is why giant datasets need the parquet viewer (below) rather than a bigger HTML.
 
 ---
 
@@ -18,14 +18,16 @@ This file is read automatically by Claude Code at session start. It captures the
 |---|---|
 | This repo | `C:\apps\padb\tools\` |
 | Job configs | `C:\Users\damurray\OneDrive - Keysight Technologies\Documents\Padb\Data\*.json` |
-| PADB results | `C:\Users\damurray\OneDrive - Keysight Technologies\Documents\Padb\Data\*_results\` |
-| Raw PADB output | `C:\Users\damurray\OneDrive - Keysight Technologies\Documents\Padb\R-Plots\` |
-| PADB logs | `C:\Users\damurray\OneDrive - Keysight Technologies\Documents\Padb\Logs\Padb_Err_*.err` |
-| Python executable | `C:\Users\damurray\AppData\Local\Python\bin\python3.14.exe` |
+| PADB results | `...\Documents\Padb\Data\*_results\` |
+| Raw PADB output | `...\Documents\Padb\R-Plots\` |
+| PADB logs | `...\Documents\Padb\Logs\Padb_Err_*.err` |
+| Python | `C:\Users\damurray\AppData\Local\Python\bin\python3.14.exe` |
 | PADB-R.exe | `C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe` |
-| GitHub | `https://github.com/damurray/padb-tools.git` |
+| GitHub | `https://github.com/damurray/padb-tools.git` (also a `bitbucket` remote; see workflow below) |
 
-**The job configs and results are NOT in the repo** — they live in OneDrive. The repo contains only the tool source.
+**Job configs and results are NOT in the repo** — they live in OneDrive. The repo is tool source only.
+
+**Commit/publish workflow (standing):** after committing, push to **both** `origin` and `bitbucket`, then robocopy the tree to the `\\srsnas01...\SG6311A\padb-tools\tools` share for non-Bitbucket users (robocopy via PowerShell — Git Bash mangles UNC paths; robocopy exit 0–7 = success, 3 = files copied). Commit messages end with `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>`. **Never use non-ASCII in `print()`** — throws `UnicodeEncodeError` on this console's cp1252 codepage (use `->` not `→`, `--` not `—`).
 
 ---
 
@@ -33,1900 +35,209 @@ This file is read automatically by Claude Code at session start. It captures the
 
 ```
 job.json → padb_run.py → PADB-R.exe → results/padb/*.csv
-                       → padb_plots.py → results/plots/*.html
-                       → index.html (gallery)
-                       → padb_run_YYYYMMDD_HHMMSS.log (tee of all stdout)
-                       → publish to \\srsnas01...
-
+                       → padb_plots.py → results/plots/*.html → index.html (gallery) → publish to \\srsnas01...
+padb_v2.py (Interactive/V2): one Type=80 CSV → generate_report() → the 6 interactive views
 padb_scheduler.py → Windows Task Scheduler → padb_run.py (overnight)
+webapp/padb_web.py → local Flask UI over the above
 ```
 
-**Dispatch:** `padb_run.py` calls plot functions by name via `getattr(padb_plots, plot_type)`. Adding a new plot type to `padb_plots.py` as a public function automatically makes it available in job.json — no changes to `padb_run.py` needed.
+**Dispatch:** `padb_run.py` calls plot functions by name via `getattr(padb_plots, plot_type)`. A new public `def my_type(csv_path, cfg, output_html)` in `padb_plots.py` is automatically available in job.json `secondary_plots` — no `padb_run.py` change.
 
-**Plot function signature (required):**
-```python
-def my_plot_type(csv_path: Path, cfg: dict, output_html: Path) -> None:
-```
+**CLI:** `py padb_run.py job.json` (full) · `--plots-only` (redo HTML) · `--no-publish` · `--dry-run`. V2: `py padb_v2.py <plot_job.json>` (honors `publish_to`; `--no-publish` / `--pdf-report` / `--pdf-apply-filter` / `--pdf-filter-site` override without touching the file).
 
-**CLI:**
-```
-py padb_run.py job.json                 # full run
-py padb_run.py job.json --plots-only    # redo HTML only (fast iteration)
-py padb_run.py job.json --no-publish
-py padb_run.py job.json --dry-run
-```
+**`padb_plots.py` structure gotcha:** several giant JS blocks are *module-level* raw-string constants (`_AV_FREQ_JS`, `_STAT_SUMMARY_JS`, `_ENV_SUMMARY_JS`, `_ENV_COVERAGE_JS`, `_STAT_BOXPLOT_INTERACTIVE_JS`, `_SUMPLOT_JS`, `_HISTOGRAM_JS`, `_COMMON_JS`, `_AUTO_FILTER_SHARED_JS`, `_SITE_PANEL_SHARED_JS`) sitting *between* `def`s. A "nearest preceding def" heuristic misattributes lines inside them — confirm with `grep -n "^_[A-Z_]*_JS = r"` / `^def `.
 
 ---
 
-## Active job files (as of 2026-07-22)
+## Active job families (as of 2026-07-22)
 
-| Job file | Pod | Status | Publish destination |
-|---|---|---|---|
-| `amplitude_job.json` | Amplitude_Accuracy_All_temps_062526.pod | ✓ Published | `...\AmplitudeAccuracy` |
-| `clockspurs_job.json` / `clock_leakage_env_v2_job.json` | Non-Harmonic_Clock_spurs_all_Spec_DUTS_June10.pod | ✓ Published | `...\ClockSpurs` (explicit `publish_to:""` opt-out on the V2 job — published via the older mechanism) |
-| `harmonics_job.json` / `harmonics_env_v2_job.json` | Harmonics_Latest_all_Spec_DUTS_June10.pod | ✓ Published | `...\Harmonics` |
-| `linespurs_job.json` / `line_related_env_v2_job.json` | Line_Related_Spurs_all_Spec_DUTS_June10.pod | ✓ Published | `...\LineSpurs` |
-| `closein_job.json` / `closein_env_v2_job.json` | Non-Harmonics_Close-In_all_Spec_DUTS_June10.pod | ✓ V2 stable | `...\CloseIn` |
-| `absphase_noise_job.json` | Absolute Phase Noise EP6 Spec Setting.pod | ✓ Published | `...\AbsPhaseNoise` |
-| `maxpower2_job.json` | (superseded) | ⚠️ Known issues, not fixed — see below | — |
-| `maxpower3_run_job.json` + 4 plot jobs | MaxPower3.pod | ✓ Plotted, published (default location) | `...\padb-tools-results\maxpower3_results` |
-| `vswr_v2_job.json` | VSWR2.pod (`vswr_scatter.csv`) | ✓ V2, Room-only, published (default location) | `...\padb-tools-results\vswr2_results` |
-| `return_loss_v2_job.json` | VSWR2.pod (`return_loss_scatter.csv`) | ✓ V2, Room-only, published (default location) | `...\padb-tools-results\vswr2_results` |
-| `phase_noise_de_v2_job.json` | Absolute Phase Noise EP6 Spec Setting DE.pod | ✓ V2, multi-temp, published (default location) | `...\padb-tools-results\phase_noise_de_results` |
+Spur families (`clock_leakage_env_v2` / `harmonics_env_v2` / `line_related_env_v2` / `closein_env_v2`, plus V1 `clockspurs_job` etc.), `amplitude_job`, `absphase_noise_job` / `phase_noise_de_v2`, `maxpower3_*_v2` (4 hand jobs), `vswr_v2` / `return_loss_v2` (Room-only). All explicit publish under `\\srsnas01...\SG6311A\`; jobs with no `publish_to` use the **Default publish location** (below). The 4 `env_v2` jobs actually have `publish_to` **absent → default** `...\padb-tools-results\<results_dir>` (an older CLAUDE.md note about a `publish_to:""` opt-out on them was stale). Results-dir paths in these jobs are **relative** (resolved against the job file's dir).
 
-All explicit publish destinations are under `\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\`. See **Default publish location** below for jobs with no `publish_to` set.
+**MaxPower3** is the first non-spur (dBm, one-sided-lower-spec) family; its pod has `Limits_YLimit=None` (no spec limits), worked around per-job via `spec_direction`. Canonical "no spec limits, one-sided" example = the 4 `MaxPower3_*_v2_job.json` (all `"spec_direction":"lo"`), not `maxpower3_leveled_linear_job.json`.
 
-### MaxPower2 → MaxPower3
-
-`maxpower2_job.json` had three known unresolved issues (empty Environmental plot, no spec limits, n=17 below NP-TI threshold — see project memory `project_maxpower2_issues`). MaxPower3 is the redo with a new pod:
-
-- **Fixed:** `Environment_TestStep={All}` is now set in `MaxPower3.pod` (was `'Room'` in MaxPower2), so `distribution`/`env_coverage`/`summary` views now have non-Room data to compute deltas from.
-- **Still open:** Every analytic in `MaxPower3.pod` has `Limits_YLimit=None` — no spec limits are configured at the pod level. Worked around per-job via the `spec_direction` key (see below) rather than a pod fix.
-- MaxPower is the first non-spur (dBm, one-sided-lower-spec) pod family run through the V2 pipeline — see `spec_direction` below for what that surfaced.
-
-### `spec_direction` job.json key and the live TLL-direction selector (added for MaxPower3, finalized 2026-08-04)
-
-`stat_summary` (V2) auto-detects whether to show the lower spec line, upper spec line, both, or neither, based on whether any `freq_stats` entry has `spec_lo`/`spec_up` populated (`padb_plots.py` ~line 4072). MaxPower3's pod has no spec limits at all (`Limits_YLimit=None` everywhere), so auto-detection always resolves to `"none"` — no pass/fail line would ever show, even though MaxPower is conceptually a lower-spec-only (guaranteed minimum power) measurement. `"spec_direction"` in job.json (`"lo"`/`"hi"`/`"both"`/`"none"`/`"auto"`) exists to override this.
-
-**Final rule, confirmed by the user and applied uniformly in `summary` (`_build_summary_html`) and `stat_boxplot`/boxplot (`_stat_boxplot_interactive`/`_build_box_interactive_html`) — both in `padb_plots.py`:**
-
-1. **If the CSV itself has a real `Upper_Limit`/`Lower_Limit`, that detected value always wins.** No selector is shown, full stop — this is true even if job.json also sets an explicit `"spec_direction"`. Data beats config.
-2. **If the CSV has no limit at all, a live "TLL display: Both / Upper only / Lower only" radio selector is *always* shown** — never hidden, regardless of whether `spec_direction` is `"auto"` or explicit. `spec_direction` (or `"both"` if unset) only sets which radio is *pre-checked* by default; it does not remove the viewer's ability to switch. (An earlier same-day version of this rule incorrectly hid the selector whenever `spec_direction` was explicit — corrected after user feedback: "explicit config should only set the default, not remove the option to override live.")
-3. **The Data-filter range control is two independent radios, not one relabeled radio**: `"Upper limit"` and `"Lower limit"` are separate options (values `range_hi`/`range_lo`), each shown only when relevant to the *currently selected* TLL direction (both shown when direction is "Both"). A single relabeled radio can't represent two independent bounds simultaneously — this was the actual bug behind an early "why does this still show Upper Limit" report. Filter semantics are literal, not inverted: "Lower limit" cuts off (hides) data *below* it, "Upper limit" cuts off data *above* it — matches whichever side the TLL selector is currently showing.
-4. **Boxplot's filter mechanics differ from summary's**: boxplot trims raw sample points before computing Q1/Q2/Q3/whiskers (`d.v>rhi`/`d.v<rlo` in `buildBoxTraces`/`buildPortSerialTraces`/`updateStatsTable`/`_collectOutliers`), where summary's filter hides/shows whole condition traces (`max_data[i]<=limit`/`min_data[i]>=limit`). Both got the identical two-radio, direction-aware treatment, implemented independently since they're separate JS templates (`_SUMPLOT_JS` vs `_STAT_BOXPLOT_INTERACTIVE_JS`).
-5. **`summary`'s Results Table and CSV export are also direction-aware** (`buildTable()`/`exportTableCSV()`): only show TTL↑/Spec Hi/Margin↑ columns when Upper/Both is active, TTL↓/Spec Lo/Margin↓ when Lower/Both is active. (Boxplot's own Statistics Table has no equivalent gap to fix — it's purely descriptive statistics (Q1/Median/Q3/whiskers/normality), with no spec-direction-dependent columns at all.)
-
-**Current MaxPower3 job settings** (all pod-specific, not tool-wide defaults — confirmed with the user that other pods keep whatever their own data/config implies): the 4 hand-written V2 jobs (`MaxPower3_Leveled_Log_v2_job.json`, `MaxPower3_Leveled_Linear_v2_job.json`, `MaxPower3_Unleveled_Log_v2_job.json`, `MaxPower3_Unleveled_Linear_v2_job.json`) all have `"spec_direction": "lo"` (selector shown, defaults "Lower only"). The legacy V1 job `maxpower3_leveled_linear_job.json` has `"spec_direction": "auto"` (selector shown, defaults "Both") — a separate, earlier user request to match `Leveled_Log`'s config at the time, left as-is. `maxpower3_unleveled_linear_job.json` still has `"lo"` from the original 2026-07-16 fix and was intentionally left alone. **For a new pod's canonical "no spec limits, one-sided measurement" example, use the 4 `MaxPower3_*_v2_job.json` files, not `maxpower3_leveled_linear_job.json`** — the latter no longer demonstrates the explicit-direction pattern.
-
-Verification pattern for this class of fix: render the HTML headlessly and dump the post-JS DOM rather than asking the user to check a browser or guessing from source —
-```
-"$EDGE" --headless --disable-gpu --virtual-time-budget=15000 --user-data-dir=$(mktemp -d) --dump-dom "file:///path/to/file.html" > dump.html
-```
-Plain `--dump-dom` without `--virtual-time-budget` can hang indefinitely on a large embedded-Plotly page; always pair with a virtual-time-budget and an outer shell `timeout`.
-
-**This was not previously documented** — added to `PADB_Tools_Guide.md` and `PADB_Analytic_Requirements.md` on 2026-07-16, revised 2026-08-04.
+**Verification pattern** for JS/DOM fixes: render headlessly and dump the post-JS DOM rather than guessing from source. Headless **Edge is dead on this box** (`--headless --print-to-pdf`/`--dump-dom` exit 0, write nothing) — use the **in-app browser** or Playwright/Chromium instead (see PDF report). When a browser QA tier is unavailable it honest-exits 3 (env, not a gap).
 
 ---
 
-## `x_label` / `x_unit` job.json keys (added for the phase-noise pod, 2026-07-21)
+## job.json keys (reference)
 
-The x-axis title and every unit-suffix string (hover tooltips, stats table headers, CSV export headers, filter-bar labels) in `scatter`/`stat_summary`/`env_coverage`/`summary`/`distribution`/`boxplot` were hardcoded to `"Frequency (MHz)"` / `"MHz"` with no override. This was actively wrong for the phase-noise pod (`Absolute Phase Noise EP6 Spec Setting DE.pod`), whose x-axis is **Frequency Offset in Hz**, not carrier frequency in MHz — a 10,000,000 Hz value labeled "MHz" looks like 10,000 GHz.
+Every key below is optional and defaults to prior behaviour (no existing pod's output changes unless it sets the key). Patched only into the `_run.pod` copy where noted; the original `.pod` is never touched.
 
-- `"x_label"` — full axis title, e.g. `"Frequency Offset (Hz)"`. Default: `"Frequency (MHz)"`.
-- `"x_unit"` — short unit suffix used everywhere else, e.g. `"Hz"`. Default: `"MHz"`.
+- **`spec_direction`** (`"lo"|"hi"|"both"|"none"|"auto"`) — TLL/spec direction override for `stat_summary`/`summary`/`boxplot`. **Rules:** (1) a real CSV `Upper_Limit`/`Lower_Limit` always wins and hides the selector (data beats config); (2) with no CSV limit, a live "TLL display: Both/Upper/Lower" radio is **always shown**, `spec_direction` only sets the pre-checked default; (3) the Data-filter range control is **two independent radios** (`range_hi`/`range_lo`), each shown only when relevant to the current TLL direction — semantics literal ("Lower limit" hides data below it); (4) `summary`'s Results Table + CSV are direction-aware (show ↑ or ↓ columns to match). Boxplot trims raw points pre-Q1/Q3; summary hides/shows whole condition traces — separate JS templates.
+- **`x_label` / `x_unit`** — full x-axis title / short unit suffix (default `"Frequency (MHz)"` / `"MHz"`). Used in titles, hover, table headers, CSV headers, filter labels across all 6 V2 views. `_short_x_label()` derives the control-label word ("Freq" preserved for the default). Hovertemplates use an injected `X_SHORT_LABEL` JS constant (not a literal "Freq").
+- **`x_col`** — exact swept-x column name when it isn't Frequency/X-value (e.g. `"Vgg (V)"`, `"Rate (kHz)"`). `padb_make_v2_job.py` auto-sets `x_col`/`x_label`/`x_unit` from the pod's `Data_ScatterPlot_XData_Label` (via `_x_col_override()`) so regenerating a job can't silently reintroduce a zeroed-out x-axis.
+- **`env_coverage_y_label`** — env_coverage Y-axis title (default `"ΔEnv (dB)"`); also the ΔEnv-drift label in its Site panel.
+- **`mode`** (`"legacy"` default / `"simple"` / `"interactive"`) — `simple` forces PADB native PNG/PDF render (`OutputConfig_OutputGraph=1`) and builds `padb_simple.py`'s gallery; non-simple modes force it **off** (`disable_native_render`, so a Simple-tuned pod doesn't leak native renders into Interactive). `simple`/`interactive` also write `HOW_TO_USE.txt`. Metadata field `ExtractionOptions_AllRunResults` was renamed `ExtractionOptions_LastRun` in newer pods — `build_metadata_table_html` checks both. (Webapp Generate-Job UI only offers `simple`/`interactive`; `legacy` still works if present.)
+- **`subex`** — raw `[Extract]` overrides. Values can be **relative-date sentinels** resolved at run time by `_resolve_date_sentinel()`: `"today"`, `"N day(s)/week(s)/month(s)/year(s) ago"` (real calendar arithmetic). Non-matching values pass through. `"TestRun_RunStatus":"{All}"` is the fix for "rc 0 but no CSV" (pods default to passing-only).
+- **`unique_output_filenames`** — force each analytic's `AnalyticName` + `OutputConfig_OutputFile` to a unique slug (index-suffix on slug collision). Fixes pods where analytics share one `OutputFile`. `main()` runs `make_run_pod()` *before* `parse_pod_analytics()` so renamed fields are seen.
+- **`force_output_csv`** — force `OutputConfig_OutputCSV=1` on every Type=80 analytic (some pods ship it off → PNG/PDF but zero CSV, silent since rc 0).
+- **`compare_csv`** `{site: csv_path, ...}` + **`primary_site`** — cross-site comparison. `_build_compare_csv()` tags `"Site: <name>"` into each row's Group, `pd.concat`s (column-union), writes `_compare_merged.csv`, and feeds the normal single-CSV pipeline — so `Site` is just another condition dimension everywhere. `primary_site` is the reference population for the Site Population Check. Publishes to a `PADB-Compare` share tree by default; `"publish_to":""` opts out (local-only). No-swept-x compares (switching speed) auto-route to `histogram`; `_site_has_swept_x(df, x_col)` requires an x-like column **plus a separate numeric value column** (honors configured `x_col`), so a measurement column named "...Frequency..." doesn't false-route.
+- **`scatter_decimate`** (`"auto"` default / `"off"` / `"always"`) — build-time min/max-envelope decimation of dense per-series scatter (`_decimate_dense_series`); embeds only the envelope (dropped points gone), shrinks the file. **`scatter_decimate_toggle`** — mutually exclusive: embeds the FULL point set + a live "Show all points" checkbox (`_decimateClient` is the JS port); for "page size fine, want fast default + on-demand full".
+- **`binary_encode`** — float32-pack the numeric arrays (scatter Freq/Value, boxplot `vals_detail` as base64 `vals_detail_bin`). **Plot-transparent** (encoding/size only, never a value). Auto-enabled (`_maybe_auto_binary_encode`) when CSV ≥25 MB **or** ≥250k rows (`binary_encode_auto_mb`/`_rows` override); explicit `true`/`false` always wins.
+- **`export_parquet`** — write a compact zstd `<stem>.parquet` sidecar (80–140× smaller). Auto for compare jobs or large CSVs (`export_parquet_auto_mb`/`_rows`); explicit wins; never fails the build. Feeds `padb_viewer.py`.
+- **`build_pdf_report`** / `pdf_report_apply_filter` / `pdf_report_filter_site` — comprehensive multi-view PDF (below).
+- **`hist_limit_hi` / `hist_limit_lo`** — spec for the `histogram` view when the CSV carries none (keeps re-imported clean exports spec-aware).
+- **`views`** — explicit view list overrides auto-selection. `room_only_full_views` is a no-op now (summary+stat_summary are Room-only defaults).
+- **`csv` vs `csv_file`** (V1 `secondary_plots`): `csv` = case-sensitive substring match against analytic names; `csv_file` = exact filename in `results/padb/` (wins if both set). Use `csv_file` when names don't substring-match cleanly, collide, or the CSV was placed manually.
 
-Both default to the exact prior literal text, so no existing pod's output changes unless it explicitly sets these. **`env_coverage_y_label` is now wired (2026-09-13):** `render_env_coverage` passes `cfg.get("env_coverage_y_label", "ΔEnv (dB)")` as the view's `y_label` (default unchanged, so no existing pod's output changes). It sets the Y-axis title (`EC_Y_LABEL`) and, for consistency, the ΔEnv-drift value label in the Site Population Check panel (`_EC_SITE_JS` reads `EC_Y_LABEL`, falling back to `"ΔEnv (dB)"`).
-
----
-
-## Group-string parser padding bug (fixed 2026-07-21)
-
-`_parse_group_kv()` silently dropped grouping keys whenever PADB's own value padding produced 2+ spaces after a colon (e.g. `"Frequency (MHz):  10"` for a 2-digit value vs `"Frequency (MHz): 100"` for a 3-digit value — PADB right-pads to a fixed column width). The 2+-space split treated the padding as a segment boundary, splitting `"Frequency (MHz):"` (empty value) away from its orphaned value `"10"` — both fragments then failed the `key: value` regex and were dropped. Exactly half of the phase-noise pod's carrier-frequency groupings vanished before this fix.
-
-**Fix:** colon-less fragments produced by the 2+-space split are now re-merged into the preceding part before matching (both in `_parse_group_kv()` and the duplicate inline parser in `_build_stat_summary_html`'s `COND_DIMS` builder). This is a no-op when no orphan fragments exist, so it's safe for every existing pod — verified via `qa_padb.py` (unchanged 27/5) plus full regen of clock leakage, close-in, VSWR2.
-
-**Implication:** this bug could be lurking in any already-"stable" pod with a variable-width numeric grouping value that nobody happened to check for — it was never specifically tested for before the phase-noise pod's 10/100 MHz carrier split exposed it.
-
----
-
-## Zoom/pan persistence across filter changes (`scatter` view, added 2026-08-18)
-
-Every `update()` call re-renders via `Plotly.react()`, which recomputes axis autorange from the fresh trace data by default — so any manual zoom/pan (drag-zoom, scroll-zoom) got silently discarded on *any* filter change at all, not just ones that touch the frequency window. Reported by the user: "almost every data filter item resets the plot axis."
-
-**First attempt (reverted, didn't work): `layout.uirevision`.** This is Plotly's own documented mechanism for exactly this problem, so it was the obvious first try — keep `uirevision` constant across ordinary `update()` calls, bump it only at intentional-range-change call sites. Verified empirically it does **not** work in this app's bundled Plotly version: built a minimal from-scratch repro (`Plotly.newPlot` → real simulated drag-zoom via dispatched `mousedown`/`mousemove`/`mouseup` on the `.nsewdrag` element → `Plotly.react()` with matching `uirevision`) and the axis still reset to autorange. Confirmed it wasn't a test artifact (e.g. falsy `uirevision:0`) by re-running with a non-zero value — same result.
-
-**Working fix: read back the plot's own live axis state.** `_liveAxisRange(axis)` checks `document.getElementById('plot').layout[axis]` — if `autorange===false` (which Plotly sets automatically on any manually zoomed/panned axis, or any axis a `Plotly.relayout()` call gave an explicit range to), returns that live `range` array; otherwise `null`. `buildLayout()` calls this for both axes and explicitly passes the result back (`range:..., autorange:false`) instead of leaving the axis unconstrained — this is what actually stops `Plotly.react()` from recomputing autorange on an unrelated filter change.
-
-**Why this doesn't break the "intentional new range" cases**: `syncFreq()`/`freqTxtChange()`/`freqStep()`/`setFreqBand()` all already called `Plotly.relayout('plot', {'xaxis.range':...})` directly (for immediate visual feedback) *before* calling `update()` — so by the time `buildLayout()` runs, the live DOM already reflects the new intended range, and `_liveAxisRange()` picks it up correctly. No changes needed to any of them. `resetFilters()` (the app's own Reset button) is the one exception: it never called `Plotly.relayout()` itself, so it now explicitly does `Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true})` before `update()` — otherwise `_liveAxisRange()` would keep re-applying the stale zoomed range even after Reset. Plotly's own built-in "Reset axes" modebar button needs no support at all — it already sets `autorange:true` internally, which `_liveAxisRange()` correctly reads as "nothing pinned" on the next `update()`.
-
-**Real bug found and fixed the same day**: `toggleLogX()` *did* call `Plotly.relayout()` directly, but computed its new range from the `freq_lo_txt`/`freq_hi_txt` slider textboxes unconditionally — a drag-zoom never updates those textboxes, so toggling Log X silently discarded any active zoom every time, reported by the user immediately after this feature shipped ("I'm guessing the log-x checkbox forces a reset regardless"). Fixed by having `toggleLogX()` prefer `_liveAxisRange('xaxis')` (converting it into the new axis type's scale — log10 going to log, `Math.pow(10, ...)` coming back to linear — since the live range it reads is still in the *old* type's units at call time, before the relayout switches the type) and only falling back to the slider textboxes when nothing is currently zoomed. Verified round-trip: drag-zoom → toggle log on (range correctly converts, survives) → toggle log off (converts back, survives).
-
-**Y-axis interaction with `Y_LIM`**: `curY = Y_LIM || _liveAxisRange('yaxis')` — an actual configured Y-limit override always takes priority over a live zoom read-back, so this doesn't change existing Y-limit-override behavior at all.
-
-Verified headlessly end-to-end on a real generated page: real simulated drag-zoom → ordinary filter change (hover-column checkbox) → zoom range unchanged; typing a new frequency value → view correctly moves to it; clicking Reset → view correctly returns to the full default range.
-
-**Extended to all 6 interactive views (2026-08-18)**, after validating the approach on `scatter` alone. Each view needed the identical `_liveAxisRange()` helper plus its own handling of what counts as an "intentional new range" — none of the mechanics port over verbatim because each view's `update()`/`buildLayout()` shape differs:
-
-- **stat_summary**: the one view whose `update()` calls `Plotly.purge('plot')` before rebuilding (every other view uses in-place `Plotly.react()`) — a purge wipes the live layout `_liveAxisRange()` would otherwise read, so `update()` itself must call `_liveAxisRange()` **before** the purge and thread the result into `buildLayout(conds,params,fLo,fHi,curX,curY)` as explicit params instead of `buildLayout()` reading the (by-then-destroyed) DOM directly. Also had no dedicated `toggleLogX()` at all (`log_x_chk` called `update()` directly) — added one, mirroring scatter's fix. No Reset button exists in this view, so no autorange-clearing call was needed.
-- **env_coverage**: `buildLayout(yRange)`'s `yRange` param is a freshly-recomputed best-fit suggestion (excludes TTU/TTL's absolute units from the auto-fit calc, see `buildTraces()`'s own comment), not a static config override like `Y_LIM` elsewhere — so a live zoom takes priority over it (`_liveAxisRange('yaxis')||yRange`), same "zoom wins over auto-fit" logic as everywhere else, just with a computed rather than configured fallback. `syncFreq`/`freqTxtChange`/`freqStep`/`segTab` had no `Plotly.relayout()` calls at all (unlike scatter, where they already existed) — added them. Added a dedicated `toggleLogX()` (this view also had none). No Reset button.
-- **summary**: had the exact same set of functions as scatter (`toggleLogX`/`syncFreq`/`freqTxtChange`/`freqStep`/`setFreqBand`/`resetFilters`) — but `toggleLogX()` had scatter's *original* bug (recomputed from the frequency sliders unconditionally, discarding any drag-zoom) and `resetFilters()` had the same missing-autorange-clear gap fixed in scatter — both fixed identically to their scatter counterparts. `freqStep()` was also missing a `Plotly.relayout()` call — see the cross-view bug note below.
-- **boxplot**: Y-axis only. The x-axis is categorical (frequency labels), with its visible `categoryarray` recomputed fresh from the current freq filter on every call — freezing an explicit numeric range on top of a category axis whose category *set* can change size/order under it risked a pinned index range pointing at the wrong categories after a filter change, for a case nobody actually drag-zooms in practice. `buildLayout()`'s y-axis previously hardcoded `autorange:Y_LIM?false:true` (explicitly forcing autorange on every call, not just leaving it unset) — the most aggressive version of this bug found in any view. `clearEverything()` (Reset) needed the autorange-clearing relayout added, same as scatter's `resetFilters()`.
-- **distribution** (`_build_env_distribution_html`): x-axis is the measurement value/density, not frequency — the freq controls here are a pure data filter with no relayout equivalent needed. The one axis-defining control is the Absolute/ΔTemp `view_mode` radio, which changes what the x-axis *means* — zoom must reset there but nowhere else. Tracked via a module-level `_lastDistMode`, compared each `update()` call; `_liveAxisRange()` is skipped (forced to `null`) exactly when the mode actually changed since the last render. `resetView()` needed the autorange-clearing relayout added.
-
-**Cross-view bug found while extending, and fixed everywhere including `scatter`**: `freqStep()` (the arrow-key frequency increment/decrement handler) never called `Plotly.relayout()` in *any* view, including the original scatter fix — it only updated the textbox/slider values and called `update()`. This "accidentally" still worked whenever nothing was zoomed (autorange was still live, so `Plotly.react()`'s fresh autorange-from-filtered-data naturally moved the view), but with a manual zoom active, arrow-stepping the frequency box got stuck showing the old zoomed range instead of moving. Fixed identically to `freqTxtChange()`'s existing pattern in every view that has `freqStep()` — scatter, stat_summary, env_coverage, summary.
-
-Verified per-view with headless drag-zoom simulations against a synthetic multi-temp dataset: zoom survives an unrelated filter change in all 6 views; log-toggle round-trips correctly in scatter/stat_summary/env_coverage/summary; frequency text-entry and arrow-step both move the view in scatter/stat_summary/env_coverage; Reset/Clear correctly clears zoom in scatter/summary/boxplot/distribution; distribution's Absolute↔ΔTemp mode switch correctly resets zoom while an ordinary temp-checkbox toggle does not.
+**Default publish location:** jobs with no `publish_to` key publish to `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>` (`DEFAULT_PUBLISH_ROOT`). `"publish_to":""`/`false`/`null` opts out; a real path publishes there.
 
 ---
 
-## stat_summary Data-filter: single relabeled radio couldn't represent two-sided overrides (fixed 2026-08-18)
-
-Reported by the user looking at a real generated page: "this plot makes no sense to have only an upper limit filter checkbox. Summary plot has both upper and lower." `stat_summary`'s "Data filter" bar had one `value="range"` radio whose *label* got rewritten between "Upper limit"/"Lower limit" by `updateFilterLabel()` based on `SPEC_DIRECTION`/whether `stat_spec_lo`/`stat_spec_hi` had a value — the exact single-relabeled-radio bug already fixed in summary/boxplot/env_coverage (see the TLL-direction-selector section below), just never ported to this view. A single shared `flt_yhi` input then had to *guess* which side the user meant via a `_spLoV`/`_spHiV` heuristic in `update()`, so a genuinely two-sided spec could never have both overrides active at once.
-
-**Fix**, mirroring summary's already-established two-radio pattern exactly: split into independent `range_hi`/`range_lo` radios, each with its own wrap (`flt_hi_wrap`/`flt_lo_wrap`) and its own input (`flt_yhi`/`flt_ylo`, the latter newly added — `getDataFilter()` already had a dead `ylo` field reading a nonexistent element, evidence this was a half-finished port). `updateFilterLabel()` now shows/hides the two wraps independently instead of rewriting one label (reusing its existing `_loOn`/`_hiOn` detection unchanged), and `update()`'s override logic became an unconditional `if(flt.mode==='range_hi')`/`if(flt.mode==='range_lo')` pair — no more guessing which side a shared value was meant for. `applyDataFilter()` keeps its existing no-op-for-range semantics unchanged: this radio group has always meant "override the effective spec value used for TLL/margin," not "exclude data outside the bound" (that's a different feature from summary's/boxplot's identically-named `range_hi`/`range_lo`, which *do* trim — same label, deliberately different mechanics per view, not a bug).
-
-Verified headlessly: both wraps correctly visible by default (data has both Upper_Limit and Lower_Limit); selecting Upper limit and setting a value renders a spec-line shape at exactly that value while Lower stays at the CSV's real value; switching to Lower limit renders its override independently while Upper correctly reverts to the CSV's real value (no cross-talk between the two, unlike the old shared-heuristic behavior).
-
----
-
-## `summary` Data-filter range_hi/range_lo silently excluded nothing (fixed 2026-08-18)
-
-Reported by the user against a real generated page: "setting a lower limit to 18dBm does nothing." `applyDataFilter()`'s `range_hi`/`range_lo` branches (unlike the `passing` branch right above them, which correctly uses `.every()`) used `vis.some(...)` to decide whether to *keep* a condition — meaning a condition was only *excluded* if it failed the limit at literally every single visible frequency. The control's own hint text ("hides conditions where max data exceeds limit" / "...min data falls below limit") describes the opposite: hide it if it *ever* crosses the limit. For real multi-frequency sweep data, a condition failing at every single frequency is rare, so in practice the filter almost never excluded anything, regardless of what threshold was entered.
-
-**Fix**: changed both branches from `vis.some(...)` to `vis.every(...)`, matching the `passing` branch's existing (correct) pattern — a condition is now kept only if it satisfies the limit at *every* visible frequency, i.e. excluded if it fails at any one of them.
-
-Verified with a synthetic two-condition dataset (`Board: A` never dips below 25, `Board: B` dips to 15 at 2 of 8 frequencies, everywhere else fine): setting Lower limit to 18 now correctly excludes `Board: B` while keeping `Board: A`. Confirmed the old `.some()` logic would have kept both (reproducing the reported bug exactly) by evaluating both versions directly against the same synthetic per-frequency data.
-
----
-
-## `stat_summary` Statistics Table not respecting active filters (fixed 2026-08-18)
-
-Reported by the user against a real generated page: "statistics table does not apply a filter to show just the plot data." `toggleStatPanel()` called `getGroupedConditions()` directly when the panel was first opened — the raw, unfiltered condition list, skipping every filter `update()` normally applies (frequency range, condition checkboxes, serial/port, GF, Data-filter/spec override). Opening the table right after narrowing the frequency range (before any other filter change happened to trigger `update()`) showed every row regardless.
-
-**Fix**: extracted `update()`'s entire filtering pipeline (Group-by → frequency-range trim → serial/port/GF recompute → Data-filter/spec-override → `applyDataFilter()`) into a shared `getFilteredCondsAndParams()`, which both `update()` and `toggleStatPanel()` now call — the table can no longer drift out of sync with the plot, by construction, since there's only one function that computes "what's currently shown."
-
-**Same bug class found in `boxplot`, fixed the same way**: its `toggleStatPanel()` called `updateStatsTable(getSelectedConds(),getYFilter(),getSelectedBoxSerials())` — missing the 4th argument (`selTemps`) that `update()` always passes. With `selTemps` `undefined`, `updateStatsTable()`'s own temperature-checkbox filtering (`if(selTemps&&selTemps.indexOf(cd.temp)<0)...`) silently never ran, so opening the table for the first time showed all temperatures regardless of which env-step checkboxes were actually checked. Fixed by adding the missing `getSelectedTemps()` argument. (`env_coverage`'s and `summary`'s equivalent toggle/refresh functions were also audited — both already call the exact same data-fetching path `update()` uses, so no bug there.)
-
-**Defensive addition while investigating**: `update()` calls `updateTLLDisplay(conds,params)` immediately before `updateStatPanel(conds,params)` — if the former ever throws on some data shape, the plot (updated just before) would look current while the table (never reached) silently freezes on stale content with no visible error. Wrapped in a try/catch that surfaces the error inline, mirroring `updateStatPanel()`'s own existing internal try/catch.
-
-Verified headlessly: narrowing the frequency range *before* ever opening the panel now correctly shows only the in-range rows (previously showed all); the same holds with Group By pooling multiple conditions into a virtual one, and with "Passing only"/Upper-limit/Lower-limit overrides applied before first open — all match the plot's actual filtered state.
-
----
-
-## `stat_summary`: drag-zoom didn't narrow the Statistics Table (added 2026-08-18)
-
-A related but distinct report from the one above: "Open statistical Summary, zoom to subset of frequencies, open statistics table, and it still shows all the rows, not just the rows matching the plot data view." This is *not* the same bug — a Plotly drag-zoom only changes the axis viewport; it has never touched `freq_lo`/`freq_hi` (the slider that actually drives `getFilteredCondsAndParams()`'s frequency trim), and deliberately so — that decoupling is exactly what the zoom-persistence feature above depends on (zoom must survive unrelated filter changes without forcing a data refilter).
-
-The user confirmed they want the opposite relationship specifically for this control: a drag-zoom should *also* narrow the data used for the table (and by extension the plot's own computed TI/TLL, since those already reuse `freq_lo`/`freq_hi`). Rather than inventing a second, parallel frequency-filtering path, `_onPlotRelayout(ed)` listens for the plot's own `plotly_relayout` event and calls `setFreqBand()` (new in this view — moves the slider + textboxes and calls `update()`) with the zoomed range, converting from log10 units first if `isLogX()` is active. This reuses the *existing*, already-correct frequency-filter pipeline entirely — no new filtering logic, the slider was already wired to both plot and table. A `'xaxis.autorange'` event (double-click / the built-in "Reset axes" modebar button) resets the slider back to the full `FREQ_MIN`–`FREQ_MAX` range instead, checked *before* the range keys so it always wins even if a Plotly version bundles a computed range alongside `autorange:true`.
-
-**Real bug found while verifying the reset case**: `Plotly.purge('plot')` inside `update()` tears down previously-attached event listeners along with everything else, so the relayout listener registered once at page load only survived the *first* zoom — by the time a second relayout (e.g. the reset) fired, nothing was listening anymore. Fixed by re-attaching `.on('plotly_relayout',_onPlotRelayout)` immediately after every `Plotly.newPlot()` call inside `update()` itself, not just at initial page load.
-
-Verified headlessly end-to-end with a real simulated drag-zoom: slider syncs to the zoomed range, the Statistics Table opened afterward shows only the in-range frequencies, and a simulated "Reset axes" relayout correctly restores the slider to the full range — confirmed this last step only works with the re-attach-after-purge fix (failed before it, passed after).
-
-**Scope**: `stat_summary` only, by explicit user choice, to validate the approach before considering it for scatter/env_coverage/summary.
-
-Follow-up question from the user after confirming the above worked: "Can we auto refresh tables after a [Reset] (button press)?" Checked directly — for `stat_summary`, this already worked with no further changes needed, since `setFreqBand()`'s reset path already calls `update()`, which always rebuilds the (open) Statistics Table. Verified headlessly: table open and zoomed to 2 visible rows, "Reset axes" correctly rebuilds it back to all 8.
-
-The user then clarified they specifically meant `summary`'s **Results Table** (`buildTable()`/`sum_table_wrap`) — a different, adjacent case: that table only ever rebuilds on an explicit "Refresh table" click, marked "(stale)" by `update()` on every other filter change (a deliberate design choice, since a full rebuild can be expensive with many conditions — see "PADB Simple mode gallery" and other "only add structure when it helps" precedents in this file for the same instinct applied elsewhere). `resetFilters()` is a deliberate, one-shot action the user just took, not an incremental tweak, so it now also calls `buildTable()` directly and resets the button text to non-stale — every *other* filter change still just marks it stale as before. Verified by poisoning the table's DOM content with a sentinel string before calling `resetFilters()` and confirming the sentinel is gone afterward (proves `buildTable()` actually re-ran, not just that the button text changed).
-
----
-
-## Statistics/Results Tables: auto-refresh below a condition-count threshold, manual "Refresh" above it (added 2026-08-19)
-
-Follow-up to the item above: the user asked whether `summary`'s Results Table should just auto-refresh on every filter change like `stat_summary`'s Statistics Table already does, recalling that the manual-click design existed specifically for very large datasets. Comparing the actual per-row cost: `summary`'s `_buildCondRows()`/`getSumCondData()` (weighted mean/min/max via `by_temp` pooling) is *lighter* per row than `stat_summary`'s `computeFreqResult()` (Shapiro-Wilk normality test + NP-TI fallback + k-factor lookup) — and `stat_summary`'s table already auto-refreshes unconditionally with no size gate at all. The documented pathological case (`padb_csv_check.py`: a 2,388-condition analytic took ~19 minutes) was about `boxplot`/`stat_summary`, not `summary` — so the old manual-only gate was arguably on the wrong view already.
-
-**Design**: auto-refresh below `STATS_TABLE_AUTO_THRESHOLD` (150 active conditions, chosen a bit under `padb_csv_check.py`'s own >500 "real combinatorial slowness" warning, since a table rebuild is a more expensive operation than the plot legend that warning was originally about); above it, skip the automatic rebuild, show a "Large dataset (N conditions) — click Refresh table" placeholder, and visually highlight the Refresh button (`_setTableBtnStale()`, orange background/border/text — the same "needs attention" palette this codebase already uses for GF badges) so the escape valve isn't casually missed sitting next to a table that looks like it might just be current. Rolled out to all four Statistics/Results Tables that do real per-condition computation: `summary` (`sum_refresh_table_btn`), `stat_summary` (`stat_refresh_table_btn`, new — this view previously had no manual-refresh affordance at all), `boxplot` (`box_refresh_table_btn`, new), `env_coverage` (`ec_refresh_table_btn`, new).
-
-**Implementation shape differs from the size gate down**: `summary`'s gate lives at the call site (`update()`/page-init both check `active.length` before calling `buildTable()`, since that table isn't behind a collapsible panel — the Results Table section is always in the DOM). The other three gate *inside* the render function itself (`updateStatPanel(conds,params,force)`, `updateStatsTable(selConds,...,force)` for both boxplot and env_coverage) so both of that view's two call sites — `update()`'s auto-rebuild and `toggleStatPanel()`/`toggleStatsPanel()`'s first-open build — automatically respect the same gate without duplicating the check; the new Refresh button's `onclick` passes `force=true` to bypass it regardless of size.
-
-**Real gap found while verifying**: `summary`'s Results Table is built once, unconditionally, at page load (`buildTable();` in the page-init sequence) — this bypassed the size gate entirely, so a large dataset would still hang the page on *first load*, the exact scenario this feature exists to prevent. Fixed by gating that init call the same way as `update()`'s.
-
-Verified headlessly against two synthetic datasets: a 180-condition one (2 combined Group dimensions, 30×6, since a single dimension above roughly 50 distinct values gets excluded from `COND_DIMS` entirely by an unrelated pre-existing cardinality cap — a flat single dimension of 160 values was not a valid test case) correctly shows the placeholder + highlighted button in all four views and builds the real table on click with the highlight clearing; a 5-condition one auto-builds everywhere with no placeholder and no highlight, confirming the common case is unaffected.
-
----
-
-## Freq-range default bounds silently clipped the true min/max point (fixed 2026-08-18)
-
-Reported by the user looking at a real generated page: "the row frequencies start after the slider start frequency and finish before the slider stop frequencies. Is this an off by 1 error?" Yes — an off-by-rounding bug, not an indexing one.
-
-Every freq-slider control has two independent representations of the same bound: the `<input type="range">` (`min`/`max`/`value` formatted `:.4f`, effectively full precision) and a paired `<input type="text">` display box (formatted `:.3f`, i.e. rounded to 3 decimals) that the user can type into directly. Every filtering path (`getFilteredCondsAndParams()` in `stat_summary`, and the equivalent inline logic in scatter/distribution/env_coverage/boxplot/summary) reads the **text box**, not the slider, as the authoritative bound whenever it has a value — and on initial page load, that text box is *always* populated (with the rounded default), so this is the active bound from the very first render, before the user ever touches anything.
-
-Python's `:.3f`/`:.4f` formatting rounds to nearest, which can round either direction. If the true minimum frequency is e.g. `1000.1236`, `:.3f` produces `"1000.124"` — a lower bound *higher* than the real minimum. The filter comparison itself (`fs.freq>=fLo`, confirmed inclusive at every call site) is correct, but with `fLo=1000.124` and the real data point at `1000.1236`, `1000.1236 >= 1000.124` is false — the true first row is silently excluded by default. Symmetrically, rounding the true max down (e.g. `1999.8764` → `"1999.876"`) excludes the true last row. Same root cause as the two other rounding/precision bugs already documented for this control family (segment-tab boundary comparison, `setFreqBand`'s slider-`.value` snapping) — a recurring lesson that any place a displayed/rounded string gets parsed back into a filter boundary needs to round outward, not to-nearest.
-
-**Fix:** `_floor_dec(v, ndigits)` / `_ceil_dec(v, ndigits)` (new, near `_short_x_label`) round down/up instead of to-nearest. Applied to every default lower/upper text-box `value=` at page-generation time: `freq_lo_txt`/`freq_hi_txt` (scatter, legacy `distribution()`, `stat_summary`, `summary`), `ec_freq_lo_txt`/`ec_freq_hi_txt` (`env_coverage`), `box_freq_lo`/`box_freq_hi` (boxplot — this view's number inputs have no separate full-precision slider to fall back on, so this was the only source of the bound), and the real V2 `distribution` (`_build_env_distribution_html`)'s `dist_freq_min`/`dist_freq_max` (1-decimal `round()` → `_floor_dec`/`_ceil_dec` at the point they're computed, since that view derives both the slider bound *and* the JS filter constant from the same rounded value). Deliberately **not** touched: `_build_env_summary_html` (the `de_summary`-equivalent legacy path — same pre-existing exclusion boundary as every other feature in this doc that lists it).
-
-This only ever widens the default range very slightly (at most one unit in the last displayed decimal) — it can never newly exclude a point that was previously included, only stop excluding ones that shouldn't have been.
-
-Verified via direct unit check of `_floor_dec`/`_ceil_dec` against the exact reported failure shape (a non-round min/max like `1000.1236`/`1999.8764`, where plain `:.3f` rounding lands on the wrong side of the true value in at least one direction) confirming the floor/ceil result is always ≤/≥ the true value; `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL, same pre-existing failures as always).
-
-**Follow-up, same day**: the fix above only covered the *initial page-load* default. Clicking an existing "Reset" button (scatter, legacy `distribution()`, `summary`) re-triggered the identical bug at runtime — each one wrote `parseFloat(FREQ_MIN).toFixed(3)`/`parseFloat(FREQ_MAX).toFixed(3)` straight into the text boxes, which is exactly the round-to-nearest pattern this section fixed for the HTML default. Fixed identically: `Math.floor(parseFloat(FREQ_MIN)*1000)/1000` / `Math.ceil(...)` before `.toFixed(3)`. Boxplot's `clearEverything()` was already safe (assigns `BOX_FREQ_MIN`/`BOX_FREQ_MAX` directly to the number input's `.value`, no string rounding involved). `setFreqBand()` (used by segment-tab Prev/Next and stat_summary's drag-zoom-to-slider sync) was deliberately left alone — it rounds an arbitrary, user-chosen boundary for display, not the true data extent, so to-nearest rounding there is a minor cosmetic difference, not a data-clipping bug.
-
----
-
-## Reset button added to stat_summary and env_coverage; boxplot's "Clear everything" no longer wipes the Global Filter (added 2026-08-18)
-
-`scatter`, legacy `distribution()`, the real V2 distribution (`resetView()`), `boxplot` (`clearEverything()`), and `summary` all had a Reset/Clear control; `stat_summary` and `env_coverage` had none at all — reported by the user after noticing scatter's Reset while comparing views. Added a `resetFilters()` to both, covering each view's own actual control set:
-- `stat_summary`: condition-dim/serial/port panels, temperature checkboxes, frequency range, log-X, Group by, the two-sided Data-filter radio + `flt_yhi`/`flt_ylo` overrides, P/C/n/MU/ΔEnv-up/ΔEnv-lo/guard-band/drift/spec-lo/spec-hi/TLL-hi/TLL-lo fields, Non-parametric TI, Show points, Hide spec-lines, and the local GF-apply toggle (`stat_gf_chk`).
-- `env_coverage`: condition-dim/serial/port panels, temperature checkboxes, frequency range, log-X, Group by, Show excluded, Room/ΔEnv P and C selects, Room/ΔEnv n-override fields, M.U., Spec hi/lo, and the local GF-apply toggle (`_ecGfEnabled`). **Does not** have a Data-filter radio or TLL-override field at all — confirmed by reading the actual generated HTML; `_ENV_COVERAGE_JS`'s `saveState()`/`loadState()` used to reference `env_dfilt`/`env_y_hi`/`env_tll_hi` ids that don't exist in `_build_env_coverage_html`'s output (guarded `if(el)` no-ops) — those dead lines were **removed 2026-09-03**. The `env_dfilt`/`env_y_hi`/`env_tll_hi` ids that remain in the file belong to the **legacy** `_build_env_summary_html`/`_ENV_SUMMARY_JS` view, where they are real live controls.
-
-Both mirror boxplot's `clearEverything()` for thoroughness rather than scatter's much shorter version, since both new views have a comparably rich control set.
-
-**Real bug found and fixed while adding these**: `pEl.value = DEFAULT_P` (a bare number like `0.9`) silently fails to select a `<select>` option whose literal attribute is `value="0.90"` — the browser finds no matching option, sets `selectedIndex = -1`, and reads back `.value` as `""`, not `0.9`. Every P/C confidence selector in this codebase (`stat_P`/`stat_C`, `ec_P_room`/`ec_C_room`/`ec_P_env`/`ec_C_env`) is one of these fixed-string-option `<select>`s. Fixed with `_snap_pc_opt(val, opts)` (new, near `_freq_label_map`) — snaps to the nearest option and returns its *exact value string*, not a float — and used for the `DEFAULT_P`/`DEFAULT_C`/`EC_DEFAULT_P`/`EC_DEFAULT_C` JS constants these two new `resetFilters()` assign from. `summary`'s pre-existing Reset (`sum_P`/`sum_C`) never had this bug — it already hardcoded the literal strings `'0.95'`/`'0.90'` rather than deriving from a snapped variable, which happened to sidestep the issue (at the cost of ignoring the pod's actual configured default, a separate, minor, pre-existing inaccuracy not touched here).
-
-**Second real behavior gap found while adding these**: boxplot's `clearEverything()` also does `localStorage.removeItem('padb_v2_excluded')` — wiping the Global Filter, which is a *cross-view*, deliberately additive/persistent exclusion list (shared via that same key across scatter/stat_summary/boxplot/env_coverage/summary; see "Boxplot Global Filter (GF)" above) that can take real effort to build up. Boxplot already has its own dedicated `clearGlobalFilter()`/"Clear global filter" button for exactly that action, so `clearEverything()` doing it too was redundant with — and inconsistent with the intent of — that dedicated control, and inconsistent with every other view's Reset (none of which touch the GF). Confirmed with the user and fixed: `clearEverything()` no longer touches `padb_v2_excluded`; the new `stat_summary`/`env_coverage` `resetFilters()` don't either. Only the dedicated "Clear global filter" button (and its equivalents) clears GF now, in every view.
-
-Verified headlessly against a real generated multi-temp dataset (`qa_padb.py`'s synthetic CSV, `--keep`): for both `stat_summary` and `env_coverage`, deliberately mutated every covered control away from its default (unchecked temp/serial checkboxes, non-default P/C selections, non-default frequency text, toggled show-excluded/hide-spec/log-X/GF-apply checkboxes), called `resetFilters()`, and confirmed every control read back to its correct default — including P/C selects correctly showing `"0.90"` rather than the pre-fix empty string. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## Boxplot frequency-label collision — fixed via adaptive-precision labels, not fixed-precision (fixed 2026-08-18)
-
-See `project_boxplot_freq_label_collision` memory for the original report: two genuinely distinct close-in-frequency points (e.g. either side of a YTO/band-edge split, a few kHz apart) could round to the identical short label (`.3g` once in GHz) — and since boxplot's x-axis is **categorical**, keyed by that label string, both boxes then land on the same slot and render fully overlapping. Confirmed this is boxplot-only: `stat_summary`/`summary`/`env_coverage`/scatter all use a numeric x-axis (no collision possible); the only other categorical-axis user in the codebase is `_build_env_summary_html`, the `de_summary`-equivalent legacy path, left untouched per this doc's usual exclusion boundary for that view.
-
-User explicitly did not want every label padded to full precision by default (most frequencies don't need it and it would clutter the axis) — wanted collisions flagged/resolved locally instead. **Fix**: `_freq_label_map(freqs, x_unit)` (new, near `_short_x_label`) computes labels for *all* frequencies at the normal short precision first, then recursively regroups only the colliding subset at one more significant digit, repeating until that subset's labels are distinct (falls back to an explicit `"label (i/n)"` suffix past 10 significant digits, which should be unreachable on real data). Every non-colliding frequency keeps its original short label untouched.
-
-Wired into the one real call path: `stat_boxplot()` (`padb_plots.py`) computes `freq_label_map` once and passes it into `_aggregate_box_data_by_temp(df, x_unit, freq_label_map=...)` explicitly, rather than each independently calling their own `_freq_label()` closure (the pre-fix shape) — guarantees the categorical axis order (`freq_cat_order`/`BOX_FREQ_ORDER`) and each `freq_stats` entry's own `freq_label` can never drift out of sync with each other, which two independently-computed-but-hopefully-identical functions would risk.
-
-Verified directly against the reported collision shape (`8199.95`/`8200.05` MHz, both `.3g`-rounding to `"8.2 GHz"`): now resolve to distinct `"8.19995 GHz"`/`"8.20005 GHz"`; a 3-way collision at the same cluster resolves to 3 distinct labels; well-separated frequencies (100/200/8500 MHz) keep their original short labels unchanged. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## Boxplot drag-zoom didn't sync `box_freq_lo`/`box_freq_hi` — same fix as `stat_summary`'s zoom-sync, extended (fixed 2026-08-18)
-
-Reported by the user against a real generated page: after drag-zooming boxplot's plot to a few frequencies, switching the "Group by" selector left the plot "still zoomed in" but showing a *wider* frequency range than before — "doesn't seem right." A day-earlier related report: "box plot zoom on plot is not setting start/stop slider" at all.
-
-Root cause was the same design gap already documented for `stat_summary` before its own zoom-sync fix (see "`stat_summary`: drag-zoom didn't narrow the Statistics Table" above), just never ported to boxplot: `buildLayout()` never pins an explicit `xaxis` range (`box_freq_lo`/`box_freq_hi` are plain `<input type="number">`, not touched by a drag-zoom at all — confirmed nothing wrote to them). A Plotly drag-zoom on the categorical frequency axis is reported as a **fractional category-index range** (e.g. `[-0.015, 1.478]`, not a frequency range), and is purely a Plotly-internal view state with nothing tying it back to the actual frequency filter. Since `buildLayout()`'s `categoryarray` is recomputed fresh from `getBoxFreqRange()` on every `update()` — including a Group By change, which doesn't touch frequency at all but still calls `update()` — Plotly reinterprets its own stored index range against whatever categoryarray happens to be current at that moment. In the reported case this landed on a *wider* set of categories purely by coincidence of index math, not by any actual design.
-
-**Fix**, mirroring `stat_summary`'s already-established pattern: `_onPlotRelayout(ed)` (new) listens for `plotly_relayout`, converts the reported category-index range back into real frequency bounds via a new `_boxLabelToFreq` map (built once from `BOX_FREQ_ORDER` and a new parallel `BOX_FREQ_VALS` JS array — boxplot previously only exposed the *label strings*, never the underlying frequency values, so there was no way to reverse a category index back into a frequency at all), then writes the result into `box_freq_lo`/`box_freq_hi` and calls `update()`. Once the "zoomed" range is a real, persisted frequency bound instead of a transient Plotly view state, every rebuild — Group By included — naturally re-derives the same `categoryarray` from it, with nothing left for Plotly's own index reinterpretation to get wrong. A `'xaxis.autorange'` event (double-click / "Reset axes") resets `box_freq_lo`/`box_freq_hi` back to `BOX_FREQ_MIN`/`BOX_FREQ_MAX` instead.
-
-Unlike `stat_summary` (which calls `Plotly.purge()` and must re-attach the listener after every rebuild), boxplot's `update()` uses `Plotly.react()` in place — the listener is attached once, in the page's init sequence, and survives every subsequent `update()` call.
-
-`clearEverything()` already reset `box_freq_lo`/`box_freq_hi` to the full range, but never cleared Plotly's own *visual* zoom state (previously harmless, since nothing read that state) — now that a stale visual zoom index would get reinterpreted against the freshly-widened `categoryarray` on the very next render, added `'xaxis.autorange':true` alongside the existing `'yaxis.autorange':true` relayout call.
-
-Verified headlessly with a real simulated drag-zoom against `qa_padb.py`'s synthetic dataset (5 frequencies): zoom correctly narrows `box_freq_lo`/`box_freq_hi` to the two zoomed-in frequencies (2 categories); switching Group by to Port, then to Temperature, both correctly *stay* at 2 categories (previously widened back to 5 on the reported real page); `clearEverything()` correctly restores all 5 categories and the full unzoomed view. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## Boxplot Statistics Table: `Max +Δ`/`Max -Δ` columns split the Outliers list by sign (added 2026-08-18)
-
-User noticed, looking at a real page: the existing `Outliers` column lists every fence-crossing point for a row jammed into one comma-separated string (e.g. `-30.0 (DUT_A), 25.0 (DUT_B)`), which made a small/subtle negative outlier easy to miss sitting next to a much larger positive one — reported as "it gives the largest positive outlier, but the largest negative outlier is very close to the limit [and wasn't obviously visible]." Confirmed this is not a bug in what's computed: both branches of `updateStatsTable()` already list every point in `outlier_detail`/`outDet`, nothing was being dropped — just visually easy to overlook in a single run-on list.
-
-**First proposed design (revised after user feedback)**: an unconditional "largest deviation in each direction, fence or not" pair of columns, so a near-limit-but-not-fence-crossing point would also surface. **User corrected this**: "I only want values that you judge as outliers" — i.e. still gated by the existing IQR fence test, just split by sign into two columns instead of run together in one list, so a positive and a negative outlier at the same frequency each get their own visible cell.
-
-**Fix**: `_maxDevCells(outlierDetail, center)` (new, right before `updateStatsTable`) takes the *already fence-filtered* outlier list (`outDet` in the serial/Y/passing/temp-filtered branch, `fs.outlier_detail` in the plain branch — the exact same sets the `Outliers` column itself already lists, not a new or separately-gated notion of "extreme") and picks the single most-positive and single most-negative deviation from the row's median (`s.q2`/`fs.q2`), each tagged with its value and DUT serial. A row with no outlier in a given direction shows `—` there, identically to what `Outliers` would show. Two new `<th>` columns (`Max +Δ` / `Max -Δ`) added after `Outliers` in both the filtered and unfiltered table-building branches and the shared header row.
-
-Verified directly against a synthetic single-frequency, single-condition CSV (10 clustered DUTs + one deliberate `+15` and one deliberate `-40` deviation from the median): `Outliers` column correctly lists both (`-30.0000 (NEGDUT01_RF1), 25.0000 (POSDUT01_RF1)`), `Max +Δ` shows `+15.0000 [25.0000 (POSDUT01_RF1)]`, `Max -Δ` shows `-40.0000 [-30.0000 (NEGDUT01_RF1)]` — matching the fence-detected outliers exactly, correctly signed and attributed. A second synthetic case with no outliers at all correctly shows `—` in all three columns (not a manufactured "extreme" for healthy data, per the user's explicit correction). `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
-**Real gap found the same day, from the same feature**: with no serial/Y/passing/temp filter active, `updateStatsTable()`'s default branch sources its rows entirely from `BOX_STATS` (`_aggregate_stat_data()`'s output, built for `stat_summary`) rather than `BOX_DATA` (`_aggregate_box_data_by_temp()`, boxplot's own per-temp aggregation) — and `_aggregate_stat_data()` computes its `freq_stats` **exclusively from `room_dut`** (Python-side: `room_df = cdf[cdf["Temperature"] == "Room"]`), since non-Room temps there only ever feed a separate ΔEnv calc, never their own per-temp outlier/normality breakdown. The box traces on the *plot* are drawn from `BOX_DATA`, which is genuinely per-temp — so a real outlier at a non-Room temperature showed correctly on the plot but was silently absent from the table. Reported by the user, who correctly self-diagnosed it: "no Max -Delta data in the table but I see it in the plot... you are only accessing Room data, even though 20C and 30C data is available with outliers too."
-
-**Fix**: added a second pass over `BOX_DATA`'s own non-Room entries (`cd.temp!=='Room'`) inside the same default branch, computed exactly like the already-existing filtered branch does for every temp (`computeBoxStats()` on that entry's `vals_detail`) — labeled `condition / temp` to distinguish from the Room rows above them, with the Normality cell replaced by an explicit "no normality test at non-Room temps" note rather than faking a Shapiro result that was never computed for that population. This is a real, permanent limitation of `_aggregate_stat_data()` (Room-only by design), not something papered over — non-Room rows simply don't get a normality verdict, same as the filtered branch already had no normality column at all.
-
-Verified against a synthetic 3-temp (Room/20°C/30°C) dataset with a deliberate `-30` outlier planted *only* at 20°C: Room and 30°C rows correctly show no outliers in any column; the `All / 20°C` row correctly appears with `Outliers: -30.0000 (NEGDUT_RF1)` and `Max -Δ: -39.9900 [-30.0000 (NEGDUT_RF1)]` — previously silently missing entirely. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## Boxplot Statistics Table never respected "Group by: Serial Number/Port" (fixed 2026-08-19)
-
-Confirmed real gap tracked in the `project_boxplot_stats_table_ignores_group_by` memory since 2026-08-14, picked back up this session. `updateStatsTable()` always iterated `BOX_DATA`/`BOX_STATS` by the raw, ungrouped `cd.condition` — but when "Group by" is set to Serial Number or Port, `buildBoxTraces()` (the plot) delegates entirely to `buildPortSerialTraces()`, which pools a DUT's (or port's) data **across every condition it was tested under**. With Group by on either of those two settings, the plot and table described genuinely different populations: an outlier on a serial-pooled box could trace back to a different underlying condition than whatever the table's same-looking, ungrouped row reported for that condition name — exactly the mismatch originally reported (`N5383_63008_PODDAE_boxplot.html`, outliers under `QPA2962B` on the plot vs. `QPA2962A` in the table for what looked like the same state).
-
-**Scope check before fixing**: read `buildBoxTraces()` closely to confirm the *other* two Group-by modes (`Condition` default, or a named `COND_DIMS` field like `Amp`) don't have the same bug — they don't. For those, boxes stay exactly one-per-real-condition; Group by there only changes each box's **color and legend label** (via `getGroupKey()`), never merges statistics across conditions. So the table's existing per-condition rows were already correct for those two modes — only Serial Number/Port needed a fix.
-
-**Fix**: extracted `buildPortSerialTraces()`'s pooling logic (the `freqVals`/`freqSet`/`freqLabels` building + per-group-per-freq `computeBoxStats()` call) into a new shared function, `_computeBoxGroupedByColId(colId, ...)`, returning `{gk: fs_arr}` (gk = serial or port value). `buildPortSerialTraces()` now calls it and only builds Plotly traces from the result; `updateStatsTable()` gained a new first-checked branch — when `box_group_by` is `__serial__`/`__port__`, it calls the *same* function and renders one row per `(group, freq)` labeled `Serial: <gk>` / `Port: <gk>`, with Normality replaced by an explicit "pooled across conditions, no normality test" note (Shapiro was never computed for this cross-condition population, so a real note beats faking one). Sharing one function guarantees the table can't drift out of sync with the plot again, the same principle already applied to the boxplot freq-label fix earlier this session.
-
-Verified against a synthetic case mirroring the real report exactly: DUT01 tested under both condition `QPA2962A` (10.0) and `QPA2962B` (10.02), plus a lone DUT (`DUT06`) tested only under `QPA2962B` with a deliberate `40.0` value. With Group by set to Serial Number: the table's `Serial: DUT01` row correctly shows `n=2, mean=10.01` (pooling both conditions); `Serial: DUT06` shows `median=40.0000, Q3=40.0000` — read directly off the live plot's own trace data (`gd.data` for the `DUT06` trace) and confirmed to match exactly. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## TLL override lower side added to boxplot and summary (fixed 2026-08-19)
-
-Confirmed real gap tracked in the `project_tll_override_lower_missing` memory since 2026-08-14: the manual TLL override input only ever had an upper side (`box_tll_hi`/`sum_tll_hi`) — `getYFilter()`/`getSumParams()` only returned a `tll_hi`/`tll_hi_override` field, the "Passing only" filter's lower-bound check (`passLo`/`lo`) always fell back to the plain CSV `LO_SPEC`/`spec_lo` with no way to override it, and the manual TLL line trace only ever drew the upper line.
-
-**Scope correction from the memory (verified against current code, not assumed)**: the memory listed three views — boxplot, `env_coverage`, `summary`. Checking each:
-- `stat_summary` was never actually broken — it already has both `stat_tll_hi`/`stat_tll_lo` fully wired (`tll_lo_override` in `getFilteredCondsAndParams()`'s params, consumed by `computeFreqResult()`). Not part of this fix; presumably already fixed by the time the memory was written, or the memory's "three views" list simply predates it.
-- `env_coverage`'s `env_tll_hi` **does not belong to the real V2 `env_coverage` view at all** — it's rendered inside `_build_env_summary_html`, the `de_summary`-equivalent legacy path this codebase deliberately excludes from feature work everywhere else in this doc. The real `_build_env_coverage_html` has no TLL override control, upper or lower — confirmed directly reading its generated HTML. Since there's no existing one-sided feature to make symmetric there, and per user decision, **left untouched** — not a "fix," would have been a new feature on top of an excluded legacy view.
-- `boxplot` and `summary` were the two real gaps, fixed identically.
-
-**Fix, per view**: added a second input (`box_tll_lo` / `sum_tll_lo`) beside the existing one, each wrapped in its own `id="..._wrap"` label so the existing TLL-direction show/hide logic (`updateBoxFilterLabels()` / `updateSumFilterLabels()`, the same functions that already conditionally show/hide the Data-filter Upper/Lower-limit radios) now also governs these two wraps — both shown when direction is "Both," only the relevant one otherwise. `getYFilter()`/`getSumParams()` now return `tll_lo`/`tll_lo_override`; every consumer that read `tll_hi`/`tll_hi_override` to override `HI_SPEC`/`spec_hi` for the "Passing only" pass/fail check (three call sites in boxplot: `buildBoxTraces`, `updateStatsTable`, the outlier panel; one in `summary`: `applyDataFilter`) gained the symmetric `tll_lo`/`tll_lo_override` fallback for `LO_SPEC`/`spec_lo`. The manual TLL line trace gained a second, independent line for the lower override in both views. `saveState`/`loadState`/Reset (`clearEverything()`/`resetFilters()`) updated to persist and clear the new field alongside the existing one.
-
-**At the time, left untouched**: neither view's Results/Statistics Table or CSV export applied the *upper* override either (`_buildCondRows()`'s Spec/Margin columns and `saveCSV()`'s export both computed straight from `spec_hi`/`spec_lo`, ignoring any manual override) — assumed to be a separate, pre-existing limitation affecting both sides equally. Boxplot's own Statistics Table has no equivalent gap to fix — it's purely descriptive statistics (Q1/Median/Q3/whiskers/normality), with no spec-direction-dependent columns at all.
-
-Verified per view: **boxplot** — both wraps visible when TLL direction is "Both," switching direction to "hi"/"lo" correctly shows only the matching wrap; both manual TLL lines render at the entered values. **summary** — same wrap-visibility check; `getSumParams()` returns both overrides; both manual lines render; and critically, the override actually changes filtering (not just cosmetic): with "Passing only" active and an intentionally impossible lower override (`999999`), the active condition count dropped from 12 to 0, proving `applyDataFilter()`'s new `tllLoOv` fallback is genuinely read, not just displayed. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL) throughout.
-
-**Follow-up, same day**: the "left untouched" call above was wrong. The user immediately noticed and asked: "if I override lower limit, should the table Spec Lo change? It's not." Re-reading the override's own tooltip ("bypasses Spec Hi/Lo") settled it — the override is documented as *standing in for* the spec for pass/fail purposes, not just for the filter checkbox, so the Results Table's Spec Hi/Lo columns (and the Margin columns computed from them) showing the un-overridden spec was a real inconsistency, not a deliberate design choice: a condition could show as passing in the filtered view while its own table row still reported the stale, un-overridden margin. Fixed in `summary`: `_buildCondRows()` and `saveCSV()` now both check `params.tll_hi_override`/`params.tll_lo_override` (`sumPar.*` in `saveCSV`, which previously never even called `getSumParams()`) before falling back to the CSV-derived spec, mirroring `applyDataFilter()`'s existing pattern exactly. `stat_summary`'s equivalent (`spec_hi_override`/`spec_lo_override`, `stat_spec_hi`/`stat_spec_lo`) is a deliberately *different* mechanism — a manual spec **entry** used only when the CSV has none, not a bypass of a real one — so its Margin already correctly uses the real CSV spec when present and was not touched. Boxplot has no Spec Hi/Lo table columns at all, so there was nothing there to fix either.
-
-Verified headlessly: before setting an override, a row's Spec Lo read `-110.0000`, Margin↓ `+41.4192`; after setting `sum_tll_lo` to `-2`, the same row's Spec Lo correctly became `-2.0000` and Margin↓ recalculated to `-66.5808` (now correctly failing, since the actual TTL↓ is far below -2) — confirming the override propagates through to both displayed columns, not just the pass/fail filter. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
-**Terminology, worked out with the user the same day (informs the naming below, no code renamed yet):** "TTL" and "TLL" are not spelling variants of one concept — they're computed in opposite directions, and the codebase currently mixes both spellings for both meanings:
-- **Spec Hi/Lo** — the datasheet limit. Fixed input.
-- **TTL↑/↓ (Total Tolerance Limit, PADB's own term** — confirmed from PADB's real CSV column `Upper/Lower TTL (est)`, and this repo's own `PADB_Tools_Guide.md` glossary entry) — what the *data* supports: a statistical bound (mean ± k·σ, or NP-TI) *plus* the MU/DEnv budget. `summary`'s `uttl`/`lttl` already computes and labels this correctly.
-- **TLL↑/↓ (this team's own term, no PADB precedent)** — spec adjusted *backward* by the same budget: `spec ∓ MU ∓ DEnv ∓ Guard Band`. Only `stat_summary`'s `tll_up`/`tll_lo` is actually computed this way, and its hover text already correctly calls it "TLL."
-- Boxplot's and `summary`'s manual override control doesn't override either of the above — it overrides **Spec Hi/Lo** directly (confirmed: the "Passing only" check compares the real `uttl`/`lttl` against `override ?? spec`) — so calling it "TLL override" there is a real misnomer; "Spec override" is what it actually does. Not yet renamed in code/labels — flagged for a future pass.
-
-**Design revision, same day, after further discussion:** the "Follow-up" fix above (silently substituting the override into the Spec Lo cell) was reconsidered after asking "should Spec Lo change?" a second time and thinking through the failure mode: an override left active with no visual cue makes an exported/archived table indistinguishable from real spec data. Revised design, implemented in `summary`:
-- **Live Results Table** (`buildTable()`): Spec Hi/Lo still shows the *effective* value (override, when set — so Margin stays consistent with what `applyDataFilter()`'s Passing-only check actually compares against), but a new `specTd()` helper flags it with the same "needs attention" orange this codebase already uses for GF badges and stale-refresh buttons, with the real spec value in the cell's `title` tooltip. `_buildCondRows()` now carries `real_spec_hi`/`real_spec_lo` and `spec_hi_is_override`/`spec_lo_is_override` alongside the existing effective `spec_hi`/`spec_lo`, so the render step can tell them apart.
-- **CSV exports** (`exportTableCSV()` and `saveCSV()`): Spec Hi/Lo columns revert to *always* being the real datasheet value — a CSV can't carry a tooltip, so silently exporting an override with no flag would be worse than the original bug. Added explicit `Spec Hi Override`/`Spec Lo Override` columns (empty when unset) so the override is recoverable and explicit instead of invisible. Margin still follows the effective value in both exports, consistent with the live table and the filter.
-
-Verified headlessly: Spec Lo cell reads plain (no background/title) before any override; after setting one, the cell's background becomes `rgb(255, 240, 232)` (`#fff0e8`) with `title="Spec override active -- real spec is -110.0000"` while showing the override value; `exportTableCSV()`'s header/row confirmed both `Spec Hi`/`Spec Hi Override` present with the real and override values in their own columns respectively; `saveCSV()`'s header confirmed `Spec_hi,Spec_hi_override,Spec_lo,Spec_lo_override` present. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
-**Parity fixes applied to `stat_summary` the same day**, after the user asked to reason out and apply the analogous fixes there for "outliers, spec overrides, +/- deltas from median":
-- **Max +Δ/Max -Δ columns** (the boxplot fix from earlier this session) ported to `stat_summary`'s own Statistics Table (`updateStatPanel()`) — same `_maxDevCells(outlierDetail, center)` helper, same semantics (only ever drawn from `fs.outlier_detail`, the exact set the Outliers column itself already lists). While here, the existing Outliers column was upgraded from plain values (`fs.outliers`) to `fs.outlier_detail` (adds the DUT serial per outlier, matching boxplot's format) — `outlier_detail` already existed in `_aggregate_stat_data()`'s output with serial info, just wasn't being used by this column.
-- **TLL Bounds visual flag**: `tllStr`'s two sides (`r.tll_lo`/`r.tll_up`) get the same orange-background/tooltip treatment as `summary`'s Spec override cell when driven by `stat_tll_lo`/`stat_tll_hi`, via a new `_tllSpan(v, isOverride)` helper — each side flags independently, since only one may be overridden at a time.
-- **CSV export** (`saveCSV()`): added `TLL_lo_override`/`TLL_hi_override` columns (empty when unset) alongside the existing `TLL_lower`/`TLL_upper` — this view's `TLL_lower`/`TLL_upper` was already the effective value with `Spec_lo`/`Spec_hi` already a separate, always-real column (a cleaner design than `summary`'s pre-fix Spec Hi/Lo had), so this was about making an active override explicit rather than fixing an ambiguity.
-
-**Real bug found while doing this parity pass**: `computeFreqResult()`'s `spec_up` correctly checks the override first (`params.spec_hi_override!==null ? override : fs.spec_up`), but `spec_lo_raw` had the *opposite* priority — `(fs.spec_lo!=null)?fs.spec_lo:params.spec_lo_override` — checking the real CSV value first and only falling back to the override when the CSV had none. Reported directly: "changing Spec hi affects the hi margin in the table. however changing spec lo value does not change the low margin." Whenever the CSV/pod has any real lower spec at all (the common case), the manual "Spec Lo" entry was silently never consulted. Fixed to match `spec_up`'s priority exactly: override wins first, always.
-
-Verified headlessly against the exact reported symptom: before the fix, Margin↓ stayed at `+36.9494` regardless of the `stat_spec_lo` entry; after the fix, setting it to `999` correctly flips Margin↓ to `-1072.0506` (now failing, as expected against an artificially strict lower spec) while Margin↑ (untouched) stays at `+13.6494`. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## `summary`'s Data-filter (Upper/Lower limit, Passing only) ignored the Temperature checkboxes (fixed 2026-08-19)
-
-Reported by the user against a real page: "setting the data filter to upper limit or lower limit seems to include or exclude table data outwith the prescribed limits. Math issue maybe."
-
-**Root cause**: `applyDataFilter()`'s `range_hi`/`range_lo`/`passing` branches read `cd.max_data`/`cd.min_data`/`cd.uttl`/`cd.lttl` directly off the raw condition record — fields computed across *every* temperature in the dataset, regardless of which Temperature checkboxes are currently selected. The Results Table, by contrast, already gets its Min/Max/TTL from `getSumCondData(cd, selTemps, params)`, which correctly recomputes those values from only the currently-selected temperatures. So deselecting a temperature (e.g. narrowing to Room-only) changed what the *table* displayed but not what the *filter* evaluated — a condition's real, all-temperature max could exceed the Upper-limit value even though its currently-visible (Room-only) max was well within it, and the filter would still hide it based on the invisible, no-longer-relevant temperature's data. This is the same class of bug as the earlier "boxplot Statistics Table never respected Group by" fix — two code paths computing the same conceptual thing differently, only one of them updated when a filter control changed.
-
-**Fix**: `applyDataFilter()` now calls the same `getSumCondData(cd, selTemps, sumPar)` the table already uses, for all three modes (`passing`, `range_hi`, `range_lo`), instead of reading `cd.*` fields directly. Added null-guards on the recomputed `max_data[i]`/`min_data[i]` (`stats.max_data[i]===null||stats.max_data[i]<=flt.yhi`) since the temperature-filtered recompute can legitimately produce `null` at an index with no data for the selected temps — the raw `cd.max_data` never did, so the original code had no reason to guard against it, but blindly comparing `null<=20` in JS evaluates true (null coerces to 0), which would have silently treated a missing point as passing.
-
-Verified against a synthetic 2-temp case (Room: 10/12/11, all within an Upper limit of 20; 20°C: 10/12/25, one DUT exceeding it) with both temps selected: condition correctly hidden (0 active, matching the existing `.every()` "hide if it fails anywhere" semantics). Deselecting the 20°C checkbox (Room-only view): condition now correctly reappears (previously stayed hidden, using stale all-temperature data even though the only *visible* temperature's data was fine). `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## `summary`: stepping the Freq max box to an exact real frequency still excluded it (fixed 2026-08-19)
-
-Reported by the user: "using the freq max text box up/down keyboard arrow to step through frequency bands... setting the frequency to 750MHz in this box excludes 750MHz in the table until I increase the frequency max box to the next higher value."
-
-**First-layer cause**: `freqStep()` (the arrow-key handler) snaps to the exact real frequency from `FREQ_VALS`, then writes it into the text box via plain `.toFixed(3)` (round-to-nearest) — the same class of bug as the page-load-default rounding fix earlier in this doc. If the real frequency has more than 3 decimals of precision (e.g. `750.00003`, common floating-point noise from a real instrument sweep), rounding to nearest can land the displayed/re-parsed boundary *below* the true value, so the inclusive `f<=fHi` check then excludes the exact point the user just stepped to. Fixed identically to the earlier page-load fix: `freqStep()` now floors the low-side box and ceils the high-side box instead of rounding to nearest, across all 6 duplicated copies of this function (scatter, legacy `distribution()`, `stat_summary`, `env_coverage`, `boxplot` has no equivalent — plain number inputs, not a stepped slider — and `summary`).
-
-**Second, deeper cause found while verifying the first fix**: even after `freqStep()` correctly ceils the *text box* to `750.001`, the bug persisted — because `summary`'s own filtering functions (`buildTraces()`, `applyDataFilter()`, `saveCSV()`, `_buildCondRows()`, plus the `toggleLogX()`/`buildLayout()` display-range fallbacks) all read the frequency bound from the **raw slider element** (`document.getElementById('freq_hi').value`), not the text box. A browser silently snaps a programmatically-assigned slider `.value` to its `step` attribute — so after `freqStep()` set the slider to the real `750.00003`, reading it back gave a snapped `"750"`, undoing the text box's own correct ceiling and reproducing the exact same exclusion one layer down. `stat_summary` already avoids this (its own `getFilteredCondsAndParams()` explicitly prefers the text box), but `summary` never had the equivalent guard on any of its filtering functions.
-
-**Fix**: added `_sumFreqRange()` (new, near `toggleLogX()`) — the same "prefer the text box, fall back to the slider only if the text box is empty" pattern `stat_summary` already used — and switched every filtering/plotting function in `summary` from reading the slider directly to calling this. `_recomputeSpecSegments()` already did the right thing inline and was left alone; `resetFilters()`'s slider-value assignment and `saveState()`'s slider-value read are setters/persistence, not filtering, and were left alone too.
-
-Verified end-to-end on a synthetic 5-frequency dataset with a deliberate `750.00003` value: stepping the Freq max box from 725 to the next step correctly lands on `750.001` (ceiled) in the text box; `_sumFreqRange()` correctly returns `{lo:700, hi:750.001}` even though the raw slider itself still reads a snapped `"750"`; the Results Table now correctly includes the `750.0000` row; the plot's own trace data confirmed to include the real `750.00003` point. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## Spec-mask rendering (`scatter` view, added 2026-07-22)
-
-`accuracy_vs_freq`'s `buildLayout()` used to round every row's `Upper_Limit`/`Lower_Limit` to the nearest integer and draw one **full-width** dashed line per distinct rounded value (`xref:'paper', x0:0, x1:1`) — designed for a constant spec with sub-dBc MU-adjustment noise. For a genuinely frequency-varying spec (PADB `Limits_YLimit=Line`, e.g. a phase-noise mask or a frequency-banded dBc spec), this produced a cluttered stack of full-width lines, none tied to the frequency range they actually applied to.
-
-**Fix:** `getSpecMask(dataArr)` (new helper in `_AV_FREQ_JS`) builds per-frequency (min Upper_Limit / max Lower_Limit) pairs and flags `isMask=true` when more than 3 distinct rounded values exist. `buildTraces()` then draws a proper `line:{shape:'hv'}` step trace following the real (freq, limit) pairs, and `buildLayout()` skips the old full-width shapes entirely when in mask mode.
-
-**This changes the visual appearance of already-published pods**, not just the phase-noise pod: Clock Leakage (6→1 line), Line-Related (6→1 line), and Close-In (5→1 line) all have genuine frequency-banded step specs and now trigger mask mode — confirmed monotonic and correct against the documented spec tables, so this is an improvement, not a regression, but it was a deliberate, explicitly-confirmed decision (not silent) given those datasets are already published. Harmonics/Sub-Harmonics stays on the old flat-line rendering (only 3 tight values, doesn't cross the threshold).
-
----
-
-## "Hide spec lines" checkbox (added 2026-08-17)
-
-A checkbox that suppresses the red dashed CSV-derived spec reference line/trace, added independently to all 6 views except `env_coverage`:
-
-- **scatter** (`_AV_FREQ_JS`): `hide_spec_chk` gates both the flat dashed `shapes` (`buildLayout()`) and the frequency-varying mask step-line traces (`buildTraces()`, `getSpecMask()`).
-- **distribution** (`_build_env_distribution_html`, the real V2 distribution view): `dist_hide_spec_chk` gates the ΔTemp mode's light-gray zero-line shape *and* the Absolute mode's red/blue vertical `curHi`/`curLo` shapes.
-- **stat_summary** (`_STAT_SUMMARY_JS`): `stat_hide_spec_chk` gates the `hiSpecs`/`loSpecs` shapes+annotations block in `buildLayout()`.
-- **boxplot** (`_STAT_BOXPLOT_INTERACTIVE_JS`): `box_hide_spec_chk` gates the `Spec Lo`/`Spec Hi` named traces in `buildBoxTraces()`.
-- **summary** (`_SUMPLOT_JS`): `sum_hide_spec_chk` gates the per-frequency-range `Spec Hi <v>`/`Spec Lo <v>` segment traces in `buildTraces()`.
-- **`env_coverage` deliberately excluded** — it never draws a visible spec line/shape at all; `spec_hi`/`spec_lo` there only drive a pass/fail comparison against TTU/TTL and hover/CSV text, so there's nothing for this checkbox to hide.
-
-Each view's checkbox is independent (own `localStorage` key via the existing `saveState()`/`loadState()` pattern already in every view) — same reason `getSpecSegments()`/the Help panel/etc. are duplicated per view rather than shared. Deliberately does **not** touch TTL/TLL bands (the computed tolerance-interval lines) in any view — those are the actual statistical content of stat_summary/boxplot/summary/env_coverage, not a spec reference a viewer would want to hide. Also does not touch the "TLL override" manual line (`box_tll_hi`/`sum_tll_hi`) — a separate, already-named feature.
-
-Verified headlessly (Edge `--dump-dom`) against a synthetic multi-temp CSV for all 5 wired views: shape/trace counts confirmed to drop to 0 after checking the box, for both the scatter flat-line and frequency-varying-mask cases, and both distribution view modes (ΔTemp zero-line, Absolute red/blue spec lines).
-
----
-
-## `mode` job.json key (added 2026-08-03)
-
-Three values, default preserves every pre-existing job.json byte-for-byte:
-
-- `"legacy"` (default when the key is omitted) — today's V1 behavior: `run_secondary_plots()` + `make_index_html()`, unchanged.
-- `"simple"` — a direct, static replacement for the old internal Perl `PADB::Simple` tool. No custom plotting or statistics: `make_run_pod()` forces `OutputConfig_OutputGraph=1`/`OutputConfig_GraphFormat=png,pdf` inside every `[PADBAnalyticN]` section (only when this mode is set — no-op otherwise), so PADB-R.exe itself renders each analytic's native PNG/PDF. `padb_simple.py`'s `make_simple_gallery_html()` then wraps those native renders in a bare HTML gallery (one card per PNG, a metadata table dumped verbatim from `_run.pod`'s own `[Extract]`/`[PADBAnalyticN]` settings, download links to `.sao`/`.pod`/`.txt`/`.csv`) — written to the same `results_dir/index.html` path V1/V2 already use, not a nested index-of-indexes.
-- `"interactive"` — label only, documents that this job feeds the existing V2 two-command flow (`padb_run.py` extract, then a separate `py padb_v2.py ... --csv ...`). No dispatch change: V2's job.json schema is structurally different (`csv_path`/`views`/`publish_to` vs V1's `pod`/`subex`/`secondary_plots`), and `generate_report()` takes one CSV per call while a V1-style `analytics` list can yield N CSVs, so wiring this in-process was a deliberate scope cut, not a missed requirement. Setting this mode just prints a one-line "run padb_v2.py with this CSV" hint after extraction.
-
-**Bug fixed 2026-08-05 — native renders leaking into non-Simple modes:** `make_run_pod()` only ever forced `OutputConfig_OutputGraph` **on** (for `"simple"`); it never forced it **off** for `"legacy"`/`"interactive"`. Neither of those pipelines reads a native render — but a pod previously tuned for Simple mode (like the `MaxPower3` family — see the "Verified no-op case" note below) keeps `OutputConfig_OutputGraph=1` baked into every analytic regardless of what mode a *later* job.json against that same pod uses, so PADB-R silently re-rendered a full native PNG/PDF gallery on every Interactive-mode extraction too — wasted render time, and confusing PNG/PDF files sitting next to the CSVs that could be mistaken for the actual result (a real case: `MaxPower3_v2_run_job.json`, reported via the web app). Fixed with a new `disable_native_render` flag on `make_run_pod()` (`_DISABLE_RENDER_KEYS = {"OutputConfig_OutputGraph": "0"}`), called as `disable_native_render=(mode != "simple")` alongside the existing `force_native_render=(mode == "simple")` — the two are mutually exclusive by construction. Verified via `--dry-run` on both a real Interactive-mode job (now `OutputConfig_OutputGraph=0` in the `_run.pod` copy) and a real Simple-mode job (still `=1`, unchanged).
-
-Both `"simple"` and `"interactive"` also get a `results_dir/HOW_TO_USE.txt` written by `write_mode_guidance()` — a short, mode-aware text explainer (what the output is, what it can't do, how to switch tiers). Not written for `"legacy"` — no behavior change to existing jobs.
-
-**Known metadata gotcha:** the metadata table's `ExtractionOptions_AllRunResults` field was renamed to `ExtractionOptions_LastRun` in newer PADB pods (confirmed: `MaxPower3.pod`, PADB Version 4.12.2.8, uses the new name; the legacy PADB::Simple output on the share, PADB Version 3.1.2, used the old one). `build_metadata_table_html()` in `padb_simple.py` checks both key names — if another renamed field like this ever turns up, add it to that field's candidate-key tuple in `_METADATA_FIELDS` rather than special-casing it.
-
-**Verified no-op case:** `MaxPower3.pod`'s 6 analytics already have `OutputConfig_OutputGraph=1`/`GraphFormat=pdf,png` set, so forcing them in Simple mode is a true no-op there — confirmed by diffing `make_run_pod()` output before/after the change on real pods (`MaxPower3.pod`, `test1.pod`, `flat.pod`) with `force_native_render=False`, byte-identical in every case. Other pod families haven't been checked — if a pod currently renders natively off, flipping it on in Simple mode adds PADB run time/disk and could surface a previously-suppressed render failure.
-
----
-
-## `subex` relative-date sentinels (added 2026-08-03)
-
-Any `subex` value can be a placeholder resolved to PADB's `YYYY-MM-DD` format at the moment the job actually *runs*, not whenever job.json was written — this is the capability the old PADB::Simple tool had that was missing here:
-
-```json
-"subex": {
-    "Device_MinDate": "8 weeks ago",
-    "Device_MaxDate": "today"
-}
-```
-
-Supported forms, matched case-insensitively (`_resolve_date_sentinel()`, `padb_run.py`): `"today"`, and `"N day(s) ago"` / `"N week(s) ago"` / `"N month(s) ago"` / `"N year(s) ago"` for any integer N. Month/year arithmetic is real calendar arithmetic (via `calendar.monthrange`), not a 30/365-day approximation. Resolution happens once, inside `load_job()`, right after the friendly list-field → subex merge — a literal date string (`"2026-07-31"`) or any other subex value (`"{All}"`, a quoted list) that doesn't match one of these patterns is returned unchanged, so this is safe to leave wired in unconditionally. Verified against real pods: `4 weeks ago`, `1 day ago`, `3 months ago`, `1 year ago`, and `today` all resolve correctly, and non-date subex values pass through untouched.
-
-Useful for recurring/scheduled jobs (`schtasks`/`padb_scheduler.py`) that should always pull "the last N weeks" rather than a range that goes stale the day after the job.json is written.
-
----
-
-## `_collect_padb_outputs()` clears stale files before copying fresh ones (added 2026-08-03)
-
-`results_padb` (`results_dir/padb/`) used to accumulate forever — every real run's `_collect_padb_outputs()` call only ever copied newly-matched files *in*, never removed anything, so repeated runs of the same job piled up duplicate PNGs from past runs on top of the current ones. This bit Simple mode hard: a job run 3 times in one day had **273 PNG files** in `results_padb` for 2 analytics, most of them stale leftovers, producing a gallery with ~270 duplicate-looking cards instead of the correct handful.
-
-**Fix:** before copying, `_collect_padb_outputs()` now clears any existing `results_padb` file whose stem matches a known analytic stem **that also has fresh output this run** (`padb_run.py:246`). Stems with zero fresh matches in `padb_output_dir` this run are left untouched — this is the one case that had to be handled carefully: the clock-spurs job relies on a CSV manually placed in `results_padb` *forever*, specifically because PADB never writes a matching file to R-Plots for that analytic (see the Clock spurs gotcha below). A naive "delete everything matching a known stem" fix would silently wipe that workaround on the next real run; scoping the clear to "stems with fresh output this run" preserves it.
-
-Verified in production: a real re-run of `spectral_history_closein_job.json` logged `Cleared 286 stale file(s) from a previous run` and `Collected 14 file(s) from R-Plots/` — the correct count, matching what a single clean collection pass produces, with none of the historical bloat.
-
-**Second, more serious bug found and fixed 2026-08-20 — stale R-Plots leftovers clobbering genuinely fresh `-dir` output.** `run_padb()` always passes `-dir <results_padb>`, so PADB's real output for the *current* run already lands directly in `results_padb`, never in R-Plots (see the `-dir` gotcha below). But `_collect_padb_outputs()` still unconditionally scanned R-Plots and copied any stem-matching file it found there into `results_padb` — clobbering the already-fresh `-dir`-written CSV with an old one, if R-Plots happened to still hold a leftover from something else entirely (typically a manual GUI session, which does default-save to R-Plots). Found via `UHP-IddVsVgg`: a stale 505-row R-Plots leftover from an earlier manual run silently overwrote every subsequent automated re-extraction's genuinely fresh (and much larger, 920+ row) CSV, run after run, with the run log's own "predate this run" warning printing every time but not being treated as fatal. Auditing recent run logs turned up the same pattern in **11 of 16** recent runs across several different jobs — this had likely been silently serving stale data on a meaningful fraction of runs for a while, not just for this one pod.
-
-**Fix:** a stale R-Plots candidate (mtime before `run_start`) is now skipped — not copied — whenever `results_padb` already holds a fresh (mtime ≥ `run_start`) file for the same stem. Real fresh `-dir` output can no longer be clobbered by a coincidentally-stem-matching R-Plots leftover. The existing "predate this run" warning is unchanged for the genuine case (no fresh `-dir` output exists at all, e.g. the clock-spurs manual-CSV-placement gotcha) — that fallback path is untouched.
-
-Verified by deliberately reproducing the exact failure: restored 68 archived stale R-Plots files for `UHP-IddVsVgg`'s `PODDAE` stem, re-ran the extraction for real (PADB-R.exe genuinely executed, ~40s), and confirmed the log now reports `Ignored 68 stale R-Plots/ file(s) that predate this run -- results_padb already has fresh -dir output for the same analytic` while the fresh 942 KB CSV survives intact (previously would have been silently replaced by the old 388 KB one). `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## `padb_make_job.py` — job.json generator (added 2026-08-03)
-
-Generates a `<pod_stem>_job.json` next to each given `.pod` file, using the same template every hand-written job.json in this project already follows (`mode`, `results_dir`, `padb_exe`, output/logs dirs, `publish.destination`).
-
-```
-py padb_make_job.py pod1.pod pod2.pod --module MiniMoab
-py padb_make_job.py pod1.pod --module VSWR --min-date "8 weeks ago" --max-date today
-py padb_make_job.py pod1.pod --no-publish          # local results only, no publish key
-py padb_make_job.py pod1.pod --module X --force     # overwrite an existing job.json
-```
-
-- `--module` names the subfolder under `--publish-root` (default the `PADB-Simple` root). **Required unless `--no-publish` is given** — deliberately not auto-derived from the pod filename, since guessing the wrong subfolder name has already happened twice in practice (`MiniMoab`, `ReferenceNominalSpecs` vs `Reference`) and silently publishing to the wrong place on a shared network location is a worse failure mode than a required flag.
-- `--min-date`/`--max-date` are written into `subex` verbatim (including sentinel strings like `"today"`/`"8 weeks ago"` — resolved later by `load_job()`, not by this script). Omit both and no `subex` key is written at all, leaving the pod's own baked-in `[Extract]` date range untouched — this was the specific design ask that prompted the script.
-- Skips a target file that already exists unless `--force` is passed — won't clobber a manually-tuned job.json.
-- All other defaults (`padb_exe`, `padb_output_dir`, `padb_logs_dir`, `padb_timeout=7200`) match this session's established values and are overridable via their own flags.
-- **Fixed 2026-08-10**: `description` was hardcoded `f"SG6311A {stem} — ..."` regardless of the pod's actual instrument. Caught when a user pointed out that `MCS_Spurs_Example_simple_results\index.html` (an MCS pod, `Device_Device='M9484C'`) showed "SG6311A MCS_Spurs_Example — Simple mode" in both its `<title>` and page body — visibly wrong, not just an internal label. Fixed by reading `Device_Device` from the pod's own `[Extract]` section via `parse_pod_sections()` (already used for this in `padb_make_v2_job.py`, see below) and using that instead of a literal; falls back to no device prefix at all if the field is missing or empty, rather than guessing. Same fix applied to `padb_make_v2_job.py`'s `description`/`title_prefix`/`index_title` (see that section) — those are more consequential since `title_prefix` becomes the literal generated HTML filename prefix (e.g. every file this session was named `SG6311A_<analytic>_<view>.html`, correct only by coincidence since this session's pods really were SG6311A). The per-analytic metadata table (`padb_simple.py`'s `build_metadata_table_html`) already showed the correct `Device_Device` value the whole time — only the page title/header text was wrong.
-
----
-
-## `unique_output_filenames` job.json key (added 2026-08-04)
-
-Some pods have multiple analytics sharing one `OutputConfig_OutputFile` despite having distinct `AnalyticName`s — confirmed in the wild: `Harmonics_and_Subharmonics_Spec_Setting_Data2_review.pod` has 13 of 19 analytics sharing one `OutputFile` and 2 more sharing another, all 19 `AnalyticName`s distinct. `find_csvs()` already falls back to `AnalyticName` as the differentiator in this case (documented there), but that's a downstream workaround — the collision still exists in what PADB actually writes, and anything that predicts a CSV filename *before* extraction (like `padb_make_v2_job.py`) has to guess right.
-
-Set `"unique_output_filenames": true` in job.json to fix it at the source instead. `make_run_pod()` (`padb_run.py`) then forces every analytic's `AnalyticName` **and** `OutputConfig_OutputFile` to the same slug of that analytic's own original `AnalyticName`, patched only into the `_run.pod` copy — the original `.pod` is never touched, same convention as every other `make_run_pod()` flag.
-
-**Guaranteed, not just usually true:** slugifying can itself introduce a *new* collision when two `AnalyticName`s differ only by punctuation style — a real case in the same pod: `"Sub-Harmonics Summary 50MHz-20GHz"` (analytic 11) and `"Sub-Harmonics_Summary_50MHz-20GHz"` (analytic 18) both slugify to `Sub_Harmonics_Summary_50MHz_20GHz`. `make_run_pod()` detects any slug that isn't unique after the first pass and appends that analytic's own index (`_11`, `_18`) — confirmed both via direct unit testing and against a real PADB-R.exe run (all 19 analytics wrote distinct, correctly-named CSVs; analytics 11/18 correctly got the index suffix).
-
-**Ordering consequence:** because this can rename fields the rest of the pipeline depends on for file-collection stem-matching, `main()` now calls `make_run_pod()` *before* `parse_pod_analytics()`, and parses from the `_run.pod` copy instead of the original pod path. Verified this reorder is a no-op for every existing job (byte-identical output when no flags are set, so parsing from either file gives identical results) — it only matters once `unique_output_filenames` or a future similar flag is actually used.
-
-`padb_make_v2_job.py` sets this automatically whenever it detects an `OutputConfig_OutputFile` collision while generating a pod's job files, and predicts every `csv_path` using the identical slug + collision-disambiguation logic, so the generator and the runtime patching can't drift out of sync — see below.
-
----
-
-## `force_output_csv` job.json key (added 2026-08-04)
-
-Real case: a CW Closed Loop pod's single Type=80 Scatter analytic had `OutputConfig_OutputCSV=0` in the pod itself. PADB-R happily rendered native PNG/PDF pages (proving real data existed) but wrote **zero** CSVs — completely silent, since `run_padb()` returns code 0 either way. V2/Interactive mode is fundamentally built on a Type=80 CSV, so this pod could never feed the V2 pipeline as-authored.
-
-Set `"force_output_csv": true` in job.json to fix it at the source. `make_run_pod()` (`padb_run.py`) forces `OutputConfig_OutputCSV=1` on every Type=80 (Scatter) analytic in the `_run.pod` copy only — scoped to Type=80 deliberately, since other analytic types may have CSV output disabled on purpose. Existing values are replaced in place; a missing key is appended when the section ends — same convention as `force_native_render`/`unique_output_filenames`.
-
-`padb_make_v2_job.py` sets this automatically whenever a Type=80 analytic has `OutputConfig_OutputCSV=0` (parsed via `parse_pod_analytics()`'s existing `output_csv` field), printing a `NOTE:` explaining why.
-
-**This is a genuinely separate problem from date-range issues** — a run that returns 0 CSVs in a few seconds can be either "no data in the requested window" (real, expected) or "this analytic doesn't write CSVs at all" (a pod configuration gap `force_output_csv` fixes). Distinguish by checking `OutputConfig_OutputCSV` in the pod and/or re-running with the pod's own baked-in date range as a sanity check — a run that takes tens of seconds and produces native PNG/PDF but still 0 CSVs points at the CSV-disabled case, not the date-range case.
-
----
-
-## Spec-limit segment tab-through (added 2026-08-06)
-
-All 6 V2 views have a "Segment by" selector (Spec / Limit / Uncertainty) plus Prev/Next buttons that jump the frequency range to each contiguous band of a frequency-varying spec — e.g. a datasheet spec that steps from -100 dBc to -94 dBc to -88 dBc as frequency increases: `accuracy_vs_freq`/`render_scatter` (scatter), `stat_boxplot` (boxplot), `stat_summary`, `render_summary` (summary, padb_v2.py), `render_env_coverage` (env_coverage, padb_v2.py), and `_build_env_distribution_html`/`render_distribution` (distribution, padb_v2.py).
-
-**Real gap found and fixed a day later (2026-08-07):** the first pass added this to `distribution()` in padb_plots.py — a real, working function, but the *wrong* one. `padb_v2.py`'s `render_distribution()` (the function that actually backs the V2 "Distribution (Delta-Env)" tile in the standard 6-view suite) calls a completely different function, `_build_env_distribution_html()` (multi-temp overlaid KDE curves with ΔEnv analysis), which never got the feature. So "all 6 views" was false for a full day — only 5 of 6 real V2 views had it. Found while recapturing training-deck screenshots (the real distribution tile visibly had no "Segment by" control), fixed by adding the same feature to `_build_env_distribution_html` instead/in addition. `distribution()` itself keeps its own copy — it's still real, reachable via V1-legacy `secondary_plots`, just not what the V2 pipeline's "distribution" view actually renders.
-
-**PADB extraction has three separate limit-key pairs you can select as grouping items: `Upper/Lower Limit` (selected by default), `Upper/Lower Uncertainty`, and `Upper/Lower Spec`.** Confirmed against real data: `Upper Limit ≈ Upper Spec − Upper Uncertainty` (Uncertainty ≈ M.U. + ΔEnv). Limit is the *derived* value PADB shows by default — it shifts per-unit with that DUT's own measurement uncertainty, so it's frequently NOT piecewise-constant across frequency and either fragments into extra noisy segments or hides real band structure. Spec is the raw nominal value and is the one that's actually piecewise-constant by frequency.
-
-**For "Segment by: Spec" or "Segment by: Uncertainty" to find anything, the pod's Type=80 analytic extraction must have `Upper Spec`/`Lower Spec` and/or `Upper Uncertainty`/`Lower Uncertainty` added as grouping items** (open the pod in PADB-R.exe, add them to the analytic's grouping, re-save) — most existing pods only have the default `Upper Limit`/`Lower Limit`. Without this, those two selector options show zero segments (Prev/Next bar stays hidden); "Segment by: Limit" still works off the always-present `Upper_Limit`/`Lower_Limit` CSV columns.
-
-Implementation:
-- `_load_scatter_csv`/`_load_scatter_for_stats` (padb_plots.py) parse `Upper Spec (<=): ...`/`Lower Spec (>=): ...` and `Upper Uncertainty (<=): ...`/`Lower Uncertainty (>=): ...` straight out of the raw `Group` text into `Spec_Hi`/`Spec_Lo`/`Unc_Hi`/`Unc_Lo` columns via `_extract_group_field()`, alongside the existing `Upper_Limit`/`Lower_Limit` CSV columns.
-- `getSpecMaskByKey(dataArr, key)` (scatter/distribution) and its boxplot equivalent read a specific field pair with **no automatic fallback** — picking a key the pod's extraction never selected legitimately produces zero segments, which is itself informative. This is deliberately separate from `getSpecMask()`'s own automatic Spec-preferred-else-Limit blend used for the actually-plotted dashed reference line, so the selector can't disturb that existing rendering.
-- **Boxplot, stat_summary, summary, and env_coverage are all architecturally different** from scatter/distribution — each pre-aggregates server-side into its own distinct per-condition shape, not a flat per-row array, and each needed its own (structurally similar but not identical) segment-detection function as a result:
-  - **Boxplot**: `BOX_DATA` → per-`(condition, temp)` `freq_stats` entries. `_aggregate_box_data_by_temp()` carries Spec/Limit/Uncertainty as **per-point fields on each `vals_detail` entry** (not one value per frequency). Segment recompute mirrors `buildBoxTraces()`'s condition/temp/serial/port/GF filtering (`_boxIsInGf()`'s coarse-key matching).
-  - **stat_summary**: `STAT_DATA` → per-condition `freq_stats`, each with a `dut_vals` array of per-DUT `{s, p, v}` dicts. `_aggregate_stat_data()` extends each dict with `spec_hi`/`spec_lo`/`unc_hi`/`unc_lo`/`upper_limit`/`lower_limit`. Segment recompute mirrors `recomputeFreqStat()`'s per-DUT GF check (`_isStatGfExcl()`).
-  - **summary** (`render_summary`, padb_v2.py): records use a **2D array** shape — `dut_vals[freq_idx][dut_idx]`, parallel to `dut_info[dut_idx] = {s: serial}`. Added `dut_spec_vals[field][freq_idx][dut_idx]` (one per Limit/Spec/Uncertainty side) built via the same groupby+unstack+reindex pattern as `dut_vals` — pandas' version of "pivot a long list of (frequency, DUT, value) rows into a 2D table," roughly analogous to building a `Dictionary<(double freq, string dut), double>` and then reading it out as a rectangular array in a fixed row/column order — but aggregated with **min/max (tightest-wins), not mean** — unlike the measured Value, these should be constant per (freq, DUT); averaging would silently blend a genuine data conflict (e.g. a datapak error recording two different spec values for the same DUT/frequency) into a meaningless number. Segment recompute (`_sumInclDutIdxs()`) mirrors `getSumCondData()`'s per-DUT serial+GF inclusion logic.
-  - **env_coverage** (`render_env_coverage`, padb_v2.py): each DUT (`cd.duts[dutKey]`) already carried a `room`/`deltas` array per frequency; added a parallel `spec` dict (`spec.upper_limit[freq_idx]`, etc.) via `_aggregate_env_coverage_data()`'s new `spec_pivots` (same pivot-table pattern as the existing `room_pivot`, aggregated with min/max for the same tightest-wins reason as summary). Segment recompute reuses `getActiveDuts(cd)` exactly, so it's automatically consistent with whatever serial/port/GF filtering the actual plot uses.
-  - **distribution** (`_build_env_distribution_html`, padb_plots.py): the easiest of the five — `RAW_ABS[spurIdx][tempIdx]` already carried per-point `hi`/`lo` (Upper_Limit/Lower_Limit) arrays for its own existing freq/serial-filtered live KDE recompute, so this just needed `spec_hi`/`spec_lo`/`unc_hi`/`unc_lo` added as parallel per-point arrays in the same `_abs_cols` construction — no new aggregation shape at all. No GF exists in this view (delta-env/KDE has no per-DUT exclusion mechanism), so segment recompute only respects the SpurType/serial/port filters, the same ones `update()`'s own raw-recompute path already uses.
-  - None of these five had pre-existing per-DUT-per-frequency Limit/Spec/Uncertainty tracking before this work — scatter/boxplot's `Spec_Hi`/`Spec_Lo`/`Unc_Hi`/`Unc_Lo` CSV columns (`_load_scatter_csv`/`_load_scatter_for_stats`) already existed from the Spec/Uncertainty parsing described above; the aggregation functions just hadn't threaded them through to their client-side JSON yet.
-- A real bug was found and fixed in the same work: `setFreqBand()` (scatter/distribution) wrote its lo/hi to the range slider's `.value` then read that back into the text boxes — browsers silently snap programmatic `.value` assignment to the nearest `step`, which for a wide frequency range (a coarse step) corrupted the actual filter boundary. Also, segment-index recovery after each `segTab()` call was reading the slider's raw `.value` instead of the text box, which combined with the same snapping caused Prev/Next to appear to get stuck after the first click on data with small segments. Both fixed to read/write the exact float via the text box, matching the pattern `freqTxtChange` already used for the identical reason. Boxplot's `box_freq_lo`/`box_freq_hi` are plain `<input type="number">`, not sliders, so it was never exposed to this bug.
-- Every one of the 6 views' page-init sequence builds its first plot via a direct `Plotly.newPlot(...)` call, bypassing `update()` entirely — `_recomputeSpecSegments()` has to be called explicitly in each view's init block too, not just inside `update()`, or the segment bar never appears until the first filter change. Found and fixed for boxplot, stat_summary, summary, and env_coverage (scatter's `_recomputeSpecSegments()` was already explicit in its init sequence from the start). The real distribution view (`_build_env_distribution_html`) is the one exception that needed no fix here — its init sequence already calls `update()` directly (`window.addEventListener('DOMContentLoaded',function(){loadState();update();})`), so the hook inside `update()` was sufficient.
-- Verified end-to-end against a real clock-leakage pod (`ClockSpurs_PADBToolTest.pod`) with a genuine 5-level spec staircase (−100→−94→−88→−82→−76 dBc, 8 MHz–20 GHz) and a real datapak anomaly (a handful of serials showing a −65 dBc DAC-Band spec under the wrong SpurType) — see `feedback_npi_data_anomalies` memory for how that anomaly was resolved (not a code bug). All 6 views individually re-verified against the same real dataset after this extension.
-
-**Asymmetric two-sided limit gap found and fixed (2026-08-07):** `getSpecSegments()` originally took one array of `{x,y}` points and built segments purely from value changes in that one array — every call site fed it `hiPoints.length ? hiPoints : loPoints`, i.e. Upper preferred whenever it existed at all, Lower used only as a fallback when Upper was totally absent. For the common case (Upper and Lower stepping at the same frequency band edges, which is virtually every real spec — both come from the same guard-banded limit table) this is indistinguishable from correct. But if Upper and Lower were ever configured to transition at genuinely different frequencies, Lower's own unique transition point would never become a tab stop — Prev/Next would only stop at Upper's boundaries, silently absorbing Lower's transition into whichever Upper-defined segment it happened to fall inside.
-
-Fixed by changing `getSpecSegments()`'s signature to take *both* arrays (`getSpecSegments(hiPoints, loPoints)`) and building the union of both sides' breakpoints: it walks the merged, sorted set of frequencies where either side has a point, carries forward each side's last-seen value independently, and starts a new segment whenever *either* value changes. Each segment now carries `hiValue`/`loValue` separately instead of one ambiguous `value` — `_segLabelText()` renders whichever side(s) are present as `upper: X` / `lower: Y` (previously just `value: X`, which didn't say which side it was even in the one-sided case). One-sided data still works exactly as before (the missing side's `*Points` array is simply empty, so its value stays `null` throughout and only the present side drives segment breaks).
-
-This is the same repeated-per-view pattern as everywhere else in this feature — `getSpecSegments()` is defined 7 times (scatter, legacy `distribution()`, real V2 `_build_env_distribution_html`, stat_summary, summary, env_coverage, boxplot), all textually identical, all fixed identically via one `replace_all` edit. The `var points = hi.length ? hi : lo` line at each of the 7 call sites was deleted; each now calls `getSpecSegments(hiPoints, loPoints)` (or `getSpecSegments(mask.hi, mask.lo)` for scatter/legacy-distribution, which get their arrays from `getSpecMaskByKey()` instead of building them inline) directly.
-
-Verified two ways: (1) `qa_js_segments.py` (new, permanent — promoted from a throwaway synthetic harness after the fix was confirmed) extracts all 7 `getSpecSegments()` copies straight from the current `padb_plots.py` source, asserts they're still textually identical (catches future per-view drift immediately instead of leaving 6 views silently unfixed), then runs one extracted copy under headless Edge against symmetric two-sided, genuinely asymmetric two-sided (Upper breaks at one frequency, Lower at another — confirms 3 segments where the old code silently produced 2), one-sided upper, one-sided lower, empty-both, and a late-starting side — all passing; sanity-checked by running the same test against the old buggy single-array function, which correctly fails 5 of 6 cases, confirming the test has real teeth rather than passing vacuously. (2) Real one-sided ClockSpurs data re-generated end-to-end, confirming zero regression (still 5 segments, same boundaries) and the new label format (`upper: -88` instead of `value: -88`). `qa_padb.py` baseline unchanged (27 PASS / 5 FAIL, same pre-existing failures as always).
-
----
-
-## Boxplot Global Filter (GF): additive semantics, Export/Import CSV (added 2026-08-06)
-
-**"Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" all *add* to the current global filter — none of them replace it.** Every one of these funnels through `_mergeGf()`, which unions new keys into whatever's already stored in `localStorage['padb_v2_excluded']`. Use "Clear global filter" first if you want to start over rather than layer on top of an existing selection. Button hovers now say this briefly; this is the fuller explanation.
-
-**Export GF CSV / Import GF CSV** round-trip the current GF through a human-readable CSV (`Serial,Condition,Temperature,Start_Freq_<unit>,Stop_Freq_<unit>,N_Points`). Import re-merges (adds to, doesn't replace) the current filter, same as the "Set ... as GF" buttons. Key thing to know: **the runtime exclusion check (`_boxIsInGf`, via `_loadBoxGlobalFilter`'s key-coarsening) only ever matches on (serial, condition, temperature) — frequency is dropped at match time**, even though the original GF key format includes a frequency. So:
-- The exported `Start_Freq`/`Stop_Freq`/`N_Points` columns are display-only context (what frequency range and how many points the original exclusion happened to cover) — they are *not* used to reconstruct an exact frequency-by-frequency exclusion on import.
-- Import re-forms a raw `serial||condKey||temp||freq` key per CSV row (any placeholder frequency, since it's discarded at match time anyway) and merges it via the existing `_mergeGf()` — functionally identical to the original exclusion, even though the exact original frequency points aren't individually recoverable from the summarised range.
-- No filesystem check gates the Import button (e.g. "only enable if a GF CSV already exists in the results folder") — a static HTML page opened via `file://` has no API to probe the local folder ahead of time, and since the button is just a native file-picker trigger, clicking it costs nothing if there's nothing to import.
-- "Copy PADB Filter" (a best-effort `'Serial Number' NOT IN {...}`-style expression for pasting into PADB's own filter box) is flagged **under development** in its hover — the generated expression may not exactly match PADB's own filter syntax in every case.
-
-**GF Inspect mode: one excluded DUT can render as a full box while another renders as a flat line — not a bug (investigated 2026-08-21).** Reported: after excluding "Serial 401, 2.4GHz spur, 0°C" and "Serial 406, 9.6GHz spur, Room" (via "Set filter as GF"), Inspect mode showed a real box (IQR/median/whiskers) for the first and just a flat line for the second. Traced to two compounding, genuinely real data facts, confirmed by exporting the GF as CSV and reading the raw rows directly:
-1. **The "frequency is dropped at match time" rule above cuts both ways.** Serial 401's exclusion matched exactly *one* raw condition (a clean, unfragmented Upper Limit value), which alone covered 96 real frequency points for that serial — so Inspect mode aggregates all 96 into one legitimate population per box position. Serial 406, by contrast, has **per-unit-noisy** Limit/Uncertainty values (e.g. `-101.34089`, `-77.33843`, `-83.33843`, ...) — the same per-DUT Group-string-fragmentation problem "Group by" (added 2026-08-06, above) exists specifically to collapse — so "excluding 406 for 9.6GHz @ Room" actually matched **11 separate raw conditions**, together spanning nearly the entire 8 MHz–20 GHz sweep (confirmed directly from the exported GF CSV: 11 rows for serial 406 vs. 1 for serial 401).
-2. **Directly confirmed via a headless check of the real Plotly trace data** (`q1`/`median`/`q3` arrays, not just visual inspection): serial 401's box has 96 positions, 0 of them flat (real IQR spread at every one — this DUT/condition combo has multiple repeat measurements per frequency, likely from multiple `TestRun_RunLabel` passes). Serial 406's box has 381 positions, **all 381 flat** (`q1 === median === q3` exactly) — every single one is a single-measurement degenerate box, which is exactly what renders as "a line."
-
-**The user's original hypothesis (Room data leaking into a 0°C-only filter) was checked and is wrong** — temperature scoping in `_boxFullCondKey`/`_boxIsInGf` is working correctly; the apparent size difference is fully explained by (1) real per-unit Limit fragmentation broadening the exclusion's scope far beyond what "one serial + one spur type + one temp" sounds like it should cover, and (2) a genuine difference in how many repeat measurements exist per frequency between the two specific DUT/condition combinations. Worth remembering: a `setFilterAsGf()` action on a per-unit-noisy DUT can silently become dramatically broader than the same action on a DUT with clean Limit values, since the longform checkboxes it operates on are keyed on the *raw*, unfragmented condition text.
-
----
-
-## "Copy PADB Filter" rewritten to reflect the current view, not the GF (fixed 2026-08-19)
-
-The original implementation (above, added 2026-08-06) built its expression from the *Global Filter's exclusion list* — a `'Serial Number' NOT IN {...}`-style expression covering whatever DUTs had been manually excluded via GF. The user asked to improve it, and provided a real, working PADB filter expression as a template to match:
-```
-'Analytic-->Analytic (unit):AlcState' = "TRUE"
-AND ( 'Analytic-->Analytic (unit):Frequency' >= "337.49" AND 'Analytic-->Analytic (unit):Frequency' <= "2700.01" )
-AND 'Analytic-->Analytic (unit):Mode' = "0"
-AND 'Analytic-->Analytic (unit):Port' = "RF1"
-AND 'Analytic-->Analytic (unit):Upper Spec' != "-100.35"
-AND 'Analytic-->Analytic (unit):Test Step' IN {"0.0 Deg C","55.0 Deg C","Room"}
-```
-
-**Checked against the real ClockSpurs pod's own data before implementing** (`ClockSpurs_PADBToolTest_run_results\padb\ClockSpurs_PADBToolset.csv`, and the real generated boxplot's own `COND_DIMS`/`PADB_FIELD_PREFIX`): this specific pod has no `AlcState`/`Mode`/`Port` fields at all (`ALL_BOX_PORTS=[]`; real `COND_DIMS` are `SpurType`, `Upper Limit (<=)`, `Upper Spec (<=)`, `Upper Uncertainty (<=)`) — so those three field names in the template were evidently carried over from a different, differently-shaped pod the user had used as a syntax reference, not meant to be reproduced literally for ClockSpurs. The parts of the template that *do* correspond to real ClockSpurs fields (Frequency range, an `!=` exclusion, `Test Step`) matched the real `COND_DIMS`/`TEMPS_PRESENT` shape exactly, confirming the template's *syntax* was the real target, not its specific field names.
-
-**Real design correction found while matching the template**: the old code special-cased `'Serial Number'` and `'Test Step'` as prefix-free (no `PADB_FIELD_PREFIX:` in front). The user's template prefixes *every* field, including both of those — so the old no-prefix special-casing was simply wrong, not an intentional PADB quirk.
-
-**New implementation**: `copyPadbFilter()` now builds its expression entirely from the current view's own active filters (condition-dim checkboxes, Serial, Port, Frequency range, Temperature) — not the GF — via one shared `clauseFor(fieldRef, allVals, selVals)`:
-- Omit the clause entirely when nothing on that dimension is excluded (all or none selected).
-- `= "val"` when exactly one value is selected.
-- `!= "val"` when exactly one value is excluded (cheaper to state than listing everything that remains) — this is the case that produces the `!=` clause in the template.
-- `IN {"a","b",...}` otherwise, for the selected set.
-- Every field is qualified with `PADB_FIELD_PREFIX:`, including `Serial Number`, `Port`, and `Test Step` (correcting the old no-prefix special case). `Frequency` reuses the already-injected `PADB_FREQ_FIELD` constant (already fully qualified).
-- A COND_DIM's own label (e.g. `"Upper Spec (<=)"`) has its trailing `" (<=)"`/`" (>=)"` comparison-direction hint stripped before use — that's a Group-string display convention, not part of the real PADB field name.
-- Frequency range is only emitted when narrowed from the view's own full extent (`BOX_FREQ_MIN`/`BOX_FREQ_MAX`), reading the number-input box (not the raw slider — irrelevant here since boxplot's freq inputs are plain `<input type="number">` with no separate slider).
-- Temperature values are converted from CSV labels (`"30°C"`) to PADB's own `"Test Step"` format (`"30.0 Deg C"`) via the existing `csvTempToTestStep()`.
-- All active clauses join with `AND` (no `OR` blocks anymore, since this no longer needs to express a *set of excluded rows* — it expresses the single narrowed view state directly).
-
-Verified against a small synthetic dataset shaped exactly like the real ClockSpurs pod (`SpurType`, `Upper Spec (<=)`, `Serial Number`, `Test Step`, `Frequency`, using the pod's real `PADB_FIELD_PREFIX`): narrowing Upper Spec to exclude one of seven real values produced `'...(dBc):Upper Spec' != "-100.35"` — an exact match to the corresponding clause in the user's template; narrowing Temperature to 3 of 5 steps and Frequency to a sub-range produced the correctly-formatted `IN {...}` and parenthesized range clauses. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## "Group by" — collapsing fragmented conditions (stat_summary, summary, env_coverage; added 2026-08-06)
-
-Real motivation: when a pod's extraction includes `Upper Spec`/`Upper Uncertainty` as grouping items (see the segment tab-through section above), "condition" in these three views is the *full combination* of every Group key — including the per-unit-noisy `Upper Limit` text. A pod with 5 real SpurTypes but per-unit Limit variation can explode into 150+ near-duplicate legend entries that differ only in Limit/Uncertainty digits. "Group by" lets you collapse on a *single* dimension (e.g. "SpurType" alone) instead of the full combination — confirmed on real data: 151 fragmented conditions → 5 real SpurTypes.
-
-Each view needed its own pooling function since each has its own aggregate shape (same reason the segment tab-through feature needed four different implementations) — but they share one **exactness principle**: because "condition" is the full key combination, a given DUT's data falls under exactly one constituent condition when grouping by any single dimension, so pooling per-DUT contributions across constituents is mathematically the correct group value, not an approximation, for anything that's a plain aggregate over DUTs (mean, min, max, or a from-scratch recompute like `computeStats()`). The exception is anything that needs the *pooled population's own* order statistics or requires data that isn't embedded client-side at all (Shapiro normality, non-parametric TI, DEnv) — those fall back to a **worst-case (max/tightest) approximation across the constituent conditions' own pre-computed values**, following the same tightest-wins convention already used for spec-conflict resolution elsewhere in this codebase (see `getSpecMask()`).
-
-- **stat_summary** (`getGroupedConditions()`/`_poolFreqStats()`): mean/std/quantiles/outliers recomputed exactly from pooled `dut_vals`. DEnv and spec are worst-case across constituent `freq_stats` entries. Shapiro normality (`W`/`p`/`norm`) is **not** recomputed — pooled entries get `norm:'grouped'`, which doesn't match `"Normal"`/`"Marginal"` in `normColor()`, so it renders as the "Non-normal" red dot as a visible (if imperfect) cue that this is a pooled approximation, not a real Shapiro result.
-- **summary** (`render_summary`/`_SUMPLOT_JS`): mean/min/max are **exact** (pooled per-DUT `dut_vals`/`dut_info`, and min/max of a union equals min/max of per-subset mins/maxes — no approximation at all). `uttl`/`lttl` (NP TI) and `spec_hi`/`spec_lo` are worst-case across constituent records, since a true NP TI recompute needs the pooled population's raw order statistics, and `by_temp`'s precomputed per-temp breakdown doesn't cleanly re-aggregate once records are merged.
-- **env_coverage** (`render_env_coverage`): the **only fully exact one** — `computeStats()` already recomputes UDE/LDE/TTU/TTL from raw per-DUT `room`/`deltas` arrays on every call regardless of grouping, so pooling the underlying `duts` dicts and letting the existing function run unchanged is exactly correct, no separate re-aggregation math needed. Only `spec_hi`/`spec_lo` (already a single `mode()` value per condition pre-Group-by) take the tightest value across constituents.
-- All three feed the pooled "virtual conditions" into the exact same downstream code (`buildTraces`, stats tables, CSV export, segment-tab detection) that real conditions use — segment detection in particular automatically respects whatever Group By is active, since it iterates whichever `getGroupedConditions()` currently returns.
-- `env_coverage`'s existing "Show excluded" checkbox compares candidate conditions against `ENV_DATA` by object identity — meaningless once Group By produces synthetic pooled objects, so `update()` skips it (shows nothing "excluded") whenever Group By is active, rather than incorrectly flagging everything as excluded.
-- Verified against the same real clock-leakage pod: all three views correctly collapse 151 conditions → 5 SpurTypes with matching, correctly-pooled statistics.
-
-**Real bug found and fixed the same day**: `summary`'s pooled virtual record initially set `by_temp: {}` (empty object) on the returned record. `getSumCondData()`'s fallback branch checks `if(!cd.by_temp){ ...use the precomputed mean/min/max/uttl/lttl directly... }` — but `{}` is truthy in JavaScript, so that check never fired. Execution fell through into the by-temperature recompute path instead, which iterates `cd.by_temp[t]` for each temp; since the object was empty, every lookup came back `undefined`, `tot_n` stayed `0` for every frequency, and the function returned `null` for the entire trace — a real, silent blank plot for every "Group by" option except the default "Condition". Fixed by setting `by_temp: null` instead (falsy), which correctly routes into the "use precomputed" branch — exactly the values `_poolSumRecords()` had already computed correctly. `stat_summary`'s equivalent field (`denv_by_temp`) was never at risk of the same bug — its only consumers read it via `fs.denv_by_temp||{}`, a safe fallback pattern rather than a `!x` truthy branch, confirmed by re-checking both call sites. Lesson: an empty object is not a safe stand-in for "no data" wherever the consumer branches on `!field` rather than `Object.keys(field).length`.
-  - **For C#-background readers**: this bug only exists because JavaScript lets you write `if(!someObject)` at all. C# has no implicit object→bool conversion — `if (someObject)` is a compile error unless `someObject` is itself a `bool`, so this exact mistake can't be expressed in C#. JS instead has a small fixed list of "falsy" values — `false`, `0`, `""`, `null`, `undefined`, `NaN` — and everything else, including `{}` and `[]` (empty object/array, no `Count`/`Length` involved), is truthy. The C# instinct "an empty collection is falsy-ish, right?" doesn't transfer — the closest C# analogy is `someList != null` (reference check) vs. `someList.Count > 0` (content check); this bug is exactly "used the reference check where a content check was needed."
-
----
-
-## env_coverage: Room TI and delta TI now share one DUT population (changed 2026-08-08)
-
-**What changed**: `computeStats()` (`_ENV_COVERAGE_JS`, `padb_plots.py`) used to compute Room stats (`room_ns`/`room_means`/`room_lo`/`room_hi`) from `allDuts` — every DUT in the condition, completely unfiltered (ignored the Serial filter, the Port filter, and even the Global Filter). Delta stats (`ude`/`lde`, via `getDeltaDuts()`) were already correctly serial+GF filtered. Room now uses `getDeltaDuts(cd)` too — the exact same population as delta — so Serial/GF selections shrink both together instead of only shrinking delta.
-
-**Premise**: UDE/LDE is fundamentally a *per-DUT delta* (non-Room value − Room value for that same DUT). The Room TI band/n displayed alongside it exists as a reference for "how much does Room itself vary." For that comparison to actually isolate temperature as the only degree of freedom — the entire point of showing the two bands together — both must be computed from the *same* DUTs. If Room's population differs from delta's (e.g. Room includes a DUT that Serial-filtering excluded from delta), the two bands are no longer measuring the same population's behavior at two temperatures; they're comparing two different populations, and any resulting difference could be population variation rather than a temperature effect. Reported by the user after noticing exactly this: deselecting one DUT via the Serial filter dropped ΔEnv `n` from 6 to 4 while Room `n` stayed at 6.
-
-**What's deliberately unchanged**: both Room and delta remain **port-agnostic** — selecting a single port never shrinks either `n`. This preserves the original (and still valid) rationale for `getDeltaDuts()` excluding port: narrowing to one port for viewing purposes isn't the same kind of population change as deselecting a DUT, and letting it shrink `n` would make the k-factor lookup (tolerance-interval multiplier) unnecessarily unstable at small `n` for no statistically meaningful reason. Only the *Serial/GF* mismatch was the actual inconsistency — port was never the problem, and the fix doesn't touch it.
-
-Verified via direct probe on `computeStats()`'s output: with all serials selected, `room_ns`/`delta_ns` both read `[6,6,6]`; after deselecting one serial, both read `[4,4,4]` together (previously Room would have stayed at `[6,6,6]`). `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
----
-
-## CSV auto-detection fallback in `padb_v2.py` (added 2026-08-04)
-
-`padb_v2.py` resolves its input CSV in priority order: `--csv` CLI arg, then `cfg["csv_path"]` from job.json, then a fallback search. The `cfg["csv_path"]` case previously failed hard (`sys.exit`) if the path didn't exist — a real risk for `padb_make_v2_job.py`-generated jobs, since `csv_path` there is *predicted* from naming conventions, not verified against a real extraction.
-
-`_resolve_csv_path()` now gives a predicted-but-missing `csv_path` one more chance: it searches the same directory for a CSV matching via `padb_run.filename_stem_variants()` — the identical space/hyphen/dot normalization `find_csvs()` already applies in `padb_run.py` (hoisted from a nested function to a module-level one specifically so `padb_v2.py` could reuse it without duplicating the logic) — then falls back further to a fuzzy 15-char-prefix glob, matching `find_csvs()`'s own fallback order. Prints which match (if any) it used and why. Falls through to the original `sys.exit` only if nothing in the directory matches at all.
-
----
-
-## `padb_make_v2_job.py` — V2 (Interactive mode) job.json generator (added 2026-08-04)
-
-Generates the full Interactive-mode job set from a `.pod` file alone: one shared extraction job (`<pod_stem>_run_job.json`, `padb_run.py`'s schema) plus one plot job per Type=80 Scatter analytic (`<pod_stem>_<analytic>_v2_job.json`, `padb_v2.py`'s schema) — mirroring the real hand-written `MaxPower3.pod` V2 job set structurally, though not every design choice matches (see below).
-
-```
-py padb_make_v2_job.py MyPod.pod --module MyModule
-py padb_make_v2_job.py MyPod.pod --module MyModule --spec-direction lo
-py padb_make_v2_job.py MyPod.pod --no-publish
-py padb_make_v2_job.py MyPod.pod --module MyModule --force
-```
-
-Key design decisions, each deliberate:
-
-- **`"views"` is omitted from every generated plot job.** `padb_v2.py` already auto-detects Room-only (`scatter`+`boxplot`) vs. multi-temp (all six views, including `env_coverage`/`distribution` when non-Room data is present) from the actual extracted CSV at run time — the existing "Auto view-selection" mechanism above. No new detection logic was needed; verified against a real 19-analytic pod where 7 analytics correctly got all six views (genuine multi-temp data) and 2 correctly got just `scatter`+`boxplot` (genuinely Room-only), with zero manual `views` tuning.
-- **Every Type=80 analytic gets its own plot job, full stop** — no attempt to guess which one deserves the "primary" full treatment vs. a lighter `scatter`-only comparison view, the way the hand-written `MaxPower3.pod` jobs do (3 of 4 near-duplicate analytics trimmed to `scatter`-only by a human). See `feedback_padb_automation_completeness` memory / the "completeness over curation" principle — confirmed by the user as the right default after comparing generator output to the hand-curated original side-by-side.
-- **`csv_path` is predicted, not confirmed**, from the analytic's `OutputConfig_OutputFile` (or, when a pod-wide `OutputFile` collision is detected, the same guaranteed-unique slug `unique_output_filenames` will produce) — can't be verified correct until the run job has actually executed once. Verified exact-match against real extraction output on two very different pods: `MaxPower3.pod` (no collisions, `OutputFile`-based prediction) and the Harmonics pod (collisions, `AnalyticName`-slug prediction with index-suffix disambiguation) — both predicted every `csv_path` correctly on the first real run, zero manual correction needed.
-- **`spec_direction` defaults to `"auto"`** — a measurement that's one-sided despite having no configured pod-level spec limits (`MaxPower3.pod`'s hand-tuned jobs hardcode `"lo"` for exactly this reason) can't be inferred from the pod alone; override with `--spec-direction` if you know better.
-- **All plot jobs for one pod share one `results_dir` and one publish destination** — `padb_v2.py`'s `_write_index()` already merges multiple runs into one combined gallery, so N analytics' worth of views (up to N×6 files) accumulate into a single `index.html`, matching the real `MaxPower3.pod` example. Verified: the Harmonics pod's 9 analytics produced exactly 47 files (42 + 4 view files + `index.html`) in one gallery, published to `PADB-Interactive\<module>\<pod_stem>` — a separate top-level share tree from `PADB-Simple`, per user preference.
-- `--module` is required unless `--no-publish`, same reasoning as `padb_make_job.py`.
-- **`description`/`title_prefix`/`index_title` are tagged with the pod's real `Device_Device` (fixed 2026-08-10), not hardcoded.** `sections = parse_pod_sections(pod_path)` was already computed here (used for `y_label`) but the "SG6311A" prefix on every title/description/index-title was a separate literal, unconditional of it. Since `title_prefix` becomes the literal generated HTML filename prefix, this wasn't just cosmetic — every plot file for a non-SG6311A pod would be misnamed. Now reads `sections["Extract"]["Device_Device"]` (stripped of the literal quotes PADB wraps it in, e.g. `'M9484C'` → `M9484C`) via a small `_dev_tag()` helper; omits the prefix entirely if the field is missing rather than guessing.
-
-**Path-length warning (added 2026-08-04):** both `padb_make_job.py` and `padb_make_v2_job.py` call `padb_config.warn_if_path_long()` right after writing each file. Real case that motivated this: a CW Closed Loop pod nested in its own `padbResults\<name>.dir\` tree, with a single Type=80 analytic whose name nearly repeated the pod's own already-long stem, produced a 256-character `_v2_job.json` path — one character away from Windows' 260-char `MAX_PATH`. That specific case was fixed at the naming-logic level (the per-analytic suffix is now only appended when a pod has more than one Type=80 analytic — see `_predict_csv_stem`/plot-job-naming above), but nothing stopped a *different* long pod/module/analytic-name combination from hitting the same wall. `warn_if_path_long()` (`padb_config.py`) prints a `WARNING:` with the full path, its length, and concrete next steps (move the pod to a shallower directory, shorten the pod filename, shorten `AnalyticName` if multiple Type=80 analytics force the suffix, and a reminder that `results_dir`/`publish_to` paths built from this job nest even deeper) whenever a generated path reaches 220+ characters — 40 characters of margin before the hard 260 limit. This only covers the two generators' own output paths; it does not (yet) check `results_dir` or `publish_to` paths themselves, since those aren't known to be problematic in practice yet — extend `warn_if_path_long()` calls to those if a real case surfaces.
-
-**Auto-detects non-frequency x-axis pods and sets `x_col`/`x_label`/`x_unit` automatically (added 2026-08-21).** `parse_pod_analytics()` (`padb_run.py`) now also captures each analytic's `Data_ScatterPlot_XData_Label` (the pod's own record of its real swept x-axis column, e.g. `"~Vgg (V) (1 x 303)"`). A new `_clean_x_axis_label()` strips the pod's `~` prefix and `(rows x cols)` suffix, and `_x_col_override()` checks the result against the exact same `"frequency"`/`"x value"` substring rule `_load_scatter_for_stats()` itself uses for column auto-detection (`padb_plots.py`). If the real x-axis won't match either substring, the generated plot job.json gets `x_col`/`x_label`/`x_unit` set automatically (e.g. `"Vgg (V)"` / `"Vgg (V)"` / `"V"`, parsed from the label's own trailing parens), with a printed `NOTE:` explaining why.
-
-Closes a real, repeat-prone regression: `UHP-IddVsVgg`'s job.json had this override hand-patched in after the pod's `Vgg (V)` x-axis was found to silently zero out every row ("No usable rows loaded") — but regenerating the job.json from the pod (e.g. via the webapp's "Generate Job" button) always produced a fresh job.json with no memory of that fix, quietly reintroducing the exact same failure. Confirmed this had already happened once for real before the generator fix landed. Verified: regenerating `UHP-IddVsVgg`'s job set now reproduces the `x_col`/`x_label`/`x_unit` override automatically with no manual step, and a normal frequency-swept pod (`MaxPowerTutorial2`) gets no spurious override (its `Data_ScatterPlot_XData_Label` already contains `"Frequency"`, so `_x_col_override()` correctly returns `None`).
-
----
-
-## `padb_convert_site.py` — convert a pod/job.json between database sites (added 2026-08-05)
-
-Malaysia (AMC2) production ramp-up surfaced a new axis of variation: the *same* test, pulling from a *different* PADB Oracle database. Comparing a real Santa Rosa pod against a hand-made AMC2 variant of the same test (`MaxPowerTutorial1.pod` vs `MaxPowerTutorial1-AMC2.pod`) showed the only genuine differences live in `[Extract]`: `Device_Server` (`"PADB ORACLE SR"` vs `"PADB ORACLE AMC2"`) and `Device_Database` (`"V2_GALLEON"` vs `"GALLEON_1"`). Everything else — every `AnalyticName`, every `OutputConfig_OutputFile` — is identical between the two, which means running both pods writes identically-named CSVs. No collision *within* one pod (the existing `unique_output_filenames` case) — a collision *across* two site-variant pods of conceptually the same test, if either is ever run into a shared location.
-
-- **Site registry**: `padb_sites.json`, next to the script — `{"SiteName": {"suffix": "...", "Device_Server": "...", "Device_Database": "..."}}`. Exactly one site must have `"suffix": ""` — that's the *primary* site (Santa Rosa); its analytic names are the canonical, unsuffixed ones everything else disambiguates against. Add a new site here (no code changes) when a third location shows up.
-- **`--pod <file> --to <site>`**: detects the source site by matching the pod's live `Device_Server`/`Device_Database` against the registry (raises clearly, never guesses, if it matches none — same defensive-throw convention as the spec functions). Writes a new pod (never touches the source): swaps `Device_Server`/`Device_Database`, and for every analytic, appends the target site's suffix to `AnalyticName` (space-separated, e.g. `"Leveled Linear"` → `"Leveled Linear AMC2"`) and `OutputConfig_OutputFile` (underscore-separated, e.g. `"..._Linear"` → `"..._Linear_AMC2"`) — or strips a known suffix back off when converting *to* the primary site. Verified round-trip byte-identical (Santa Rosa → AMC2 → Santa Rosa reproduces the original pod exactly, apart from `SaoFile`/`LastUpdated`).
-- **`.sao` files can't be converted.** They're a binary PADB format (version-tagged, with encoded DUT serial numbers) — a Santa Rosa `.sao` is meaningless against AMC2 hardware. The tool points `SaoFile=` at the expected new filename and prints an explicit `WARNING:` that a real `.sao` extracted at the target site still needs to be supplied before the converted pod can run.
-- **`--job <job.json> --to <site>`**: repoints `"pod"`, and substitutes the old pod stem for the new one everywhere it appears in `results_dir`, `publish`/`publish_to`, and `description`. Auto-creates the companion converted pod via the same logic above if it doesn't exist yet (prints when it does this — no silent side effects). For a V2 run job (`"mode": "interactive"`) it also prints a reminder to re-run `padb_make_v2_job.py` against the new pod for the plot-job side, rather than hand-patching a `csv_path` prediction a second time.
-- **Never overwrites an existing output file** without `--force` — same convention as every other generator in this repo.
-
----
-
-## Auto view-selection (added 2026-07-22)
-
-`padb_v2.py`'s per-job-runner omits `"views"` from job.json entirely now to get automatic, data-driven defaults instead of hardcoding a list per pod:
-
-- **Room-only data** (`Temperature` column is a subset of `room_values`, default `{"Room"}`) → `scatter` + `boxplot` + `reference` + `summary` + `stat_summary` (**updated 2026-09-15**: summary + stat_summary are now Room-only DEFAULTS — David: "when there is no env data it is still useful to have a summary plot for the room data". They're per-condition stats/TI vs spec and need no temperature deltas). **Never** `distribution`/`env_coverage` for Room-only — those compute deltas against Room and need non-Room data.
-- **Multi-temp data detected** → all six views (`scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`).
-- **`"room_only_full_views"` is now a no-op** (accepted for back-compat): summary + stat_summary are default Room-only regardless. Jobs that set it `true` still work (idempotent); jobs that never set it now get the fuller set. Pinned by `qa_regressions.test_room_only_default_views`.
-
-An explicit `"views"` key in job.json always overrides auto-detection, preserving all pre-existing job configs verbatim (and is the way to get a *narrower* Room-only set now, e.g. just `["scatter","boxplot"]`).
-
----
-
-## `histogram` view — CSV-driven value distribution for no-swept-x tests (added 2026-09-09)
-
-Some tests have **no numeric swept x-axis at all** — switching-speed and similar "one number per event" measurements produce a *population* of times (µs) against an upper spec limit, not a value-vs-frequency (or vs-amplitude) sweep. The real motivating case was `SwitchingSpeed.pod`: every Type=80 Scatter analytic has an x-axis label of `~Device Family [T] (1 x 1)` — text-typed (`[T]`) and a single value (`1 x 1`), so there is nothing numeric to put on an x-axis and a scatter is impossible. The test's original analysis used PADB's native Type=70 histograms, but **Type=70 emits only PNG/PDF, no per-measurement CSV** — so it can't feed this tool's CSV-based pipeline.
-
-The fix is an interactive, self-contained `histogram` view that reads the **Type=80 analytic's own raw-value CSV** and plots the value distribution instead of value-vs-x.
-
-**This is why a switching-speed pod must keep its Type=80 Scatter analytics even though we no longer draw them as scatter plots** — the Type=80 CSV is the histogram's raw-value data source. Dropping the Type=80 analytics (leaving only Type=70) removes the data source entirely. Keep Type=80; the Type=70 native histograms are redundant with this view and can be dropped.
-
-**What triggers histogram vs scatter — a build-time decision in `padb_make_v2_job.py`, not runtime auto-detection.** `parse_pod_analytics()` (`padb_run.py`) captures each analytic's `Data_ScatterPlot_XData_Label`; `_is_non_sweep_x(raw_label)` returns True when that label contains `[T]` (text type) or `(1 x 1)` (single value) or is empty. In the per-analytic loop, a True result sets the generated plot job's `plot_job["views"] = ["histogram"]` (with a printed `NOTE:`); otherwise the existing scatter/`x_col`-override path runs. So the choice is baked into the generated plot job's `"views"` key — edit that key by hand to force either view. A normal numeric sweep (`~Vgg (V) (1 x 303)`, `~Frequency (MHz) (1 x 500)`, etc.) is unaffected and still routes to scatter.
-
-**Rendering (`padb_plots.py`):**
-- `histogram(csv_path, cfg, output_html)` — the public plot function (same signature as every other plot type, so `padb_v2.py` dispatches to it by name). Builds a fully self-contained HTML: `_get_plotlyjs()` inline in `<head>`, a control bar (bins slider + **Auto** button, hide-spec, Reset), inline-checkbox condition-filter panels, the `#plot` div, and a collapsible stats panel. Writes a placeholder page if the payload is empty.
-- `_load_histogram_csv(csv_path)` — detects the most-numeric non-metadata/non-limit value column, parses its label/unit from a `prefix:Name (unit)` header, reads Upper/Lower spec limits (treating a lower<0 / hi<0 sentinel as None), and splits `Group` into condition dimensions (2..50 distinct, non-serial) plus serial. Drops NaN values.
-- `_HISTOGRAM_JS` — overlaid Plotly histograms (`barmode:'overlay'`) with a **shared `xbins`** across conditions, **Freedman–Diaconis** auto-bin width (`2·IQR/n^(1/3)`), spec lines, and a stats table (n / mean / median / p95 / p99 / max / **% out-of-spec**).
-- **Export CSV button** (`hExportCsv()`, added 2026-09-09) — dumps the currently-filtered rows (one per measurement, respecting the condition/serial checkboxes via `_hFilteredIdx()`) with columns: each condition dim, **Serial**, `<value> (<unit>)`, and an `Out of spec` Y/N flag. The per-measurement serial is embedded in the payload (`SERIAL`) but not shown in the hover or stats (a histogram bin pools many serials), so the CSV is how you get per-serial detail out. Verified on real data: 11,200 rows, 8 serials, out-of-spec flag correct, and the row count drops when a serial is deselected (filter-respecting).
-- **Pass/Fail filter** (`Spec: All / Pass only / Fail only` dropdown, `h_pf`, added 2026-09-09) — only rendered when the CSV has a spec limit (`has_spec`). Folded into `_hFilteredIdx()` via a shared `_hIsFail(v)` helper (`v>LIMIT_HI || v<LIMIT_LO`), so it filters the plot, stats table, **and** Export CSV together — selecting "Fail only" then Export gives exactly the failing rows with their serials. `_hFail()` and `hExportCsv()`'s out-of-spec flag both reuse `_hIsFail()` (one definition of "fail"). Verified: All=11,200 / Fail only=1,553 (all failing) / Pass only=9,647 (none failing), clean partition, plot follows.
-- **Re-import: an exported CSV is re-plottable through `histogram()`** (added 2026-09-09, spec-carrying revised same day). `_load_histogram_csv()` handles the "flat" export shape — when there's **no `Group` column**, it synthesizes one from the separate dim columns (each non-value/non-limit/non-serial/non-"Out of spec"/non-metadata column) plus the `Serial` column, so the normal Group parser reproduces the same dims + serial. Re-plot by re-running any histogram job with `--csv <exported.csv>` (reuses `views:["histogram"]`): `py padb_v2.py SwitchingSpeed_OA_Switching_v2_job.json --csv myexport.csv --out <dir> --no-publish`.
-  - **The exported CSV is kept clean — the spec is NOT in the data columns** (user chose this: repeating a constant `Upper/Lower Limit` on every row was noise for Excel analysis). Instead the spec is carried in **job.json** via `hist_limit_hi` / `hist_limit_lo` (new cfg keys). `histogram()` fills `payload["limit_hi"]/["limit_lo"]` from those **only when the CSV itself didn't provide them** (native PADB CSVs still carry `Upper/Lower Limit (>=)/(<=)` columns, so native builds are unaffected). The 5 real `SwitchingSpeed_*_v2_job.json` files were given their actual `hist_limit_hi` (5000 / 11000 / 20000 µs) so re-plotting a *cleaned* export through that analytic's own job restores its spec line + pass/fail. A cleaned export re-plotted through a job with no `hist_limit_*` simply shows the raw distribution (no spec) — informative, not an error.
-  - Verified: native build (dims=[Port], 11,200 values, 8 serials, hi=11000, 1,553 fails); clean export header is `Port,Serial,Frequency Switching Speed (us),Out of spec` (no limit columns); re-import with no cfg → `limit_hi=None`; re-import with `hist_limit_hi:11000` → rendered `LIMIT_HI=11000.0`, spec line + pass/fail restored.
-- **In-page "Import CSV" button** (`hImportCsvFile()`/`_hApplyImport()`, added 2026-09-09) — the browser-side counterpart to the CLI re-plot, so a user can load an exported CSV **into the open page** with no tool run (the user asked for a button, not a command). Parses the CSV in JS (`_hParseCsv`, quote-aware), detects the value column (exact match to this plot's `VLABEL (VUNIT)` header, else most-numeric non-serial/limit/flag column), the `Serial` column, `Upper/Lower Limit` columns if present, and treats the rest (minus `_HMETA_SKIP` + "Out of spec") as condition dims (kept only when 1 < distinct ≤ 50, mirroring the server). Reassigns the `VALUES`/`SERIAL`/`SERIAL_LIST`/`DIMS`/`DIMVALS`/`LIMIT_HI`/`LIMIT_LO`/`VLABEL`/`VUNIT` globals (all `var`, reassignable), rebuilds the dim+serial filter panels (`_hRebuildFilterPanels()` into `#h_filterbar`, same markup/classes as the server so all existing filter JS keeps working), and calls `update()`. **Spec handling for a clean export**: when the imported CSV has no limit columns, it *keeps this plot's own* `LIMIT_HI`/`LIMIT_LO` — so re-importing a filtered/edited export of the same analytic keeps its spec line + pass/fail. Verified headlessly: single-Port subset (Port dim correctly dropped as constant, spec 5000 kept, 8000-µs row flagged fail); two-Port subset (Port dim retained, 2 rebuilt checkboxes, 3 serial checkboxes, 2 overlaid traces). This is the in-page variant of the same re-import; the CLI `--csv` path still exists for batch/edited-file re-plots.
-
-**Routing tail (`padb_v2.py`):** a histogram branch in `generate_report()` fires when `cfg.get("views") == ["histogram"]`, right after `prefix` is computed and **before** `load_scatter` (the histogram loads the CSV itself). A shared `_finish_report(output_dir, prefix, generated, cfg, is_room_only=False)` helper does the `_write_index` + publish/opt-out tail for both the histogram branch and the normal path.
-
-Verified end-to-end on real `SwitchingSpeed` CSVs: all 5 Type=80 analytics auto-route to histogram; Amplitude Switching renders 2 overlaid Port traces (RF1 n=6160, 7.1% out-of-spec; RF2 n=880, 0.1%), auto bins, spec line, and the full stats table. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
-**Cross-site compare works (added 2026-09-09).** A `compare_csv` job merges each site's rows and tags `Site: <name>` into the Group text, so `_load_histogram_csv` picks `Site` up as a normal 2-value condition dimension — the histogram then overlays per-`(Site × other dims)` combination with a per-combination stats table (n/mean/median/p95/p99/%out-of-spec, plus an `All` row). Two compare-path fixes make this seamless:
-- **Auto-routing**: `_build_compare_csv()` now returns `(path, no_swept_x)`. `no_swept_x` is True only when *every* site's CSV lacks a genuine swept x-axis; `main()` then sets `cfg["views"]=["histogram"]` when the job didn't set `views` explicitly. Without this, a switching-speed compare job would fall to auto view-selection → scatter → fail (no numeric x). A job that sets `views` itself is respected.
-  - **"Genuine swept x" = `_site_has_swept_x(df)`, NOT a substring check (fixed 2026-09-09).** The first version tested `"frequency" in column_name` for any column — which was fooled by a *measurement* named `...Frequency Switching Speed (us)` (the YIG switching analytic): it saw "Frequency" in the value column's name, decided the site was swept, routed to scatter, and failed with 0 rows, while the `Amplitude Switching Speed` analytic (no "frequency" in its name) worked. `_site_has_swept_x()` now requires an x-like column (`frequency`/`x value`) **AND a separate numeric value column** (any numeric column that isn't the x, a limit, or metadata — sparse counts, matching the scatter loader's own "first numeric column after the x" rule). Verified: switching Amplitude/YIG → False (histogram); real phase-noise (`Frequency Offset (Hz)` + a sparse `dBc/Hz` value col) and clock-spurs → True (scatter), so genuine swept compares are unaffected.
-    - **`_site_has_swept_x(df, x_col=None)` now honours a configured non-`Frequency` x_col (added 2026-09-10).** A pod whose swept axis is *not* named "Frequency"/"X value" — `Rate (kHz)` for AM Flatness, `Vgg (V)` for an IV sweep — has that real axis recorded as `x_col`/`x_label`/`x_unit` in job.json (`padb_make_v2_job.py` auto-sets it from the pod's `Data_ScatterPlot_XData_Label`; the scatter loader already honours it). But this *routing* check was name-only, so a **compare** of such a pod (`compare_SR_vs_AMC_AM1_Flatness`: x=`Rate (kHz)`, value=`AM1 Flatness (dB)`) wrongly fell through to histogram, silently discarding the per-rate box structure. Now, when the merged CSV has a column matching the configured `x_col` that is numeric AND has a separate numeric value column, it's treated as swept. `_build_compare_csv(...)` threads `cfg.get("x_col")` in; `generate_report`'s caller passes it. **Safe for the switching case** (verified): a switching-speed measurement column set as x still returns False, because there's no *separate* numeric value column (the measurement IS the x). Verified: AM1/AM2_Flatness compares now render scatter+boxplot over `Rate (kHz)` (and pass `outliers-GF-precise` via the freq_label GF fix); Amplitude/YIG switching still → histogram; `Frequency`-swept compares (PM/NA/PM1/AM_Accuracy) unaffected. `qa_padb.py` 37/4.
-- **NOTE de-noised**: the per-site "no Frequency/X-value column ... rows won't appear" placeholder warning was a false alarm for histograms (they read the *value* column, not Frequency). It now fires **only** when *some* sites have a Frequency column and others don't (genuine placeholder exports); when *all* sites lack one it's replaced by an informational NOTE saying it'll render as an overlaid-by-site histogram. Verified all three cases (all-no-freq → auto-route + info NOTE; mixed → placeholder NOTE, no auto-route; explicit `views` → respected).
-
-**Not** ported to the histogram: the Site Population Check fence-membership panel, coverage-gap banner, and `primary_site` triage (those are boxplot/stat_summary/summary only). The spec line is also a single global value (first non-NaN limit in the merged file), not per-site. So compare mode here is a visual overlay + per-site distribution stats, not the fence-membership analysis.
-
----
-
-## Default publish location (added 2026-07-22)
-
-Jobs with **no `publish_to` key at all** now default to publishing to:
-```
-\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\padb-tools-results\<results_dir>
-```
-(`DEFAULT_PUBLISH_ROOT` in `padb_v2.py`). Set `"publish_to": ""` (or `false` / `null`) explicitly to opt out — this is what the 4 stable spur V2 jobs do, since they're already published via their own established destinations through a different mechanism. Set `"publish_to"` to a real path to publish somewhere specific, exactly as before.
-
-**Gotcha found while wiring this up:** `_publish()`'s success message used a Unicode arrow (`→`), which throws `UnicodeEncodeError` on this Windows console's codepage (`cp1252`/`charmap`) — and since the actual `shutil.copy2()` calls happen *before* that print statement, the copy succeeds but the exception handler reports `"[WARN] Publish failed"`, a false negative. Fixed by using plain ASCII (`->`) instead. Two more instances of the same class of bug (em-dash `—` in warning messages in `padb_run.py`/`padb_v2.py`) fixed at the same time. **Any future `print()` with a non-ASCII character in this codebase should be treated as a latent bug on Windows consoles** — stick to ASCII in printed status/error text.
-
----
-
-## `updateStatPanel` defensive try-catch (added 2026-07-22)
-
-Mirrors the existing `de_summary` fix below: `updateStatPanel` (the `stat_summary` statistics table) is now wrapped in try/catch, rendering the actual JS error message into the panel on failure instead of silently doing nothing. Added while investigating a report that the harmonics/sub-harmonics table wasn't updating on filter change — turned out to be a stale browser cache, not a real bug, but the defensive wrapping is a safe, permanent improvement (no-op when nothing throws) and is now in place if a real instance of this bug class ever occurs.
-
----
-
-## Scheduler (padb_scheduler.py)
-
-`py C:\apps\padb\tools\padb_scheduler.py`
-
-tkinter GUI that manages Windows Task Scheduler entries for every `*_job.json` found in a directory. Scans `C:\Users\damurray\OneDrive - Keysight Technologies\Documents\Padb\Data\` by default (directory is user-selectable).
-
-- **Treeview table:** Job File / Scheduled? / Schedule columns. Scheduled rows shown in green; orphan tasks (task exists but job file deleted) shown in grey.
-- **Add/Edit Schedule:** opens `ScheduleDialog` — Weekly (with day checkboxes) or Daily, hour/minute spinboxes, "Test Run Now" button (launches job immediately in a new console).
-- **Remove Schedule:** deletes the Task Scheduler entry; prompts for confirmation.
-- **Task naming:** `PADB_{job_stem}` (e.g. `PADB_amplitude_job`).
-- **Backend:** `schtasks` CLI. Runs tasks as the **current user** (not SYSTEM) so network publish paths remain accessible.
-- **Orphan detection:** tasks present in Task Scheduler with no matching `.json` file are shown greyed out (can only be removed, not edited).
-
----
-
-## Web app (webapp/padb_web.py) — Phase 1 (added 2026-08-05, refined same day)
-
-`py C:\apps\padb\tools\webapp\padb_web.py`
-
-Local Flask app (opens `http://127.0.0.1:5000` in the default browser). Local use only — the dev server is not meant to be reachable beyond 127.0.0.1. Every route shells out to the existing CLI scripts via `subprocess`, or imports their pure functions directly (`parse_pod_analytics()`, `discover_all_padb_tasks()`, `create_task()`, `delete_task()`, `query_task()`, `format_schedule_summary()`, `load_sites()`, `convert_pod()`, `convert_job()`); nothing in `padb_run.py`/`padb_v2.py`/`padb_make_job.py`/`padb_make_v2_job.py`/`padb_convert_site.py` was changed to build this (one real bug in `padb_scheduler.py` itself was found and fixed along the way — see below).
-
-Phase 1 covers four of the seven originally-requested features:
-
-- **Drop a `.pod` file** (drag-and-drop or click to choose) → saved into `padb_config.load_defaults()["data_dir"]` (same folder every CLI script already uses) → shows the parsed analytic list (`parse_pod_analytics()`) → fill in mode/module/dates → **Generate Job** calls `padb_make_job.py` (legacy/simple) or `padb_make_v2_job.py` (interactive) exactly as the CLI would, and shows the generated job.json content plus any `NOTE:`/`WARNING:` output verbatim. Freely overwrites an existing pod of the same name in `data_dir` — dropping a pod that's already been onboarded (to (re)generate its job.json) is the common case, not a collision to guard against; the thing that actually shouldn't be silently clobbered is the job.json itself, and that's already `--force`-gated in the generator scripts.
-- **Execute job(s)** — a jobs table (same `sorted(data_dir.glob("*_job.json"))` discovery pattern as `padb_scheduler.py`) with checkboxes and a **Run Selected** button. A single background worker thread + `queue.Queue` is the actual serialization point (PADB-R.exe must never run two instances concurrently) — Flask's dev server fielding concurrent requests does **not** by itself guarantee this; the queue does. The worker branches on job shape: a job with a `pod` key (`kind: "run"` — legacy/simple/interactive) runs via `padb_run.py`; a job without one (`kind: "plot"` — `csv_path`/`analytic` key instead, no PADB-R.exe involved at all) runs directly via `padb_v2.py` (added 2026-08-05 — previously plot jobs could be selected but always failed, since the worker unconditionally called `padb_run.py`, whose `load_job()` requires a `pod` key that plot jobs don't have). For a `"mode": "interactive"` run job (`*_run_job.json`), once it succeeds the worker auto-globs and runs every sibling `*_v2_job.json` plot job in turn, completing the full V2 flow without a manual second step — this is *in addition to* being able to run one plot job standalone, useful for rebuilding just one analytic's HTML after a `padb_plots.py`/`padb_v2.py` code change without re-extracting anything. A **Dry run** checkbox passes `--dry-run` through to `padb_run.py` for `kind: "run"` jobs — note this still runs the publish step if the job's existing results already have CSVs on disk (dry-run only skips the PADB-R.exe call itself, not publishing); it has no effect on `kind: "plot"` jobs (no PADB-R.exe call to skip in the first place — padb_v2.py has no equivalent flag, so the dry-run checkbox is simply ignored for those, always doing the real (cheap, local) build).
-- **Schedule/unschedule job(s)** — a second toolbar row (schedule type Daily/Weekly, day checkboxes, start time, **Schedule Selected** / **Unschedule Selected**) posts to `/api/schedule` / `/api/unschedule`, which call `padb_scheduler.create_task()` / `delete_task()` directly — the exact same functions the desktop Scheduler GUI uses, so a task created from either place is indistinguishable to the other. `POST /api/schedule` body: `{paths, schedule_type, days, start_time}`; both routes return a per-job `{path, task_name, ok, error}` list since some jobs in a batch can fail (e.g. a bad path) while others succeed.
-- **Convert pod/job between sites** — a **Convert to** site dropdown + **Convert Selected** button in the jobs toolbar (targets checked jobs), and a matching **Convert Pod** control under the drop-a-pod analytics preview (targets the just-dropped pod). Both call `padb_convert_site.py`'s `convert_pod()`/`convert_job()` directly rather than via subprocess — unlike the job generators, that module already exposes clean, reusable functions instead of inline `main()` logic, so there was no need to shell out and re-parse stdout. `POST /api/convert-pod`/`/api/convert-job` capture that function's own `print()` output via `contextlib.redirect_stdout` into a `log` field returned to the browser (same "show the real tool's own messages verbatim" pattern as Generate Job), and catch `SystemExit` specifically (`padb_convert_site.py`'s functions raise it, not return an error code, for conditions like "already at that site" or a pod matching no known site) since a bare `except Exception` would not catch it. `GET /api/sites` powers both dropdowns from `padb_sites.json`.
-- The status panel polls `GET /api/job-status/<id>` every ~2s per active job, showing queued/running/done/failed and a scrolling log tail, plus an **Open results** link once `result_index` is set (see below).
-
-**Jobs table columns** (Name, Mode, Pod, Description, Scheduled, Last Run, Results), each earning its keep:
-- **Mode / Kind / Name filters** above the table — client-side filtering of the same fetched job list, no extra round-trip. **Kind** (added 2026-08-05) distinguishes `"run"` (has a `pod` key — runnable via `padb_run.py`: legacy/simple/interactive-run jobs) from `"plot"` (has `csv_path` or `analytic`, no `pod` — a V2 plot job, only runnable via `padb_v2.py`, would just fail if sent through `padb_run.py`) from `"unknown"` (neither — shouldn't normally happen). A **Select All Runnable** button checks every currently-rendered `kind=="run"` row and unchecks everything else — the safe way to bulk-select for **Run Selected** across a large job list without also grabbing non-runnable plot jobs (real motivating case: 124 job files, ~44 of them plot jobs, hand-picking checkboxes wasn't practical for an unattended batch run).
-- **Bug fixed 2026-08-05 — sibling-glob stem-prefix collision**: `_find_v2_siblings()` (used by both the Results-link lookup and the worker's auto-chain) globs `"{stem}_*v2_job.json"` for a run job's plot siblings — but one job's stem can be a literal prefix of a completely different, unrelated pod's longer stem. Real case: `maxpower3_run_job.json` (stem `maxpower3`) incorrectly matched `MaxPower3_v2`'s own plot jobs too (`MaxPower3_v2_Leveled_Linear_v2_job.json` etc. all start with `maxpower3_`, case-insensitively). Fixed by validating each glob-matched candidate's own `csv_path` actually points into *this* run job's `results_dir` before accepting it as a real sibling — but only when `csv_path` is set; older plot jobs using the `analytic` key (no `csv_path` at all) are passed through unfiltered rather than incorrectly excluded. Verified with a full sweep comparing naive-glob vs fixed results across every `*_run_job.json` in the real dataset (124 jobs) — exactly one case differed (the known `maxpower3` collision), no other collisions, no regressions.
-- **Scheduled** — shows the actual cadence (e.g. "Mon Wed Fri  02:00"), not just a checkmark: `discover_all_padb_tasks()` finds which jobs have a `TASK_PREFIX + job_stem` task (one `schtasks` call for the whole table), then `query_task()` + `format_schedule_summary()` fill in the human-readable schedule for just those. Reuses `padb_scheduler.py`'s own detection/formatting rather than re-implementing it, so this column can never disagree with the Scheduler GUI.
-- **Bug fixed in `padb_scheduler.py` while building this**: `query_task()` queried `schtasks /query /tn <name> /fo LIST` *without* `/v` — but `Schedule Type`/`Start Time`/`Days` only appear in schtasks' verbose output. This meant `query_task()` had always returned empty schedule info for any real task, so the desktop Scheduler GUI's own schedule-summary display was almost certainly blank too, silently, this whole time. Fixed by adding `/v` to that one call (`padb_scheduler.py` line ~71). Confirmed via a real create→query→delete round trip on a live Windows Scheduled Task.
-- **Last Run** — mtime of that job's `results_dir/index.html`, formatted `YYYY-MM-DD HH:MM`. Reflects the last *successful* run (index.html is only written on success), not the last attempt — a repeatedly-failing job shows a stale date rather than "just failed."
-- **Results** — a link to that job's `results_dir/index.html`, if it exists. Served through the app itself at `/results/<token>/<filename>` rather than a `file://` link — browsers silently block navigating an `http://` page to `file://`, which was a real bug here. `<token>` is a short hash of the results directory, registered in an in-memory `_RESULT_DIRS` dict the first time that directory is ever pointed at (resets on server restart, same as job/queue state); `send_from_directory` blocks path traversal outside it. Because the URL path mirrors the real directory structure, the generated gallery's own relative links between sibling plot HTML pages resolve correctly with no rewriting.
-- **Bug fixed 2026-08-05 — run job's own Results link pointed at the wrong page**: for a `*_run_job.json` row, `list_jobs()` was using that job's *own* `results_dir` (the extraction step's plain metadata/analytics-table page) instead of the sibling plot jobs' shared `results_dir` (the actual merged interactive gallery) — those are two different folders by design (`padb_make_v2_job.py`: run job gets `{stem}_run_results`, every plot job shares `{stem}_v2_results`). Reported via the web app: clicking "Open" on the run-job row showed "no interactive plots." Fixed with `_job_result_index_path()` — for a `mode=="interactive"` job named `*_run_job.json`, it looks up the first sibling `*_v2_job.json`'s own index instead of its own; every other job shape is unaffected. Used for both the jobs-table Results/Last-Run columns and the running-job status panel's fallback.
-- **Layout**: `body` max-width 1300px (bumped up from an arbitrary initial 900px). Name/Pod/Description/Scheduled wrap onto extra lines when long (row grows taller) rather than truncating or scrolling — tried per-cell horizontal scrollbars first, wrapping reads easier. Mode/Last Run/Results stay single-line since they're never long enough to need it. The table itself sits in a `max-height: 320px` scrolling box (sticky header) so a long job list doesn't push "Running Jobs" off-screen.
-
-Deliberately out of scope for Phase 1 (not started): the guided "what do you want to do?" wizard, the tutorial walkthrough dropdown, and the doc viewer.
-
-**Delete job(s) (added 2026-08-17):** a third toolbar row — **Also delete local results data** checkbox (default checked) + **Delete Selected** button — posts to `POST /api/delete-job` (`{paths, delete_data}`). Deliberately never touches the source `.pod` file (shared across jobs, not job-specific output) or any already-published copy on the network share (a location other people may rely on — out of scope for a local delete button, same reasoning `_publish()` is never invoked from a delete path). The browser shows a native `confirm()` listing every path about to be deleted before the request fires.
-
-Per job: unschedules its Task Scheduler entry first if one exists (reuses `delete_task()` — an orphaned task pointing at a now-deleted job.json would otherwise just fail confusingly the next time it fires), then optionally removes `results_dir`, then deletes the job.json itself.
-
-**Shared results_dir is the real hazard here, not the job.json deletion itself**: `padb_make_v2_job.py` deliberately gives every plot job for one pod the *same* `results_dir` ("all plot jobs for one pod share one results_dir"). Deleting one plot job.json out of several must not `rmtree` output the surviving siblings still point at. Fixed by computing, before any deletion in the batch runs, the set of `results_dir` values referenced by every job.json **not** in this delete request — a results_dir already in that set is left alone (reported back as a `note`, not silently skipped) even if `delete_data` is checked. Verified against three cases via a Flask test-client harness (not the running dev server, to avoid touching whichever real job files happen to be in `data_dir`): a standalone job (job.json + results_dir both removed), a run-job-plus-plot-job pair sharing one results_dir (deleting just the run job keeps the results_dir, since the plot job.json still references it; deleting the remaining plot job afterward then removes it), and a nonexistent path (`error: "not found"`, doesn't fail the rest of the batch).
-
-**Web app job log now shows live progress, not just a bare "running" state (fixed 2026-08-19)**: confirmed 2026-08-13 while investigating why a job "looked stuck" in the web tool for ~18 minutes — it was genuinely just queued behind another PADB-R.exe instance (the cross-process exclusivity guard above, working correctly), not actually hung, but the live status panel showed nothing at all during that wait, indistinguishable from a real hang. Root cause: `_stream()` (the shared helper every job type's subprocess launch goes through) called `subprocess.Popen(cmd, stdout=PIPE, ...)` with no `-u` flag and no `PYTHONUNBUFFERED` env var. Python defaults to *block*-buffered (not line-buffered) stdout when writing to a pipe rather than a real terminal, so `padb_batch.py`'s own status prints (e.g. `"Waiting for existing PADB-R.exe (PID X) to exit..."`) could sit unflushed in the child process's stdout buffer for the entire wait — `_stream()`'s live reader (`for line in proc.stdout`) only ever saw them once the buffer filled or the process exited. Final log content was always complete and correct once a job finished (process exit flushes everything) — this only ever affected *live* visibility while a job was still running.
-
-**Fix**: `_stream()` now passes `env={**os.environ, "PYTHONUNBUFFERED": "1"}` to `Popen`, forcing the child Python process's stdout to be unbuffered regardless of terminal/pipe. Since this is the one shared function every job-launching code path already goes through, no other call site needed touching. `padb_run.py`'s own `_Tee` (which tees stdout to both console and log file) never calls `.flush()` itself — but `PYTHONUNBUFFERED=1` makes the underlying real stdout it wraps flush on every write at the interpreter level, so no change to `_Tee` was needed either.
-
----
-
-## V2 index.html: per-analytic grouping (added 2026-08-18)
-
-`_write_index()` (padb_v2.py) used to render one flat alphabetically-sorted `<ul>` of every generated view file — for a multi-analytic pod (up to N analytics × 6 views accumulating into one shared `results_dir`, per "all plot jobs for one pod share one results_dir" above) this interleaves views from different analytics with nothing showing which analytic a link belongs to.
-
-**Fix:** `_index_group_key(stem)` strips a filename's trailing `_<view>` suffix (the exact `f"{prefix}_{slug}.html"` convention `generate_report()` writes) to recover the analytic prefix each view shares. `_write_index()` groups files by that prefix and renders one `<h3>{analytic}</h3><ul>...</ul>` section per group, each internally ordered by `_VIEW_FN`'s own canonical key order (scatter, stat_summary, boxplot, distribution, env_coverage, summary) rather than alphabetically — link text switches to the friendlier `_VIEW_LABELS` value (e.g. "Box Plots") instead of the raw filename stem, since the analytic name is already in the group header. A file whose stem doesn't end in any known view suffix (not written by `generate_report()`, e.g. a stray file) falls back to being its own single-item group rather than being dropped.
-
-**Only applied when there's more than one group.** A single-analytic `results_dir` (the common case — one plot job's own output, or a Room-only job with just `scatter`+`boxplot`) keeps the exact old flat `<ul>` with full-stem link text, byte-for-byte — grouping structure would be pure overhead there, same "only add it when it helps" call as the Simple-mode gallery TOC below.
-
-Verified: a synthetic single-analytic/2-view case renders identically to the old flat list (no `<h3>`); a synthetic 3-analytic × 6-view case, built via 3 separate `_write_index()` calls into the same directory (mirroring how 3 real plot jobs would accumulate), correctly produces 3 alphabetically-sorted group headers each with its 6 links in canonical view order, not alphabetical.
-
----
-
-## PADB Simple mode gallery: jump-nav TOC (added 2026-08-18)
-
-`make_simple_gallery_html()` (padb_simple.py) stacks one card per analytic (and one card per PNG for an analytic that paginates into several), with no way to jump between them — a 6-analytic pod is already a long scroll, and pods with more analytics only make it worse.
-
-**Fix:** every analytic's first card gets `id="analytic-{idx}"`; an analytic that renders multiple PNGs (pagination) still gets exactly one anchor, on its first card only, since the nav is for jumping *between analytics*, not between pages of the same one. A `<div class="toc">Jump to: ...</div>` bar linking to each anchor is inserted between the page's metadata line and the cards — but **only when there are more than 3 analytics**; for 1–3 it's just clutter above the content.
-
-Verified against a synthetic 6-analytic case (one analytic paginated into 2 PNGs — confirmed only one anchor/TOC entry for it, not two) and a 3-analytic case (confirmed the TOC is correctly suppressed, anchors still present but unused/harmless). Also regenerated the real `MaxPowerTutorial1_job.json` (Simple mode, 6 analytics) via `--plots-only` and confirmed the real page renders a correct 6-entry nav.
-
----
-
-## Implemented plot types
-
-| Function | Source | Interactive? |
-|---|---|---|
-| `accuracy_vs_freq` | Type=80 Scatter | Yes — full control bar |
-| `distribution` | Type=80 Scatter | Plotly native only |
-| `population_envelope` | Type=80 Scatter | Plotly native only |
-| `empirical_cdf` | Type=80 Scatter | Plotly native only |
-| `spec_derivation` | Type=80 Scatter | Plotly native only |
-| `stat_summary` | Type=80 Scatter | Yes — full control bar |
-| `stat_boxplot` | Type=80 Scatter | Yes — full control bar |
-| `de_summary` | Type=60 Environmental | Yes — full control bar |
-
-`de_summary` used to be defined **twice** (an older static version shadowed by the active interactive one). The dead static duplicate was **removed 2026-09-03** — there is now a single `de_summary` definition (the interactive one).
+## Generators & tools
+
+- **`padb_make_job.py`** — `<pod>_job.json` (legacy/simple). `--module <subfolder>` **required** unless `--no-publish` (never auto-derive the publish subfolder — wrong-place publishing to a shared drive is worse than a required flag). `--min-date`/`--max-date` → `subex` (sentinels allowed). `--publish-to <path>` sets `publish_to` verbatim (wins over `--module`). Reads `Device_Device` from the pod for the title/description prefix (not a hardcoded "SG6311A").
+- **`padb_make_v2_job.py`** — full Interactive set: one `<stem>_run_job.json` + one `<stem>_<analytic>_v2_job.json` per Type=80 analytic (all sharing one `results_dir`/publish). Omits `views` (auto-selection decides). Predicts `csv_path` from `OutputConfig_OutputFile` (or the `unique_output_filenames` slug). Auto-sets `unique_output_filenames`/`force_output_csv`/`x_col`+labels/`pod_filter_expression` from the pod. Routes a text/single-value x-axis (`[T]`/`(1 x 1)`, `_is_non_sweep_x`) to `views:["histogram"]`. `--module` required unless `--no-publish`; `--publish-to` / `--spec-direction` / `--force`. Calls `padb_config.warn_if_path_long()` (≥220 chars, MAX_PATH margin).
+- **`padb_convert_site.py`** — convert a pod/job between PADB DB sites (registry `padb_sites.json`; exactly one site has `suffix:""` = primary). Swaps `Device_Server`/`Device_Database`, suffixes `AnalyticName`/`OutputConfig_OutputFile`. `.sao` binaries can't convert (warns). Never overwrites without `--force`.
+- **`padb_csv_check.py`** — pre-flight one CSV (`--x-col`) or a job (`--job`, incl. publish-target gate). Calls `_load_scatter_for_stats()` directly (can't drift). Flags: 0-rows, orphaned numeric columns (esp. one with more distinct values than the detected x — a missed real x-axis), raw-vs-usable drop rate, Group cardinality (>100 crowded, >500 slow), grouping-item presence, Room-only vs multi-temp. Exit 1 on WARN/FAIL.
+- **`padb_viewer.py`** + **`build_viewer.py`** — local-server viewer for datasets too big for self-contained HTML (see **Large-dataset viewer**).
+- **`padb_pdf_report.py`** — comprehensive multi-view PDF (see **Comprehensive PDF report**).
+- **`padb_testpoint_reduce.py`** / **`padb_sentinel.py`** — report-only test-plan trimmer + run-to-run audit-diff (see `project_testpoint_reduction` memory; still prototype-ish in the webapp).
+- **`padb_batch.py`** — the single PADB-R.exe launcher for every path; enforces cross-process exclusivity (below).
 
 ---
 
 ## PADB-R.exe quirks
 
-- **WinForms app (PE subsystem=2).** Always call with `capture_output=False`. Using `capture_output=True` hangs indefinitely — the process waits for a GUI message loop that never starts.
-- **Requires a desktop session.** Will not run headless (SSH without virtual desktop).
-- **Always use `-ext r` flag** for Oracle extraction.
-- **`-dir` flag** redirects PDF/PNG/CSV output to a folder. When used, CSVs land directly in `results/padb/` and do NOT appear in R-Plots — the `_collect_padb_outputs()` function monitors R-Plots, so its "no new files" message is expected and harmless.
-- **Timeout:** Large pods (Environmental analytics, all temps) need `padb_timeout: 7200` or more.
-- **Two concurrent instances interfere with each other and both stall** (zero CPU progress) — see the cross-process exclusivity guard below for the real fix, not just "don't do that."
+- **WinForms app** — always `capture_output=False`; `capture_output=True` hangs forever (waits for a GUI message loop).
+- Requires a **desktop session** (won't run over SSH without a virtual desktop). Always pass **`-ext r`** (Oracle extraction).
+- **`-dir <folder>`** redirects PDF/PNG/CSV there → CSVs land in `results/padb/`, NOT R-Plots (so `_collect_padb_outputs()`'s "no new files in R-Plots" is expected).
+- **Timeout:** big pods (Environmental, all temps) need `padb_timeout: 7200`+.
+- **Two concurrent instances both stall** at zero CPU. **Cross-process exclusivity guard** (`padb_batch.wait_for_exclusive_padb_r()`, called from `PADBBatch.run()` — the one choke point for webapp + CLI): checks the live OS process table (`tasklist`), waits/polls, else raises with the exact `taskkill`. **Idle-GUI exemption:** only PIDs whose command line has `-f <switchfile>` (this tool's convention) count as blocking (`_running_batch_pids` via PowerShell `Get-CimInstance`); a hand-opened PADB window is ignored. Fails safe (treats all as blocking) if command-line probing fails. `--dry-run` never reaches this.
+
+## `_collect_padb_outputs()`
+
+Clears stale `results/padb/` files whose stem has fresh output this run before copying (stops Simple-mode PNG bloat) — stems with **no** fresh output are left (preserves the clock-spurs manual-CSV workaround). A **stale R-Plots leftover never clobbers fresh `-dir` output**: an R-Plots candidate older than `run_start` is skipped when `results/padb/` already has a fresh same-stem file (was silently serving stale data on ~11/16 runs before this).
+
+## Run logs
+
+Every `padb_run.py` run tees stdout to `results_dir/padb_run_YYYYMMDD_HHMMSS.log` via `_Tee` (survives crashes, works headless, accumulates). `_Tee` doesn't `.flush()`; piped stdout is block-buffered — the webapp forces `PYTHONUNBUFFERED=1` for live logs.
 
 ---
 
-## Cross-process PADB-R.exe exclusivity guard (added 2026-08-10)
+## CSV loading & Group parsing
 
-**Real incident this was built from**: the webapp's single-worker job queue (`queue.Queue` + an in-memory `_jobs` dict in `padb_web.py`) only serializes PADB-R.exe launches within one Flask process's *lifetime*. That Flask process got killed mid-run (a background-task lifecycle issue, unrelated to the job itself — not something either the user or the job caused), while a real extraction was still in progress. `subprocess.Popen` doesn't bind child-process lifetime to its parent on Windows without an explicit job object, which this code never set up — so the already-launched `padb_run.py` → PADB-R.exe chain kept running, orphaned and invisible to any UI, once its parent Flask process died. A *new* Flask process then started with a fresh, empty queue that had no idea the orphan existed, and happily launched a second PADB-R.exe for a different job. Two concurrent PADB-R.exe instances → both stalled at zero CPU progress, confirmed via repeated `Get-Process -Id ... | Select CPU` sampling showing no growth across several seconds on both.
+- **Scatter (Type=80) `_load_scatter_csv` / `_load_scatter_for_stats`** — keyword column detection: Frequency (`"frequency"`/`"x value"`), Value (first numeric after frequency, skipping Group/Serial/Station/Limit/metadata), Serial (`serial num/no`, `sn`, `unit id`, `dut id`, or exactly `serial`), Station, Upper/Lower Limit, Group (exactly `"group"`). Also parses `Upper/Lower Spec` and `Upper/Lower Uncertainty` out of the raw Group text into `Spec_Hi/Lo`, `Unc_Hi/Lo` columns (`_extract_group_field`). `Upper_Limit ≈ Upper_Spec − Upper_Uncertainty`; Limit is per-unit-derived (noisy), Spec is the piecewise-constant nominal.
+- **Environmental (Type=60) `_load_env_csv`** — reads by exact PADB column name; values >2e9 in UDE/LDE/UDE(Max)/LDE(Max) clamped to NaN (PADB writes INT_MAX on env-compute failure).
+- **`_parse_group_kv()`** — splits Group on **2+ spaces** (preserves multi-word keys). Colon-less fragments from PADB's value-padding (`"Frequency (MHz):  10"`) are re-merged before matching (the padding-bug fix; also in `_build_stat_summary_html`'s inline parser). Serial-key detection: name contains `serial`/`unit id`/`dut id`/`s/n`, OR >50% of values match `^[A-Z]{2,3}\d{5,}$`. Serial keys excluded from condition dropdowns; single-distinct-value keys excluded (no info — so a constant grouping item like an all-"P" `Test Event Status` legitimately never appears as a filter). Temperature = a key containing `"temp"` (boxplot) or the `Test Step` column; Room ≈ value closest to 25. Phase-noise serial-collapse (Serial not in Group) auto-handled by reading `df["Serial"]`.
 
-**Fix**: `padb_batch.py`'s `wait_for_exclusive_padb_r(exe_path, max_wait, poll_interval)`, called from `PADBBatch.run()` itself — the one real choke point every invocation path goes through (webapp queue *and* direct CLI use of `padb_run.py`), rather than relying on any one process's in-memory queue state:
-- Checks the **live OS process table** via `tasklist /FI "IMAGENAME eq <exe>" /FO CSV` (not psutil — avoids a new dependency for one lookup; `tasklist` is always present on Windows). Checking real OS state instead of a lock file means a stale lock from a crashed/killed process can never cause a false "still busy" deadlock — the moment the real process exits, this sees it gone, no cleanup step required.
-- If another instance is found, polls every `poll_interval` seconds (default 5s) until it clears or `max_wait` elapses, printing a one-time notice on the first check so a long wait doesn't look silently stuck.
-- If it never clears, raises `RuntimeError` naming the blocking PID(s) and how long it waited, with the exact `taskkill /IM <exe> /F` command to clear a genuinely-stuck instance by hand — refuses to launch a second instance rather than let two interfere silently.
-- `max_wait` defaults to the caller's own `timeout` (i.e. `padb_timeout` from job.json) when `PADBBatch.run()` is called with one, so "how long am I willing to wait for my own run" and "how long am I willing to wait for someone else's run to clear first" reuse the same already-configurable value rather than inventing a second timeout setting.
-- `--dry-run` never reaches this check at all (`padb_run.py` returns before calling `.run()` when `dry_run=True`), so it adds no delay to switch-file-only runs.
+## Statistics notes
 
-Verified: directly exercised `_running_pids()`/`wait_for_exclusive_padb_r()` against a real live PADB-R.exe instance (correctly detected the real PID and refused to proceed within the test's short `max_wait`) and against a nonexistent exe name (returned in ~1s, the `tasklist` subprocess's own overhead, with no artificial delay).
-
-**Idle-GUI exemption (added 2026-08-17):** the original guard above treated *any* running `PADB-R.exe` process as blocking — including a bare interactive window opened by hand and left sitting on the desktop, doing nothing ("PADB open on your desk"). That's a completely normal way to have PADB open while also using the webapp, but it made every webapp launch wait out its full `max_wait` and then fail with a "go taskkill it" error, even though nothing was actually running.
-
-`tasklist` (used by `_running_pids()`) doesn't expose command-line arguments, so there was no way to tell an idle GUI window apart from a real batch run from that alone. Fixed with `_process_command_lines(exe_name)` (PowerShell `Get-CimInstance Win32_Process`, since `tasklist` can't do this) and `_running_batch_pids(exe_name)`, which only counts a PID as blocking if its own command line contains `-f <switchfile>` — this tool's own batch-invocation convention (every real call goes through `PADBBatch.build_command`, which always uses `-f`). An interactively-opened GUI window has an empty/bare command line and is never flagged. `wait_for_exclusive_padb_r()` now calls `_running_batch_pids()` instead of `_running_pids()`.
-
-**Fails safe, not open**: if `_process_command_lines()` itself can't be resolved (PowerShell unavailable, times out, etc.), `_running_batch_pids()` falls back to treating every running PID as blocking — the original all-or-nothing behavior — rather than risk silently launching a second real batch run concurrently, which is the exact stall this guard exists to prevent. The idle-vs-batch distinction is only ever used to *relax* the check when it's confirmed safe to do so, never to bypass it on uncertainty.
-
-Verified end-to-end: (1) launched a synthetic pair of processes, one with `-f <file>` in its command line and one without — `_running_batch_pids()` correctly flagged only the `-f` one; (2) confirmed real idle processes already running on the machine (including the webapp's own `padb_web.py` instances) are correctly excluded; (3) confirmed the fail-safe path — with `_process_command_lines()` forced to fail, a real running PID is still reported as blocking, not silently waved through.
-
----
-
-## CSV loading
-
-### Scatter (Type=80) — `_load_scatter_csv`
-
-Column detection by keyword match (case-insensitive, stripped):
-- **Frequency:** column containing `"frequency"` or `"x value"`
-- **Value:** first numeric column after frequency, skipping Group/Serial/Station/Lower Limit/Upper Limit/metadata columns
-- **Serial:** column containing `"serial num"`, `"serial no"`, `"sn"`, `"unit id"`, `"dut id"` (excluding `"station"`); or exactly `"serial"`
-- **Station:** contains `"station"`
-- **Lower/Upper Limit:** contains `"lower limit"` / `"upper limit"`
-- **Group:** exactly `"group"`
-
-### Environmental (Type=60) — `_load_env_csv` (the one at ~line 2392)
-
-Reads by **exact column name** (PADB standard output names). Key columns:
-`X value`, `Group`, `UDE`, `LDE`, `Min (Env.)`, `Max (Env.)`, `mean (Env.)`, `Upper TTL (est)`, `Lower TTL (est)`, `UDE (Max)`, `LDE (Max)`, `Lower Limit`, `Upper Limit`, `Units`
-
-Values > 2,000,000,000 in `UDE`, `LDE`, `UDE (Max)`, `LDE (Max)` are clamped to `NaN` — PADB writes `2,147,483,647` (INT_MAX) when environmental computation fails.
-
----
-
-## Group string format and parsing
-
-PADB writes the `Group` column as key:value pairs separated by **two or more spaces**:
-```
-AlcState: TRUE  OA State: 0  Mode: 0  Serial Number: US65080401
-```
-
-`_parse_group_kv()` splits on `2+` spaces first (preserving multi-word keys like `"OA State"` and `"Serial Number"`), then extracts `Key: Value` per segment. Falls back to single-word key regex if no double-space separators are found.
-
-**Serial key detection** (used by `stat_summary`, `stat_boxplot`, `de_summary`):
-1. Key name contains `"serial"`, `"unit id"`, `"dut id"`, or `"s/n"` (case-insensitive), **or**
-2. More than 50% of observed values for that key match `^[A-Z]{2,3}\d{5,}$` (e.g., `US65080401`)
-
-Serial keys are excluded from condition filter dropdowns. Condition keys with exactly 1 distinct value are excluded (constant, no info). **Correction (2026-07-21):** there is no 20-value upper cap in `stat_summary`'s own filter-panel builder (`_build_stat_summary_html`, `len(vals) > 1`, no ceiling) — confirmed by VSWR2's `OA` key (40–56 distinct values) rendering as a full checkbox panel. A separate `1 < len(vals) <= 50` check exists elsewhere (env_coverage/boxplot condition-vs-serial classification) but that's a different cap for a different purpose, not a "filter panel cutoff." A previous version of this doc and `PADB_Analytic_Requirements.md` incorrectly stated a 20-value cap throughout — corrected.
-
-**Temperature detection** (`stat_boxplot` only): a key whose name contains `"temp"`. Room condition = the temperature value numerically closest to 25.
-
----
-
-## Embedding JavaScript in Python
-
-**Always use raw strings for large JS blocks:**
-```python
-_MY_JS = r"""
-function foo(x){ return x*2; }
-"""
-```
-
-This avoids `{{`/`}}` escaping hell in f-strings. Python variables are injected as `var X=...;` declarations before the raw string:
-```python
-constants = f"var TITLE={json.dumps(title)};\nvar DATA={json.dumps(data)};"
-html = f"<script>\n{constants}\n{_MY_JS}</script>"
-```
-
-**Never use f-strings for the JS body itself.**
+- **NP TI** (`_nonparametric_ti`, scipy beta.cdf): tightest symmetric order-stat bounds meeting P/C; needs n≥~39 for P=C=0.90; `null` when a serial filter is active (no client recompute).
+- **DUT averaging:** each DUT contributes one point per (condition×frequency) — repeats averaged first; population stats are over DUT averages (so table `n` = #DUTs).
+- **Whiskers:** unfiltered = max-inlier (Python `_box_stats`, Tukey fence); with a live Y/serial filter = fence convention (client recompute).
+- **`stat_summary` Spec↓** is entered as a positive magnitude (`|Spec↓|`), internally negated.
+- **TTL vs TLL** (not spelling variants): **Spec Hi/Lo** = datasheet limit; **TTL↑/↓** (PADB "Total Tolerance Limit", CSV `Upper/Lower TTL (est)`) = what the data supports (mean±k·σ or NP-TI + MU/DEnv budget), summary's `uttl`/`lttl`; **TLL↑/↓** (this team's term) = spec adjusted backward by MU/DEnv/guard, stat_summary's `tll_up`/`tll_lo`. Boxplot/summary's manual override actually overrides **Spec Hi/Lo** ("Spec override" is the accurate name; not yet renamed in code).
 
 ---
 
 ## Interactive HTML patterns
 
-### Toggle panels (stat_summary, stat_boxplot, de_summary)
-
-Always use **`style.display` toggling**, not CSS class toggling:
-```javascript
-// CORRECT
-if(el.style.display==='none'){ el.style.display='block'; }
-else { el.style.display='none'; }
-
-// WRONG — class toggling silently fails in Plotly-embedded pages
-el.classList.toggle('open');
-```
-
-Stats panel divs start with `style="display:none"` inline (not a CSS rule). Button IDs follow the pattern `*_toggle_btn` or `*_btn`.
-
-### Plotly.js placement
-
-Always load Plotly.js in `<head>`, never at the end of `<body>`:
-```html
-<head>
-  <script>{_get_plotlyjs()}</script>
-</head>
-```
-
-If loaded after the plot div, `Plotly.newPlot()` inline scripts inside the div run before Plotly is defined and silently fail.
-
-### Trace count consistency
-
-`Plotly.react()` matches traces by index. Always emit a **fixed number of traces per condition** on every `update()` call — use empty `x:[], y:[]` arrays rather than conditionally omitting traces. Mismatched trace counts cause fill bands to attach to the wrong reference trace.
-
-### TI bands require `type:'scatter'` not `type:'scattergl'`
-
-`fill:'tonexty'` is silently ignored by WebGL (`scattergl`) traces. All TI band and fill traces must use `type:'scatter'`.
-
-### scattergl markers can *look* like they cross the spec line when zoomed out — WebGL artifact, NOT a bug (documented 2026-09-17)
-
-Reported on `SG6311A_Phase_Noise_Pre_YS_check_scatter.html`: zoomed out, points appear to sit above the spec (Hi) line ("looks like TLL fails"); zoomed in, they're clearly below. **Verified this is a rendering artifact, not a data or coordinate error** — David chose to leave it documented rather than change rendering (WebGL is what lets the 56k-point phase-noise pages open at all; a global switch to SVG `scatter` would make big pods sluggish).
-
-What was checked on the live plot and found correct: the spec line is a data-space trace (`yref:'y'`), a proper `line.shape:'hv'` step mask following the real per-offset limits; every trace (markers + spec line) is `scattergl`, so there's no SVG-vs-WebGL cross-layer offset. The zoom dependence comes from two compounding WebGL/pixel facts: (1) the full Y range is huge (measured `[-188.5, -81.6]` ≈ **107 dB over ~480 px ≈ 0.22 dB/px**), so a 3 px marker covers ~0.6 dB — a point within ~½ dB below the line visually touches it; (2) `scattergl` positions markers with **float32** precision, which at a 107 dB span around −145 adds a sub-pixel wobble. Zooming in shrinks dB/px *and* restores precision, so the marker sits correctly — which is exactly why zoomed-in is fine. The marker's data value was always right.
-
-**Guidance:** judge pass/fail from the numbers (the Statistics Table, computed numerically), not by eyeballing markers vs the line at full zoom-out. (This often compounds with the spec-line caveat below — many "above the line" points belong to a *different measurement* with its own/absent limit.) If pixel-accurate near-limit inspection is ever genuinely needed, the fix would be an opt-in SVG-`scatter` render for small datasets — deliberately not built (perf).
+- **Embed big JS as module-level raw strings** (`_X_JS = r"""..."""`); inject Python data as `var X=...;` constants before the block — never f-string the JS body.
+- **Plotly.js in `<head>`** (`_get_plotlyjs()`), never after the plot div (inline `Plotly.newPlot` would run before Plotly is defined).
+- **Toggle panels via `style.display`**, not CSS class toggling (class toggling silently fails in Plotly-embedded pages). Stats panels start `style="display:none"`.
+- **Fixed trace count per `update()`** — use empty `x:[],y:[]` not conditional omission (`Plotly.react()` matches by index; mismatched counts attach fill bands to the wrong trace).
+- **TI/fill bands must be `type:'scatter'`, not `scattergl`** — `fill:'tonexty'` is silently ignored by WebGL.
+- **`_COMMON_JS` shared prelude** (in every view): the single source for cross-view rules — `PADB_num`, `PADB_specClass` (the ONLY `>hi/<lo` classifier; side-aware, one-sided fails only on the present side), `PADB_isFail` (derived), `PADB_pct`/`PADB_fence` (the single Tukey fence), and the busy-overlay/spinner helpers. Every Site spec-classifier and fence helper delegates here — pinned by `qa_regressions` so a feature can't land in one view and miss others.
+- **`scattergl` markers can *look* like they cross the spec line when zoomed out** — a WebGL float32 + marker-pixel artifact on huge-Y-range pages (phase noise), NOT a data/coordinate bug. Judge pass/fail from the Statistics Table (numeric), not eyeballed markers. Left as WebGL (SVG scatter would make big pods sluggish). Often compounds with the spec-line caveat (points belong to a different measurement's limit).
 
 ---
 
-## job.json: csv vs csv_file
+## Views & interactive features (durable rules)
 
-| Key | Match rule |
-|---|---|
-| `csv` | **Substring** match against analytic names in `csv_map`. Case-sensitive. |
-| `csv_file` | **Exact filename** (with `.csv` extension) in `results/padb/`. |
+There are six V2 views (`scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`) plus `histogram`. Most controls are duplicated per view (own `localStorage` state); fixes generally apply to all. **Legacy exclusion boundary:** `distribution()` (V1), `_build_env_summary_html`/`_ENV_SUMMARY_JS` (the `de_summary`-equivalent), and `stat_boxplot(interactive=False)` are deliberately excluded from feature work. `de_summary` is now a single interactive definition (dead static duplicate removed).
 
-Use `csv_file` when: (a) the analytic name doesn't substring-match cleanly, (b) two analytics share the same output filename, or (c) the CSV was copied manually from R-Plots.
+**Zoom/pan & axes.** Every `update()` re-`react()`s, which recomputes autorange — so a manual zoom is preserved by `_liveAxisRange(axis)` reading back `plot.layout[axis]` (`autorange===false`→ pinned range) and threading it into `buildLayout`. `uirevision` does NOT work in this Plotly build (verified). Intentional-new-range call sites (`syncFreq`/`freqTxtChange`/`freqStep`/`setFreqBand`/`toggleLogX`/Reset) relayout first; Reset clears autorange. **Drag-zoom syncs the frequency sliders + narrows the data/Statistics tables** in scatter/stat_summary/env_coverage/boxplot (via `plotly_relayout` → `setFreqBand`/`_zoomSyncFreq`; boxplot maps its categorical index range back through `BOX_FREQ_VALS`). stat_summary purges the plot so it re-attaches the listener after each `Plotly.newPlot`. **"Autoscale Y"** button (all 6) rescales only Y. **Segment-by tab-through** also narrows the condition filters to each band.
 
-`csv_file` takes precedence over `csv` when both are present.
+**Freq-range rounding.** Default text-box bounds round **outward** (`_floor_dec`/`_ceil_dec`, and `Math.floor/ceil` in Reset/`freqStep`) — round-to-nearest silently clipped the true min/max point. Filtering reads the **text box** (full precision), not the snapped slider `.value` (`_sumFreqRange` etc.).
+
+**Spec segment tab-through** (all 6 real views). "Segment by: Spec/Limit/Uncertainty" + Prev/Next jump to each contiguous spec band. `getSpecSegments(hiPoints, loPoints)` takes **both** arrays and breaks on either side's value change (per-view identical copies — `qa_js_segments.py` guards drift). `getSpecMaskByKey(data,key)` reads a specific key-pair with no fallback (picking an unextracted key → 0 segments, informative). Needs `Upper/Lower Spec` or `Uncertainty` added as pod grouping items to find anything beyond Limit. The whole control is **hidden when the dataset has no frequency-varying Spec/Limit/Uncertainty** (`_has_segmentable_spec`). Segment-tab index recovery is pinned (`_segIdxPinned`) and boundary comparisons rounded to the textbox precision (real non-round sweeps).
+
+**Group by** (multi-select in all views). Collapses/pools by any *combination* of parameters (empty = Condition = no pooling). Pooling is **exact** for plain per-DUT aggregates (mean/min/max, and env_coverage's from-scratch `computeStats`); **worst-case (tightest) across constituents** for things needing the pooled population's own order stats or data not embedded client-side (Shapiro normality, NP-TI, DEnv, spec). Adaptive defaults: boxplot → Serial Number above 150 raw conditions (else Condition); scatter → fewest-cardinality dimension. Deselecting every condition shows **nothing** (not everything). Serial/Port grouping pools across conditions via the shared `_computeBoxGroupedByColId` (table uses the same function as the plot — can't drift) and respects the condition filter.
+
+**Global Filter (GF).** A cross-view, browser-persisted, **additive** DUT-exclusion list (`localStorage['padb_v2_excluded']`, shared across all views). Set from boxplot ("Set filter/outliers/delta-outliers as GF" — all merge via `_mergeGf`, none replace); "Clear global filter" is the only thing that wipes it (Reset buttons never touch the list). Export/Import GF CSV round-trips it. **Point-precise across ALL views** on `(serial, cond, port, temp, freq-box)` — the frequency identity is the categorical **`freq_label`** (from one shared `_freq_label_map(all-freqs, x_unit)`, deterministic across views), NOT `toFixed(3)` (which collapsed genuinely-distinct close boxes). Matchers are a dims-intersection: a whole-DUT "Set filter" key (freq sentinel `'0'`, no Freq dim) matches all frequencies; an outlier key matches only its box. Temp scope: scatter/stat_summary full; env_coverage/summary/distribution-ΔTemp are temp-agnostic (delta spans temps). **GF Inspect ("focus") mode** (`padb_v2_gf_mode`) is browser-global, **reset to 'exclude' on every page load** with an amber "⚠ INSPECT MODE" banner while active — a stuck Inspect mode (showing only GF-matched points from another dataset) was the real cause of many "buttons/serial filter/axis do nothing / no data" reports; Reset also forces it back to 'exclude'.
+
+**"Copy PADB Filter"** (boxplot) — three-mode dropdown building real PADB syntax (`'Field' = "v"` / `!=` / `IN {...}` / `NOT(...)`, `AND`-joined): **Plot view** (current filters), **Global Filter only** (the GF's full captured scope, fixed at capture), **Plot + GF**. `'Serial Number'` is a global *unprefixed* field; every other field carries `PADB_FIELD_PREFIX`; a port-qualified serial → base serial + separate Port clause.
+
+**Spec-mask / hide-spec / worst-first.** scatter draws a `line.shape:'hv'` step mask when >3 distinct limit values (`getSpecMask`), else flat full-width dashed lines (`_isMaskDataset` decides from the **whole dataset**, memoized — not the filtered subset). "Hide spec lines" checkbox in all 6 views except env_coverage (which draws no spec line). scatter "Sort: Worst first" ranks by **largest error relative to spec** (`_rowSpecExceed`: max exceedance past effective Spec_Hi/Lo else Upper/Lower_Limit; groups with no spec sort last), falling back to raw max Value only when the dataset has no limits at all (`_scatHasSpec`).
+
+**Help panel & disclaimers.** `_build_help_panel_html` (ⓘ, all 6 views; threaded as `help_panel_html` where the builder lacks `df`) explains the controls + flags **inverted rows** (Upper_Limit<Lower_Limit or Spec_Hi<Spec_Lo, backwards — a pod data-entry issue, names the culprit dimension) + shows the pod's `Filter_Expression` (`pod_filter_expression`) if any. A static amber **noise-sensitivity disclaimer** on env_coverage/distribution/stat_summary/summary (TI/KDE math assumes low-noise data — always-true caveat, not a per-dataset check).
+
+**Statistics/Results tables.** Auto-refresh below `STATS_TABLE_AUTO_THRESHOLD` (150 active conditions); above it, a placeholder + highlighted manual **"Refresh table"** button (`_setTableBtnStale`). The Refresh build is **spinner-wrapped** (`PADB_deferRender`). Grouped/Per-point mode toggle (per-point = one row per DUT, PASS/FAIL vs the effective limit) + a **"# fail / n"** column (boxplot/stat_summary/summary), coupled to the live serial/port/GF filter via the same data path as the plot. Per-point Limit/Status honor a manually-typed Spec (`_statSpecEntry` → `_statDutLimits` falls back to `stat_spec_hi/lo`) when the data has no CSV spec. Boxplot **"Dup runs"** column + opt-in **"Collapse dup runs"** (average a DUT's exact `(serial,cond,port,temp,freq)` repeats to one point before stats; identity includes Port — RF1/RF2 aren't dups). `Max +Δ`/`Max -Δ` columns split outliers by sign (relative to the row median). stat_summary panel sits *after* the plot (opening the table doesn't push the plot off-screen).
+
+**Site Population Check** (cross-site compares; all 6 views). Gated on `primary_site` + a `Site` dim with 2+ values. Buckets non-primary points by `(temp,freq)` (or per non-Site dim combo for histogram), builds the primary site's Tukey fence (live `k`, `n<4`→`n/a`), reports inside/OUTSIDE with a **selectable comparison basis** ("Site check vs: fence / Spec-Limit / both" — env_coverage: Room baseline vs ΔEnv drift; distribution: Absolute vs ΔTemp), a **triage** suggestion (`_siteTriageTag`: station/systemic if a DUT's OUTSIDE points are mostly shared with other DUTs at the same freq → strongest signal; else bad-DUT/isolated/benign-away-from-fail/ambiguous), a coverage-gap amber banner (`_norm_val` compares numerics rounded to avoid format false-positives), and CSV export (All / Outside-only, from `_lastSiteRows` so it matches screen). env_coverage/distribution share `_SITE_PANEL_SHARED_JS` (`_sp*`); boxplot/stat_summary/summary/histogram have bespoke copies. **Per-point detail tables cap at 5000 rows** (summary counts + CSV cover all rows) and the panel open is spinner-wrapped. Boxplot adds "Dup runs"/"Genuinely repeated freqs" + per-serial "SR dup pts". Histogram has no GF — its clean vehicle is Export→edit→Import CSV (`_hApplyImport` re-detects the Site dim).
+
+**Auto-filter + Workflow & Recommendations** (boxplot/stat_summary/summary/env_coverage/histogram; `_AUTO_FILTER_SHARED_JS`). Basis dropdown (dist=MAD modified-z / iqr / dmad / spec / tll) + level (Off/Conservative/Moderate/Aggressive). `_afCompute` classifies per DUT: **auto** (meets bar AND per-DUT false-removal risk <5%), **marginal**, **review** (systemic / benign / out-of-scope). **Nothing excludes until Apply** (or one-click "Run recommended workflow"). Writes the canonical point-precise GF (histogram writes `_hAutoExcl` instead — no GF). **"Remove auto-filter"** subtracts only the auto-added keys (manual GF survives). **Compare site scope** (Reference / Onboarding / Both) with per-site risk shown. A "why no Apply button" banner when nothing is auto-filterable. **Subpopulation / dual-distribution advisory** (`padb_subpop.py` oracle + byte-faithful JS port `_spDetect`; `qa_subpop`): flags ≥2 DUTs behaving as a separate distribution (budget-anchored to MU+drift, else shape-only), advisory-only, complements the Site check (which finds subtle overlapping shifts). Undo wording is ctx-driven ("Clear global filter" for GF views; "Clear auto-exclusion" for histogram).
+
+**Busy overlay & spinners.** `_BUSY_OVERLAY_HTML` (static `#padb_busy` div, painted before the big data `<script>`) + `PADB_busyHide` (in `_COMMON_JS`, polls `#plot`/`#kde_plot` for a rendered layer, ~60s safety) — every interactive view shows "Loading plot data…" until first render. `PADB_spinnerHtml`/`PADB_deferRender` (double-rAF) spinner-wrap slow user-initiated builds: Site Population Check panels, the 4 Statistics/Results "Refresh table" builds, and the histogram Statistics panel (`toggleStats`, since it has no size-gated Refresh). Compute functions stay synchronous (QA/programmatic callers unaffected).
+
+**Auto view-selection** (`padb_v2.py`, no `views` key). Room-only → scatter+boxplot+reference+summary+stat_summary (summary/stat_summary are Room-only defaults now — useful without env data; **never** distribution/env_coverage, which need non-Room deltas). Multi-temp → all six. Explicit `views` always overrides.
+
+**V2 index.html** groups links per-analytic (`_index_group_key` strips the `_<view>` suffix) only when >1 analytic; links a `<analytic>_report.pdf` and (when a `.parquet` is present) a collapsible **Large-dataset viewer** section.
+
+---
+
+## `histogram` view
+
+CSV-driven value distribution for tests with **no numeric swept x** (switching speed etc. — `~Device Family [T] (1 x 1)`). Reads the Type=80 analytic's own raw-value CSV (Type=70 native histograms emit no per-measurement CSV — keep the Type=80 analytics as the data source). Overlaid per-condition histograms (`barmode:'overlay'`, shared `xbins`, Freedman–Diaconis auto-bins), spec lines, stats (n/mean/median/p95/p99/max/%out-of-spec). Export CSV (per-measurement, filter-respecting, `Out of spec` flag), Pass/Fail filter (`_hIsFail`), in-page Import CSV (`_hApplyImport`), CLI re-plot (`--csv`). Clean exports keep the spec out of the data (carried via `hist_limit_hi/lo`). Cross-site compare overlays per-`(Site×dims)` with a per-combination stats table + Site Population Check. Routed at build time by `_is_non_sweep_x` in `padb_make_v2_job.py` (`views:["histogram"]`); `generate_report` branches on `views==["histogram"]` before `load_scatter`. Shared `_finish_report` does index+publish for both paths.
+
+---
+
+## Large-dataset viewer (parquet + `padb_viewer.py`)
+
+Self-contained HTML embeds every point, so a giant analytic (wide phase-noise sweeps, big compares, millions of points) can exceed what a browser opens. **This is an encoding problem, not volume** — an 885 MB CSV → ~6 MB parquet (Group/Model columns dictionary+zstd-compress to almost nothing). `binary_encode`+`scatter_decimate` do **not** rescue the giants (a per-offset categorical boxplot over thousands of offsets is inherently huge — the size guard says use the scatter); ship the parquet + viewer.
+
+- **Parquet sidecar** — `_maybe_export_parquet` streams the **raw source CSV** (`_csv_to_parquet`, pyarrow zstd-9, `newlines_in_values=True` for embedded newlines) so the viewer sees the same columns the loader detects (incl. the `Site:` tag). Auto for compares/large data.
+- **`padb_viewer.py`** — local Flask server (`py padb_viewer.py <folder-or-parquet>`); reads the parquet once, answers server-side **filtered + min/max-envelope-decimated** queries so the browser never loads the whole set. Main scatter has a frequency filter, **Site + temperature checkboxes** (temperature from the real `Test Step` column, reliable), and **band-view buttons** that render any full interactive view for the current band (via the real `padb_v2` pipeline on a parquet slice; `full=0` lite drops the boxplot per-point overlay). **Autoscale/Reset-axes/drag-zoom on the main plot drive the frequency filter** (relayout listener → re-query; guarded against a loop), so zooming refines and the band views stay scoped.
+- **`build_viewer.py`** → one `PADB_Viewer.exe` (PyInstaller); a frozen exe defaults to serving its own folder — drop it into a results folder and double-click. `.exe`/`.parquet`/build dirs are git-ignored; rebuild, never commit the binary.
+- Index links it ("Open in viewer" via the webapp's `/api/open-viewer`, "Open folder", and an `Open_in_viewer.bat` for the `file://` case). The **Large-dataset viewer index section is collapsible** (`<details>`): collapsed by default (optional; the HTML plots have the same analysis), auto-expanded only when a published view page is ≥ `VIEW_SIZE_WARN_MB` (80 MB). `_publish` copies parquet/exe/bat. `qa_viewer.py` covers it in-process.
+
+## Comprehensive PDF report (`padb_pdf_report.py`)
+
+Opt-in (`build_pdf_report`/`--pdf-report`) multi-view PDF (cover + every view with its table expanded) built at build time by **printing the real self-contained pages via Playwright + bundled Chromium** (headless Edge is dead here). One-time: `py -m pip install playwright pypdf` + `py -m playwright install chromium`. Crash-hardened: fresh page per view, hardened launch args, browser relaunch-on-crash → skip the offending (giant) view. `check_environment()` gates it; failure is non-fatal (`_log_note`, never fails extraction/plot/publish). Filter-aware mode (`--pdf-apply-filter`) runs each view's auto-filter workflow first (cleaned population); scatter/distribution stay the full cloud; cover gets "as collected" + "filtering applied" sections. On-demand from already-built results; site scope (`--pdf-filter-site`). Webapp has a "Build PDF report" checkbox + on-demand button. Index links + `_publish` copies `*_report.pdf`. **The same `_build_help_pdfs.py` Playwright approach builds the doc PDFs** (GETTING_STARTED, Interactive_Plots_User_Guide, PADB_Tools_Guide, CHANGELOG); those PDFs are git-ignored local artifacts carried to the share via robocopy. **TODO:** a "protocol error" (CDP drop) can still surface on a ~46 MB compare page's `page.pdf()` — make it catch/skip like a renderer crash and gate per-view print by the size threshold.
+
+---
+
+## Web app (`webapp/padb_web.py`)
+
+Local Flask (`http://127.0.0.1:5000`, 127.0.0.1-only). Shells out to / imports the CLI scripts (nothing in them was changed to build it). Features: drop a `.pod` → Generate Job (`padb_make_job`/`padb_make_v2_job`, shows output verbatim); a jobs table (Name/Mode/Kind/Pod/Description/Scheduled/Last Run/Results, client-side filters, Select-All-Runnable/Select-Filtered); Run Selected via a single background worker + `queue.Queue` (the real serialization point — Flask concurrency doesn't guarantee it); schedule/unschedule (`padb_scheduler.create_task`/`delete_task`); convert-site; delete jobs (never touches the source `.pod` or the share; guards a shared `results_dir` referenced by a surviving sibling); "Clean up orphaned PADB-R" (`_running_batch_pids`, on-demand UAC elevation for `R-Host.exe` orphans); compare panel (**creates the job only** — run it from the jobs table; publishes to `PADB-Compare`).
+
+- **Kind:** `run` (has `pod` → `padb_run.py`) vs `plot` (has `csv_path`/`analytic` → `padb_v2.py`). An interactive `*_run_job.json` auto-chains its `*_v2_job.json` siblings after extraction (`_find_v2_siblings` validates each candidate's `csv_path` points into this run's `results_dir` — avoids stem-prefix collisions). Auto-resume of an interrupted chain records permanently-failing siblings in a `failed` set (`.v2_chain_state.json`) so it doesn't loop forever.
+- **Publish is opt-in per-run** (default OFF → appends `--no-publish`); job.json files are never rewritten. "Generate Job" builds `publish_to` from the "Folder name" (`--module`) or a "Share path (override)" field; "Default share root" is settable (`/api/config` → `padb_config.save_config`, kept as one root + `PADB-Simple`→`PADB-Interactive` swap).
+- **Subprocess lifetime:** `_stream()` redirects child stdout to a **temp file** it tails (not a live PIPE) + `PYTHONUNBUFFERED=1` — a webapp restart no longer kills an in-progress job's subprocess (a closed PIPE's next `print` killed it), and live logs show immediately. In-memory `_jobs` is still wiped by a restart (check the results folder). Job-failure "View log" link (`webapp_console.log`). `Results` link served via `/results/<token>/...` (browsers block `http://`→`file://`); a run-job's Results points at the sibling plot gallery, not its own extraction page.
+- **Scheduler bug fixed:** `query_task()` needed `/v` (verbose) or schedule fields were always blank.
+
+## Scheduler (`padb_scheduler.py`)
+
+tkinter GUI over `schtasks` for `*_job.json` in the Data dir. Weekly/Daily, runs as the current user (network paths accessible), task name `PADB_{stem}`, orphan detection. `Start_web.bat` double-click-launches the webapp (frees port 5000 first).
 
 ---
 
 ## Common gotchas
 
-**PADB returns code 0 but writes no CSV / no data:**
-Add `"TestRun_RunStatus": "{All}"` to `subex`. Many pods default to `TestRun_RunStatus='P'` (passing runs only). This silently filters out all data if no runs are marked passing.
-
-**CSV not found after a successful run:**
-Check if the file is in `results/padb/` with a slightly different name than expected. PADB sometimes adds suffixes or uses different capitalisation. Switch from `csv` to `csv_file` with the exact filename.
-
-**Clock spurs Environmental CSV:**
-The clock spurs SummaryPlot doesn't write a CSV (only PNGs/PDF). The `Env_Clock_spurs_All_Spec_Duts.csv` was copied manually from R-Plots to `clockspurs_results/padb/` and referenced via `csv_file`. This is expected — it's a pod configuration limitation.
-
-**R-Plots collection uses stem-matching (not timestamps):**
-`_collect_padb_outputs()` matches files in `padb_output_dir` (R-Plots) by stem against known analytic names. Parallel jobs with different stems do not contaminate each other. Old files from a previous run of the same job (same stems) will be re-collected — this is expected. If R-Plots is stale or missing, copy CSVs to `results/padb/` manually and use `--plots-only`.
-
-**stat_summary Spec↓ is a magnitude:**
-The lower spec field in stat_summary is entered as a positive magnitude (e.g., `0.15` for a ±0.15 dB spec). It is internally negated. The field label is `|Spec↓|` with `min=0`.
-
-**Phase noise serial collapse in stat_summary (n=1):**
-When the Group string does not embed the serial number (e.g. phase noise pods where `Serial Number` is a separate TData column, not part of Group), the serial fallback uses the entire Group string — every DUT in a group gets the same serial ID, collapsing n to 1. Fixed: `_aggregate_stat_data()` now overrides `_serial_id` from `df["Serial"]` when `serial_keys` is empty and the column contains valid serial patterns. No action needed in job.json; it is automatic.
-
-**de_summary serial filter:**
-Not possible. The Environmental CSV (Type=60) is pre-aggregated across all DUTs by PADB — there are no per-DUT rows. Serial filtering would require re-computing environmental deltas from a raw Scatter CSV.
-
-**`summary_plot()` (V1-legacy) serial filter (added 2026-08-05):**
-Important scope note: `summary_plot()` is the *V1/legacy* function, reachable only via `secondary_plots` `"type": "summary_plot"` against a real Type=90 SummaryPlot CSV — a data source `PADB_Analytic_Requirements.md` explicitly tells pod authors not to use as V2's primary source ("Do not use Type=60/Type=90 ... those produce pre-aggregated output that cannot be used for per-DUT analysis"). It is **not** what V2's real `summary` view uses — that's `render_summary()` in `padb_v2.py`, a completely separate function (see below). This fix only matters for whoever still has an old job.json using the legacy path (confirmed one real case: `harmonics_job.json`).
-
-`summary_plot()` explicitly excludes serial-like keys from its generic Condition-filter dimensions (`_serial_kws` match on key name, or a `_serial_re` match on values) — correct, since a per-DUT serial isn't a "condition" to compare across. But unlike de_summary's Type=60 data, a Type=90 Summary CSV's rows are still grouped by the *whole* Group string, so per-serial granularity is retained whenever the pod's `Group_Num` was configured high enough to include a Serial Number key — the exclusion was just also hiding it from ever being offered as a filter. Fixed by detecting the excluded serial-like key separately and, if it has 2+ distinct values, appending it back into `cond_keys` (not just `cond_dims`) — everything downstream (`dim_vals` collection, each record's `cond_keys` dict) already iterates `cond_keys` generically, so no other code needed to change. Mirrors `de_summary`'s own existing "add serial back" pattern, adapted to reuse the already-parsed `group_kv` dict instead of re-deriving it from raw condition strings via regex. Verified with synthetic CSVs (checking the actual `COND_DIMS` JS variable, not just text search — a plain string search on `"Serial Number"` is unreliable here since an unrelated JS helper comment always contains that literal text): 2+ distinct serials → dimension appears with correct values; exactly 1 serial → correctly omitted; no serial key at all → unaffected, other dimensions still work.
-
-**`summary` (V2) — per-DUT filtering is GF, not a Condition-filter dropdown:**
-`render_summary()` (`padb_v2.py`) is built directly from the same single Type=80 Scatter CSV every other V2 view uses (per pod-authoring guidance: use Scatter with proper Group-By/Order-By, not Type=90/60, precisely so this data survives intact). It excludes serial-like columns from its Condition-filter `cond_dims` the same way `summary_plot()` does — but does **not** need `summary_plot()`'s "add it back" fix, because it already has a working, different mechanism for per-DUT effects: whenever it finds a serial-like column at all (no 2+-distinct-value gate, unlike the Condition-filter path), it unconditionally embeds `dut_vals`/`dut_info` — per-frequency, per-DUT mean values — into each record, specifically so the JS side can recompute the displayed aggregate when GF excludes specific DUTs (the comment at that call site literally says so). So: excluding a DUT via GF elsewhere in the tool already correctly affects `summary`'s numbers, with no dedicated Serial Number dropdown needed on the summary page itself. `de_summary` has no equivalent — it isn't even part of V2's view set (`VIEW_FUNCS` in `padb_v2.py` has no `de_summary` entry; V2's environmental analogue is `env_coverage`, also Scatter-CSV-derived).
-
-**de_summary stat table showed no data:**
-Root cause: the table panel was rendering at `display:block` (via class toggle) but with zero height because `updateEnvStatsTable` silently errored. Fixed by switching to `style.display` toggling (matching the pattern in stat_summary and stat_boxplot) and wrapping the table-build in a try-catch that renders the error message in the panel on failure.
+- **rc 0 but no CSV / no data** → add `"TestRun_RunStatus":"{All}"` to `subex` (pods default to passing-only). A tens-of-seconds run with native PNG/PDF but 0 CSV → `force_output_csv` (analytic has CSV output disabled), not a date-range issue.
+- **CSV not found after a run** → check `results/padb/` for a slightly-different name; switch `csv`→`csv_file`.
+- **Clock spurs env CSV** is placed manually in `clockspurs_results/padb/` and referenced via `csv_file` (its SummaryPlot writes no CSV) — a pod limitation, expected.
+- **de_summary/summary_plot serial filter:** de_summary (Type=60) is pre-aggregated — no per-DUT rows, no serial filter. V2 `summary` (`render_summary`, Type=80) has no serial *dropdown* but embeds `dut_vals`/`dut_info` so GF exclusions affect its numbers. V1 `summary_plot` re-adds a serial-like key to `cond_keys` when it has 2+ values.
+- **Non-ASCII in `print()`** → `UnicodeEncodeError` (cp1252). ASCII only in status/error text.
+- **A second numeric swept dimension** (a pod repeating a sweep at N amplitudes) is silently pooled — no way to isolate it yet (open question below).
 
 ---
 
-## Statistics implementation notes
+## QA toolchain — see `QA_GUIDE.md`
 
-**NP TI (non-parametric tolerance interval):**
-Computed server-side in `_nonparametric_ti()` using `scipy.stats.beta.cdf`. Finds tightest symmetric order-statistic bounds [x_(d+1), x_(n-d)] satisfying `beta.cdf(1-P, 2(d+1), n-2(d+1)+1) >= C`. Requires n ≥ ~39 for P=0.90, C=0.90. Stored as `np_ti_lo`/`np_ti_up` per frequency stat. Set to `null` when serial filter is active (client-side recomputation of NP TI is not feasible).
-
-**stat_summary DUT averaging:**
-Each DUT contributes **one data point** per (condition × frequency) — all repeat measurements for that DUT at that frequency are averaged first. Population statistics (mean, σ, TI) are then computed across DUT averages. This means n in the statistics table = number of DUTs, not number of measurements.
-
-**Whisker convention in stat_boxplot:**
-- Unfiltered: whiskers use **max-inlier** convention (Python `_box_stats`, Tukey IQR fence)
-- When Y-range filter or serial filter is active: whiskers recomputed client-side using **fence** convention (Q1 − 1.5×IQR, Q3 + 1.5×IQR), which can extend beyond the filter boundary
+Umbrella gate **`qa_selfcheck.py`** (baseline-delta GREEN/RED/AMBER vs `qa_baseline.json`; a browser tier skipped for env shows `ok*`, not a regression). Standalone: `qa_padb.py` (synthetic baseline, 37/4), `qa_stats_recompute.py` (independent numpy/scipy recompute), `qa_webapp.py` (Flask test-client), `qa_regressions.py` (per-fix source-contract pins), `qa_js_segments.py` (per-view `getSpecSegments` drift), `qa_subpop.py`, `qa_testpoint_reduce.py`, `qa_sentinel.py`, `qa_viewer.py`, `padb_csv_check.py`/`qa_csv_sweep.py`, `qa_view_sweep.py` (rebuild + headless-verify; `qa_view_sweep.json` manifest), `qa_filters.py` (browser-tier behavioural: GF precision, table-vs-screen, CSV-export-matches-screen, auto-filter, Site fence, subpop; `--browser <chrome-headless-shell>`). All take `--root`/`--job` for other groups' data. **QA must have teeth** — prove a check FAILS on a broken version. Update `qa_baseline.json` when adding pins.
 
 ---
 
-## Extending the tool
+## Open questions / future work
 
-### Adding a new plot type
-
-1. Add a public function to `padb_plots.py` with signature `def my_type(csv_path, cfg, output_html)`.
-2. Reference it by function name in `secondary_plots` in job.json: `"type": "my_type"`.
-3. No changes to `padb_run.py` needed.
-
-### Adding a new interactive control
-
-Follow the established pattern:
-- Condition filter: collapsible div with `filter-wrap`/`filter-panel`/`filter-btn` CSS classes
-- Toggle panel (stats table, etc.): `style="display:none"` on div, `style.display` toggling in JS, button with unique ID
-- Frequency sliders: `<input type="range">` with `oninput="syncFreq()"`
-- All controls call `update()` which calls `Plotly.react()`
-- Embed JS as a module-level raw string (`r"""..."""`); inject Python data as `var X=...;` constants before the raw string block
-- Never use a non-ASCII character in a `print()`/status message — throws `UnicodeEncodeError` on this Windows console's codepage; see **Default publish location** above for the bug this caused
-
-## Run log files
-
-Every `padb_run.py` run writes a timestamped `padb_run_YYYYMMDD_HHMMSS.log` to `results_dir/`. Output is teed to both the console (when interactive) and the log file simultaneously via `_Tee` (`padb_run.py`). This means:
-- Partial output is preserved even if the process crashes.
-- Task Scheduler overnight runs (no console) still produce a log.
-- Multiple runs accumulate separate log files — they do not overwrite each other.
-
-**Correction (2026-08-19):** this section previously claimed the tee was "line-buffered" — not true. `_Tee.write()` never calls `.flush()`, and when Python's stdout is piped (not a real terminal, e.g. the web app launching `padb_run.py` via `subprocess.Popen`), it defaults to *block*-buffered, not line-buffered — see "Web app job log now shows live progress" below for the real bug this caused and its fix.
+- **Selectable x-axis / secondary numeric dimension** — a pod with a genuine second swept numeric column can't expose it (full selectable x-axis = big rework; or expose as a filter dimension). Revisit when it recurs.
+- **Intelligent test-point reduction** (scoped, gated on a loadable per-instrument-family **band-edge config** — JSON keyed by family, resolved config-style, hard-preserving hardware band breaks). Importance-weighted keep (band breaks / spec transitions / fails+outliers / local extremes), condition-aware with floors, display-vs-stats split (never silently thin the stats path). Complementary to the parquet viewer. See `project_testpoint_reduction` memory.
+- **PDF report CDP "protocol error"** on a ~46 MB compare page (see PDF report section).
 
 ---
 
-### Future work identified
+## Dev-environment gotcha: Claude desktop won't launch ("Another program is currently using this file")
 
-- **TODO — PDF report "protocol error" on a very large compare page (reported 2026-09-15).** `compare_SR_vs_AMC_Relative_Frequency_Sweep_OAtten_Power_Per_DUT_GreaterThan_minus90dBm_v2_job.json` logged a **protocol error while outputting to PDF**. That compare's pages are ~46 MB (per the size survey), and the comprehensive PDF builder (`padb_pdf_report.py`) drives headless Chromium via CDP + `page.pdf()`; a "protocol error" is the CDP channel dropping mid-`page.pdf()` — almost certainly the renderer OOM/crashing on an oversized page, the same giant-page class as the `_warn_if_view_too_large` 80 MB backstop and the parquet/viewer path. The builder is already crash-hardened (fresh page per view + browser relaunch on crash → skip that view), so the *report* should still complete with the offending view skipped — but the protocol error surfaced, so either the relaunch/skip didn't catch this particular failure mode or it wasn't logged cleanly. **Next:** reproduce on that job with `--pdf-report`, confirm whether the report still finishes (offending view skipped) or dies; make the `page.pdf()` call catch a CDP protocol error the same way it catches a renderer crash (relaunch → skip → `! <view>: ... (skipped)`), and consider gating per-view PDF rendering by the same size threshold that already warns (skip the print for a view over the limit, since a 46 MB page won't print meaningfully anyway — point at the parquet/viewer instead). Fail-safe: a PDF failure must never fail extraction/plot/publish (it's already wrapped in try/except → `_log_note`, so the *build* wasn't broken — this is about the PDF itself).
-- **TODO — Intelligent test-point reduction for large datasets** (scoped with the user 2026-09-14; NOT built — gated on the band-edge config below). A workflow recommendation + reducer that shrinks the number of per-CSV-row test points for a large dataset, **importance-weighted** rather than a flat percentage. Design agreed with the user:
-  - **Keep-value per point** (drop the lowest-value redundant interior points to hit a target %): hard-preserve **hardware/calibration band breaks** (never decimate across one), **Spec/Limit/Uncertainty transitions** (already detected via `getSpecSegments`/segment boundaries), **spec fails + flagged outliers** (never drop a fail/outlier), and **local extremes / high gradient** (Douglas–Peucker / min-max envelope — `_decimate_dense_series` already does the envelope part). Low value = redundant interior points in flat regions.
-  - **Condition-aware + floors:** reduce per `(condition × DUT)` series independently, with a floor (≥K points per condition per band) so no condition/band loses coverage.
-  - **Display/handoff vs. stats path — the critical rule:** reducing points changes the tolerance-interval / spec-derivation math. Reduce freely for *display/file-size* (envelope decimation already does this for scatter); for the *stats/TI path* do **not** silently reduce — keep all points, except (a) collapse exact-duplicate repeat runs (already implemented in boxplot) and (b) an *explicit, documented* reduction that keeps the original and records which rows were dropped and why (traceability). Never thin the source-of-truth CSV silently.
-  - **Optional weighting:** up-weight points where repeat runs disagree (a noisy repeat is worth keeping).
-  - Complementary to the parquet + `padb_viewer.py` path (which avoids reduction entirely by serving decimated slices server-side) — reduction is for when a smaller **self-contained** artifact is specifically wanted.
-- **TODO — Comprehensive build-time PDF report (multi-view)** (scoped with the user 2026-09-14; interactive per-view version DONE — see below). The interactive print-to-PDF report (`_afGenerateReport`, boxplot + stat_summary) captures snapshots of *its own* page only (current view + per-band + marginal-reveal), because each view is a separate self-contained HTML page and can't `Plotly.toImage` another page's plot. A **comprehensive** report — one document with the *right* plots from *all* views (e.g. a Room stat/box plot by band + a ΔEnv plot for temperature data + distribution), workflow-aware — needs to be built **server-side at plot-build time** (`padb_v2.py`, rendering each view statically). Note it documents the *recommendation/analysis*, not a live browser GF session (GF is browser-local), so it's a different artifact than the interactive "export what I just clicked" report. User wants it *later*; interactive first (done).
-- **TODO — Loadable per-instrument-family band-edge config** (scoped with the user 2026-09-14; prerequisite for the reducer above). A JSON the tool loads at build time, keyed by instrument family / pod, listing hardware/calibration band-edge frequencies (+ x-axis + a match tolerance) so the reducer can hard-preserve breaks. Must be **loadable across multiple instrument families** (the user's requirement) — follow the established config-resolution pattern (`padb_sites.json` / the `qa_view_sweep.json` manifest): resolved in priority order (explicit path → per-user Padb dir next to `padb_config.json` → next to the tool), with a documented schema so another family drops in their own file with no code change. The data alone cannot tell the tool where hardware band breaks are — this config is that missing input.
-- ~~**Config-driven coverage set for `qa_view_sweep.py`**~~ — DONE 2026-09-03. `qa_view_sweep.py` now loads its coverage list from a `qa_view_sweep.json` manifest (list of `{label, glob(s), needles?}`) — resolved in priority order: explicit `--manifest PATH`, then the per-user Padb dir (next to `padb_config.json`, via `padb_config.CONFIG_PATH.parent`), then next to the script — falling back to the built-in `_DEFAULT_JOBS` (this workstation's pod globs) when none exists or the manifest is invalid/unparseable (warns and continues). `--write-manifest [PATH]` emits the built-in set as a starter file for another group to edit. So each group maintains their own coverage set (their pod names + expected needles) without touching the script. The generic checkers (`padb_csv_check.py`/`qa_padb.py`/`qa_js_segments.py`) and `qa_csv_sweep.py --root` were already fully portable; the core run-job/plot pipeline is path-agnostic via job.json + per-user `padb_config.json`.
-- ~~**Live "Show all points" toggle on the scatter view**~~ — DONE 2026-09-14. Opt-in `"scatter_decimate_toggle": true` (`_build_av_freq_html`): embeds the **full** point set (deliberately skips the build-time server decimation -- the two are mutually exclusive) and emits `SCATTER_DECIMATE_TOGGLE`/`DEC_THRESHOLD`/`DEC_TARGET`/`DEC_PARTITION_COLS`/`DEC_LOG_X_DEFAULT` constants + a **Show all points** checkbox. `_AV_FREQ_JS`'s `_decimateClient()` is a JS port of `_decimate_dense_series` (partitions by `DEC_PARTITION_COLS`, buckets each dense series along Frequency_MHz -- log-spaced when Log X is on -- keeping each bucket's min & max Value + the series' first/last-x rows). `buildTraces()` draws the envelope by default and every raw point when the box is ticked; `filtered` is left intact so the spec mask and data-rows table still see all rows. State persisted (`show_all_pts`). An amber "Fast render" banner explains it. Distinct from the size-shrinking build-time `scatter_decimate` (which stays the default; this toggle is for the "page size is fine, I just want a fast default with an on-demand full view" case). Verified in-app-browser: 40,000 pts embedded → 6,004 plotted decimated (spike preserved) → 40,000 with Show-all → 6,004 restored. Server contract pinned in `qa_regressions.py` (`test_scatter_decimate_toggle`, 37/0).
-- ~~**Extend Site Population Check to `env_coverage` and `distribution`**~~ — DONE 2026-09-13. Both wired via a shared, view-agnostic panel (`_SITE_PANEL_SHARED_JS`: `_spFence`/`_spTriage`/`_spRender`/`_spCsv`), each supplying only its own point-gathering + a **selectable fence basis** (env_coverage: Room baseline vs ΔEnv drift; distribution: Absolute vs ΔTemp) and a live k. See "Site Population Check extended to env_coverage + distribution" below. The **older** note (kept for context):
-- **[superseded] TODO — Extend Site Population Check to `env_coverage` and `distribution`** (plot-type-review item 4, deferred 2026-09-03 at user's request; involved, not started). The cross-site fence-membership panel currently lives only in `boxplot`/`stat_summary`/`summary`. Template to copy: `_STAT_SUMMARY_JS`'s `toggleSitePanel`/`updateSitePanel`/`_siteFence`/`_siteTriageTag`/`_siteTowardFailDir`/`saveSitePopulationCSV` (~lines 6012–6293) plus the server-side gating (`site_compare_enabled`/`coverage_gap_html`/`PRIMARY_SITE` constant/`site_btn_html`, ~7005–7075 and ~7427–7440). Only `updateSitePanel()`'s point-gathering is per-view; the helpers are view-agnostic. Notes when picked up: (a) **distribution** is the natural fit — per `(temp, freq)` fence on the abs values in `RAW_ABS` (like boxplot); the per-point raw Group is already available as `.g` (added for GF 2026-09-02), so site can be parsed from it (`Site: <name>`) rather than adding a new per-point field; neither `_build_env_distribution_html` nor `_build_env_coverage_html` currently extracts `_site`/`PRIMARY_SITE` or a coverage-gap banner, so that plumbing is new. (b) **env_coverage** has a genuine semantic choice to confirm with the user first — its data is ΔEnv (temperature deltas), not raw values, so the sensible "population" to fence on is the per-DUT **Room** value per frequency (Room-only, mirroring stat_summary), not the deltas. (c) The real Close-In compare dataset has no serials, so the per-DUT/frequency-cluster triage degrades to a plain OUTSIDE count there — verify against a with-serial compare (e.g. `MaxPowerTutorial2` SR-vs-AMC2) for the full triage.
-- **Parallel scatter overlay on stat_boxplot:** ✅ Implemented. `vals_detail: [{s, v}]` is embedded in `BOX_DATA` for every freq_stat entry (no second CSV needed). "Show points" checkbox in the filter bar overlays per-DUT scatter points (size 5, opacity 0.55) on the boxes. Respects serial and Y-range filters via the `vals_detail` field on `fs` entries. Outlier traces still use `circle-open` markers; scatter points use filled circles for visual distinction.
-- ~~**Remove dead `de_summary`**~~ — DONE 2026-09-03 (dead static duplicate removed; single interactive definition remains).
-- ~~**`env_coverage_y_label` job.json key documented but not wired**~~ — DONE 2026-09-13. `render_env_coverage` now reads `cfg.get("env_coverage_y_label", "ΔEnv (dB)")` (default unchanged); drives the Y-axis title and the site-panel ΔEnv-drift label. See the `x_label`/`x_unit` section above.
-- **`de_summary`/`stat_boxplot`'s non-interactive branch don't have `x_label`/`x_unit`** — only the six V2-pipeline-relevant view builders (`scatter`, `stat_summary`, `boxplot` interactive path, `distribution`, `env_coverage`, `summary`) were updated. Add if a future pod needs a non-MHz axis through the V1 `de_summary` or `stat_boxplot(interactive=False)` paths.
-  - **Correction (2026-08-10):** this claimed the interactive `boxplot` path already had `x_label` — it didn't. `_build_box_interactive_html` had `x_unit` but no `x_label` parameter at all, and `_stat_boxplot_interactive` (its caller) never read `x_label` from `cfg` either. Fixed the same day as the two bugs below — see that section.
-
----
-
-## Real bugs found on a real complex multi-analytic pod (2026-08-10)
-
-Found while plotting `AmplitudeAccuracyClosedLoop_PADBToolTest` (5 Type=80 analytics, one with a non-frequency x-axis, one with 2,388 distinct Group values, one a 1.26GB CSV).
-
-**1. Segment-tab stepping stuck on segment 0 for real (non-round) sweep data.** `_recomputeSpecSegments()`'s index-recovery loop compared the freq textbox value (rounded to 3 decimals via `.toFixed(3)`, see `setFreqBand`) against each segment's *unrounded* `.lo` boundary. For synthetic/round test data this never mattered; for a real instrument sweep (segment boundary `10.107422`, textbox shows `"10.107"`), `10.107 >= 10.107422` is false, so the lookup always fell back to index 0 — Prev/Next appeared completely broken (`_segIdx` never advanced) even though `setFreqBand()` itself was correctly moving the frequency window every click. Fixed by rounding the segment boundary to the same 3 decimals before comparing (`parseFloat(_specSegments[i].lo.toFixed(3))-1e-9`), across all 7 duplicated copies. Verified end-to-end: 5 consecutive Next clicks now advance `_segIdx` 0→1→2→3→4 with matching real frequency ranges, not just improved unit-test coverage.
-
-**2. "Freq min:"/"Freq max:" control labels never followed `x_label`.** The unit suffix and slider range correctly reflected an `x_label`/`x_unit` override (e.g. a job configured for `"x_label": "Amplitude (dBm)"` correctly showed a `-120` to `25` `dBm` range) — but the label text itself was a hardcoded literal `"Freq"` string in every one of 6 view builders, independent of any override. A pod whose real x-axis is Amplitude showed "Freq min: [-120.000] dBm", which is actively misleading, not just cosmetically inconsistent. Fixed by adding `_short_x_label(x_label)` (derives e.g. `"Amplitude"` from `"Amplitude (dBm)"`, preserving the literal `"Freq"` wording for the default `"Frequency (MHz)"` case so no existing pod's label text changes as a side effect) and using it in place of the literal `"Freq"` in `_build_av_freq_html` (scatter), `_build_env_distribution_html` (distribution), `_build_stat_summary_html`, `_build_env_coverage_html`, `_build_box_interactive_html` (boxplot — needed a new `x_label` parameter threaded from `_stat_boxplot_interactive`, since it never had one), and `_build_summary_html`. Deliberately **not** touched: the legacy `distribution()` function (V1, hardcodes `&nbsp;MHz` with no `x_unit` support at all — same pre-existing exclusion boundary as `de_summary`) and `_build_env_summary_html`/`_ENV_SUMMARY_JS` (the `de_summary`-equivalent legacy path) — both already excluded from the original `x_label`/`x_unit` rollout, not newly excluded here.
-
-**3. A genuine second swept numeric dimension is silently pooled with no way to isolate it.** Neither bug — just a real design gap surfaced by this pod: `Relative_Frequency_Sweep_Vernier_Power_Per_DUT`'s CSV has a real `Amplitude (dBm)` column with 46 distinct values (the sweep was repeated at 46 different amplitudes), and `Relative_Amplitude_Sweep`'s CSV has the mirror-image `Frequency (MHz)` column with 12 distinct values. Neither is the detected x-axis, neither is `Group`-text, so neither is exposed anywhere — the tool has no concept of a second numeric sweep/condition column at all; it silently pools every value of it together. Not fixed (bigger design decision, not a quick patch) — see **Open question: selectable x-axis / secondary numeric dimension** below.
-
-**4. "Extra segments" on `Absolute_Accuracy_PM`/`Absolute_Accuracy_NA` traced to per-DUT/per-Port inverted spec rows, not dimension pooling.** User reports: PM scatter showed 14 segments where ~7 were expected ("Segment 6 of 14 ... why 8 more segments?"), and NA boxplot showed the same pattern (19 segments). First hypothesis — that a sparse `Amplitude (dBm)` calibration condition (value `0`) was pooling with the real sweep (value `15`) via `getSpecMaskByKey`'s tightest-wins and producing isolated single-point segments — was **wrong**: direct row inspection showed `Amplitude (dBm): 0` covers 100% of frequencies (1,145 of 1,145), not a sparse few, so it isn't a pooling artifact at all. The real cause, found by inspecting the actual rows at the "extra" segment frequencies: in `Absolute_Accuracy_PM.csv`, **one single Serial Number (`US65080433`) has Upper Spec/Limit `<` Lower Spec/Limit across its entire dataset** — all frequencies, both Amplitude conditions (2,186 of 37,024 rows, 5.9%) — a per-DUT data-entry/labeling issue in the pod, not a padb-tools bug (same category as prior NPI-era anomalies: describe factually, let the user adjudicate — see `feedback_npi_data_anomalies` precedent). In `Absolute_Accuracy_NA.csv` the same inverted-value pattern exists (2,174 of 21,722 rows, 10.0%) but concentrated differently — by `Port: RF1` and `Lower/Upper Uncertainty: 0.04` (Serial is blank for this analytic, so the per-DUT lens doesn't apply here). Both cases: `getSpecMaskByKey`'s tightest-wins pooling is working correctly on bad input data, faithfully surfacing every distinct (often-conflicting) Spec/Limit combination as its own segment. Led directly to the Help panel feature below, which surfaces this exact check automatically instead of requiring a manual investigation each time.
-
----
-
-## QA toolchain — see `QA_GUIDE.md` (added 2026-09-08)
-
-The full QA story (how to test a change with minimal PADB runs, each script, a full-pass recipe, the pod-variety coverage matrix, portability) lives in **`QA_GUIDE.md`**. Quick map of the standalone gates: `qa_selfcheck.py` (umbrella baseline-delta gate: compile + qa_padb + qa_viewer + qa_js_segments + qa_stats_recompute + qa_webapp vs `qa_baseline.json`, GREEN/RED/AMBER), `qa_padb.py` (synthetic regression baseline, 37/4), `qa_stats_recompute.py` (independent numpy/scipy recompute of the aggregations — the uniformly-wrong blind spot, 43/0), `qa_webapp.py` (hermetic Flask test-client route coverage, 45/0), `qa_regressions.py` (per-fix regression pins for the pure Python helpers, 34/0), `qa_js_segments.py` (per-view `getSpecSegments` drift guard), `padb_csv_check.py` (pre-flight one CSV/job — below), `qa_csv_sweep.py` (that check across every CSV under `--root`; x_col-aware, skips tool intermediates), `qa_view_sweep.py` (rebuild real jobs into a temp dir + headless-verify each view renders; portable via `--root`/`--job` and a per-user `qa_view_sweep.json` coverage manifest). All take `--root`/`--job` so other groups run them on their own data.
-
-## `padb_csv_check.py` — pre-flight CSV sanity check (added 2026-08-10)
-
-Standalone script, run **before** `padb_v2.py`, that would have caught all three findings above (well, #1 and #2's root causes, and directly warns about #3) before spending time on a slow or wrong build. Deliberately does not re-implement any column-detection logic — it calls `padb_plots._load_scatter_for_stats()` directly (the exact function `padb_v2.py` itself uses via `load_scatter()`) and inspects what it actually picked, so the check can never drift out of sync with real pipeline behavior.
-
-```
-py padb_csv_check.py <csv_path> [--x-col "Exact Column Name"]
-```
-
-Checks, in order:
-1. **Load success** — if `_load_scatter_for_stats` returns 0 rows, reports it as a FAIL with the same guidance the loader's own `[WARN]` gives (set `x_col`).
-2. **Orphaned numeric columns** — any numeric CSV column that isn't the detected x-axis, value, or a Limit column, and isn't `Group`/`Test Step`/known metadata. Flags with extra emphasis when the orphaned column has *more* distinct values than the detected x-axis (the exact `Relative_Amplitude_Sweep` scenario — Frequency auto-detected as x-axis with only 12 values, while the *real* x-axis, Amplitude, has hundreds and was sitting right there unused).
-3. **Raw-vs-usable row count** — reports the drop rate from `dropna(subset=["Frequency_MHz","Value"])`, since this exact number (807,136 of 4,254,039, 81%) is easy to be alarmed by if you only ever see it later in `padb_v2.py`'s own terminal output with no context for whether it's expected.
-4. **Group cardinality** — warns above 100 (crowded legend, "Group by" recommended) and above 500 (real combinatorial slowness — a 2,388-condition analytic took ~19 minutes to build boxplot/stat_summary).
-5. **Grouping-item presence** — Serial (checked via *both* a dedicated CSV column and a Group-text key, since most real pods embed Serial in Group text only — see `PADB_Analytic_Requirements.md` §7), Port, Upper/Lower Limit, Upper/Lower Spec/Uncertainty (needed for full 3-way Segment-by).
-6. **Temperature coverage** — Room-only vs multi-temp, since that silently determines whether distribution/env_coverage/summary get built at all.
-
-Exit code 1 on any WARN or FAIL (matches `qa_padb.py`'s convention), so it's usable as a pre-flight gate in a script, not just an interactive read.
-
----
-
-## In-page "Help" panel — surfaces inverted spec/limit rows (added 2026-08-10)
-
-`_build_help_panel_html(df, dims, ...)` in `padb_plots.py` builds a collapsible &#9432; Help button. Wired into all 6 main views as of 2026-08-10: `_build_av_freq_html` (scatter), `_build_box_interactive_html`/`_stat_boxplot_interactive` (boxplot), `_build_stat_summary_html` (stat_summary), `_build_env_distribution_html` (distribution), `_build_env_coverage_html`/`render_env_coverage` (env_coverage, computed in `padb_v2.py` since that builder only receives `cond_dims`, not `df`), `_build_summary_html`/`render_summary` (summary, same reason). Deliberately **not** wired into `_build_env_summary_html` (the `de_summary`-equivalent legacy path, same pre-existing exclusion boundary as the `x_label`/`x_unit` rollout above).
-
-Not every view shares the same filter-widget CSS/JS or controls, so the function is parameterized rather than one hardcoded snippet:
-- `has_group_by`/`has_segment_by` drop the matching explanatory bullet when a view has no such control (`distribution` has no "Group by").
-- `btn_class`/`panel_class`/`toggle_fn`/`panel_id`/`wrap_class` plug in a view's own filter-widget naming. Five views share `filter-btn`/`filter-panel`/`togglePanel`/`panel_help`/`filter-wrap`; `distribution` uses its own `dist-filter-btn`/`dist-filter-panel`/`toggleDistPanel`/`dist_panel_help`/`dist-filter-wrap` convention and was wired accordingly.
-  - **Bug found and fixed same day**: the initial version only parameterized `btn_class`/`panel_class`/`toggle_fn`/`panel_id` — the outer wrapper `<div>` was hardcoded to `class="filter-wrap"` regardless. `distribution`'s page never defines `.filter-wrap` (only `.dist-filter-wrap`, which supplies the `position:relative` the popup panel anchors to), so the button rendered and was clickable but the panel had no positioned ancestor to open relative to — reported by the user as "no active help button" on a real generated page. Fixed by adding `wrap_class` and passing `"dist-filter-wrap"` at distribution's call site; verified by simulating an actual click in headless Chromium (`panel.classList.contains('open')` false→true, wrapper's `getComputedStyle().position === 'relative'`), not just by checking the class name appears in the HTML.
-- `env_coverage`/`summary`/`boxplot` don't receive raw `df` in their HTML-builder function (only pre-aggregated data) — `help_panel_html` is computed one level up, in the function that *does* have `df` (`render_env_coverage`/`render_summary` in `padb_v2.py`, `_stat_boxplot_interactive` in `padb_plots.py`), and threaded down as a plain `help_panel_html: str = ""` parameter, matching the existing `tll_selector_html`-style convention already used in this codebase for pre-rendered HTML snippets.
-
-Two parts:
-1. **Static explanation** of what Filter dropdowns / Group by / Segment by actually do, and how an unfiltered dimension can pool into segments.
-2. **Dynamic inverted-row check** — flags rows where `Upper_Limit < Lower_Limit` or `Spec_Hi < Spec_Lo` (backwards from the usual convention), and names which filter-dimension value(s) the inverted rows are concentrated in (checks every dimension in `dims` plus `Serial` if present, using a >=90%-of-inverted-rows threshold to name the real culprit rather than every dimension the bad rows happen to also have a value for).
-
-**Design history worth keeping**: the first version of this check used row-share percentage ("flag any filter value covering <10% of rows") instead of the inverted-row check. Looked plausible but was wrong on real data — it false-flagged every normal high-cardinality dimension (all 17 Serials in the PM data, each ~5.8-6.1% of rows; all 17 distinct Limit values) while completely missing the real `Amplitude (dBm): 0` hypothesis (which turned out to be wrong anyway, see bug #4 above) since that condition actually covers 100% of frequencies, not a sparse few. Replaced with the targeted inverted-Upper/Lower check once the real anomaly was found by direct row inspection — a lesson in verifying a heuristic against real generated output before trusting it, not just checking that it renders.
-
----
-
-## Hover-template "Freq" leaked through on non-frequency x-axes (fixed 2026-08-10)
-
-The 2026-08-10 `_short_x_label()` fix (finding #2 above) only touched the human-readable control *labels* ("Freq min:"/"Freq max:"). It missed Plotly `hovertemplate` strings, which are built separately and still hardcoded the literal word `"Freq"` — so hovering over any point on an Amplitude-axis page showed "Freq: -45.2 dBm" instead of "Amplitude: -45.2 dBm". Caught by the user directly reading a hover tooltip on `Relative_Amplitude_Sweep_scatter.html`. Fixed the same way as the control labels: added a JS constant `var X_SHORT_LABEL=...;` (from `_short_x_label(x_label)`, computed server-side) next to each view's existing `X_LABEL`/`X_UNIT` JS constants, then used `+X_SHORT_LABEL+` in place of the literal `'Freq'` in every hovertemplate. Fixed in: `_build_av_freq_html` (scatter, 1 site), `_STAT_BOXPLOT_INTERACTIVE_JS` (boxplot's real embedded JS module — see below for how that's wired — 2 sites), `_SUMPLOT_JS` (summary's embedded JS module, 4 sites, which also hardcoded a literal `" MHz"` unit alongside "Freq" — fixed to use `+X_UNIT+` too). Deliberately **not** touched: `stat_boxplot`'s `interactive=False` branch (confirmed dead code — `padb_v2.py` always calls `interactive=True`) and the legacy `accuracy_vs_freq`/`de_summary`/`de_heatmap` V1 functions (same pre-existing exclusion boundary as everywhere else in this doc).
-
-**Module-level JS string constants, and why line numbers lie about which function "owns" a line**: this file defines several giant JS blocks as *module-level* constants (`_AV_FREQ_JS`, `_STAT_SUMMARY_JS`, `_ENV_SUMMARY_JS`, `_ENV_COVERAGE_JS`, `_STAT_BOXPLOT_INTERACTIVE_JS`, `_SUMPLOT_JS` — all `_SOMETHING_JS = r"""..."""` at column 0), physically positioned *between* two `def` blocks in the file but not inside either one. A "what's the nearest preceding `def`" heuristic (e.g. `awk 'NR<=N && /^def /'`) will confidently misattribute a line inside one of these constants to whatever function happens to be lexically above it — which is exactly what happened while investigating this fix: a hovertemplate at "line 8133" looked like it was inside `stat_boxplot`'s dead `interactive=False` branch (plausible dead-code bug), when it was actually inside `_STAT_BOXPLOT_INTERACTIVE_JS` (7803–9932, module level), the real JS embedded by `_build_box_interactive_html`. Always confirm with `grep -n "^_[A-Z_]*_JS = r"` (or `^def `) and compare *both* sets of line numbers before trusting a "which function is this in" judgment in this file.
-
-## Segment-tab "stuck at the last segment, can't go back" — same-boundary tie in the index-recovery loop (fixed 2026-08-10)
-
-User report: on `Absolute_Accuracy_NA_boxplot.html`, tabbing forward to segment 19 (the last one) and then clicking Prev repeatedly did nothing — stuck on the same segment. User's own diagnosis ("processing order issue") was correct.
-
-Root cause: `segTab(dir)` computes the new `_segIdx` from the *old* `_specSegments` array, writes that segment's `.lo`/`.hi` into the Freq-range textbox(es), then calls `update()` → `_recomputeSpecSegments()`, which **recomputes `_segIdx` from scratch** by scanning for the highest-indexed segment whose `.lo` is `<=` the just-written textbox value (`_recomputeSpecSegments()`'s own index-recovery logic exists so that changing a *filter*, not just tabbing, keeps you near the same frequency). This round-trip is lossy whenever two segments share the same `.lo` — which happens for real on this data: consecutive single-point "spike" segments at the same frequency (e.g. two rows for the same frequency with conflicting Upper/Lower Spec — see finding #4's inverted-row anomaly) produce segments like `20000.000–20000.000` back-to-back. Writing `_segIdx=18`'s `.lo` into the textbox, then re-deriving `_segIdx` from that value, always resolves to the *last* segment with a matching `.lo` — segment 19 again — so Prev from 19 silently snaps right back to 19 every time.
-
-Fixed by adding a `_segIdxPinned` flag (declared alongside `_specSegments`/`_segIdx`): `segTab()` sets it to `true` right after computing the intentional new `_segIdx`; `_recomputeSpecSegments()` checks it first and, if set, trusts the already-correct `_segIdx` (just clamping it back into bounds in case the segment count changed) instead of re-deriving it from the textbox — clearing the flag afterward so a real filter change still gets the normal recovery behavior. Applied to all 7 duplicated copies of this segment-tab machinery (scatter, distribution, stat_summary, env_coverage, boxplot, summary — matching the same 7x duplication already tracked for the precision fix in finding #1). Verified end-to-end on the real NA boxplot page: 25 consecutive Next clicks correctly clamp at segment 18 (0-indexed, 19 total), then 3 consecutive Prev clicks correctly decrement 18→17→16→15.
-
----
-
-## Open question: selectable x-axis / secondary numeric dimension (raised 2026-08-10, undecided)
-
-Two analytics in the same real pod each have a genuine *second* swept numeric column the tool currently can't expose at all (see finding #3 above). Two options discussed, not yet decided:
-
-- **Full selectable x-axis**: embed both numeric columns per point, add a client-side selector, and rework every x-axis-dependent piece of JS (segment-tab boundary detection, frequency-range filtering, all of boxplot/stat_summary/env_coverage's frequency-keyed aggregation) to work generically instead of assuming `Frequency_MHz`. Real architecture change, not a quick patch.
-- **Expose as a filter dimension instead** (smaller, faster): treat the secondary numeric column like `Port`/`Serial` — a checkbox filter, not a swappable axis. Doesn't let you flip the axis, but lets you isolate one value of it (e.g. "just the 14 dBm sweep"). For genuinely discrete repeated-value columns (46 distinct amplitudes here, not a second continuous co-sweep), this may be the better philosophical fit anyway, not just the cheaper one.
-
-No pod has needed this until now — revisit if/when it comes up again, with a real preference for which of the two (or both) actually matters in practice.
-
----
-
-## Cross-site comparison (`compare_csv` job.json key) + boxplot "Site Population Check" (added 2026-08-19)
-
-Implements the design from `project_site_comparison_feature` memory: comparing Santa Rosa (SR) vs. a second site (e.g. AMC2) without hand-merging CSVs. Deliberately built to tolerate "less than perfect" cross-site data (mismatched columns, one site missing spec limits entirely, different Group dimensions) rather than requiring both sites' extractions to line up first — confirmed by design decision, not an oversight.
-
-**Mechanism, exactly as the memory proposed:** `padb_v2.py`'s new `_build_compare_csv()` reads each site's own scatter CSV as plain strings, appends `"  Site: <name>"` onto every row's raw `Group` text, `pd.concat()`s them (column-union, so mismatched schemas don't crash — a site missing a column just gets `NaN` there), and writes the merged result to `results_dir/_compare_merged.csv`. That merged file is then handed to the *exact same* single-CSV pipeline every other job already uses — no changes to `load_scatter()`, `generate_report()`, or any view's rendering code. "Site" becomes a normal `Group`-text key, so every existing filter/Group-by/spec-detection function already treats it as just another condition dimension, for free.
-
-**job.json keys:**
-```json
-"compare_csv": {"SR": "path/to/sr.csv", "AMC2": "path/to/amc2.csv"},
-"primary_site": "SR"
-```
-`compare_csv` overrides `csv_path`/`--csv` resolution entirely when present (2+ site names required). `primary_site` defaults to the first key when omitted — it's the population the boxplot membership check (below) treats as the reference; has no effect on any other view.
-
-**Coverage-gap intersection policy, per David's explicit decision (2026-08-19):** rather than hiding non-shared conditions or restricting the UI to only the intersection, the existing per-dimension checkboxes already express the intersection naturally once Site is just another dimension — e.g. AMC2-only data being Room/RF1-only just means its own condition rows never populate the 20°C/30°C or RF2 checkboxes' data, with zero special-case code needed. What *is* new: `_stat_boxplot_interactive()` computes an explicit **coverage-gap note** (Temperature, Port, and every other real `cond_keys` dimension except Site itself) listing what one site has that another doesn't, e.g. `"AMC2 has no Temperature data for: 20°C, 30°C | AMC2 has no Port data for: RF2"` — rendered as an always-visible amber banner (not a togglable panel) right above the plot, so a viewer can decide whether the gap means "AMC2's pod/test-plan needs widening" without it being silently invisible. Computed once server-side (Python, via `df.groupby("_site")`), not live/filter-dependent, since it describes the whole dataset's coverage, not the current view's filter state.
-
-**Boxplot "Site Population Check" — the SR-population-membership metric David asked for, per-(DUT, frequency) detail (his explicit choice via AskUserQuestion):** a new toggle button/panel, gated entirely on whether `primary_site` is set and a `Site` dimension with 2+ values is actually present (so this is a complete no-op — no button rendered at all — for every existing non-comparison job). Reuses the *exact* fence machinery already on the page for its own within-dataset outlier detection (`computeBoxStats()`, the live `k×IQR` control) rather than inventing a separate statistical method:
-- For the currently active filter set (condition dims, serial, port, temp checkboxes, GF), buckets every primary-site point by `(temp, frequency)`.
-- For every non-primary-site point at that same `(temp, frequency)`, builds the primary site's fence (`Q1 − k·IQR`, `Q3 + k·IQR`) from its own bucket and reports inside/outside — skipping (labeled `n/a`, not silently dropped) whenever the primary site has fewer than 4 points at that exact `(temp, frequency)`, since a Tukey fence isn't meaningful below that.
-- Table sorted OUTSIDE-first, with a one-line summary count up top; OUTSIDE rows get the same orange "needs attention" flag used everywhere else in this codebase (GF badges, stale-refresh buttons, spec-override cells).
-- Hooked into `update()` like every other panel (auto-refreshes while open, no-ops instantly when the panel is closed — same convention as `updateOutlierPanel()`/`updateDeltaOutlierPanel()`).
-
-**Verified end-to-end against real data**, not synthetic: `MaxPowerTutorial2_run_results` (SR, 13 DUTs, 2 ports, 3 temps, real spec) merged with `MaxPowerTutorial2-AMC2_run_results` (AMC2, 8 DUTs, Room-only, RF1-only, zero spec limits in the CSV at all) via a throwaway test job.json. Confirmed: merged-and-loaded row count (12,358) exactly equals SR's real-value row count (9,686) plus AMC2's (2,672) — no rows silently dropped or double-counted across the merge. `Site` correctly appeared as a real `COND_DIMS` entry (`["AMC2", "SR"]`). The coverage-gap banner correctly flagged AMC2's missing Temperature/Port coverage. The existing "fill missing Upper/Lower_Limit from per-condition modal spec" step (`load_scatter()`, pre-existing, unrelated to this feature) correctly left AMC2's rows unfilled rather than incorrectly inheriting SR's spec across the Site boundary — confirmed by the exact AMC2 row count (2,672) appearing in that step's own "N null values remain unfilled" warning, i.e. the existing fallback logic already respects the Site boundary with no changes needed. The Site Population Check panel, driven headlessly (simulated click + DOM dump), correctly computed **135 of 2,672 AMC2 points falling outside the SR fence** at their own frequency, with full per-DUT detail (serial, port, temp, frequency, value, fence bounds, verdict) — a real, meaningful result, not a stub. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
-**Real bug found and fixed the same day, verified against a second, richer real dataset (`ClockSpurs_PADBToolTest` vs `ClockSpurs_PADBToolTest-AMC2`, 181,548 + 24,843 rows, 5-level spec staircase):** the coverage-gap banner's first version compared Group-text dimension values as raw strings across sites, and produced false-positive gaps for any numeric value the two sites' own PADB extractions happened to format with different trailing precision — confirmed real: SR's CSV writes `Upper Spec (<=): -100.00`, AMC2's writes `-100` for the identical spec value, so the banner claimed both "SR has no Upper Spec data for: -100, -76, -82, -88, -94" *and* "AMC2 has no Upper Spec data for: -100.00, -76.00, -82.00, -88.00, -94.00" — the same 5 values, falsely flagged as gaps on both sides at once. Fixed with `_norm_val()`: values are compared as `round(float(v), 6)` when they parse as numbers (falling back to plain string comparison for genuinely non-numeric dims like `SpurType`), with one representative display string per normalized value chosen arbitrarily from whichever site's row happened to supply it first (doesn't matter which, since post-normalization they're the same value). After the fix, the banner correctly shrank to just the 2 genuinely-missing AMC2 spec values (`-100.35`, `-65.00`) instead of falsely listing 12.
-
-**Second real-dataset verification, same session:** the Site Population Check panel, driven headlessly against this larger dataset, correctly computed **387 of 24,843 AMC2 points (≈1.6%) falling outside the SR fence** — SR fence populations at some (temp, frequency) buckets had `n=110` (this pod's much larger, more fragmented condition set pooling correctly), with full per-DUT/frequency detail rendered correctly. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL) after the fix.
-
-**Triage-hierarchy extension (added 2026-08-19):** David asked what should happen *after* a point is flagged OUTSIDE — sometimes it's an obviously bad DUT/station, sometimes it isn't, and he wanted to know if a hierarchy of importance could be intuited from the results. Also raised, independently: for an upper-limit-only spec like ClockSpurs, he hadn't previously thought about the *low*-side tail mattering (can't fail spec by being quieter), but reasoned it's still valuable since it shows the real per-frequency distribution shape, not just pass/fail.
-
-Reasoned through and implemented three signals, all computed from data the panel already had (no new statistical method):
-1. **Direction relative to spec** (`_siteTowardFailDir()`, reuses the page's own live `getTllDirection()` so it respects a manual TLL-direction override, not just the static `spec_direction` config) — for a one-sided spec, the side that moves *toward* failing is a compliance risk; the other side is a population difference that can't fail spec but can still indicate a calibration/fixture offset. Two-sided or unconfigured specs report both directions as plain deviations with no "which is bad" editorializing, since the codebase's own data-beats-config rule means it genuinely can't be inferred there.
-2. **Per-DUT rollup** — checked/outside/high/low counts, max deviation distance from the fence, and a `sharedCount` (how many of that DUT's outside points are *also* flagged for at least one other DUT at the exact same frequency).
-3. **Per-frequency clusters** — every `(site, temp, freq)` where 2+ distinct DUTs are simultaneously outside, sorted by DUT-count descending. Multiple independent DUTs failing at the identical spot is the strongest available signal for "station/fixture/calibration issue," not "bad DUT" — an isolated single DUT with no sharing is the opposite signal.
-
-`_siteTriageTag()` combines these into a plainly-labeled *suggestion* (never called a verdict, matching this codebase's "note it, don't fake a result" convention elsewhere): "Likely station/systemic" (majority of a DUT's outside points are shared) beats "Likely bad DUT" (toward-failing, not shared, 2+ points) beats "Isolated -- worth a look" (toward-failing, single point) beats "Below population (benign)" (away-from-failing) beats "Ambiguous" (direction unknown). Shared-with-others is checked first deliberately — missing a systemic issue and chasing individual DUTs instead is the more expensive mistake.
-
-**Real finding on the ClockSpurs SR-vs-AMC2 data, exactly the scenario this was built for**: every one of AMC2's 8 DUTs came back tagged "Likely station/systemic" (each DUT's `sharedCount` was 60-85% of its own outside-point count), and the frequency-cluster table showed dozens of frequencies with 3-7 of the 8 AMC2 DUTs simultaneously flagged (e.g. 735.01 MHz: 7 of 8). The overwhelming majority of the 387 outside points were on the *low* side (e.g. one DUT: 108 low vs. 5 high) — i.e. AMC2 reads systematically quieter than SR across many shared frequencies, not marginally worse. Read together, this is a textbook "site calibration/fixture offset" signature, not 8 independently bad DUTs — exactly the kind of next-step interpretation David was asking the panel to help make obvious rather than requiring him to reason it out by hand from a flat list. Verified headlessly (simulated click + DOM dump) against the real merged dataset. `qa_padb.py` baseline unchanged (37 PASS / 4 FAIL).
-
-**Known limitations, not yet addressed (surfaced by David's own "3 vs 8 DUTs" discrepancy during design, and by exploring real AMC2 data — see `project_site_comparison_feature` memory):**
-- **Updated 2026-08-21**: now wired into `boxplot`, `stat_summary`, and `summary` (see "Site Population Check extended to summary view" below for the third). `env_coverage` and `distribution` still have no dedicated site-comparison feature — they'll render fine against a `compare_csv`-merged dataset (Site is just a condition dimension to them too), just without the fence-membership panel. **Deferred as a TODO 2026-09-03** (plot-type-review item 4) — see "Future work identified" for the copy-from template and the per-view notes (distribution = abs-value fence per (temp,freq); env_coverage = Room-value fence, pending a semantic confirm with the user).
-- The membership check compares one non-primary point against the primary site's fence at the *exact* same frequency — it does not attempt to match frequencies that are close-but-not-identical between two sites' sweeps (a real, confirmed near-miss exists: SR's sweep has 335 distinct frequency points vs. AMC2's 334, one of which doesn't line up). A point at an AMC2-only frequency simply never finds a primary-site bucket and would fall through as `otherPoints` with an empty/absent bucket → `n/a`, not crash — but this hasn't been separately stress-tested against that exact near-miss frequency.
-- **Accidental publish during testing**: the throwaway verification job above had no `publish_to` override, so it inherited the default publish location and copied 2 files to the real `\\srsnas01...\padb-tools-results\compare_test_results` network share before this was noticed. Cleaned up (or flagged for cleanup) the same session — a reminder that any ad-hoc test job.json needs an explicit `"publish_to": ""` to stay local-only.
-
----
-
-## Site Population Check extended to `summary` view (added 2026-08-21)
-
-Ports the identical feature from `boxplot`/`stat_summary` (see above) to `render_summary()`/`_build_summary_html()` — a coverage-gap banner plus a Site Population Check panel, same per-DUT/frequency-cluster triage hierarchy.
-
-**Shape differs from boxplot's version in one real way, not a bug:** `summary`'s per-DUT data (`dut_vals[freq_idx][dut_idx]`) is each DUT's mean **blended across every temperature present in its condition** — this view has no per-temperature breakdown at all, unlike boxplot's raw per-point `vals_detail`. So the Site Population Check here compares each DUT's cross-temperature mean against the primary site's fence, not a single temperature's raw points. Documented explicitly in the panel's own hover text and summary line so it doesn't read as equivalent to boxplot's version when it isn't. No Port field exists in `dut_info` here either (only `{s: serial}`), so Port isn't shown in the per-point table on this view — same reason, less per-DUT detail is embedded than boxplot carries.
-
-Verified against real merged SR/AMC2 `MaxPowerTutorial2` data (81,006 rows merged, 2,672 non-primary points checked): 181 flagged outside the SR fence, with a sensible per-DUT triage breakdown (7 of 8 AMC2 DUTs tagged "Likely station/systemic"). Also confirmed the panel correctly reports "(Spec is two-sided or unconfigured here...)" rather than picking a direction, since the underlying CSV genuinely has both `Upper_Limit` and `Lower_Limit` populated — correctly deferring to this codebase's "data beats config" rule (a `spec_direction` override in job.json doesn't change this) rather than guessing. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Boxplot: deselecting every condition checkbox showed everything instead of nothing (fixed 2026-08-20)
-
-Reported directly against a real generated page (`SG6311A_ClockSpurs_PADBToolTest_boxplot.html`): "box plot filter type includes all spur types if none are selected."
-
-**Root cause:** `getSelectedConds()`'s longform-checkbox path (`_STAT_BOXPLOT_INTERACTIVE_JS`) had `return checked.length?checked:allConds;` — falling back to every condition whenever zero longform checkboxes were checked. Since all 151 longform checkboxes start `checked` by default (confirmed directly in the generated HTML), this fallback could only ever fire after a deliberate "deselect all" — at which point it silently undid that action and showed every condition instead of none. The per-dimension COND_DIMS dropdown path a few lines below it already did the right thing (0 selected on any one dimension naturally excludes everything via `indexOf() < 0`), so the two filter mechanisms disagreed about what "0 selected" means.
-
-**Fix:** return the checked list as-is, even when empty — matching the per-dimension path's existing behavior.
-
-Verified against the real 181,548-row/later 217,855-row ClockSpurs dataset: deselecting every longform checkbox now correctly returns 0 conditions and renders 0 box/spur traces (only the always-present, separately-toggled "Spec Hi" reference line remains). `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Boxplot: "Group by: Serial Number/Port" ignored the condition-dimension filter entirely (fixed 2026-08-21)
-
-Reported directly: "I deselected all the spur types but I still have plot data" — on the same ClockSpurs page, this time with **Group by** set to Serial Number (left over from testing the previous fix's GF-Inspect scenario).
-
-**Root cause:** `_computeBoxGroupedByColId()` — the shared function `buildPortSerialTraces()` (the plot) and the Statistics Table's Serial/Port-grouped branch both call, per the existing "Boxplot Statistics Table never respected Group by" fix earlier in this file — filters `BOX_DATA` by `selTemps` but never checked `selConds` at all. So whenever Group by was set to Serial Number or Port, every SpurType/condition got pooled into each DUT's/port's box regardless of which condition-dimension checkboxes were checked — a completely different, independently-discovered bug from the "deselect all" one above (that one was in the *ungrouped* per-condition path; this one is in the Serial/Port-grouped path, which is a structurally separate code branch).
-
-**Fix:** threaded `selConds` through `_computeBoxGroupedByColId()` → `buildPortSerialTraces()` → `buildBoxTraces()`'s existing call, and through the Statistics Table's own call to the same function, filtering by `if(selConds.indexOf(cd.condition)<0) return;` — identical to the check the ungrouped path already had.
-
-Verified against the real 217,855-row ClockSpurs dataset with Group by set to Serial Number: deselecting every condition now correctly drops to 0 traces/0 points (previously stayed at the full 15,366-point pooled view regardless of the checkboxes); narrowing to just the "2.4GHz Leakage" conditions correctly reduces the pooled point count to 10,277 (partial filtering also works, not just the all-or-nothing case). `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Adaptive "Group by" defaults for boxplot and scatter (added 2026-08-21)
-
-Both views previously had no smart default at all — the browser just pre-selected whatever `<option>` happened to be listed first, with no `selected` attribute anywhere.
-
-**Boxplot** defaulted to "Condition" always. For a pod with a lot of raw (per-unit-Limit-fragmented) conditions — ClockSpurs has 151 — a Condition-grouped legend is bigger than the plot itself on first load. `_build_box_interactive_html()` now counts the distinct raw `box_data` condition strings; above 150 (reusing the same cardinality this codebase already treats as "large" for boxplot — `STATS_TABLE_AUTO_THRESHOLD`), it defaults to **Serial Number** instead (only when serial data with 2+ values actually exists); below that threshold, Condition stays the default, since it's the more analytically useful view for the common case of a pod with only a handful of real conditions.
-
-**Scatter**'s "Group by" dropdown (`id="groupby"`, `_build_av_freq_html()`) defaulted to whichever `_grp_*` dimension `_detect_group_cols()` happened to find first in column order — a dimension with up to 100 distinct values (that function's own cap) could easily be the "natural first" one and dominate the legend. Now defaults to whichever candidate dimension has the smallest cardinality (`min(group_cols, key=...nunique...)`), falling back to `"Station"` when there are no `_grp_*` candidates at all.
-
-Verified against the real ClockSpurs dataset: boxplot correctly defaults to Serial Number (46 initial traces, bounded) instead of Condition (would have been ~151); scatter correctly selects `SpurType` (cardinality 5) over `Serial Number` (23), `Upper Limit` (31), and `Upper Uncertainty` (20). Verified the *low*-cardinality case doesn't regress: `MaxPowerTutorial2` (2 real conditions) still defaults boxplot to Condition, unchanged. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## "Segment by: Spec/Limit/Uncertainty" control now hidden when the dataset has nothing to segment (added 2026-08-21)
-
-Reported directly: "the segment by: filter appears in every plot whether is [there] data to segment by or not." The Prev/Next tab bar already hid itself (`segTabBar.style.display='none'`) once the *currently selected* key produced fewer than 2 segments (see "Spec-limit segment tab-through" above) — but the selector itself, letting you pick among Spec/Limit/Uncertainty, was rendered unconditionally on all 6 views even when *none* of the three keys would ever produce more than one segment for that dataset.
-
-**Fix:** `_has_segmentable_spec(df)` (new, near `_checkbox_panel`) checks whether any of the three key-pairs (`Spec_Hi`/`Spec_Lo`, `Upper_Limit`/`Lower_Limit`, `Unc_Hi`/`Unc_Lo`) has more than one distinct value across the whole dataset — computed once per render from the same source `df` every view already loads, before any per-view aggregation, so it can't drift out of sync with what each view's own segment detection would separately find. `_segment_by_html(has_segments)` (new) returns the entire control's markup (including its own leading separator) or an empty string; wired into all 6 real V2 views (scatter, `distribution`/`_build_env_distribution_html`, `stat_summary`, `env_coverage`, boxplot, `summary`) via a new `has_segments` parameter, threaded down from whichever caller function has `df` in scope for the 4 views whose HTML builder doesn't receive `df` directly (`env_coverage`, boxplot, `summary` — same `help_panel_html`-style threading convention already used elsewhere in this file). Legacy V1 `distribution()` deliberately excluded, per this file's existing exclusion boundary for that function.
-
-Verified with a synthetic flat-spec CSV (constant `Upper_Limit`/`Lower_Limit`, no `Spec`/`Uncertainty` columns at all — `_has_segmentable_spec` correctly returns `False`): the `<select id="segKeySel">` tag is completely absent from scatter, boxplot, `stat_summary`, and `summary`'s generated HTML (not just hidden — the tag itself doesn't exist; confirmed by checking for the literal opening tag, not just any mention of `segKeySel`, since the JS module's own `getElementById('segKeySel')` calls are always present as static code and would give a false positive on a looser check). Re-verified the real ClockSpurs dataset (genuine 5-level spec staircase) still shows the control correctly in `env_coverage` and `distribution`, the two views not covered by the flat-spec synthetic test. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## "Set outliers as GF" — clarified, not changed (2026-08-21)
-
-David asked whether this button (boxplot) was Room-only, paired conceptually with "Set delta outliers as GF" being non-Room-only, since the two labels read like a clean Room/non-Room split. They aren't: `_collectOutliers()` computes raw-value IQR outliers **independently at each currently-selected Temperature checkbox** (not hardcoded to Room at all) — genuinely a different metric from `_collectDeltaOutliers()`, which computes delta-from-Room-baseline outliers and is inherently non-Room-only by construction (it needs Room as the reference). Confirmed via `AskUserQuestion`: this existing behavior is more useful than hardcoding Room-only, and should stay — only the "Set outliers as GF" button's tooltip changed, to say so explicitly rather than leaving it to be inferred (or misread, as happened here). To get Room-only outliers with the existing behavior, narrow the Temperature checkboxes to just Room before clicking the button — `selTemps` already respects that filter.
-
----
-
-## Boxplot: "Excl outliers: Room/ΔEnv" didn't affect "Show Points" or the Statistics Table (fixed 2026-08-21)
-
-Reported directly: with "Excl outliers: Room" checked, the box itself correctly shrank (Q1/Q2/Q3/whiskers recomputed from the fence-trimmed population), but turning on "Show Points" still overlaid every raw point, including the ones just excluded from the box — and the Statistics Table's own row for that condition still reported the pre-exclusion `n`. User confirmed the expectation directly ("should I not expect the outliers to be removed?") before the fix.
-
-**Root cause**: `buildBoxTraces()` computed `bs`/`boxDet` (the fence-trimmed set, when exclusion is active) to build the box shape itself, but the per-DUT scatter overlay and the `fs` record handed to the Statistics Table both kept reading the original, untrimmed `detail`/`vals_detail` — two different populations silently in play at once, one for the box, one for everything downstream of it.
-
-**Fix**: `buildBoxTraces()`'s per-frequency `fs.push(...)` now carries `n:bs.n` and `vals_detail:boxDet` (the same fence-trimmed set the box shape itself uses) instead of the raw `detail.length`/`detail` — so "Show Points" and the Statistics Table can no longer disagree with what the box is actually showing. `updateStatsTable()`'s own filtered-recompute branch (the "any filter active" path) got the identical fix: it now separately tracks `s` (the full-population fence, used to *detect* outliers) and `bs`/`boxDet` (the post-exclusion population used for everything reported in the row — mean/std/Q1/Q2/Q3/n), with `boxDet` falling back to the full `detail` if exclusion would otherwise leave zero points at that frequency.
-
-Verified against a real boxplot page: with "Excl outliers: Room" checked, "Show Points" now correctly omits the fence-excluded raw dots, and the Statistics Table's `n` for that row now matches the box's own trimmed count instead of the pre-exclusion total. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Boxplot Statistics Table "Freq" header didn't follow `x_label` (fixed 2026-08-21)
-
-A small, separate gap found while investigating the above: the Statistics Table's column header was hardcoded `'Freq('+X_UNIT+')'` regardless of `x_label` — every other on-page control (filter labels, hover text) already used `X_SHORT_LABEL` for this (see the 2026-08-10 fix), the table header alone was missed. Fixed to `X_SHORT_LABEL+'('+X_UNIT+')'`, matching every other label on the page. (Also confirmed, while here: the table's `Max +Δ`/`Max -Δ` columns are deliberately relative to the row's own **median**, not a fixed/absolute deviation — this is by design, not a bug, and was confirmed correct by the user directly.)
-
----
-
-## Boxplot/scatter/stat_summary/env_coverage/summary: Reset silently left GF stuck in Inspect mode across unrelated datasets — "Clear everything" appeared to do nothing (fixed 2026-08-21)
-
-Reported: "can we put a reset button on the box plot that works like the scatter reset" — followed immediately by "this one came up with no data showing" after actually trying the boxplot's existing "Clear everything" button. Two direct reproduction attempts against real data (narrowed conditions, zoomed frequency range, non-default Group by) both correctly recovered full data after `clearEverything()` — genuinely inconclusive, since neither hit a true zero-trace state. The real cause turned out to be a piece of page state neither reproduction attempt had touched.
-
-**Root cause**: `padb_v2_gf_mode` ('exclude' vs 'focus'/"Inspect") is, like the GF exclusion list itself, a **global, non-scoped `localStorage` key shared across every results page from the same browser origin** — not scoped per-`results_dir` the way almost every other control's saved state is (`STATE_KEY = 'padb_' + results_dir`). Toggling "Inspect" while looking at one pod's results (e.g. testing GF Inspect mode on a ClockSpurs page, exactly as this session did earlier) leaves Inspect mode silently active when a *completely different, unrelated* results page is opened next. Since Inspect mode only shows GF-*matched* points, and that GF list was built against a different dataset's serials/conditions, essentially nothing on the new page matches — the plot renders with only a couple of housekeeping traces (spec-line references, no real box/point data), looking exactly like "no data."
-
-**Confirmed via headless reproduction**: manually setting `padb_v2_gf_mode='focus'` plus an unrelated GF exclusion entry against a real UHP-IddVsVgg boxplot page dropped it from ~114 traces to 2, with the page's own GF status text correctly (but easy to miss) reading "... — INSPECT MODE". Critically, `clearEverything()` **did not fix it** — it left `padb_v2_gf_mode` completely untouched (by the same "don't disturb GF" convention that already, correctly, protects the actual exclusion list), so trace count stayed at 2 after clicking Reset. This is a real, confirmed trap: the one button a lost user reaches for to escape a confusing state doesn't actually escape this particular one.
-
-**Fix**: every view's Reset/Clear function (`resetFilters()` in scatter/stat_summary/env_coverage/summary, `clearEverything()` in boxplot) now explicitly resets `padb_v2_gf_mode` back to `'exclude'` and refreshes that view's own GF status display (`_updateGfIndicator()`/`_loadStatGlobalFilter()`/`_loadEcGlobalFilter()`/`_loadSumGlobalFilter()`/`_updateBoxGfStatus()`) — **the actual GF exclusion list itself is still deliberately left untouched**, unchanged from the existing "Clear global filter" is the only thing that wipes it" convention. This is a narrow, deliberate distinction: GF *Mode* is a view-toggle a user can get stuck in with no visible fix; the GF *exclusion list* is accumulated work that Reset must never destroy as a side effect. Only Mode needed fixing.
-
-**Second, smaller gap found and fixed in the same investigation**: boxplot's `clearEverything()` never reset the "Group by" `<select>` at all — every other control was explicitly reset, Group by was simply never mentioned. Combined with the new adaptive Group-by default (2026-08-21, above), there wasn't even a fixed literal to reset it *to* — fixed by adding a `DEFAULT_GROUP_BY` JS constant (computed server-side, identical logic to the adaptive default already used at page-load: `'__serial__'` above the 150-condition threshold, `''`/Condition below it) and having `clearEverything()` set `box_group_by.value = DEFAULT_GROUP_BY`. Scatter/stat_summary/env_coverage/summary's own Group-by selects already reset to `''` in their existing `resetFilters()` — only boxplot had this gap, presumably because its adaptive default was added after those other resets were already written.
-
-Verified end-to-end on the real UHP-IddVsVgg boxplot page: reproduced the exact stuck-Inspect-mode failure (114 → 2 traces), then confirmed `clearEverything()` now recovers to the full 114 traces, `padb_v2_gf_mode` reads back `'exclude'`, the GF status text drops the "INSPECT MODE" suffix, and `box_group_by` resets to its correct page-default value. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Webapp: "Legacy" retired from job generation; "V2" wording dropped from the UI (2026-08-21)
-
-David: "I no longer need legacy plot support... interactive does not need to display any reference to v2." Scoped deliberately narrow, confirmed via `AskUserQuestion`:
-
-- **Removed** from the webapp's "Generate Job" Mode `<select>` (`templates/index.html`): the `legacy` `<option>`. Only `simple`/`interactive` remain as generation choices. The *separate* jobs-table Mode **filter** dropdown still lists `legacy` — that one is for finding jobs already on disk, not generating new ones, so a pre-existing legacy job.json (if any) can still be located.
-- **Renamed** `"interactive (V2)"` → `"interactive"` in that same dropdown. The jobs-table Mode column's fallback label for a plot-kind job.json with no explicit `mode` key (`padb_web.py`, `list_jobs()`) changed from `"v2 plot"` to `"interactive"`, matching.
-- **Deliberately untouched**: `padb_run.py`/`padb_plots.py`'s actual `mode: "legacy"` handling (a pre-existing job.json using it still works exactly as before — this is a UI-only change, not a schema deprecation), `padb_v2.py`/`padb_make_v2_job.py` filenames, and the `*_v2_job.json` naming convention (internal implementation detail, not user-facing, no reason to rename and risk breaking every existing job.json's assumptions).
-- The `/api/generate-job` backend route still accepts `"legacy"` defensively if ever sent directly — unreachable from the UI now, left as-is rather than actively rejected (David chose "just the webapp dropdown," not "also deprecate mode:legacy in job.json").
-
-Confirmed the running webapp process needed a restart to see this (Jinja2 template caching + Python route functions are both loaded once at process start) — not a bug, standard Flask dev-server behavior outside `debug=True`.
-
----
-
-## Webapp: "Clean up orphaned PADB-R" button (added 2026-08-21)
-
-Motivated by a real, messy incident: multiple `padb_web.py` process generations ended up running simultaneously (an old instance never cleanly stopped before a new one was started, repeated across several restarts over more than a day), and separately, 10 `R-Host.exe` processes (a PADB-R.NET helper binary, spawned per extraction, installed alongside `PADB-R.exe` itself) were found with **no living parent PADB-R.exe at all** — confirmed via `Get-Process -Name PADB-R` returning nothing while `Get-CimInstance Win32_Process -Filter "Name='R-Host.exe'"` still listed all 10, spanning back over a full day of accumulated extraction runs. This is a resource leak in PADB-R.NET itself (not this codebase), not previously worked around anywhere.
-
-**New routes** (`padb_web.py`): `GET /api/orphaned-padb` lists batch-invoked PADB-R.exe processes system-wide, reusing `padb_batch._running_batch_pids()`/`_process_command_lines()` — the exact same idle-GUI-exempt detection `wait_for_exclusive_padb_r()` already uses, so a PADB-R window someone has open by hand (no `-f` switch) is never listed. Also reports whether *this* webapp instance's own `_jobs` currently has anything marked `"running"`, so the confirm dialog can warn the user to double-check before killing (deliberately does not try to precisely auto-exclude a PID belonging to this instance's own live job — PADB-R.exe is a grandchild of the tracked `Popen`, and reliably walking that ancestry chain is more complexity than a manual, always-shows-what-it-found, confirm-before-kill button needs; same "final judgment call stays with the user" reasoning as the existing per-job Abort button). `POST /api/orphaned-padb/kill` kills specific PIDs via `taskkill /PID <pid> /T /F` — identical mechanism to the existing `job_abort()` route; `/T` also takes down each PADB-R.exe's own orphaned `R-Host.exe` children, the other half of what this button exists to clean up.
-
-**UI**: a button in the "Running Jobs" section. Always shows the full list (PID + command line) before doing anything; never a blind "kill everything named PADB-R.exe" sweep.
-
-**A genuinely surprising side-finding while building this**: attempting to kill the 10 orphaned `R-Host.exe` processes via this session's own PowerShell/Bash tool calls (`Stop-Process -Force`, `taskkill`, even with sandbox explicitly disabled) reported success every time with zero errors, yet an independent WMI check showed the exact same PIDs and creation timestamps completely unchanged afterward — every single time. The user then killed all 10 via Task Manager with no special permissions and no issue at all. This means the tool-calling layer in this session silently no-ops cross-process kill attempts targeting processes outside its own spawned tree (reporting fake success rather than surfacing an error) — **not** an EDR/permissions issue as first suspected. This has no bearing on the webapp button itself: `padb_web.py` is a normal, unsandboxed Python process running under the user's own account (not spawned by this session's tool calls), so its own `subprocess.run(["taskkill", ...])` calls are unaffected — proven by the pre-existing Abort button already working correctly in production.
-
-Verified the new route logic via Flask's test client against mocked `_running_batch_pids`/`_process_command_lines` (since a live end-to-end kill test would need a real Oracle-connected extraction running, and the underlying `taskkill` mechanism is already proven via the identical, working Abort button): empty-list case, `has_running_job_here` correctly toggling based on `_jobs` state, and real `taskkill` error-reporting for a PID that doesn't exist. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Webapp: restarting the webapp silently killed an in-progress job's own subprocess (fixed 2026-08-21)
-
-Real incident, reported directly: a ClockSpurs cross-site compare build (`padb_v2.py`, ~13 minutes into a multi-view build against a large merged dataset) was killed when the webapp process was restarted to pick up an unrelated code change. Previously documented/assumed elsewhere in this file that a job's own subprocess is independent of the webapp process's lifetime once launched — that assumption was wrong, and this real incident is the proof.
-
-**Root cause**: `_stream()` (the shared helper every job type's subprocess launch goes through) ran `subprocess.Popen(cmd, stdout=subprocess.PIPE, ...)` and read the child's output via `for line in proc.stdout` in the webapp's own process. A pipe's read end is only ever referenced by whichever process opened it — here, only the webapp. Force-killing the webapp (or its own process being killed/restarted for any reason) causes Windows to close that pipe; the child, mid-run and still calling `print()`, then gets an unhandled `OSError` ("the pipe is being closed") on its very next write and dies — an otherwise fully independent OS process, killed for a reason a user would never expect from "I restarted the web tool."
-
-**Confirmed via direct reproduction, ruling out the more obvious-looking explanation first**: initially suspected a Windows Job Object cascade (many terminals/shells create child processes under a job with `KILL_ON_JOB_CLOSE`, tearing down the whole tree together) — but a plain `Popen(..., stdout=PIPE)` child died within one print cycle of a force-killed parent even when the parent was launched via `Start-Process` (a genuinely separate launch path), and even when the child was explicitly created with `CREATE_BREAKAWAY_FROM_JOB` (which succeeded with no error, and would have prevented a job-object cascade if that were the cause) — ruling job objects out entirely. An otherwise-identical child with stdout redirected to a real file (`open(path, "w")` passed as `stdout=`, not a pipe) survived and kept running and writing indefinitely past the parent's death — isolating the pipe itself as the actual cause.
-
-**Fix**: `_stream()` now redirects the child's stdout to a real temp file (`tempfile.gettempdir()/padb_web_job_<job_id>.log`) instead of a live pipe, and polls that file every 0.5s via a new `_tail_new_lines()` helper to feed the same live status-panel log this always had — no change to `_append_log()`, `job_status()`, or anything else downstream. The temp file is deleted once the job's `_stream()` call returns (success, failure, or the job's own process having outlived a webapp restart and finished on its own). `job["proc"]` is still set to the real `Popen` object exactly as before, so `job_abort()`'s existing `taskkill /PID <pid> /T /F` is completely unaffected.
-
-**What this does and doesn't fix**: the underlying extraction/plot build/publish now completes correctly on disk even if the webapp is restarted mid-run. What it can't fix: the webapp's own in-memory `_jobs` tracking is still wiped by a restart (by design — see "status panels are ephemeral per-browser-session" elsewhere in this file), so a job that outlives a restart won't show as "done" in the UI or appear in a fresh Running Jobs panel; check the results folder directly (or reopen the job later once its `index.html`/`last_run` timestamp reflects the completed run) rather than expecting the status panel to pick back up.
-
-Verified end-to-end with the real `_stream()` function (not a synthetic pipe/file toy — the actual function this fix lives in), driven from a background thread exactly as the real worker thread does: launched a 180-second dummy child via `_stream()`, confirmed the live temp-file tail was already populating the job's in-memory log (`tick 0`...`tick 12`), force-killed the *harness* process (standing in for the webapp) mid-run, and confirmed the child kept running and writing (`tick 24`...`tick 28` and climbing) well past that point — the exact failure mode reproduced and then shown fixed. `qa_padb.py` baseline unchanged (37/4, unaffected since this is webapp-only).
-
----
-
-## Boxplot: "Dup runs" tracking, Site Population Check CSV export, pod Filter_Expression visibility (added 2026-08-24)
-
-Prompted by a real question: "if a DUT does have duplicate runs, do you have a proposition for how to deal with that?" — starting point was that boxplot's `n` (Statistics Table and Site Population Check alike) is a raw row count, not a distinct-DUT count, so a DUT with a genuine repeat measurement at a point silently gets extra weight in `n`/mean/Q1/Q2/Q3 with no visible signal that it happened.
-
-**"Dup runs" column, boxplot Statistics Table**: new column on all three row-population branches (default/`BOX_STATS`, filtered/excl-outliers, Group-by Serial/Port) showing how many *extra* raw rows exist beyond one-per-DUT in that row's own population — informational only at this point, no change to `n`/mean/quantiles (a deliberate first step, confirmed with the user before going further: "column only, no stats change"). The default `BOX_STATS` branch needed a server-side addition (`_aggregate_stat_data()`'s new `dup_runs` field) since that branch pre-averages each DUT's repeats before the JSON ever reaches the browser — the raw count would otherwise be unrecoverable client-side.
-
-**"Genuinely repeated freqs" + "Dup runs" columns, Site Population Check per-DUT summary; "SR dup pts", per-point detail**: same underlying duplicate-detection logic, applied to the cross-site comparison feature. Real bug found comparing these against known real per-DUT totals on the SR-vs-AMC2 ClockSpurs dataset: the initial version keyed duplicates on `(temp, freq)` only, so a DUT measured under several pooled SpurTypes/conditions sharing overlapping frequencies was massively over-counted as "duplicate runs" — that's condition pooling (the whole point of the compare check), not a repeat test pass. Fixed to key on the full `(condition, port, temp, freq)` identity, matching the fix already needed for the Group-by:Serial/Port branch above. Verified against real data: baseline DUTs correctly show 0 dup runs across 60 real conditions; two outlier DUTs show a genuine partial repeat (382 distinct frequencies, capped at 2×) layered on top of genuinely broader SpurType coverage (145/120 distinct conditions vs. 60 baseline) — not a clean "ran N times" pattern, which is exactly the kind of thing this column exists to distinguish.
-
-**CSV export**: new "Export CSV (All)" / "Export CSV (Outside only)" buttons on the Site Population Check's per-point detail table — none of this data was previously exportable in any form. `_lastSiteRows`/`_lastSiteMeta` cache the panel's own computed rows right after sorting, so the export can never show a different population than whatever's currently on screen.
-
-**Pod `Filter_Expression` visibility**: each `[PADBAnalyticN]` section in a pod can carry its own `Filter_Expression` (a native PADB extraction-time filter, e.g. `Filter_Expression='...Test Step' = "Room"`), applied by PADB-R.exe against the Oracle database before a row is ever written to that analytic's CSV. Functionally this always "worked" — anything it excluded was never in the CSV for any downstream code to see — but Interactive-mode pages never displayed it anywhere, so a viewer had no way to know an analytic's data was already pre-scoped by the pod author short of opening the `.pod` file directly. `parse_pod_analytics()` (`padb_run.py`) now captures it; `padb_make_v2_job.py` bakes it into each generated plot job.json as `"pod_filter_expression"` when present; `_build_help_panel_html()` (`padb_plots.py`) renders it as a new amber note in the Help panel, threaded through all 6 view builders via a `pod_filter_expression: str = ""` parameter (empty default, so no existing page's output changes unless a pod actually has one).
-
----
-
-## Site Population Check CSV export extended to `stat_summary` and `summary` (added 2026-08-24)
-
-Parity follow-up to the boxplot export above. Deliberately did **not** port boxplot's "Dup runs"/"Genuinely repeated freqs" columns to these two views: their per-DUT data (`dut_vals`) is already averaged per `(condition, DUT, frequency)` server-side before either view's JS ever runs — unlike boxplot, which reads raw unaggregated CSV rows — so there is no raw-measurement-level duplicate left to detect at this resolution. Adding those columns would make them render as 0/— unconditionally on every dataset, for every DUT, which is accurate but useless clutter rather than a real fix; confirmed this reasoning with the user before implementing rather than silently adding dead columns.
-
-Each export mirrors boxplot's per-point detail CSV, adapted to its own view's actual data shape: `stat_summary` keeps a Port column (its `dut_vals` carry per-DUT port) and is Room-only (no Temp column, matching its Room-only-by-design per-DUT population); `summary` omits Port entirely (no per-DUT port field exists in its `dut_info`) and is likewise temperature-blind (each point is a DUT's mean already blended across every temperature in its condition). Verified via a real headless-browser click-through against freshly rendered pages for both views.
-
----
-
-## Boxplot: opt-in "Collapse dup runs" toggle (added 2026-08-24)
-
-The natural next step after "Dup runs" display-only tracking, discussed and agreed with the user as a follow-up rather than folded into the display-only column above: a checkbox (default off, same UI pattern as the existing "Excl outliers: Room/ΔEnv" checkboxes) that averages a DUT's exact-identity repeats — same DUT, same condition, same port, same temperature, same frequency — into one point *before* Q1/Q2/Q3/whiskers/outliers are computed, giving a heavily-repeated DUT the same "one DUT, one vote" weight everywhere else in the box already gets.
-
-Applied everywhere a raw per-measurement array feeds a box statistic: `buildBoxTraces()`'s own recompute (the plot itself), the Statistics Table's filtered/excl-outliers branch, and the Group-by Serial/Port pooling branch (`_computeBoxGroupedByColId()`, shared by the plot and the table) — the latter needed a condition+temp-aware identity, same reasoning as the Dup-runs fix, since that branch already pools across every selected condition and a naive per-array collapse would wrongly average two different SpurTypes together. The Statistics Table's default (`BOX_STATS`) branch needed no change: it's already pre-averaged per DUT server-side, so checking the box there routes into the filtered branch instead (`isCollapseDup()` added to that branch-selection condition).
-
-Verified with a synthetic dataset (one DUT with a real duplicate row at one frequency, three clean DUTs): unchecked shows the true raw `n=5` (duplicate counted twice) with `Q1=10.00`/`Q3=10.30`; checked shows `n=4` with `Q1=10.075`/`Q3=10.375` — and that collapsed result exactly matches what the page's independent, server-side-pre-averaged default branch already computes for the same data, a strong correctness cross-check. Confirmed both the Statistics Table and the actual Plotly trace data (`gd.data[0].q1/median/q3`) update on toggle; unaffected frequencies (no duplicates) are byte-identical before and after.
-
----
-
-## Site Population Check: "SR dup pts" changed from a summed total to a per-DUT breakdown (fixed 2026-08-24)
-
-Real ambiguity found by the user reading a live page: a single summed total (e.g. `"3"`) is indistinguishable between "one DUT has 3 copies" and "three separate DUTs each have 2 copies" — on the real ClockSpurs SR-vs-AMC2 dataset it turned out to be the latter (three specific SR DUTs, each independently duplicated, identically across every SpurType), which the old column had no way to convey on its own; it took a manual data dump to tell which one it was.
-
-Replaced the summed count with `_dupBreakdown()` (new, next to `_dupRunCount()`): returns `"serial×count"` for each DUT that genuinely has more than one raw row, omitting DUTs with exactly one (no `"×1"` noise). Same identity key as before (condition+port, not just serial) — only the output shape changed, from a count to a list. Updated the per-point detail table's cell, its header tooltip, and the CSV export's column to join the list with `"; "`.
-
-Verified with a synthetic SR population (7 clean DUTs + 3 DUTs each with a real duplicate row): the column now reads `"SRDUP1×2, SRDUP2×2, SRDUP3×2"` instead of the old ambiguous `"3"` — confirmed via a real headless-browser click-through of the actual generated page.
-
----
-
-## Boxplot: "Dup runs" was missing Port from its identity, causing false positives on multi-port DUTs (fixed 2026-08-25)
-
-Follow-up question from the user ("if a DUT has two ports, will it show a larger n DUTs for the same test points?") led to auditing every `_dupRunCount()` call site for port-awareness — and found a real bug: `_dupRunCount()`'s **default** key (used by 2 of its 3 call sites: the filtered-branch `boxDet` and the non-Room `BOX_DATA` pass) was `d.s` alone, and one explicit `keyFn` (the Group-by Serial/Port branch's own Statistics Table row) used `_cond+'|'+_temp` with no port either. Neither of the ungrouped branches is port-scoped by the enclosing loop, so a DUT's genuinely distinct RF1 and RF2 measurements at the same condition/temp/frequency were being counted as a duplicate of each other — exactly backwards, since RF1 vs. RF2 is the textbook case of "not a duplicate, a different independent measurement." `_collapseDupRuns()`'s own default already had this right (`(d.s||'unknown')+'|'+(d.p||'')`); `_dupRunCount()`'s default and docstring were simply wrong about port not mattering.
-
-**Fix**: changed `_dupRunCount()`'s default key to include port, matching `_collapseDupRuns()`; fixed the Group-by branch's explicit `keyFn` to conditionally include the "other" dimension (serial when grouped by port, port when grouped by serial), mirroring the exact conditional `_collapseDupRuns()` already used for that same branch.
-
-Verified with a synthetic dataset isolating the two cases: DUT01 with RF1/RF2 (2 ports, no real duplicate) alongside DUT02 with a genuine single-port duplicate row, plus two clean DUTs. Both the default and filtered branches now correctly report **Dup runs = 1** (only DUT02's real repeat) — before the fix, this would have shown 2, incorrectly counting DUT01's RF1/RF2 pair too.
-
----
-
-## Noise-sensitivity disclaimer added to env_coverage, distribution, stat_summary, and summary (added 2026-08-25)
-
-Requested directly by the user: a disclaimer on `env_coverage` "stating calculations don't work well on noisy data," then extended to the other three views once the pattern was established. Each is a **static, always-visible** amber note (same "needs attention" styling as the compare-mode coverage-gap banner) — deliberately *not* a per-dataset check like the coverage-gap banner, since the caveat (tolerance-interval/KDE math assumes a reasonably well-behaved, low-noise population; few DUTs, high measurement noise, or non-normal/scattered data can make the bounds unstable or misleading) is always true of the statistical method itself, not something worth detecting per-dataset.
-
-Wording is tailored per view, not copy-pasted boilerplate: `env_coverage` names UDE/LDE/TTU/TTL; `distribution` names the KDE curves (`scipy.stats.gaussian_kde`, Silverman bandwidth) and the ΔEnv Tolerance Interval panel beneath them; `stat_summary` names Normality/TI/TLL/DEnv; `summary` names the TTL↑/TTL↓ (Total Tolerance Limit) bands. `boxplot` was deliberately left out of this rollout — it already has a real, working fix (Collapse dup runs) for its own version of this problem, rather than just a caveat. Each was verified via a real build, placed at a consistent relative position (right after the main control bar / before the plot, matching each view's own existing layout conventions — `distribution`'s sits right before its pre-existing multimodal-mode warning).
-
----
-
-## stat_summary: Statistics Table pushed the plot out of view when opened (fixed 2026-08-25)
-
-Real gap found by the user: `stat_summary` was the one view where the Statistics Table's container (`#stat_panel`) sat **before** the plot's `<div>` in the page, instead of after it. Boxplot and `env_coverage` both put the plot first and the table below, so opening their tables just adds content below an already-visible, fixed-position plot. In `stat_summary`, opening the table inserted a block above the plot instead, pushing it further down the page — with enough rows, far enough to scroll out of view, giving the impression the plot and table couldn't be shown together at all.
-
-**Fix**: reordered to match boxplot/`env_coverage`: `coverage_gap_html` → plot → toggle-buttons row → `stat_panel` → `stat_site_panel`. Verified headlessly: the plot's on-screen position (`getBoundingClientRect().top`) is identical before and after opening the table, and the table still populates correctly.
-
----
-
-## Interactive controls: "Autoscale Y" button + Segment-by now narrows condition filters (added 2026-08-31)
-
-- **"Autoscale Y"** added to all six V2 views (`scatter`, `boxplot`, `stat_summary`, `summary`, `env_coverage`, `distribution`) — rescales only the Y axis to fit the currently-visible data, without touching the frequency (X) zoom. Distinct from Plotly's built-in "Reset axes" (which clears *both* axes back to autorange); this exists because the zoom-persistence machinery pins an explicit X range, so a user who has narrowed frequency and wants the vertical scale to re-fit had no one-click way to do just that.
-- **Segment-by tab-through now narrows the condition filters to match each segment**, not just the frequency window. Tabbing to a band shows only the conditions belonging to it; tabbing back out / reaching the ends restores the prior selection. A companion fix cleared a stale Autoscale-Y pin left behind on `segTab()`. Also fixed several boxplot Group-by/segment-tab filter desyncs and added a fast-path for the "Hide spec lines" toggle in the same pass.
-
----
-
-## scatter: drag-zoom now narrows the freq sliders + data-rows table (added 2026-09-12)
-
-Reported by the user against a real compare scatter (`Analog_mod_AM1_Accuracy_and_Distortion_compare_scatter.html`): "the table view does not change when the plot is zoomed." This is the same drag-zoom→slider sync that `stat_summary`/`env_coverage`/`boxplot` already had — the zoom-persistence section (2026-08-18) explicitly deferred it for scatter ("Scope: stat_summary only ... before considering it for scatter/env_coverage/summary"), so a scatter drag-zoom only changed the Plotly viewport, never the `freq_lo`/`freq_hi` sliders, and the data-rows table (`updateScatterTable`, driven by those sliders via `update()`) stayed full-range.
-
-**Fix** (`_AV_FREQ_JS`): added `_onPlotRelayout(ed)` (attached once with `.on('plotly_relayout',...)` right after the init `Plotly.newPlot` — scatter uses `Plotly.react()` in place, so it survives every later render, like env_coverage) that maps a drag-zoom's `xaxis.range` (log-aware) to the freq filter, and `xaxis.autorange` (double-click / Reset axes) back to `FREQ_MIN`/`FREQ_MAX`. **Crucially it does NOT route through scatter's own `setFreqBand()`** — that one calls `Plotly.relayout('xaxis.range')`, which would re-fire `plotly_relayout` and loop; instead a dedicated `_zoomSyncFreq(lo,hi)` just sets the sliders + text boxes and calls `update()` (the user's drag already applied the visual zoom, and `update()`→`buildLayout()`→`_liveAxisRange()` preserves it — no relayout needed). Mirrors stat_summary/env_coverage's no-relayout `setFreqBand`.
-
-Verified end-to-end in a real browser (served over http, simulated `plotly_relayout` to a mid-band): freq boxes synced `0.9/18000 → 8100.5/9900.4`, data-rows table narrowed `2001 → 151` rows. `qa_padb.py` 37/4, `qa_js_segments.py` structural checks pass. (Committed on `develop`; `summary` is now the only view still without this sync.)
-
----
-
-## "Copy PADB Filter" rewritten to real PADB syntax + three-mode dropdown; faithful GF scope (2026-09-01)
-
-Supersedes the 2026-08-19 "reflect the current view" rewrite above. Two commits (`84b6c46` real-syntax, `c33e3c0` three-mode + inspect banner, `6273de4` faithful GF scope):
-
-- **Real PADB syntax.** The generated expression was verified against hand-provided real pod filter expressions and rewritten to match: `'Field' = "value"` / `!=` / `IN {...}` / `NOT ( ... )`, joined with `AND`. **`'Serial Number'` is a global, *unprefixed* field**; every other field carries the `PADB_FIELD_PREFIX` (`Name-->Name (unit)`). A port-qualified serial (`US65080401_RF1`) is emitted as the base serial plus a separate Port clause, not a compound token (user confirmed this "amounts to the same thing"). No longer flagged "under development".
-- **Three-mode dropdown** replacing the single button: **Plot view** (`_buildViewFilterClauses`, the current view's own active condition/Serial/Port/Frequency/Temperature filters), **Global Filter only** (`_buildGfExclusionClause`), and **Plot + GF** (both `AND`-joined).
-- **"Global Filter only" reproduces the GF's full captured scope**, not a bare `'Serial Number' NOT IN {...}`. Per the user's design call: at creation it's equivalent to Plot + GF, but afterward it stays fixed to what the GF captured — decoded from each GF key into `NOT ( 'Serial Number' IN {...} AND '<pfx>:HarmonicNumber' = "2" AND ... AND '<pfx>:Test Step' IN {...} AND ( '<pfx>:Frequency' >= lo AND <= hi ) )`. Only emits Port + real `COND_DIMS` dims (Limit-noise dims dropped), drops full-coverage dims, and includes frequency only when the GF actually captured a range. Changing other plot controls afterward doesn't alter it (they'd be incremental to the GF, not part of it).
-
----
-
-## GF Inspect-mode reset-on-load + banner; compare-plot Serial/Port panels under binary_encode (2026-09-01)
-
-- **GF Inspect (Focus) mode is browser-global** (`padb_v2_gf_mode` in `localStorage`, not scoped per results folder) — so toggling it on one page left it stuck on when opening an unrelated results page next, showing only GF-matched points (usually almost nothing, since the GF was built against a different dataset). Now **reset to `'exclude'` on every page load**, and while active a prominent amber `#box_inspect_banner` ("⚠ INSPECT MODE ...") is shown above the plot via `_updateBoxGfStatus()`. This was the real cause of several "buttons don't work / serial filter does nothing / axis won't reset" reports — all were a stuck Inspect mode, not the individual controls. (See also the later 2026-08-21 Reset-clears-Inspect fix, which handles the same class of trap from the Reset button.)
-- **Cross-site compare boxplot was missing its Serial/Port filter panels entirely** (`de664f3`). `all_box_serials`/`all_box_ports` were computed from `vals_detail`, which is empty under `binary_encode` (per-point data is stored as base64 `vals_detail_bin` instead). Fixed by computing them from `df["_serial_id"]`/`df["_port"]` directly, so the panels appear regardless of encoding. Also dropped the empty `plots/` directory that `run_secondary_plots` no longer needs.
-
----
-
-## Compare tool + csv-check publish gate + webapp batch (2026-09-01 / 2026-09-02)
-
-- **`padb_csv_check.py --job`** (`6ff265c`) — `check_job()` now pre-flights a job.json's `publish_to`/`compare_csv` publish targets (FAIL/WARN), lazily importing `padb_v2` for the `COMPARE_PUBLISH_ROOT`/`DEFAULT_PUBLISH_ROOT` constants so the check can't drift from the real publish logic.
-- **Compare webapp panel** (`6ff265c`) — CSV **name filter** + **Refresh CSVs** button (mirrors the Jobs Name filter), wider Site A/B dropdowns and Description field, x-axis unit inheritance into the generated job.json, and Create&Run/Run-Selected now auto-scroll to the new status card.
-- **Compare jobs publish to a `PADB-Compare` share tree** by default (`\\srsnas01...\SG6311A\PADB-Compare`) when `publish_to` is absent; `"publish_to": ""` opts out. Backup/archive copies left as-is.
-- **Webapp job-failure "View log" link** (`94719e2`) — `_persist_console_log()` writes the full captured console to `<results_dir>/webapp_console.log` after every job (worker + resume paths); `job_status()` returns a servable `log_url` and the status card renders a red "View log" link on failure. Motivated by `Pulse_Mod_Quality_Latest_run_job.json` "failed but produced data" (extraction rc 0 / 9 CSVs, a chained plot sibling failed → whole run-job marked failed).
-- **"Select Filtered" button** (`94719e2`) — checks every job row matching the current Mode/Kind/Name filters, alongside the existing "Select All Runnable".
-- **"Dry run" checkbox removed** from the webapp UI (`94719e2`); the request always sends `dry_run:false`. Backend and `padb_run.py --dry-run` CLI flag unchanged.
-- **`Start_web.bat`** (`f693294`, 2026-08-31) — double-click launcher for the web app, for users who'd rather not use a terminal.
-
----
-
-## Webapp: on-demand elevation for "Clean up orphaned PADB-R" (2026-09-02)
-
-The cleanup button ran `taskkill /PID <pid> /T /F` from the non-elevated webapp process, which lacks `SeDebugPrivilege` — so orphaned `R-Host.exe` processes (parent PADB-R.exe already gone) failed with taskkill's misleading "There is no running instance of the task", even though Task Manager (which auto-enables `SeDebugPrivilege` for admin users) could kill them. Now any PID a normal `taskkill` can't terminate is retried once, in a **single elevated batch** via `Start-Process -Verb RunAs` (one UAC prompt for the whole cleanup), so the button works without running the whole server as administrator. Per-PID success is judged from the live process table (`_pid_running` via `tasklist`), not taskkill's aggregate exit code; a declined UAC prompt (ERROR_CANCELLED / 1223) is reported cleanly. The confirm dialog notes a permission prompt may appear. Verified `_pid_running` and the elevated-command construction via a stubbed `subprocess.run` (no real UAC fired in the test).
-
----
-
-## Stat Summary: Segment-by step didn't move the frequency axis (fixed 2026-09-02)
-
-Reported by the user: on `stat_summary`, tabbing "Segment by" updated the spec shapes but left the frequency (x) axis where it was.
-
-**Root cause:** `stat_summary`'s `update()` reads `_liveAxisRange('xaxis')` BEFORE its `Plotly.purge()`, and `buildLayout()` prefers that pinned live range over the new freq band (`xRange = curX ? curX : [fLo,fHi]`, ~line 5546). `segTab()` set the freq textboxes (so the spec shapes, driven by those, moved) but — unlike `env_coverage`'s `segTab()` — never relayouted the x-axis to the new band, so a range pinned by an earlier segment/zoom kept winning via `_liveAxisRange()` and the axis never moved. This was the only view with that exact `curX?curX:...` fallback; `env_coverage` already relayouted x in its `segTab()`, `distribution`'s x-axis isn't frequency, and `boxplot`'s is categorical — so none of those had it.
-
-**Fix:** `segTab()` now relayouts `xaxis.range` to the new segment band (log/linear-aware) alongside the existing `yaxis.autorange` reset, before `update()`, so `_liveAxisRange()` picks up the new band. Verified headlessly on the real Harmonics page: with the x-axis pre-pinned to the full range, stepping to a band moves the axis to exactly that band's frequencies; a negative control (the old sequence — textboxes + `update()`, no x relayout) left it stuck, confirming the test has teeth. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Webapp: selectable publish (default no-publish); "Module" → "Folder name" (2026-09-02)
-
-Publishing to the network share is now an opt-in per-run choice in the webapp, defaulting OFF — worked out over several user messages ("make publish_to selectable... Default is --no-publish", "Let existing objects keep their settings", "Let module still add a folder name", "rename Module to folder name").
-
-- **"Publish to share after run" checkbox** by Run Selected (default unchecked). Off → the worker appends `--no-publish` to `padb_run.py` (run jobs) and `padb_v2.py` (plot jobs + the interactive sibling chain, threaded via `_run_v2_siblings(..., publish=...)`). On → each job's own `publish_to` is honored.
-- **Runtime override only** — job.json files are never rewritten (`_worker` reads `job["publish"]`, defaulting False; `execute_job` reads `publish` from the request body). Existing jobs keep their `publish_to` on disk. Auto-resume of an interrupted chain stays no-publish (matches the default; avoids a surprise publish on auto-resume).
-- **`padb_v2.py --no-publish`** (new) forces `cfg["publish_to"] = ""` (the opt-out path in `generate_report`) without touching the job file — mirrors `padb_run.py`'s existing flag.
-- **Generate Job still builds `publish_to` from the folder name** (`--module` unchanged: `<publish_root>\<module>\<pod_stem>`), so a generated job carries its intended destination for when publish is enabled. Renamed the field's visible label "Module" → **"Folder name"** (element id `moduleInput` unchanged, so app.js is unaffected). The webapp originally exposed only the subfolder name — the share root is fixed in `padb_config` (`…\SG6311A\PADB-Simple`, auto-swapped to `PADB-Interactive` for V2).
-
-**Share-path override (added 2026-09-02, same day, on the user's follow-up "add the Share path override field").** A separate **"Share path (override)"** field in Generate Job sets `publish_to` *verbatim* to an exact path, for publishing off the standard share tree. Implemented as a new `--publish-to` flag on both generators (`padb_make_job.py`'s `make_job_cfg(..., publish_to=...)` sets `cfg["publish"]={"destination": publish_to}`; `padb_make_v2_job.py` sets `plot_job["publish_to"]=publish_to` for every plot job, so a V2 pod's whole shared gallery gets one destination). `--publish-to` takes precedence over `--module`, and either one (or `--no-publish`) now satisfies the "must specify a publish intent" validation. The webapp's `generate_job` route passes `--publish-to` when the field is filled (Folder name still passed alongside, harmlessly — the generator prefers the override). Verified both generators end-to-end: `--publish-to` produces the exact path verbatim; `--module` still composes `<root>\<module>\<stem>` when no override is given.
-
----
-
-## Webapp: settable default share root (2026-09-02)
-
-The publish root was only changeable by hand-editing `padb_config.json`. Added a **"Default share root"** field at the top of Generate Job, backed by new `GET`/`POST /api/config` routes and a new `padb_config.save_config(updates)` (merges into `padb_config.json`, preserving other keys). The generators already read `publish_root` fresh from `padb_config` each run, so a new default takes effect with no restart. Kept the one-root + `PADB-Simple`→`PADB-Interactive` string-swap convention (chosen with the user via AskUserQuestion); a root not ending in `PADB-Simple` saves with a warning. Per-user (config lives under `Path.home()`), so "other users on other products" each set their own root once, no code edits. The UI shows the derived Interactive root for transparency.
-
----
-
-## Webapp: auto-resume no longer loops forever on a permanently-failing sibling (fixed 2026-09-03)
-
-Reported: after reopening the webapp, two run jobs sat in limbo as "(resuming 1 interrupted plot job(s))" with no way to complete or delete them. Root cause: a sibling plot job that can *never* succeed (a bad auto-detected `x_col`, or a CSV the extraction never produced) is never added to the chain's `done` set, so `_resume_incomplete_v2_chains()` re-detected "N-1 of N done" and re-spawned a doomed resume job on *every* startup.
-
-**Fix:** the chain-state file (`.v2_chain_state.json`) now also carries a `failed` set (`_load_v2_chain_failed`, `_save_v2_chain_state(done, failed)`). `_run_v2_siblings` records a sibling's build failure there; `_resume_incomplete_v2_chains` treats `done | failed` as "attempted" and only auto-resumes siblings in neither — so a broken sibling is retried at most once, then left alone. `failed` resets on a fresh extraction (`fresh=True`, new data → retry everything) and a sibling clears from it if a later run finally succeeds. The two stuck chains were remediated in place (their permanently-failing sibling stems written into `failed`) so the next reopen came up clean.
-
-The concrete broken siblings that exposed this: `Pulse_Mod_Quality_Latest`'s Overshoot-Open-Loop (SR DB had no result rows for that analytic, so PADB wrote a default `Model Number`/`PROCEDURE TIME` placeholder export with no numeric x-axis — unplottable; the SR plot job was deleted) and `Absolute_Phase_Noise_EP6_Spec_Setting-AMC2`'s DCFM-at-Defined-Offsets (predicted CSV never produced by the extraction).
-
----
-
-## `padb_v2.py`: clear "no matching test data" failure logging (added 2026-09-03)
-
-Prompted by the above — a plot build that can't proceed used to dump a raw traceback (`x_col not found`, or silently render nothing on 0 rows). Now:
-
-- **`NoPlottableData`** exception + `_diagnose_no_data(csv_path, cfg, detail)` — `load_scatter` raises it (instead of a bare `ValueError` or returning an empty df) when the loader can't find the configured `x_col`, or when the load yields 0 usable rows. The diagnosis reads the CSV's own column names and, using what a real scatter looks like as the reference, reports the likely cause: a missing/wrong `x_col`, no Frequency/X-value column at all, and/or the PADB **default placeholder export** signature (`Model Number`/`PROCEDURE TIME` columns, no numeric x) that PADB writes when an analytic returns **no matching test results** for that database/site.
-- **`_log_build_failure(output_dir, cfg, csv_path, reason)`** — prints the reason and appends it to `build_failures.log` in the results dir. `main()` calls it for both a missing CSV and a `NoPlottableData` from `generate_report`, then exits non-zero (so the webapp still marks the job failed, and its "View log" shows the clear reason via `webapp_console.log`).
-- **Compare jobs**: `_build_compare_csv` now flags (via `_log_note`, a non-fatal NOTE in `build_failures.log`) any site whose own CSV has no Frequency/X-value column — the "one good reference CSV makes it easy to say which site has no matching test data" case the user pointed out. The merged build still succeeds on the real site's rows.
-
-Verified: the SR Overshoot placeholder CSV now produces a clear "no matching test data / placeholder export" message and a `build_failures.log` (both the bad-`x_col` and the valid-column-but-no-numeric-x paths); a real Frequency CSV still loads with no false positive; a missing CSV logs the "analytic wrote no output" reason. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## `padb_v2.py`: oversized-view size guard (added 2026-09-03)
-
-Real report: a phase-noise DCFM boxplot "does not generate any plot data." Root cause was pure data volume, not a bug — the SR DCFM CSV is **8.5M rows across 7,662 distinct Frequency-Offset points × 14 conditions**. A boxplot's x-axis is categorical (one box per frequency), so that's ~107K potential boxes plus every raw point embedded for "Show points" → a **517 MB** self-contained HTML. A browser (single-threaded JSON parse, ~2–4 GB per-tab ceiling) can't load it, so the page opens but never paints — indistinguishable from "no data." (Same dir: EFC boxplot 178 MB, DCFM scatter 95 MB; the small "at Defined Offsets" variants render fine.) The job used neither `binary_encode` nor `scatter_decimate`.
-
-This is inherent to the self-contained-HTML design (no server, opens off the share — everything embeds in one file the browser must fully load), unlike a server-rendered tool (Streamlit etc.) that keeps the data server-side and sends the browser only a decimated/rendered slice.
-
-`_warn_if_view_too_large(out_html, view, cfg, output_dir)` (called after each successful render in `generate_report`) logs a NOTE to `build_failures.log` + console when a view file is ≥ `VIEW_SIZE_WARN_MB` (80 MB), with concrete options: `binary_encode`, `scatter_decimate`, narrowing the extraction, and — for `boxplot`/`stat_summary`/`summary`, whose x-axis is per-frequency — that a categorical view over thousands of distinct offsets isn't meaningful and the scatter is the right view. Verified against the real 517 MB boxplot (warns, boxplot-specific tip included) and a small file (no warning). `qa_padb.py` baseline unchanged (37/4).
-
-**Follow-up (same day):** the SR DCFM/EFC jobs were rebuilt with `binary_encode: true` + `scatter_decimate: "auto"`. The scatters became viewable (DCFM 95→79 MB, EFC 40→33 MB — `scatter_decimate` kept min/max envelopes, 1.66M→397K rows embedded for DCFM); the boxplots stayed too big (DCFM 324 MB, EFC 113 MB) because `scatter_decimate` doesn't touch the boxplot's per-frequency aggregation and 7,662 offset categories is inherently huge — confirming a per-offset boxplot is the wrong view for wide-offset phase-noise data (use the scatter).
-
-## `padb_v2.py`: auto-enable `binary_encode` for large data (added 2026-09-03)
-
-Requested by the user (other groups now using the tool; oversized unrenderable pages are a real error class to prevent). `_maybe_auto_binary_encode(cfg, csv_path, df)` — called in `generate_report()` right after the CSV loads and `_fill_spec_nulls()` — sets `cfg["binary_encode"]=True` when **either** trigger fires: CSV file `>= AUTO_BINARY_ENCODE_MB` (25 MB) **or** usable row count `>= AUTO_BINARY_ENCODE_ROWS` (250,000). User picked "either MB or rows" via AskUserQuestion. Both thresholds are per-job overridable (`binary_encode_auto_mb` / `binary_encode_auto_rows`).
-
-**Safe to auto-enable because `binary_encode` is plot-transparent** — it float32-packs the numeric arrays (scatter Frequency/Value, boxplot `vals_detail`), changing only the file *encoding*/size, never a displayed value, statistic, or the plot. So this is a pure size/latency optimization with zero accuracy risk, which is why it's acceptable to flip on automatically for other groups' jobs.
-
-**An explicit `"binary_encode"` in job.json always wins (true OR false)** — the helper early-returns if the key is present, so anyone can force it on or off regardless of size. Logs a one-line `NOTE:` (console → captured in the webapp's `webapp_console.log`) naming which trigger fired. Note this is orthogonal to `_warn_if_view_too_large` (80 MB post-render warning): auto-encode is a *pre-emptive* input-size gate, the size guard is a *post-render* backstop for whatever slips through (e.g. an inherently-huge per-offset boxplot that no encoding can shrink — see the phase-noise note above).
-
-Verified via direct unit test of `_maybe_auto_binary_encode`: small/no-explicit → not enabled; 250k rows → enabled (NOTE printed); large + explicit `false` → stays false (override, no NOTE); small + explicit `true` → stays true; MB-only and rows-only triggers each fire independently. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## `padb_viewer.py` + parquet sidecar export — local-server viewer for datasets too big for self-contained HTML (added 2026-09-11, `develop` branch)
-
-**The problem.** Self-contained HTML embeds every data point as JSON, so a giant analytic (wide phase-noise offset sweeps, VSWR/Return_Loss, per-DUT power sweeps, large cross-site compares) produces a 300 MB – 2 GB page no browser can open (single-threaded JSON parse, ~2–4 GB per-tab ceiling). Spike finding: **this is a data-*encoding* problem, not a volume one** — an 885 MB / 6.5M-row compare merged CSV becomes a **6 MB parquet** (143×; a 19 MB one → <0.5 MB, 235×), because the hugely-repetitive Group/Model/Units columns dictionary+zstd-compress to almost nothing. The HTML is bloated by embedded JSON + Plotly trace structure + the per-point overlay, not the data.
-
-**Why a local server, not a static WASM page.** A page opened off a `\\share` is a `file://` (null) origin, where Chromium blocks ES-module `<script>`, `new Worker()`, *and* `fetch()` — exactly what an in-browser DuckDB-WASM viewer needs. Even over http, the shipped `@duckdb/duckdb-wasm` dist needs a JS bundler (bare `import "apache-arrow"`) or a CDN (jsdelivr blocked on this network; npm registry reachable), with no node/npm here to bundle. A `localhost` server sidesteps all of it, needs no WASM/bundler/CDN, and can be frozen to one `.exe` (Flask freezes cleanly; Streamlit resists it). User chose this route via AskUserQuestion after the spike.
-
-**`_maybe_export_parquet(cfg, csv_path, output_dir, df=None)` (padb_v2.py)** — called in `generate_report()` right after `_maybe_auto_binary_encode` (main path) and in the histogram branch. Streams the **raw source CSV** (via `_csv_to_parquet`, pyarrow zstd-9, bounded memory) to a `<csv_stem>.parquet` sidecar in the results dir — the *raw* CSV, not the loaded/filtered df, so the viewer sees the same columns the loader detects (x/value/Serial/Group incl. the `Site: ...` tag compare jobs add). For compare jobs that's `_compare_merged.parquet`, sitting beside `_compare_merged.csv` and `index.html`.
-- **Gate:** explicit `cfg["export_parquet"]` wins (true/false). Otherwise auto-export for **compare jobs**, or when the CSV is large by the *same* thresholds as binary_encode (`export_parquet_auto_mb`=25 / `export_parquet_auto_rows`=250k, per-job overridable). So a normal small job stays clean unless asked; a compare or giant job gets a sidecar automatically. **Never fails the build** — a parquet error is logged via `_log_note` and skipped.
-- Logs a one-line `NOTE:` with rows / CSV MB → parquet MB / ratio (console → webapp `webapp_console.log`).
-
-**`padb_viewer.py`** — standalone Flask app (prototype; scatter view first). `py padb_viewer.py <folder-or-parquet> [--port 8799] [--no-open] [--x COL] [--value COL]`. Reads the folder's parquet once (pandas/pyarrow, strings→category, `Site` parsed from Group text), then answers **server-side filtered + min/max-envelope-decimated** scatter queries over `http://localhost` (`/api/meta`, `/api/scatter?flo&fhi&maxpts&sites`) — the browser never loads the whole dataset (no ceiling). `_decimate()` buckets x across the requested window and keeps each bucket's min & max y point (preserves the visible envelope / spec excursions plain sampling would drop). Plotly is served from the existing bundled `_get_plotlyjs()` at `/plotly.js` (no CDN); no WASM, no JS bundler. Per-Site overlay with real n counts, frequency-range filter, points cap.
-
-Proven end-to-end on the real Return_Loss compare (was an **845 MB unopenable HTML**): loads 653k usable rows, full-range decimated query **~70 ms** server-side, renders an 8000-point envelope in **~346 ms**; zooming a sub-band refines detail (30,857 in-view → all 582 envelope points). Parquet export verified in-pipeline on the Level_Accuracy compare (`_compare_merged.parquet` written beside the HTML) and via direct gate tests (compare→export, explicit false→skip, small non-compare→skip, explicit true→export). `qa_padb.py` baseline unchanged (37/4).
-
-**Keep the self-contained HTML for normal small/medium analytics** — it works great and needs nothing. The viewer + parquet are only for the giants.
-
-**`.exe` packaging — DONE (2026-09-11).** `build_viewer.py` runs PyInstaller (`--onefile --collect-data plotly --collect-all pyarrow --hidden-import plotly.offline`, console kept) → one **~131 MB `PADB_Viewer.exe`** bundling pandas/pyarrow/plotly/flask. `padb_viewer.py`'s `target` arg is now optional: a frozen exe defaults to serving the folder it sits in (`_default_target()` → `Path(sys.executable).parent` when `sys.frozen`), so a user drops `PADB_Viewer.exe` into a results folder with a `.parquet` and double-clicks it — no Python. Verified end-to-end: exe placed in the real Return_Loss compare folder (whose boxplot HTML is 177 MB and won't open), auto-served `_compare_merged.parquet`, `/api/meta` correct, scatter query ~62 ms, rendered the AMC/SR compare scatter. Build artifacts (`dist/`, `_pyi_build/`, `*.exe`, `*.parquet`) are git-ignored — rebuild, never commit the binary.
-
-**`_csv_to_parquet` newlines fix (2026-09-11):** some PADB Group/label cells contain embedded newlines (Phase_Nose merged CSVs), which desynced pyarrow's CSV chunker ("CSV parser got out of sync with chunker") and failed the whole export. Fixed with `ParseOptions(newlines_in_values=True)`. Verified: Phase_Nose 207 MB CSV → 1.4 MB parquet.
-
-**Giant-rebuild finding (2026-09-11): `binary_encode` + `scatter_decimate` do NOT make the giants openable — the parquet+viewer is their only real delivery path.** Rebuilt all 8 giant compares with both set: dir sizes barely moved and the biggest HTMLs stayed unrenderable (DCFM boxplot **489 MB**, Return_Loss 177 MB, EFC 169 MB, VSWR 136 MB, Close_In distribution 227 MB / scatter 215 MB). Root cause is inherent: a per-frequency **categorical boxplot** over thousands of offsets embeds per-point data no encoding shrinks (the size guard already says "use the scatter instead"), and the compare scatters are genuinely millions of points. Meanwhile the **parquet sidecars are tiny** (Vernier 2017 MB CSV → **2.3 MB**, 878×; DCFM 1828 MB → 19 MB; Return_Loss 885 MB → 6.2 MB; all 8 now have one). So: don't expect encoding flags to rescue a wide-sweep giant — ship its parquet + `PADB_Viewer.exe`.
-
-**Remaining next steps:** add the other views (boxplot/summary/stat_summary/env_coverage/distribution) to `padb_viewer.py` the same server-side-query way; auto-link the viewer from a giant results folder's `index.html`; decide the giants' share layout (parquet + exe + the openable views, skipping the unrenderable boxplot HTML).
-
----
-
-## Boxplot: "Group by" is now a multi-select — pool by any combination of parameters (added 2026-09-02, prototyped on boxplot per user choice)
-
-Requested: "where multiple parameters exist, select multiple conditions to group by, not just one or all." Generalizes the single-dimension Group by. The `#box_group_by` `<select>` is now `multiple`; the selected set (`_boxGroupCols()`, the empty `''`=Condition option filtered out) drives pooling — `[]` = Condition (no pooling, one box per full condition), a non-empty set pools across every parameter NOT selected. Chosen with the user via AskUserQuestion: prototype on boxplot first, multi-select dropdown form.
-
-Implementation (all in `_STAT_BOXPLOT_INTERACTIVE_JS`):
-- New helpers: `_boxGroupCols()`, `_boxGroupKeyForPoint(cols,cd,d)` (composite per-point key across the selected dims — `__serial__`/`__port__` read the point's own fields, `__temp__` the temp, anything else a COND_DIM value via `_boxCondDimValue`), `_boxGroupColsLabel(cols)` (joined dim labels for legend/table), `_boxGroupHasUnitDim(cols)`, and `_boxGroupSelChanged()` (keeps the UI coherent — picking any real parameter clears "Condition"; clearing all re-selects it).
-- `_computeBoxGroupedByColId(cols, ...)` (was `colId`) builds the composite key per point. Aggregation rule generalizes the old one: **no serial/port in the group → `_dutAverage` (one DUT, one vote)**; **serial/port in the group → keep raw points, optional `_collapseDupRuns`** keyed on the full identity `(cond,temp,serial,port)`. `buildBoxTraces`/`buildPortSerialTraces` and the Statistics-Table grouped branch all switched from the single `box_group_by.value` + `_isPoolableGroupBy` to `_boxGroupCols()` (the superseded `_isPoolableGroupBy` was **removed 2026-09-03**). `clearEverything` resets the multi-select to `DEFAULT_GROUP_BY`.
-- Boxplot was the prototype; **now extended to the other four views (2026-09-03)** — see the next section.
-
-Verified headlessly against the `qa_padb.py` synthetic (HarmonicNumber × Port × Serial × temp): Condition → 18 full-condition boxes; HarmonicNumber alone → 2; **HarmonicNumber + Port → 4 composite boxes (`RF1 | 2`, `RF1 | 3`, `RF2 | 2`, `RF2 | 3`)**; Statistics Table rows correctly labeled `Port + HarmonicNumber: RF1 | 2`; clicking Condition returns to no-grouping; Reset restores the default. `qa_padb.py` baseline unchanged (37/4).
-
----
-
-## Multi-select "Group by" extended to scatter, stat_summary, summary, env_coverage (added 2026-09-03)
-
-After the boxplot prototype was confirmed, the user asked to apply it to the other plot types (explicitly including scatter, "makes it easier to compare data across plot types"). Each view has its **own** Group-by selector and grouping code, so each was generalized independently but to the identical pattern:
-
-- **Selector → `<select multiple>`** (`statGroupBySel`, `ecGroupBySel`, `sumGroupBySel`, and scatter's `groupby`), with `size` sized to the option count and a per-view `_xxxGrpChanged()` coherence handler (picking any real parameter clears the "Condition" option; clearing all re-selects it). The three statistical views keep a `<option value="" selected>Condition</option>` default; scatter has no Condition option (it always splits by something) — its default stays the fewest-cardinality dimension.
-- **`getGroupedConditions()`** in `stat_summary` / `env_coverage` / `summary` now reads the selected set (`_statGroupCols`/`_ecGroupCols`/`_sumGroupCols`, the empty `''` filtered out), and groups by the **composite** of the selected dimensions' values (joined `  |  `) instead of one dim. `stat_summary` extracts each dim's value from the condition string via regex (keyed on `col_id`); `env_coverage`/`summary` read `cd.cond_keys[col]`. Empty selection → return the ungrouped active conditions (Condition). The existing pool helpers (`_poolFreqStats`/`_poolEcConditions`/`_poolSumRecords`) are unchanged — only which records group together and the label changed. The group label is the joined dim labels + `: ` + the composite value (e.g. `HarmonicNumber + Upper Spec (<=): 2  |  -43.0`).
-- **scatter** (`buildTraces`): splits/colors traces by the composite of the selected `_grp_*` columns; **none selected → one combined `(all)` trace** (scatter must always draw something). This is a display split, not statistical pooling — same as scatter's Group by always was.
-- `env_coverage`'s "Show excluded" gate (`gbActive`) now uses `_ecGroupCols().length>0` instead of the single `.value`, so it correctly detects grouping-active under multi-select. Resets (`.value=''`) still land on Condition — and even if a browser's multi-select `.value=''` behaved oddly, empty cols always means Condition, so reset is robust either way.
-
-Verified headlessly on the `qa_padb.py` synthetic for all four: single-dim gives the expected N groups, a two-dim selection gives the composite groups (`2  |  -43.0`, …), Condition/none returns the full ungrouped set (scatter → `(all)`). `qa_padb.py` baseline unchanged (37/4). `boxplot` keeps its own richer implementation (serial/port pooling with dut-average-vs-raw rules); these four are the lighter condition-dimension pooling their existing single-select already did, just generalized to a combination.
-
----
-
-## Dev-environment gotcha: Claude desktop won't launch — "Another program is currently using this file" (diagnosed 2026-09-03)
-
-Not a padb-tools issue at all, but a recurring morning time-sink on this workstation, documented here for the same reason the `backup_memory.ps1` header documents the `schtasks`/Store-alias-stub gotcha: it costs a reboot every time it's rediscovered.
-
-**Symptom:** arrive in the morning, the Claude desktop GUI is closed (nobody closed it), clicking the icon throws a modal error box reading "Another program is currently using this file." Ending "Claude" in Task Manager doesn't clear it; only a reboot does.
-
-**Cause:** Claude desktop installs as an **MSIX package** under `C:\Program Files\WindowsApps\Claude_<version>_x64__pzs8sxrjxfjjc` and auto-updates itself overnight. If any process from the old version is still alive when the new one is staged, Windows can't swap the package and parks it — `Microsoft-Windows-AppXDeploymentServer/Operational` event **658**, "Marking package {new} for deferred registration because {old} is still running." The staging tears down the visible window, which is why the GUI is already closed in the morning. The next launch has to finalize that parked registration first, hits the still-locked package files, and fails — escalating to event **419**/`0x80073D02` (`ERROR_PACKAGES_IN_USE`, "Unable to install because the following apps need to be closed") when it gives up.
-
-Confirmed on this machine across three consecutive days (2026-09-01 through 2026-09-02): every version bump logged a 658, and 2026-09-01 logged the full 419/401/404 failure triple.
-
-**Why Task Manager doesn't fix it — two independent reasons:**
-1. A running Claude spawns ~13 `claude.exe` processes. "End task" on the app entry reaps the visible tree; the headless helpers sit under *Background processes* and survive. One survivor keeps the package locked.
-2. Even at zero processes, a deferred registration **does not retry on demand** — Windows only re-attempts it at a user logon. So the error persists after killing everything, which is what makes a reboot look like the only cure.
-
-**What actually closes the GUI (2026-09-08, from the app's own `…\AppData\Local\Claude\logs\main.log`):** not Windows tearing down the window during staging — the **app quits itself to install the update**. Claude's updater has a "stealth relaunch": when an update finishes downloading it logs `[updater] Update downloaded and ready to install`, saves its window z-order/nav (`[stealth-relaunch] Saved ...`), then logs `Windows session ending (close-app) - quitting the app` and exits, expecting to relaunch on the new version in seconds (it has done this invisibly on every prior update). The `(close-app)` tag is the app closing *itself*; a real OS logoff/shutdown logs `(critical)` instead. On 2026-09-08 the sequence was: `11:14:09 Update ... ready { Claude 1.49585.0 }` → `12:35:00 ... quitting the app` → no relaunch until `15:08` (after the reboot). It couldn't come back because `CoworkVMService` (below) held the package, so the deferred update never registered — turning a normally-invisible self-relaunch into a stuck outage. There was **no crash** (no WER/Application-Error/Hang for claude.exe that day), which is the tell that it was a clean self-quit, not a kill.
-
-**Root cause refined (2026-09-08) — the real persistent blocker is a packaged *service*, not the GUI processes.** Recent Claude builds install **`CoworkVMService`** (DisplayName "Claude"): a `StartMode=Auto`, **LocalSystem** Windows service whose binary is `...\WindowsApps\Claude_<ver>\app\resources\cowork-svc.exe` — i.e. it runs from *inside* the package folder, so while it's alive the MSIX package can't be swapped. It **keeps running after the GUI window is closed** and is not named `claude.exe`, so both `Get-Process claude` (the old script's kill step) and Task Manager's "End task" on Claude miss it entirely — this is why the old script "did not remedy" the failure and a reboot was needed. Confirmed live from the deployment log: the deferred-registration event 638 named the running blocker, and the only thing that let a subsequent `RegisterByPackageFamilyName` complete was the engine's `TerminateSingleService ... in package CoworkVMService`. Its service ACL grants Authenticated Users `SERVICE_STOP` (`sc.exe sdshow CoworkVMService`), so it can be stopped **without admin**. `fix_claude_launch.ps1` now stops `CoworkVMService` (and reaps any stray `cowork-svc.exe`) as its first step, before reaping `claude.exe` and re-registering. Because the service is Auto/LocalSystem, closing the GUI (or even quitting from the tray) does not stop it — so the overnight-update conflict is now largely inherent, and running this script is the reliable non-reboot remedy.
-
-**Fix without rebooting:** run [fix_claude_launch.ps1](fix_claude_launch.ps1) from a **plain PowerShell window** (not a terminal inside Claude — its steps stop the cowork service and kill the process hosting that terminal):
-```
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\apps\padb\tools\fix_claude_launch.ps1
-```
-It reaps every `claude` process, forces the parked registration via `Add-AppxPackage -RegisterByFamilyName -MainPackage Claude_pzs8sxrjxfjjc` (per-user, no admin needed), then prints the recent 658/419 events for confirmation. If the re-register still fails, sign out of Windows and back in — a logon always clears a deferred registration, and is faster than a full reboot.
-
-**Prevention:** quit Claude from the **tray icon** (right-click → Quit), not the window's X, before leaving for the day. Closing the window leaves the app running; the app also auto-starts at login (`ClaudeStartup` under `HKCU:\...\AppModel\SystemAppData\Claude_pzs8sxrjxfjjc`), so it comes back regardless. With no processes alive overnight, the update registers cleanly and the morning launch is uneventful.
-
-**Related, and worth not confusing with this:** the "webapp restart killed an in-progress job" fix (2026-08-21, above) is a *different* parent/child-lifetime problem — that one was a stdout pipe, this one is MSIX package registration. Neither is a Windows Job Object cascade; both were originally misdiagnosed as one.
-
----
-
-## Boxplot Site Population Check: dup-pts per-serial rollup, wrap, scroll box, collapse-aware (2026-09-09)
-
-Four fixes to the boxplot cross-site **Site Population Check** per-point detail table, all reported by the user against a real CloseIn compare page (`compare_SR_vs_AMC_NonHarmonics_Close_In...boxplot.html`):
-
-1. **"`<SITE>` dup pts" repeated the same serial once per selected condition — real bug.** `pvDup` was `_dupBreakdown(pvItems, key=(serial,cond,port), label=serial)` — so a DUT that ran twice under each of N selected conditions (e.g. *all* SpurTypes at once) emitted `US...×2` N times in one cell ("repeated dozens of times ... makes no sense"). Fixed to **roll up to one entry per serial**: detect a genuine repeat per exact `(serial,cond,port)` identity, then aggregate → `US65080401×2 (6 conds)` once. The underlying ×2 is *real data* (this dataset genuinely ran every point twice, two different real values per point — the column exists to surface exactly that); only the display was wrong.
-2. **"Collapse dup runs" now drives this panel too.** `updateSitePanel()` reads `isCollapseDup()` and, when on, averages each DUT's exact-identity repeats in BOTH the primary-site fence population and the checked non-primary points (via `_collapseDupRuns`, keyed `serial|cond|port`), matching the plot's collapsed view; the panel header notes "(dup runs collapsed — one point per DUT)" and the dup-pts column then reads `—`. Boxplot-only, because boxplot's per-DUT data is raw `vals_detail`; summary/stat_summary use server-pre-averaged `dut_vals` (no raw repeat to collapse), and their Site panels have no dup-pts column at all.
-3. **Dup-pts cell wraps** (`max-width:220px;white-space:normal;overflow-wrap:break-word`) — `.stbl td` is `white-space:nowrap` globally, so a long serial×count list overflowed; same treatment the "Fence check" cell already had.
-4. **Per-point table sits in a `max-height:60vh;overflow:auto` box** so the horizontal scrollbar is at the bottom of the viewport (always reachable) instead of the bottom of a very long table.
-
-Verified on a synthetic multi-SpurType compare (401 & 402 ran twice under all 6 SpurTypes): collapse-off shows `US65080401×2 (6 conds), US65080402×2 (6 conds)` (one per serial, was 12 entries); collapse-on shows `—` with the header note. `qa_padb.py` unchanged (37/4).
-
----
-
-## Boxplot: "Set outliers as GF" over-excluded whole DUTs (frequency dropped at match) — now point-precise (fixed 2026-09-10)
-
-Reported against a real page (`AmplitudeAccuracyClosedLoop` `Absolute_Accuracy_NA` boxplot, whose analytic now *does* carry serials — the old "NA has blank serials" note was a stale extraction): "remove outliers does not work in the plot" / "clear global filter does not work" (the latter could **not** be reproduced — the Clear button correctly restores the plot in both Exclude and Inspect modes; it was almost certainly the blank plot below being read as "clear broke").
-
-**Root cause of the real bug:** "Set outliers as GF" builds precise per-point keys (`serial‖condKey‖temp‖freq`, real frequency), but the GF matcher deliberately **dropped the frequency** — `_loadBoxGlobalFilter()` coarsened every key to `serial‖condKey|Temp=temp` and `_boxIsInGf()` matched that (documented "frequency is dropped at match time"). So setting outliers as GF didn't remove the outlier *points* — it removed **every frequency** for those (serial, port, temp) combos. On NA (one pooled "All" condition, Room-only, 8 DUTs, and *every* DUT has ≥1 outlier) that excluded the entire dataset → `update()` rendered **0 traces**, a blank plot.
-
-**Fix (boxplot only, per user choice):** the GF match is now frequency-aware for keys that carry a real frequency, while whole-DUT "Set filter as GF" (freq `'0'`) stays coarse:
-- `_loadBoxGlobalFilter()` appends `|Freq=<parts[3]>` to the coarse key **only** when `parts[3]` is a real frequency (present, not `'0'`, parses > 0). Filter keys (freq `'0'`) get no `Freq` dim → still whole-DUT.
-- All 6 per-point `_boxIsInGf(...)` check-key constructions now append `+'|Freq='+<freqvar>.freq.toFixed(3)` (five sites use loop var `f`, the Site-panel site uses `fs` — matching the stored `f.freq.toFixed(3)` in `_collectOutliers`).
-- `_boxIsInGf()` needed **no change**: its dims-intersection only constrains dims present in the *stored* key, so a whole-DUT stored key (no `Freq` dim) still matches every frequency, while an outlier stored key (`Freq=X`) matches only that frequency.
-
-Verified on the real NA boxplot: "Set outliers as GF" now keeps the plot populated (2 traces, 1099 box positions, GF=404) and is point-precise — the outlier point `US65080433 RF1 Room @ 17.578` is excluded while the *same DUT at 50.000 MHz* is kept; "Set filter as GF" still excludes all frequencies (whole-DUT); Clear restores fully. `qa_padb.py` 37/4, `qa_js_segments.py` 10/0 unchanged. Scope is boxplot-only — the other views' GF helpers (`_isStatGfExcl`, etc.) were not touched.
-
-**Follow-up (2026-09-10): the `|Freq` key still over-excluded via a precision collision — now keyed on the box LABEL, not `toFixed(3)`.** The hardened `qa_filters.py` gate (see `QA_GUIDE.md`) deterministically caught that the above fix, while correct in principle, still over-excluded on the `AmplitudeAccuracyClosedLoop` compare boxplots (`Absolute_Accuracy_PM`: 166 non-outlier points wrongly removed; `NA`: 125). Root cause: the `|Freq` component used `f.freq.toFixed(3)`, which **collapses genuinely-distinct close categories** into one key — e.g. `0.099999` vs `0.1 MHz`, `8.789061` vs `8.789062 MHz` (instrument float-rounding noise rendered as separate boxes). 282 colliding freq-groups in the PM data. So "Set outliers as GF" on one box also removed points in its collision-siblings. This is the same class as the boxplot freq-**label** collision fixed earlier (adaptive-precision labels), but in the GF **key**.
-
-**Fix:** new `_gfFreqKey(f)` returns `f.freq_label` (the categorical box identity the x-axis is actually keyed on — line ~10846 `x:fs_arr.map(f=>f.freq_label)`) instead of `f.freq.toFixed(3)`, so GF frequency granularity == the plotted box, by construction: two boxes with distinct labels (`0.099999 MHz`/`0.1 MHz`) are distinguished, while two `f.freq` values that share one label (`11.718749`/`11.71875` → both `11.71875 MHz`, i.e. one Plotly category) are treated as one. Applied at all 9 boxplot GF freq sites (2 stored-key builders `_collectOutliers`/`_collectDeltaOutliers`, `setFilterAsGf`'s non-whole-DUT branch, and the 6 `_boxIsInGf` check-key constructions), plus the `_loadBoxGlobalFilter` coarsener's `_fq` test relaxed from `parseFloat(parts[3])>0` to `parts[3]!=='0'` (any non-sentinel label is point-precise). **Contained to the boxplot**: `_isStatGfExcl`/`_isDistGfExcl`/`_isEcGfExcl` all drop the frequency component entirely (coarse match on `serial||condKey` only), so no other view parses `parts[3]`. `setFilterAsGf`'s whole-DUT `'0'` sentinel is unchanged (a label is never `'0'`). Old numeric GF keys still in a user's `localStorage` simply stop matching (under-exclude, the safe direction) until re-set; `clearGlobalFilter` resets.
-
-Verified with the gate (rebuild the page first — it tests pages as built): `Absolute_Accuracy_PM`/`NA` reach `outliers-GF-precise` **PASS** (`outside-outlier-identity=0`), deterministically; single-axis `compare_SR_vs_AMC_Normal_PM1_Accuracy` full-suite **27/0** — point-precise outliers (removed=8, outside=0) *and* whole-DUT "Set filter as GF" still exact (`filter-GF-whole-dut` leftover=0, keeps-others 126=126). `qa_padb.py` 37/4, `qa_js_segments.py` 10/0 unchanged. **Note:** `AM1_Flatness` (and other "Flatness" analytics) turned out NOT to be a boxplot at all any more — its swept x is `Rate (kHz)` (not `Frequency`), so `_site_has_swept_x` correctly routes the compare to **histogram**; the old boxplot HTML there is a stale pre-reroute artifact, not a live view. (Whether a `Rate (kHz)`-swept compare *should* be a per-rate boxplot rather than a pooled histogram — i.e. teaching `_site_has_swept_x`/compare jobs the non-`Frequency` x_col — is a separate open question, not this GF fix.)
-
----
-
-## Point-precise GF extended to ALL views — scatter, stat_summary, summary, env_coverage, distribution (added 2026-09-10)
-
-The boxplot fix above ("Contained to the boxplot" — no longer true) made the boxplot's GF point-precise on `(serial, cond, port, temp, freq-box)`. The other five views still matched GF at coarse **(serial, condition)** granularity (whole-DUT-per-condition, dropping temp+freq), so a boxplot-set outlier GF that dropped one point in the boxplot dropped that DUT's *whole condition across every frequency* in the tables. Per user request ("make the other views' GF point-precise") and their choice via AskUserQuestion ("Full (serial, cond, temp, freq) where possible"), all five now match point-precisely.
-
-**The frequency identity is `freq_label` (the categorical box), not a number** — a box can contain several distinct float frequencies that share one adaptive-precision label (see the freq-collision fix above). So each view embeds `freq_label` per point/freq from the SAME `_freq_label_map(all-df-freqs, x_unit)` the boxplot uses (deterministic → identical across views), and matches on that. Every view's matcher became a `_boxIsInGf`-style **dims-intersection** (a stored key only constrains the dims it carries: a whole-DUT "Set filter as GF" key — freq `'0'`, no `|Freq` dim — still matches all frequencies; an outlier key with `|Freq=<label>` matches only that box). Base-serial stripping was added where the view's per-point serial is port-qualified but GF keys store the base (`_boxBaseSerial`).
-
-Per-view specifics and temp/port scope:
-- **scatter** (`_AV_FREQ_JS`): already had a fine matcher `_isInGfFull` (serial+cond+**temp**+freq) — but keyed freq on `r.Frequency_MHz.toFixed(3)`, which (a) had the same collision and (b) after the boxplot switched its keys to `freq_label`, **silently stopped matching** (broke scatter's cross-view GF). Fixed to key on `freq_label` via injected `FREQ_LABEL_PAIRS` → `_gfRowFreqKey(r)`. Full precision (temp via `r.Test_Step` — normalized "Room"/"20°C", matches the boxplot; port via `_grp_` Port in the row cond-map).
-- **stat_summary** (`_STAT_SUMMARY_JS`): Room-only, so temp is always `'Room'`. Coarsener keeps `|Temp|Freq`; `_statGfIsIn` dims-intersection; `_statBaseSerial` strips via `SS_ALL_PORTS`; matches serial+cond+port+`Room`+freq. `_aggregate_stat_data` embeds `freq_label` per freq_stat.
-- **env_coverage** (`_ENV_COVERAGE_JS`): freq-precise, **temp-agnostic** (its data is temperature deltas + a Room population per DUT, so a single temp is ambiguous). GF split into `_isEcGfWholeDut` (drops a DUT from the population — used by `getActiveDuts`/`getDeltaDuts`) vs `_isEcGfAtFreq` (drops an outlier-GF'd DUT's contribution at only its freq box — applied per `(dut, freq)` inside `computeStats`' Room and delta loops). `_aggregate_env_coverage_data` embeds `freq_labels` per condition.
-- **summary** (`_SUMPLOT_JS`): freq-precise, **temp/port-agnostic** (summary pools all temps into one per-DUT mean and its `dut_info` carries only `{s: serial}`). `getSumCondData` computes per-frequency included-DUT sets (`_sumInclAt`) instead of one whole-DUT `_inclIdxs`, with a per-freq TI n-scale. `render_summary` (padb_v2) embeds `freq_labels`; `_poolSumRecords` carries them through Group-by pooling.
-- **distribution** (`_build_env_distribution_html`): Abs mode full precision (temp via `TEMPS[ti]`); ΔTemp mode freq-precise but temp-agnostic (a delta spans Room+non-Room). `RAW_ABS`/`RAW_DELTA` embed a per-point `fl` (freq_label) from the **full-precision** freq — their `f` is rounded to 1 decimal, so a client-side numeric→label lookup would miss.
-
-**Cross-view frequency representation is the linchpin, and it's consistent by construction** because every view builds `freq_label` from the whole df's frequency set via the one shared `_freq_label_map`. Temperature strings are consistent too (all normalized by `_parse_temp` to "Room"/"20°C"). Old numeric GF keys in a user's localStorage stop matching (under-exclude, the safe direction) until re-set.
-
-Each view verified cross-page headlessly (write a boxplot-format GF key to localStorage, confirm the view excludes exactly the right point): e.g. stat_summary — RF1@freqA excluded, RF2@freqA kept (port-precise), RF1@freqB kept (freq-precise), whole-DUT key excludes all; env_coverage — an outlier GF drops that condition's `room_ns` 11→10 at freqA while freqB stays 11; summary — the recomputed mean excludes the DUT at freqA while freqB includes all DUTs. All six views (incl. boxplot) gate clean via `qa_filters.py`; `qa_padb.py` 37/4, `qa_js_segments.py` 10/0 throughout. (A companion `qa_filters.py` fix made its table + outlier-identity checks robust to multi-temp single-site boxplots — the box group is `cond (temp)` while the table row is `cond / temp`, and the pts-overlay serial is port-qualified while GF keys are base.)
-
----
-
-## summary `exportTableCSV` over-exported filter-hidden rows, mislabeled "GF Excluded" (fixed 2026-09-13)
-
-Found by the new **CSV-export-matches-screen** QA check (`qa_filters.py`'s `runCsvExport` — see `QA_GUIDE.md`). `exportTableCSV()` (`_SUMPLOT_JS`) computed `excluded = DATA.filter(cd => active.indexOf(cd)<0)` — *every* condition not in the shown/active set — and emitted them all with `GF_Status="GF Excluded"`. But `active` (`_getFilteredActive()`) is already narrowed by the condition/temp/data filters, so a condition the user hid with an ordinary filter (no Global Filter set at all) was still exported and falsely tagged "GF Excluded" — the export was a superset of the on-screen Results Table (which shows the active set only). Confirmed directly: with GF empty, deselecting one HarmonicNumber value left the CSV at 20 rows (10 active + 10 mislabeled "GF Excluded") while the table showed 10; the sibling `saveCSV` correctly emitted 10.
-
-**Fix:** `excluded` is now only the rows the *Global Filter* removed from the current selection — `_getFilteredActive(false).filter(cd => active.indexOf(cd)<0)` (the GF-bypassed selection minus the shown set). A condition hidden by a condition/temp/data filter is simply not exported (matching the screen); genuinely GF-excluded rows are still appended and correctly labeled. `_getFilteredActive()` still respects the local `sum_gf_chk` toggle, so with GF display off, `excluded` is empty.
-
-Verified via the in-app browser against a freshly-built summary page: `exportTableCSV` now tracks the filter (20→10) and its row count equals the Results Table's; `qa_padb.py` 37/4 unchanged (this is a JS-only change; the deterministic core is unaffected).
-
-**The QA check that caught it — `runCsvExport` (`qa_filters.py`):** for every view with an export it intercepts the `Blob` constructor to capture the CSV text (exports download rather than return text), then asserts the export is *what's on screen*: non-blank; tracks a filter (a condition/serial/temp checkbox, or the frequency range when a length-based plot signature doesn't move — e.g. env_coverage) — shrink on narrow, restore on undo; the on-screen-count equalities (histogram CSV rows == plotted measurements; summary `exportTableCSV` rows == Results-Table rows); and, for the histogram, an **import round-trip** — re-importing the just-exported CSV via `_hApplyImport` reproduces the identical plot + table. Boxplot has no table CSV export (only `saveSitePopulationCSV`), so it skips cleanly. Browser-tier, so it honest-exits-3 when headless Edge is down (verified in-app-browser instead).
-
----
-
-## histogram: Site Population Check (SR-fence membership) + edit-reimport workflow (added 2026-09-13)
-
-Extends the cross-site **Site Population Check** (previously boxplot/stat_summary/summary only) to the `histogram` view — the natural fit, since a histogram is already a value *population* with no swept x. Gated on a `Site` dimension (≥2 sites, from a `compare_csv` merge) plus `primary_site` (`_HISTOGRAM_JS`; server emits `PRIMARY_SITE`/`SITE_COL_ID`, gates the panel button on `site_compare_enabled`).
-
-- **Fence per non-Site dimension combination** (there's no temp/freq to bucket by): `_hSiteFence(vals,k)` builds a Tukey `Q1−k·IQR … Q3+k·IQR` from the PRIMARY_SITE (SR) values in each bucket (e.g. per Port), then classifies every non-primary ("MY") measurement inside/outside, `n/a` when the SR bucket has <4 points. **`k` is a live control** (`#h_site_k` number input in the panel's static button row — default 1.5, the standard Tukey fence; `_hSiteK()` reads it, `updateSitePanel()` recomputes on change). Lower k = stricter (more flagged OUTSIDE), higher = looser — same live-k idea the boxplot Site check has. Per-DUT triage (`_hSiteTriage`, toward-fail direction from `LIMIT_HI`/`LIMIT_LO`), frequency-cluster-equivalent "multiple DUTs in the same bucket → likely station/systemic", and a per-point table sorted OUTSIDE-first — mirroring the boxplot version. CSV export via `hSaveSitePopulationCSV` (reuses `_hLastSiteRows`, so it can't drift from what's on screen).
-
-- **The fence is computed from the FILTERED data** — the current dimension + serial checkbox selection, deliberately **not** the Pass/Fail filter (the fence must see the whole distribution). Recomputed live on every `update()`.
-
-- **No Global Filter on the histogram — so the way to drop a bad SR reference DUT is export → edit → reimport.** The serial checkbox deselects a serial on *both* sites at once (wrong when serials are shared), and there's no GF here. So the workflow is: Export CSV → delete the bad SR DUT's rows in Excel → Import CSV back into the page → the fence recomputes from the cleaned SR population. **This required a fix to `_hApplyImport`:** it rebuilds dims with fresh `col_id`s on every import and never re-pointed `SITE_COL_ID`/`PRIMARY_SITE`, so the fence panel went blank after a reimport. Now it re-detects the `Site` dim (keeps the existing primary site if still present, else first site value; disables the panel if the imported CSV has no Site column).
-
-**QA (`qa_filters.py` `runHistogramSite`):** independently recomputes the SR fence + classification from the raw `VALUES`/`DIMVALS` (reading the live `#h_site_k`) and compares to the panel's own rows (catches wrong bucketing / primary-split / a uniformly-wrong fence), asserts every OUTSIDE value is truly outside its stated fence, checks the **live k slider is monotonic** (stricter k flags ≥ as many OUTSIDE, looser ≤, and k has a live effect — e.g. `k=0.5→137, 1.5→26, 5→0`), the panel CSV export matches on-screen (All + Outside-only), **and drives the full edit-reimport workflow** — export → delete one SR DUT's rows → `_hApplyImport` → assert the panel re-wires (`SITE_COL_ID` valid, rows>0) and the removed DUT's values are gone from the fence population (`SR pop 400→320, removed D1 = 80 rows`). Runs *before* `runCsvExport` (whose own round-trip replaces the data globals). Self-skips off a compare histogram. Verified in-app-browser (Edge dead): 9/9 site checks pass on a synthetic SR-vs-AMC switching-speed compare. `qa_padb` 37/4, `qa_selfcheck` GREEN.
-
----
-
-## Site Population Check extended to env_coverage + distribution (added 2026-09-13)
-
-Completes the tracked TODO — the cross-site SR-fence membership panel now exists in all six views. env_coverage and distribution share a **view-agnostic panel** rather than a fifth/sixth bespoke copy: `_SITE_PANEL_SHARED_JS` (module constant in `padb_plots.py`) provides `_spFence(vals,k)` (Tukey `Q1−k·IQR … Q3+k·IQR`), `_spTriage`, `_spRollup`, `_spRender(rows,meta)` (summary + per-DUT triage + multi-DUT clusters + per-point table), `_spCsv`/`_spDownload`, and `_spSiteFromG` (parse `Site: <name>` from raw Group text). Each view supplies only its own point-gathering + a **selectable fence basis radio** + a live k; both call `_spRender`/`_spCsv`. Function names are `_sp`-prefixed so they don't collide with the boxplot/histogram views' own bespoke copies (not migrated — left as-is).
-
-- **distribution** (`_DIST_SITE_JS`, wired in `_build_env_distribution_html`): basis radio **Absolute** (RAW_ABS values) vs **ΔTemp** (RAW_DELTA deltas). Fence per `spur | temp | port | freq` from the primary site's points; site parsed per-point from `.g`. Respects the view's live filters (freq/serial/port/cond-dim/GF) exactly like `update()`. `updateDistSitePanel()` hooked into `update()`. **Gotcha fixed:** inside `_build_env_distribution_html`, `html` is the local result-string variable (shadows the `html` module) — `html.escape()` there throws and produced a 267-byte stub; pre-escape into a plain `_ps_disp` var instead.
-- **env_coverage** (`_EC_SITE_JS`, wired in `_build_env_coverage_html` + `render_env_coverage`): basis radio **Room baseline** (per-DUT `room[freq]`) vs **ΔEnv drift** (per-DUT `deltas[temp][freq]`) — the genuine semantic choice the old TODO flagged, resolved by making it user-selectable per the user's request. Fence per `condition-dims | freq [| temp for drift]` from the primary site's DUTs (`getActiveDuts`, serial/port/GF filtered); site read from `cd.cond_keys['Site']` (Group-by pooled conditions have empty cond_keys → skipped). `updateEcSitePanel()` hooked into `update()`. `render_env_coverage` (padb_v2.py) detects sites from Group text, builds the button/basis-radio/k row (`ec_site_btn_html`), and passes `primary_site` + `site_btn_html` into the builder (new params).
-
-Both emit `PRIMARY_SITE` (null when not a compare) and gate the panel button server-side. Live k on both (`dist_site_k`/`ec_site_k`, default 1.5). CSV export per view (`saveDistSitePopCsv`/`saveEcSitePopCsv`) reuses the cached `_distLastSiteRows`/`_ecLastSiteRows`, so it can't drift from the panel.
-
-**QA (`qa_filters.py` `runSiteFencePanel`, generic over both):** panel produces rows; every OUTSIDE value is truly outside its own stated `[lo,hi]` and every inside truly inside; each non-`n/a` fence is a valid Tukey fence (`n≥4`, `lo≤hi`); **both bases render non-blank**; the live k is monotonic (`k=0.5≥1.5≥5`, with a live effect); and the panel CSV export matches on-screen (All + Outside-only). Verified in-app-browser (Edge dead): distribution 8/8 (Abs 54/90 outside, ΔTemp 93/120; k 69/54/17), env_coverage 8/8 (Room 6/30, ΔEnv drift 46/60; k 12/6/3). `qa_padb` 37/4 unchanged (non-compare env_coverage/distribution still build), `qa_selfcheck` GREEN.
-
----
-
-## Auto-filter bad DUTs + Workflow & Recommendations + print-to-PDF report (added 2026-09-14)
-
-A statistically-principled, self-QA'd feature set for finding and excluding bad DUTs, built on a shared engine and rolled out across the population views.
-
-**Shared engine (`_AUTO_FILTER_SHARED_JS`, one module included by each view):** `_afScorer(basis,fv,hi,lo)` is the single source of the per-bucket badness magnitude for every basis — **dist** (MAD modified-z, Iglewicz 3.5; robust, non-saturating — the reason it's MAD not σ-from-mean, which saturates at ~2.85σ for n≈10 and masks the very outlier), **iqr** (Tukey 1.5×IQR fence — matches the boxplot whiskers), **dmad** (double-MAD, skew-aware), **spec**/**tll** (fail-side exceedance past the datasheet/limit, σ-scaled). `_afCompute` classifies per DUT: **auto** (meets the level bar AND per-DUT false-removal **risk** < 5%), **marginal** (review+affirm), **review** (systemic = ≥2 DUTs failing the SAME direction at one frequency; benign = peer-outlier away from a one-sided spec; onboarding-site on compare). `_afPreview`/`_afApply`/`_afAffirm` drive the preview panel. `_afAnalyze`/`_afRecommend` pre-analyze the loaded dataset (DUTs/conds/freqs, multi-temp, compare, spec presence, skew fraction, population size) and recommend a **data-dependent** basis+level with written justification; `_afRenderWorkflow` shows a tailored workflow; `_afRunWorkflow` is the one-click, audited, reversible auto-execute (applies only the conservative `auto` set); `_afGenerateReport` builds an **offline print-to-PDF** report (dataset + recommendation + justification + workflow + outcome/audit + plot snapshots via `Plotly.toImage`: current view + per-band + marginal-reveal, captured by `_afCapture` briefly re-configuring the view and restoring).
-
-**Per-view wiring (a ctx object per view; HTML via `_af_control_html`/`_af_workflow_button_html`/`_af_panels_html`):**
-- **boxplot** (`BOX_AF`) — bespoke preview/compute predating the shared module; uses `_afScorer` + shared workflow/report.
-- **stat_summary** (`STAT_AF`), **summary** (`SUM_AF`), **env_coverage** (`EC_AF`) — full shared engine. Each writes the canonical point-precise **Global Filter** key (`baseSerial||condKey||temp||freqLabel`), so a clean in one view is inherited live by **every** view (scatter/distribution too). summary = per-DUT cross-temperature mean; env_coverage = active DUTs' Room values per (cond,freq); both peer-relative bases are the meaningful ones where there's no page spec.
-- **histogram** (`HIST_AF`) — **has NO Global Filter** (its cleaning vehicle is CSV edit-reimport). Auto-filter flags per-**measurement** outliers within each dim-combination bucket and applies them to `_hAutoExcl` (a measurement-index `Set` consulted by `_hFilteredIdx`) — reversible, non-destructive, standalone. ctx text is overridden (`applyNoun`/`undoHint`/`inheritNote`) so the shared UI never says "Global Filter" here.
-  - **Undo affordance corrected 2026-09-15**: the undo *button itself* (and the auto-filter control's own tooltip) is rendered by `_af_control_html`, which previously hardcoded the label **"Clear global filter"** and a "browser-wide, shared across all views" tooltip regardless of view — so on the histogram the visible button said "Clear global filter" even though the histogram has no shared GF (it does correctly clear `_hAutoExcl`, only the wording was wrong). `_af_control_html` now takes `clear_label` / `clear_title` / `apply_dest` params (defaults unchanged for ec/sum/stat/boxplot); the histogram call site passes **"Clear auto-exclusion"** + a view-local tooltip + an `apply_dest` that says "this histogram only … use Export CSV to hand a clean off". The remaining shared-JS prose that renders for the histogram was also made ctx-driven: `_afRenderWorkflow`'s closing "reversible via …" note now uses `ctx.undoHint`, and `_afWorkflowSteps`' compare export step says "the auto-exclusion is browser-local" (vs "the Global Filter is browser-local") when `ctx.inheritNote!=null`. So the histogram now says "auto-exclusion", never "Global Filter", in the button, both tooltips, the workflow steps, the preview panel, and the run audit. Pinned by `qa_regressions.py` (`undo-label:` checks — default helper says "Clear global filter", histogram override says "Clear auto-exclusion" and NOT "Clear global filter"), 131/0.
-- **scatter/distribution** deliberately have NO engine — they *inherit* the GF clean (scatter) / are standalone shape views. Not wired.
-
-**Self-QA (all features must self-QA):** `qa_filters.py` — key-precise `runAutoFilterStat` (stat) + the inline boxplot block (independent MAD/IQR/dMAD key-set recompute, point-precise apply, workflow, report), and a **generic** `runAutoFilterCtx(CTX)` for SUM_AF/EC_AF/HIST_AF (independent COUNT recompute per basis from `ctx.buckets()`, off/monotonic/invariants/apply/clear/workflow/report; `ctx.exclCount`/`ctx.clear` let it work for histogram's non-GF vehicle). `window._afNoPrint`/`_afNoCapture` keep QA from firing a real print or racing later checks. `qa_regressions.py` server pins for all views (`test_auto_filter_boxplot`/`_stat_summary`/`_rollout_summary_envcov`/`_histogram`, 73/0). Verified in the in-app browser (Edge dead): every view's auto + workflow + report checks pass (e.g. boxplot 49/0, summary/env_coverage/histogram 11/11 each). `qa_padb` 37/4, `qa_selfcheck` GREEN.
-
-**Statistical methodology note (for future extension):** beyond MAD/IQR/double-MAD, candidates are Grubbs/Generalized-ESD (p-value based; the risk metric already approximates a Bonferroni tail), Mahalanobis (multivariate — needs a per-DUT feature vector the current univariate model lacks), and Nelson/WE run rules (systematic drift vs point outliers). Transparent robust stats were chosen over black-box ML for traceability.
-
-## Subpopulation / dual-distribution advisory (Workflow & Recommendations; detector 2026-09-15, boxplot wiring 2026-09-15)
-
-Answers "are ≥2 DUTs behaving as a SEPARATE distribution from the population?" — the signal that per-unit calibration/correction failed to make those units look identical (a real DUT / test-station / test-condition problem), distinct from ordinary M.U. + drift. **Complementary to the Site Population Check**: this finds genuinely *separated* modes (dual distributions); the Site check finds *subtle overlapping* shifts. On the real ClockSpurs SR-vs-AMC compare the AMC offset is overlapping (only ~1.6% outside the SR fence) so this correctly stays quiet, while the Site check flags it.
-
-- **Reference impl + oracle: `padb_subpop.py`** (`detect_subpopulations`), tested by **`qa_subpop.py`** (18/0, in qa_selfcheck). Per condition-matched slice (buckets = frequencies), a robust median/MAD **gap test** with TWO criteria — magnitude (gap > threshold) AND shape (gap dominates the other gaps, `dom_ratio`) — plus **agreement** (≥`min_minority` DUTs recurring across ≥`recurrence_frac` of the **assessable** buckets; a one-off never flags). Threshold is **budget-anchored** to per-bucket M.U.+env-drift when supplied (else `gap_k`·MAD, result marked `shape_only` with a re-extract caveat). **Advisory only — never filters.** Reports flagged serials, direction, offset, gap/budget ratio, and any shared **station/port** correlation (points at DUT-vs-station-vs-test; the tool narrows, the engineer adjudicates). Caveat: valid only when measurement conditions match calibration conditions.
-- **JS port** in `_AUTO_FILTER_SHARED_JS` (`_spDetect`/`_spBucketSplit`/`_spMedian`/`_spMad`), kept byte-faithful to the Python so `qa_subpop` stays its oracle. `_spAdvisoryHtml(ctx)` renders a "Distribution health — subpopulation check" section in the Workflow panel (`_afRenderWorkflow` calls it, gated on `typeof ctx.subpopSlices==='function'`).
-- **Wired into all five engine views** (boxplot + stat_summary + summary + env_coverage + histogram — rollout complete 2026-09-15). The histogram has no frequency axis, so `HIST_AF.subpopSlices()` returns **single-bucket** slices (one per dim-combination, per-DUT *means*) with `opts:{min_buckets:1}`; `_spAdvisoryHtml`/`runSubpop` merge each slice's `opts` into `_spDetect`, and the "across N of M frequencies" clause is dropped when there's one bucket (both the JS port and the `padb_subpop.py` oracle). Earlier views: `BOX_AF.subpopSlices()` yields one slice per (condition, temp) shown; `STAT_AF.subpopSlices()` one per active condition (Room-only); `SUM_AF.subpopSlices()` one per active condition (temp-blind, value = `dut_vals[fi][di]`, budget from `dut_spec_vals.unc_hi`); `EC_AF.subpopSlices()` is basis-selectable via a picker in the advisory (default **ΔEnv drift** — one slice per condition × selected non-Room temp, value = `deltas[temp][freq]`, finds anomalous *temperature sensitivity*; or **Room baseline** — one slice per condition, value = `room[freq]`; budget null → shape-only). `_spAdvisoryHtml` renders a per-view `ctx.subpopBasisControlHtml()` when present (only env_coverage supplies one). All respect the condition/temp/serial(/port/GF via `getActiveDuts`) filters. **Not yet:** GF-parity in the non-env `subpopSlices` (a refinement), station/port correlation (no station field embedded; passed `null`), and the last view (`histogram` — adds its own `subpopSlices`).
-- **"Remove auto-filter" — subtract only the auto increment (2026-09-15):** applying auto-filter is ADDITIVE (`_mergeGf`/`_statMergeGf` union into the existing GF — verified: a pre-existing manual key survives, re-apply is idempotent). Previously the only undo was **Clear global filter**, which wipes the *entire* GF (manual + auto). New "Remove auto-filter" button (in the auto-filter preview, shown once something's been applied) subtracts **only the keys the auto-filter added that weren't already in the GF** — manual/pre-existing exclusions stay. Mechanism: `_afMarkApplied(ctx,keys)` records auto-new keys into `window[ctx.resultVar+'__applied']` (a Set) at Apply/Affirm/Run time; `_afRemoveApplied(ctx)` set-differences them out of the GF and calls `ctx.reloadGf`. Wired via `ctx.removeFn`/`ctx.reloadGf` for boxplot (`boxRemoveAuto`), stat_summary/summary/env_coverage (`stat`/`sum`/`ec` `RemoveAuto`). A key already added *manually* is NOT removed even if auto re-applies it (only auto-new keys are tracked). Histogram has no GF — its existing "Clear auto-exclusion" already removes exactly the auto set (`_hAutoExcl`). QA: `qa_regressions` static pins + `qa_filters` `runRemoveAuto` browser teeth (Apply additive → manual+auto present; Remove → only auto gone, manual survives; manually-added key not removed).
-- **No-Apply-button banner (2026-09-15):** when the auto-filter preview has candidates but none is auto-filterable (`auto=0 && marginal=0 && review>0`), `_afNoApplyBanner(r,ctx)` explains WHY there's no Apply button (systemic / benign / out-of-scope / below-bar breakdown) and points to the Site Population Check / Distribution health and the "auto-filter site" scope selector. Wired into both the boxplot bespoke preview and the shared `_afPreview`. Reported on the Return_Loss compare boxplot (35 DUTs all systemic/site-wide → `auto=0` correctly, but the button-less preview read as broken).
-- **QA:** `qa_regressions` static pins (JS port + renderer + BOX_AF wiring present; 139/0); `qa_filters` **`runSubpop`** browser teeth (plant a large offset into 2 real DUTs → flags EXACTLY those 2; a uniform shift of every DUT → NO subpopulation, proving it's relative not absolute; advisory renders). Verified on a synthetic bimodal boxplot AND real FM1 accuracy data (which flagged 2 genuine AMC DUTs — thin at 3 freqs, but a real-world positive).
-
----
-
-## Comprehensive build-time multi-view PDF report (`padb_pdf_report.py`, added 2026-09-14, develop)
-
-Opt-in server-side PDF that gathers **every view for an analytic** (cover page +
-scatter/stat_summary/boxplot/distribution/env_coverage/summary as applicable,
-each with its Statistics/Results table expanded) into one document, generated at
-build time. Distinct from the pre-existing client-side per-view print-to-PDF
-report (the auto-filter workflow `_afGenerateReport`, on-demand in one open page):
-this one is multi-view, runs during `padb_v2.py`, and needs no manual clicking.
-
-**Approach: headless-Chromium print of the real pages** (chosen over static
-Plotly image export via AskUserQuestion). It never re-plots -- it loads the same
-self-contained view HTML padb_v2 already wrote and prints it, so the PDF matches
-the live pages exactly and can't drift from view rendering logic. Driven by
-**Playwright + its bundled Chromium** (NOT the system Edge -- Edge headless is
-dead on this box for print-to-pdf too, confirmed 2026-09-14: `--headless
---print-to-pdf` exits 0 and writes nothing). Merged with **pypdf**.
-
-Enable the engine once (heavyweight, ~150 MB Chromium -- that's why it's opt-in
-and not a core dependency):
-```
-py -m pip install playwright pypdf
-py -m playwright install chromium
-```
-
-**How each view page is prepped for print (all from outside -- no padb_plots.py
-edits):** `PRINT_PROFILES[slug]` gives each view's plot div id, the stats/results
-panel id(s) to reveal, the toggle function that builds+shows the table, and
-(where the table is size-gated) a `refresh` button id. `_prepare_and_print`:
-goto -> wait for the Plotly div to actually have traces -> call the toggle to
-build+show the table -> **click the Refresh button to force a full build past the
-"large dataset -- click Refresh table" size gate** (stat_summary/env_coverage/
-summary/boxplot; without this a >150-condition analytic prints just the 92-char
-placeholder) -> force-show the panel if still hidden -> inject `_REPORT_HIDE_CSS`
-(hides `.ctrl-bar`/`.filter-bar`/`.flt-bar`/all buttons/inputs + the interactive
-auto-filter/workflow/GF/site panels; stats panels are plain divs and the Plotly
-legend is inside the SVG, so both survive) -> `emulate_media("print")` ->
-`page.pdf()` landscape 11x8.5. distribution's stats are the always-visible ΔEnv
-TI tables (`delta_tbl`/`dist_ti_tbl`), no toggle. scatter's data-rows table
-(`scatter_table_panel`/`toggleScatterTable`, added 2026-09-12) is present on fresh
-builds only -- older pages have no scatter table and the profile no-ops
-gracefully (typeof/getElementById guards).
-
-**Crash-hardened for large data (the real failure mode).** Reusing one page
-across all gotos accumulates memory until the single renderer OOMs -- on a fresh
-non-decimated ClockSpurs build the browser crashed at the 2nd view and every
-later view failed. Fixed: a **fresh page per view** (closed after, releasing
-memory), hardened launch args (`--disable-dev-shm-usage --disable-gpu --no-sandbox
---js-flags=--max-old-space-size=4096`), and **browser relaunch on crash** so one
-bad/huge view is skipped (logged `! <view>: ... (skipped)`) without sinking the
-rest. A truly giant view (e.g. a 500 MB per-offset phase-noise boxplot) just gets
-skipped -- ship its parquet + viewer instead.
-
-**Fail-safe, never breaks the build.** `check_environment()` returns (ok, reason);
-if Playwright/Chromium/pypdf is missing, `generate_multiview_pdf` logs a NOTE and
-returns None. `_maybe_build_pdf_report` in `padb_v2.py` wraps everything in
-try/except -> `_log_note`, so a PDF failure can't fail extraction/plot/publish.
-
-**Wiring:**
-- `padb_v2.py` `generate_report()` collects `gen_pairs=[(view, html_path)]` in the
-  view loop and, when `cfg["build_pdf_report"]` is set, calls
-  `_maybe_build_pdf_report(...)` right before `_finish_report` -> writes
-  `<prefix>_report.pdf` in the results dir. Cover meta (rows/DUTs/conds/temps/spec)
-  is computed best-effort from the loaded df.
-- **`--pdf-report`** CLI flag on `padb_v2.py` (runtime override for
-  `build_pdf_report`, leaves the job file untouched -- mirrors `--no-publish`).
-- **Webapp**: a "Build PDF report" checkbox by Run Selected (`pdfReportCheckbox`
-  -> `pdf_report` in the execute-job body -> job dict -> `_worker` appends
-  `--pdf-report` to the plot-job command and threads it into `_run_v2_siblings`
-  for the interactive chain; padb_run.py has no such flag since padb_v2 builds
-  the PDF).
-- **Histogram-only jobs** (`views==["histogram"]`) are covered too (added
-  2026-09-14): the histogram branch calls `_maybe_build_pdf_report(None, ...)`
-  with `[("histogram", out_html)]`. `_maybe_build_pdf_report` tolerates `df=None`
-  (that branch never loads the scatter df) -- cover meta fields it can't compute
-  are just omitted. The histogram print profile is `panels:["h_stats"]`,
-  `toggles:["toggleStats"]` (the stats panel is `h_stats`, collapsed by default,
-  built on toggle -- NOT `h_stats_panel`).
-- **Index link + publish** (added 2026-09-14): `_write_index()` links any
-  `<analytic-prefix>_report.pdf` present in the results dir as a red "&#128196;
-  Comprehensive PDF report" `<li>` -- under the matching analytic's group header
-  in a multi-analytic dir, appended to the flat list otherwise (the report's
-  stem-without-`_report` equals that analytic's `_index_group_key`). `_publish()`
-  now also copies `*_report.pdf` alongside the HTML so the link works on the
-  share, not just locally. **`_index_group_key` recognizes `histogram` via
-  `_INDEX_VIEW_SUFFIXES` (= `_VIEW_ORDER + ["histogram"]`)** -- histogram isn't
-  in `_VIEW_FN` (separate branch), so without this its group key kept the
-  `_histogram` suffix and the report link never matched (found + fixed while
-  driving the webapp checkbox on a real `SwitchingSpeed_AMC2` histogram job:
-  the report built and published but the index didn't link it). `histogram`
-  also added to `_VIEW_LABELS` ("Histogram") for a clean link label.
-- Self-QA: `qa_regressions.py::test_pdf_report_contract` (browser-free: profile
-  covers every `_VIEW_FN` view, filename->view recovery incl. longest-match,
-  cover HTML builds, `check_environment` returns a reason, and `_write_index`
-  emits/omits the PDF link correctly). 93/0. The histogram-only report and the
-  full 6-view report were both verified end-to-end in the in-app browser (Edge
-  headless is dead).
-
-### Filter-aware + on-demand PDF report (added 2026-09-14)
-
-Follow-up to the build-time PDF above, from the user's point that "the filtered
-output is the more useful report, though a summary of what was collected is still
-useful" and "allow a delay in pdf generation... so we don't have an unnecessary
-time hit when it isn't required."
-
-- **Filter-aware mode** (`generate_multiview_pdf(..., apply_filter=True)`): before
-  printing each engine view (boxplot/stat_summary/summary/env_coverage/histogram)
-  it runs that view's one-click auto-filter workflow (`boxRunWorkflow`, etc. --
-  the risk-gated "auto" set, reversible/audited), so the plot + stats table show
-  the **cleaned** population. Raw **scatter/distribution stay the full collected
-  cloud** (you want every point there). Views are printed first (capturing each
-  view's exclusion tally), then the cover is printed last and merged first; the
-  cover now has a **"Dataset (as collected)"** section AND a **"Filtering applied"**
-  section listing what each view auto-excluded (DUTs/points) -- one document shows
-  both what was collected and what cleaning removed. Unfiltered runs say "None".
-  Per-view profiles gained `workflow`/`ctx` keys (`BOX_AF`/`STAT_AF`/`SUM_AF`/
-  `EC_AF`/`HIST_AF`); the exclusion count is read from `window[ctx.resultVar].auto`.
-- **On-demand, to avoid the build-time hit**: `padb_pdf_report.py <prefix|folder>
-  --apply-filter` builds a (filtered) report from already-built results any time;
-  `padb_v2.py --pdf-apply-filter` (implies `--pdf-report`; honors
-  `cfg["pdf_report_apply_filter"]`) for the build-time path. **Webapp**: a
-  "Generate PDF report (on demand)" button + "Apply auto-filter (cleaned views)"
-  checkbox (`POST /api/generate-pdf {paths, apply_filter}` -> action="pdf" job on
-  the existing worker -> `_generate_pdf_task`/`_pdf_targets`: a plot job -> its own
-  analytic, a run job -> each sibling plot analytic). No plot rebuild.
-- **qa_filters `--browser PATH`** (added same day): the interactive tier's Edge
-  auto-pick is dead on this box; `--browser` points it at a Playwright
-  `chrome-headless-shell.exe` (the full chrome.exe delegates to a running instance
-  and dumps nothing -- use the headless-shell). Falls back to auto-pick; a bad
-  path still exits 3 (honest env gate). The histogram Site-Population-Check
-  `site-k-slider-monotonic` check was made robust to genuinely disjoint sites
-  (OUTSIDE count saturates -- e.g. non-overlapping SR/AMC switching-speed
-  distributions, 126/126 until k~20): it now proves the live k effect by the fence
-  **widening**, not by a count delta.
-- **Validation (2026-09-14)**: PDF report verified 10/10 across a broad sample
-  (freq scatter/box, non-freq Rate x-axis, histogram-only, compare->scatter,
-  compare->histogram, multi-temp env, amplitude, max-power lo-spec, compare
-  distortion, full 6-view) -- every report built with the right section count and
-  every index links its PDF. Auto-filter mechanism verified across every engine
-  view type on the fresh sample (boxplot 28/0, stat_summary 31/0, summary 33/0,
-  env_coverage 26/0, histogram 32/0, compare boxplot 46/0) = 241/0 after the
-  k-slider check fix. Filter-aware + on-demand verified live via the webapp button.
-
-## Auto-filter compare SITE SCOPE (Reference / Onboarding / Both) + per-site risk (added 2026-09-14)
-
-On a `compare_csv` job the auto-filter used to auto-clean ONLY the reference
-(primary/SR) site; onboarding-site (MY/AMC) DUTs were always forced to review.
-Added a per-view **"auto-filter site"** selector so the user can scope
-auto-filtering to **Reference only** (default, unchanged), **Onboarding only**, or
-**Both** -- and the preview surfaces the **per-site false-removal risk** so the
-choice is informed (the user's ask: "the tool will provide the risk level so the
-user can change the selection").
-
-- **Engine.** `_afCompute` (shared: stat_summary/summary/env_coverage/histogram)
-  and boxplot's bespoke `_autoFilterCompute` both: read the scope from the view's
-  site selector (default `'primary'`); compute each DUT's **intrinsic**
-  auto-eligibility (benign/systemic/bar/risk) INDEPENDENT of scope; build a
-  **scope-independent** `siteSummary` `{site:{eligible,pts,minRisk,maxRisk}}`; then
-  apply the scope gate (out-of-scope DUTs -> review with a "change the scope"
-  reason). Return `siteScope`+`siteSummary`. The preview shows a "Per-site
-  auto-eligible (risk …)" line for every site; `_afRunWorkflow`'s audit +
-  filter-aware PDF are scope-aware.
-- **Selector.** Rendered only on compare pages. `_af_control_html(has_site_scope,
-  primary_site)` (ec/sum/h) and inline blocks (boxplot `auto_gf_site`,
-  stat_summary `stat_auto_site`) emit `<prefix>_auto_site` (primary/onboarding/
-  both). Element ids: `auto_gf_site`, `stat_auto_site`, `sum_auto_site`,
-  `ec_auto_site`, `h_auto_site`; each ctx has `siteSel`. **Histogram badPoints
-  must set `o.site` from `DIMVALS[SITE_COL_ID][i]`** (it hardcoded `''` -- fixed;
-  without it the gate/summary are inert on histogram).
-- **Non-compare is unchanged:** no Site dim -> no selector, `compare=false`, gate
-  never fires -- auto-filter behaves exactly as before on every non-compare plot.
-- **PDF report scope option.** `padb_pdf_report.py --filter-site
-  primary|onboarding|both` (sets each view's site selector before running the
-  workflow); `padb_v2.py --pdf-filter-site` + cfg `pdf_report_filter_site`
-  (implies filter-aware); webapp on-demand row has a **site** dropdown
-  (`/api/generate-pdf {filter_site}` -> `_generate_pdf_task` -> `--filter-site`).
-  The cover's "Filtering applied" section names the scope.
-- **Auto QA (with teeth).** qa_regressions `test_auto_filter_site_scope`
-  (deterministic: selector present on compare / absent on single-site, options,
-  scope+summary wiring, `_af_control_html` helper on/off, stat_summary shared
-  engine). qa_filters site-scope invariants in the boxplot block, `runAutoFilterCtx`
-  (sum/ec/hist) and `runAutoFilterStat`: primary-scope auto = reference-only,
-  onboarding = non-reference, `both` = the by-site union, `siteSummary` is
-  scope-independent and equals what `both` auto-filters. Verified on synthetic
-  compares with planted per-site outliers -- boxplot/stat_summary `both=2
-  primary=1 onboarding=1`; histogram gated correctly (found+fixed the missing
-  `o.site` this way). qa_regressions 104/0, qa_selfcheck GREEN.
+Claude desktop is an MSIX package that auto-updates overnight; the update can't swap the package while a process still holds it, so it parks a **deferred registration** (AppXDeployment event 658→419/`0x80073D02`) and the next launch fails. The real persistent blocker is **`CoworkVMService`** (DisplayName "Claude"): a LocalSystem Auto service whose binary is *inside* the package folder — it survives closing the GUI and isn't named `claude.exe`, so Task Manager / `Get-Process claude` miss it (why a reboot seemed like the only fix). Its ACL grants Authenticated Users `SERVICE_STOP` (no admin needed). **Fix without rebooting:** run `fix_claude_launch.ps1` from a **plain PowerShell window** (not a terminal inside Claude — it stops that service and reaps the terminal's host): it stops `CoworkVMService`, reaps `claude`/`cowork-svc`, and forces the parked registration via `Add-AppxPackage -RegisterByFamilyName -MainPackage Claude_pzs8sxrjxfjjc`. If it still fails, sign out of Windows and back in. **Prevent:** quit from the tray (right-click → Quit), not the window X. (Unrelated to the webapp stdout-pipe fix; neither is a Job Object cascade.)
