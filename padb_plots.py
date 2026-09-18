@@ -559,6 +559,33 @@ function _isMaskDataset(){
   if(_dsMaskCache===null){ try{_dsMaskCache=getSpecMask(DATA).isMask;}catch(e){_dsMaskCache=false;} }
   return _dsMaskCache;
 }
+/* "Worst first" sort key: largest ERROR RELATIVE TO SPEC, not just highest raw
+   value. Per point, the effective spec is Spec_Hi/Lo when present, else the PADB
+   per-unit Upper/Lower_Limit. A point's exceedance = how far past a limit it sits
+   (Value-hi or lo-Value; positive = failing / least margin, negative = margin).
+   A group's "worst" is the max exceedance over its points. Falls back to raw max
+   Value when the dataset carries NO spec at all -- many pods, incl. compare merges
+   whose Upper Limit is literally 'NA' -- so behaviour is unchanged there. */
+function _scatSpecNum(v){return (v===null||v===undefined||v==='')?null:(isNaN(Number(v))?null:Number(v));}
+function _rowSpecExceed(r){
+  var hi=_scatSpecNum(r.Spec_Hi); if(hi===null) hi=_scatSpecNum(r.Upper_Limit);
+  var lo=_scatSpecNum(r.Spec_Lo); if(lo===null) lo=_scatSpecNum(r.Lower_Limit);
+  if(hi===null&&lo===null) return null;
+  var e=-Infinity;
+  if(hi!==null) e=Math.max(e,r.Value-hi);
+  if(lo!==null) e=Math.max(e,lo-r.Value);
+  return e;
+}
+var _scatSpecCache=null;
+function _scatHasSpec(){
+  if(_scatSpecCache===null){ _scatSpecCache=false;
+    try{ for(var i=0;i<DATA.length;i++){ if(_rowSpecExceed(DATA[i])!==null){_scatSpecCache=true;break;} } }catch(e){_scatSpecCache=false;} }
+  return _scatSpecCache;
+}
+function _rowsMaxVal(rows){return Math.max.apply(null,rows.map(function(r){return r.Value;}));}
+function _groupWorstSpec(rows){ var w=-Infinity;
+  for(var i=0;i<rows.length;i++){var e=_rowSpecExceed(rows[i]); if(e!==null&&e>w) w=e;}
+  return w>-Infinity?w:null; }
 function buildTraces(filtered){
   /* Group by is a MULTI-select (2026-09-02): split/color traces by any
      combination of parameters (Ctrl/Cmd-click). None selected = one combined
@@ -583,9 +610,17 @@ function buildTraces(filtered){
   var entries=Object.keys(groups).map(function(k){return [k,groups[k]];});
   if(sortBy==='name_asc') entries.sort(function(a,b){return a[0].localeCompare(b[0]);});
   else if(sortBy==='name_desc') entries.sort(function(a,b){return b[0].localeCompare(a[0]);});
-  else if(sortBy==='worst_desc') entries.sort(function(a,b){
-    return Math.max.apply(null,b[1].map(function(r){return r.Value;}))-Math.max.apply(null,a[1].map(function(r){return r.Value;}));
-  });
+  else if(sortBy==='worst_desc'){
+    var _dsSpec=_scatHasSpec();
+    entries.sort(function(a,b){
+      if(!_dsSpec) return _rowsMaxVal(b[1])-_rowsMaxVal(a[1]);   // no spec -> raw value
+      var wa=_groupWorstSpec(a[1]), wb=_groupWorstSpec(b[1]);
+      if(wa===null&&wb===null) return _rowsMaxVal(b[1])-_rowsMaxVal(a[1]);
+      if(wa===null) return 1;   // groups with no spec point sort last
+      if(wb===null) return -1;
+      return wb-wa;             // largest spec exceedance first
+    });
+  }
   else if(sortBy==='median_asc') entries.sort(function(a,b){
     return median(a[1].map(function(r){return r.Value;}))-median(b[1].map(function(r){return r.Value;}));
   });
@@ -2677,7 +2712,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'  <label title="Ctrl/Cmd-click to split/colour the scatter traces by multiple parameters; none = one combined trace.">Group&nbsp;by:'
         f'<select id="groupby" multiple size="{_scat_grp_size}" style="vertical-align:middle" '
         f'onchange="update()">{grp_opts}</select></label>\n'
-        '  <label>Sort:<select id="sortby" onchange="update()">\n'
+        '  <label title="Order the legend/traces. Worst first = largest error relative to '
+        'spec (furthest past the Upper/Lower limit, i.e. least margin); if the dataset has '
+        'no spec limits, it falls back to highest raw value.">Sort:<select id="sortby" onchange="update()">\n'
         '    <option value="name_asc">Name A&#8594;Z</option>\n'
         '    <option value="name_desc">Name Z&#8594;A</option>\n'
         '    <option value="worst_desc">Worst first &#8595;</option>\n'

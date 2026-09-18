@@ -351,6 +351,38 @@ def test_scatter_mask_is_dataset_level():
               "if(!_isMaskDataset()){" in h and "if(!getSpecMask(filtered||DATA).isMask)" not in h)
 
 
+def test_scatter_worst_first_spec_relative():
+    """'Worst first' sort ranks legend groups by largest ERROR RELATIVE TO SPEC
+    (max exceedance past the effective Spec_Hi/Lo, else Upper/Lower_Limit), NOT
+    just highest raw value -- with a graceful fallback to raw max Value when the
+    dataset carries no spec at all (David 2026-09-18). Verified live (controlled
+    flip + real ClockSpurs staircase); this pins the wiring so it can't silently
+    revert to the old raw-value sort."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "w.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Frequency (MHz)", "Value (dBc)", "Group", "Upper Limit"])
+            for i in range(20):
+                fq = 100 + i * 100
+                w.writerow([fq, -80, "SpurType: A", -76])   # passes (margin)
+                w.writerow([fq, -90, "SpurType: B", -95])   # exceeds spec
+        df = pp._load_scatter_csv(p)
+        h = pp._build_av_freq_html(df, {"y_label": "P", "views": ["scatter"]}, "T")
+        check("scatter worst-first: spec-exceedance helpers present",
+              "function _rowSpecExceed(r)" in h and "function _groupWorstSpec(rows)" in h
+              and "function _scatHasSpec()" in h)
+        check("scatter worst-first: _rowSpecExceed prefers Spec_Hi/Lo then Upper/Lower_Limit",
+              "r.Spec_Hi" in h and "r.Upper_Limit" in h
+              and "r.Spec_Lo" in h and "r.Lower_Limit" in h)
+        check("scatter worst-first: sort ranks by spec exceedance with raw-value fallback",
+              "sortBy==='worst_desc'" in h and "_scatHasSpec()" in h
+              and "_groupWorstSpec(" in h and "_rowsMaxVal(" in h)
+        check("scatter worst-first: no-spec groups sort last (null-guarded)",
+              "if(wa===null) return 1;" in h and "if(wb===null) return -1;" in h)
+
+
 def test_scatter_room_temp_filterable():
     """Scatter temperature checkboxes are ALL toggleable, including Room. Room is just a
     plotted Test Step in a scatter, NOT a baseline (that role is delta/env-only). Room was
@@ -1708,7 +1740,8 @@ def main() -> None:
                test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
-               test_scatter_draw_modes, test_site_compare_basis_rollout,
+               test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
+               test_site_compare_basis_rollout,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
