@@ -242,7 +242,7 @@ pages OK + one real extraction completes clean.
 | Variety / code path | Example dataset |
 |---|---|
 | Multi-temp + serial + frequency-varying (staircase) spec | Clock spurs / SR Close-In |
-| Room-only + serial (auto view-selection → scatter+boxplot only) | AMC2 Close-In |
+| Room-only + serial (auto view-selection → scatter+boxplot+reference+summary+stat_summary; no distribution/env_coverage) | AMC2 Close-In |
 | Serial-less pod (serial controls must hide, not fabricate) | a pod with no Serial in Group |
 | No spec limits (`spec_direction`, Limit-display selector) | MaxPower |
 | **Non-frequency x-axis** (`x_col`/`x_label`) | Analog-Mod Flatness (`Rate (kHz)`), Vgg, Amplitude |

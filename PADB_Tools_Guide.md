@@ -788,8 +788,8 @@ V2 job JSON schema (all keys optional unless marked):
 | `room_values` | List of Test Step strings treated as room temperature (default `["Room"]`) |
 | `proportion` | TI proportion (default `0.90`) |
 | `confidence` | TI confidence (default `0.90`) |
-| `views` | List of views to generate: `scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`. **Omit this key** to get automatic selection instead: Room-only data → `scatter` + `boxplot`; multi-temp data → all six. |
-| `room_only_full_views` | `true` to also generate `summary` + `stat_summary` for Room-only data when `views` is omitted (never adds `distribution`/`env_coverage` — meaningless without non-Room data). Default `false`. |
+| `views` | List of views to generate: `scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`. **Omit this key** to get automatic selection instead: Room-only data → `scatter` + `boxplot` + `reference` + `summary` + `stat_summary`; multi-temp data → all six (adds `distribution` + `env_coverage`). |
+| `room_only_full_views` | **No-op now (accepted for back-compat).** `summary` + `stat_summary` are Room-only defaults regardless; `distribution`/`env_coverage` are never added for Room-only (they need non-Room data). |
 | `results_dir` | Output folder relative to job file (default `v2_results`) |
 | `publish_to` | UNC or local path to copy results to. **Omit this key entirely** to publish to the default location `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>` instead. Set explicitly to `""` / `false` / `null` to opt out of publishing altogether. |
 

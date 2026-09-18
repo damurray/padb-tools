@@ -34,7 +34,7 @@ py C:\apps\padb\tools\webapp\padb_web.py
 ```
 - `compare_csv` replaces `csv_path` entirely — 2+ site names required. Every backslash doubled, same as any other job.json.
 - `primary_site` defaults to the first key if omitted. It only matters for the Site Population Check (below, on boxplot/`stat_summary`/`summary`) — no effect on any other view.
-- Omit `"views"` for the normal auto-detection (Room-only → `scatter`+`boxplot`; multi-temp → all six) — same rule as any other V2 job.
+- Omit `"views"` for the normal auto-detection (Room-only → `scatter`+`boxplot`+`reference`+`summary`+`stat_summary`; multi-temp → all six) — same rule as any other V2 job. A no-swept-x compare (switching speed) auto-routes to a `histogram` instead.
 - Set `publish_to` explicitly (even to a real path) — an ad-hoc comparison shouldn't silently inherit the default publish location. A compare job with no `publish_to` at all now defaults to a `PADB-Compare` share tree (added 2026-08-24), same pattern as `PADB-Simple`/`PADB-Interactive` for other job types — `"publish_to": ""` opts out.
 - If the two sites' x-axis isn't the default MHz carrier frequency, set `x_col`/`x_label`/`x_unit` by hand to match your sibling non-compare job.json (e.g. `"x_col": "Frequency Offset (Hz)"`) — the webapp's Create & Run does this automatically, but a hand-written job.json needs it set explicitly.
 

@@ -58,7 +58,7 @@ Different schema — this one drives `padb_v2.py`, not `padb_run.py`:
   "views": ["scatter", "stat_summary", "boxplot", "distribution", "env_coverage", "summary"]
 }
 ```
-- Omit `"views"` for automatic, data-driven selection (Room-only data → `scatter`+`boxplot`; multi-temp → all six; add `"room_only_full_views": true` to also get `stat_summary`/`summary` on Room-only data).
+- Omit `"views"` for automatic, data-driven selection (Room-only → `scatter`+`boxplot`+`reference`+`summary`+`stat_summary`; multi-temp → all six). `room_only_full_views` is a no-op now — those Room-only defaults apply regardless.
 - `spec_direction`: `"lo"`/`"hi"`/`"both"`/`"none"`/`"auto"` — set explicitly if the pod has no configured spec limits but you know the measurement is one-sided. Only sets the *default*: a real CSV limit always overrides it, and `summary`/`stat_boxplot` show a live Both/Upper/Lower selector on top of it whenever the CSV has no limit at all.
 - `x_label`/`x_unit` — override if the x-axis isn't carrier frequency in MHz (e.g. phase-noise offset in Hz).
 - `publish_to` — omit for the default `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>`; set `""` to opt out, or a path to publish elsewhere.

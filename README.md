@@ -116,7 +116,7 @@ Opens a local web UI (`http://127.0.0.1:5000`, local use only) for five workflow
 
 **V2 pipeline** (`padb_v2.py`) generates all views from a single scatter CSV using a two-step workflow: `padb_run.py` extracts from the database → `padb_v2.py` builds the HTML.
 
-Omit `"views"` from job.json to get automatic, data-driven view selection: Room-only data defaults to `scatter` + `boxplot`; multi-temp data defaults to all six. Add `"room_only_full_views": true` to also get `summary` + `stat_summary` on Room-only data (never `distribution`/`env_coverage` — those need non-Room data to be meaningful). See `CLAUDE.md` → **Auto view-selection**.
+Omit `"views"` from job.json to get automatic, data-driven view selection: Room-only data defaults to `scatter` + `boxplot` + `reference` + `summary` + `stat_summary` (per-condition stats/TI need no temperature deltas); multi-temp data adds `distribution` + `env_coverage` (all six). `distribution`/`env_coverage` are never built for Room-only (they need non-Room deltas). (`room_only_full_views` is now a no-op, accepted for back-compat — summary/stat_summary are Room-only defaults regardless.) See `CLAUDE.md` → **Auto view-selection**.
 
 | Type | Interactive controls |
 |---|---|
