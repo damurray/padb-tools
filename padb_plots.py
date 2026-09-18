@@ -19586,7 +19586,7 @@ function buildStats(groups,keys,multi){
   keys.forEach(function(k){ h+=row(k,groups[k]); });
   el.innerHTML=h+'</tbody></table>';
 }
-function toggleStats(){ var el=document.getElementById('h_stats'),b=document.getElementById('h_stats_btn'); var show=el.style.display==='none'; el.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Statistics'; if(show) update(); }
+function toggleStats(){ var el=document.getElementById('h_stats'),b=document.getElementById('h_stats_btn'); var show=el.style.display==='none'; el.style.display=show?'':'none'; b.textContent=(show?'▼':'▶')+' Statistics'; if(show) PADB_deferRender(el, update, 'Building Statistics&hellip;'); }
 function hResetFilters(){ document.querySelectorAll('.fchk_h').forEach(function(c){c.checked=true;}); document.getElementById('h_binmode').value='auto'; document.getElementById('h_hidespec').checked=false; var pf=document.getElementById('h_pf'); if(pf)pf.value='all'; update(); }
 function _hCsvCell(x){ x=(x===null||x===undefined)?'':String(x); return /[",\n\r]/.test(x)?'"'+x.replace(/"/g,'""')+'"':x; }
 function hExportCsv(){

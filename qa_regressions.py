@@ -1557,6 +1557,11 @@ def test_site_check_table_cap_and_spinner() -> None:
     # explicit large-rebuild above the size-gate) also spinner-wrap via PADB_deferRender.
     check("Statistics/Results Refresh buttons wrap the build in PADB_deferRender (spinner)",
           src.count("PADB_deferRender(document.getElementById(") >= 4)
+    # Histogram has no size-gated Refresh table -- its own Statistics panel toggle
+    # (toggleStats) spinner-wraps its build instead (2026-09-18), so switching-speed
+    # compares (histogram-only) also get a table-render spinner.
+    check("histogram Statistics toggle spinner-wraps its build",
+          "if(show) PADB_deferRender(el, update," in src)
 
 
 def test_site_compare_basis_rollout() -> None:
