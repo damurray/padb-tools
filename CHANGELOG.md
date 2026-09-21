@@ -1,6 +1,26 @@
-# Changelog — 2026-08-17 to 2026-09-18
+# Changelog — 2026-08-17 to 2026-09-21
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
+
+---
+
+## 2026-09-21
+
+### Boxplot filter fixes (found via a relational filters→plots→tables→stat-tables audit)
+- **Compare boxplot no longer zeroes the site missing a grouping key.** On a cross-site compare, one site's rows can carry a grouping key the other's don't (e.g. AMC has `Test Event Status`, SR doesn't). Deselecting *any* filter used to uncheck every row of the site lacking that key (its condition strings didn't match the absent dimension's regex), blanking half the plot with no recovery. An absent dimension now imposes **no constraint** (a no-op for single-site pods, where every condition carries every key).
+- **Boxplot "Data filter" cleaned up (Q1).** The confusing `All / Passing only / Upper limit / Lower limit` radio group — which jammed a pass/fail axis together with a raw-sample *trim* and had no "Failing" — is now a clean pass/fail axis **All / Passing only / Failing only** (Failing is the exact complement of Passing), plus a **separate, always-visible "Trim raw samples: above/below"** control that's independent of the pass/fail filter and the Spec override (so it can combine with either). The Spec override is unchanged (it sets the pass/fail *threshold*; the trim removes *data*). Applied consistently to the plot, the grouped + non-grouped Statistics Table, the per-point table, and the outlier collector.
+- **Boxplot Workflow button** now uses the shared helper (flipping ▸/▾ caret) like the other four views.
+
+### Boxplot pass/fail + spec lines were wrong for per-condition specs (found on a Harmonics compare)
+- **Table #fail is now per-point vs each point's OWN Upper/Lower Limit**, not a single flat `HI_SPEC`/`LO_SPEC`. The flat spec was the first data row's limit, so on a pod where conditions/frequencies carry different specs (Harmonic 2's staircase ≠ 0.5's) the table counted **phantom failures the plot's own spec line never supported** — measured 7,501 flat-spec "fails" vs 974 real (own-limit) for Harmonic 2. Applied to the grouped table, per-point table, and outlier collector (`_boxPtLim`/`_boxFailCountDetail`/`_boxFailCellDetail`); the flat `_boxFailCell`/`_boxFailCount`/`_boxPfLimits` are gone.
+- **One spec line per condition.** The plot min-pooled every selected condition's spec into a single (tightest) line, so 2 and 0.5 collapsed to one misleading line. Now draws one line per **distinct** per-condition Limit staircase (`_limitMapsByGroup`), collapsing to a single red line when identical (the common case).
+- **Autoscale Y re-fits when the plotted set changes.** An Autoscale-Y pin used to persist across filter changes, clipping a newly-added condition off-screen while the table still listed it (looked like "plot shows only 0.5, table shows both"). It now re-fits Y when the condition/serial/temp/freq selection changes; a manual drag-zoom still persists, and a configured `Y_LIM` still wins.
+
+### QA
+- New `qa_regressions` pins (`test_compare_boxplot_absent_dim_and_caret`, `test_box_data_filter_passfail_and_trim`, `test_box_fail_per_point_limit_and_spec_lines`, 321 → 342) and `qa_filters` behavioral checks — the Q1 data-filter set (`box-failing-isolates-nonempty-subset`, `box-passing-strict-subset`, `box-passing-failing-partition`, `box-trim-combines-with-failing`) plus `box-perpoint-fail-equals-own-limit` / `box-perpoint-fail-not-flat-spec` (would catch a flat-spec regression: on the Harmonics compare the table must show 974, not 7,501). Proven with teeth (a deterministic synthetic shows 6 own-limit fails vs 30 flat-spec, and the table shows 6). Ran the browser-tier relational gate across single-site, spur-staircase, and cross-site-compare galleries.
+
+### Docs
+- **Interactive_Plots_User_Guide.md**: added **Reference Statistics** and **Histogram** (switching-speed) view sections, corrected the Room-temperature view rules (Summary + Stat Summary are Room-only defaults now), a **"What's new in comparison mode"** subsection, and updated the Boxplot Data-filter description. Compare cheatsheet "Known gaps" refreshed (Site Population Check is on all six views).
 
 ---
 

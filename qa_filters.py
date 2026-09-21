@@ -1860,6 +1860,70 @@ _HARNESS_JS = r"""
         } else skip('workflow','no workflow panel in this view');
       } else skip('auto-filter','no auto-filter controls in this view');
 
+      // ---- Data filter: All / Passing only / Failing only + independent trim (Q1 cleanup 2026-09-21) ----
+      // Failing-only must be the exact complement of Passing-only (their point sets
+      // partition All), and the "Trim raw samples" control must be independent of the
+      // pass/fail radio (combine with it). Uses a splitting Spec-up override so the
+      // data actually has a pass/fail boundary even on a no-CSV-spec compare.
+      (function(){
+        var failRad=document.querySelector('input[name="box_flt"][value="failing"]');
+        if(!failRad){ skip('box-data-filter','no Failing-only radio in this view'); return; }
+        var so=document.getElementById('box_tll_hi');
+        if(!so){ skip('box-data-filter','no Spec override input'); return; }
+        var vals=[]; BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(f){(f.vals_detail||[]).forEach(function(d){ if(typeof d.v==='number'&&isFinite(d.v)) vals.push(d.v); });});});
+        if(vals.length<20){ skip('box-data-filter','too few points to split'); return; }
+        vals.sort(function(a,b){return a-b;});
+        var med=vals[Math.floor(vals.length/2)];
+        if(med<=vals[0]||med>=vals[vals.length-1]){ skip('box-data-filter','no spread to split'); return; }
+        ensurePts();
+        function setMode(m){document.querySelector('input[name="box_flt"][value="'+m+'"]').checked=true;}
+        so.value=String(med);
+        setMode('all'); update(); var A=ppPts().length;
+        setMode('passing'); update(); var P=ppPts().length;
+        setMode('failing'); update(); var F=ppPts().length;
+        chk('box-failing-isolates-nonempty-subset', F>0&&F<A, 'all='+A+' failing='+F);
+        chk('box-passing-strict-subset', P>0&&P<A, 'all='+A+' passing='+P);
+        // partition (tolerate a +/-1 trace-emission edge on single-point cells)
+        chk('box-passing-failing-partition', (P+F)>=A-2&&(P+F)<=A, 'all='+A+' P+F='+(P+F));
+        // trim above the split, while Failing: removes the (high) failing points -> strictly fewer
+        var yhi=document.getElementById('box_flt_yhi'); yhi.value=String(med); update(); var Ft=ppPts().length;
+        chk('box-trim-combines-with-failing', Ft<F, 'failing='+F+' failing+trim='+Ft);
+        yhi.value=''; so.value=''; setMode('all'); update();
+      })();
+
+      // ---- Table #fail must be per-point OWN limit, NOT a flat global spec (David 2026-09-21) ----
+      // The reported bug: the table counted failures against a single flat HI_SPEC/LO_SPEC,
+      // showing phantom failures the plot's own per-condition spec line never supported
+      // (Harmonic 2's spec staircase != 0.5's). Per-point mode judges each point vs its OWN
+      // Upper/Lower Limit -- independently recompute and require an EXACT match, and require
+      // the result to DIFFER from the flat-spec count (else a flat-spec regression is invisible
+      // on this data, so skip with that stated).
+      (function(){
+        if(typeof _boxPtLim==='undefined'){ skip('box-fail-own-limit','no _boxPtLim (older build)'); return; }
+        if(typeof clearGlobalFilter==='function') clearGlobalFilter();
+        reset();
+        var flatHi=(typeof HI_SPEC!=='undefined')?HI_SPEC:null, flatLo=(typeof LO_SPEC!=='undefined')?LO_SPEC:null;
+        var anyLim=false, ownFail=0, flatFail=0;
+        BOX_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(fs){ (fs.vals_detail||[]).forEach(function(d){
+          if(typeof d.v!=='number'||!isFinite(d.v)) return;
+          var oh=(d.upper_limit!=null&&d.upper_limit!==undefined)?d.upper_limit:null;
+          var ol=(d.lower_limit!=null&&d.lower_limit!==undefined)?d.lower_limit:null;
+          if(oh!=null||ol!=null){ anyLim=true; if(PADB_isFail(d.v,oh,ol)===true) ownFail++; }
+          if(PADB_isFail(d.v,flatHi,flatLo)===true) flatFail++;
+        }); }); });
+        if(!anyLim){ skip('box-fail-own-limit','no per-point limits in this data'); return; }
+        var tm=document.getElementById('box_table_mode'); if(tm){ tm.value='perpoint'; tm.dispatchEvent(new Event('change')); }
+        var el=document.getElementById('box_stat_panel'); if(!el||el.style.display==='none'){ if(typeof toggleStatPanel==='function') toggleStatPanel(); }
+        update();
+        var hdr=el?el.textContent:''; var m=hdr.match(/([\d,]+)\s*fail limit/);
+        var tblFail=m?parseInt(m[1].replace(/,/g,''),10):-1;
+        chk('box-perpoint-fail-equals-own-limit', tblFail===ownFail, 'table='+tblFail+' ownLimit='+ownFail+' flatSpec='+flatFail);
+        if(ownFail===flatFail){ skip('box-perpoint-fail-teeth','own-limit==flat-spec here; a flat-spec regression would be invisible on this data'); }
+        else { chk('box-perpoint-fail-not-flat-spec', tblFail!==flatFail, 'table='+tblFail+' flatSpec='+flatFail+' (must NOT match the flat global spec)'); }
+        if(tm){ tm.value='grouped'; tm.dispatchEvent(new Event('change')); }
+        reset();
+      })();
+
       // ---- reset-restores ----
       reset();
       chk('reset-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);

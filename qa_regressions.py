@@ -1109,7 +1109,7 @@ def test_common_prelude_and_feature_registry() -> None:
     check("scatter/boxplot pass-fail route through PADB_isFail",
           "PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit)" in src
           and "var fail=PADB_isFail(v,lim.hi,lim.lo);" in src
-          and "if(PADB_isFail(v,lim.hi,lim.lo)===true) n++;" in src)
+          and "if(PADB_isFail(d.v,lim.hi,lim.lo)===true) fail++;" in src)
     # 4) Cross-view feature registry: (label, marker, min occurrences). A feature
     #    dropped from a view drops the count and trips the check. Grounded in the
     #    dedicated pins (axis titles / compare-basis / segment-by) but consolidated
@@ -1149,15 +1149,19 @@ def test_box_table_perpoint_mode() -> None:
         check("box table: per-point renderer + status via shared PADB_isFail rule",
               "function _boxPerPointTable(" in h and "function _boxPointStatus(v,lim)" in h
               and "var fail=PADB_isFail(v,lim.hi,lim.lo);" in h)
-        check("box table: grouped #fail/n helper present",
-              "function _boxFailCount(" in h and "function _boxFailCell(" in h)
+        check("box table: grouped #fail/n helper present (per-point-limit form)",
+              "function _boxFailCountDetail(" in h and "function _boxFailCellDetail(" in h)
         check("box table: per-point mode short-circuits updateStatsTable",
               "if(_boxTableMode()==='perpoint'){ el.innerHTML=_boxPerPointTable(" in h)
         # Grouped #fail/n column must be wired into EVERY row-push branch (grouped,
-        # else-if filtered, default-Room, default-nonRoom) + the header, or a pooled
-        # row would silently drop its pass/fail signal in one of the 4 branches.
-        check("box table: #fail/n column wired into all 4 grouped push sites",
-              h.count("+_boxFailCell(") >= 4 and "var _pfLim=_boxPfLimits(yFlt);" in h)
+        # else-if filtered, default-Room, default-nonRoom) + the header, using the
+        # per-point-limit form (see test_box_fail_per_point_limit). The old flat
+        # _boxFailCell/_boxPfLimits must be gone (they counted phantom failures against
+        # a single global spec when conditions/frequencies had different specs).
+        check("box table: #fail/n column wired into all 4 grouped push sites (detail form)",
+              h.count("+_boxFailCellDetail(") >= 4)
+        check("box table: old flat _boxFailCell/_boxPfLimits form removed",
+              "function _boxFailCell(" not in h and "_boxPfLimits(" not in h)
         check("box table: #fail/n header column present",
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 
@@ -1190,6 +1194,85 @@ def test_compare_boxplot_absent_dim_and_caret() -> None:
     check("box: workflow button uses the shared helper (flipping .wfcaret)",
           "_af_workflow_button_html('box', 'toggleBoxWorkflow')" in src
           and 'id="box_wf_btn" onclick="toggleBoxWorkflow()"' not in src)
+
+
+def test_box_data_filter_passfail_and_trim() -> None:
+    """Boxplot Data-filter Q1 cleanup (David 2026-09-21): the confusing
+    All / Passing only / Upper limit / Lower limit radio group -- which conflated a
+    pass/fail axis with a raw-sample TRIM and was missing the Failing complement --
+    became a clean pass/fail axis (All / Passing only / Failing only) plus a SEPARATE,
+    always-visible "Trim raw samples: above/below" control (so trim can combine with
+    Passing/Failing instead of being a mutually-exclusive radio). Spec override is
+    untouched (it still sets the pass/fail threshold). Pins the new structure + the
+    failing = exact-complement-of-passing skip in every place points are filtered."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("box: Data-filter has a Failing-only radio",
+          'name="box_flt" value="failing"' in src)
+    check("box: old Upper/Lower-limit radios (range_hi/range_lo) removed from box_flt",
+          'name="box_flt" value="range_hi"' not in src
+          and 'name="box_flt" value="range_lo"' not in src)
+    check("box: trim inputs are a separate always-on control ('Trim raw samples')",
+          "Trim&nbsp;raw&nbsp;samples:" in src
+          and 'id="box_flt_yhi"' in src and 'id="box_flt_ylo"' in src)
+    # Failing must be the EXACT complement of Passing, wired in every point-filter
+    # site: the main trace builder, the grouped pooler, the outlier collector, the
+    # non-grouped stats table, and the per-point table. Count the complement form.
+    fail_skip = "failActive&&!((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))"
+    check("box: failing = complement-of-passing skip in the main trace builder + grouped pooler",
+          src.count(fail_skip) >= 2)
+    check("box: outlier collector honours failing (olPass* vars, filter-keep form)",
+          "!failActive||((olPassLo!==null&&d.v<olPassLo)||(olPassHi!==null&&d.v>olPassHi))" in src)
+    check("box: non-grouped stats-table + per-point table honour failing too",
+          "!failActive||((stPassLo!==null&&d.v<stPassLo)||(stPassHi!==null&&d.v>stPassHi))" in src
+          and "_fail&&!_oos" in src)
+    # Trim is now independent of the pass/fail radio (active whenever a value is typed),
+    # not gated on mode==='range_hi'/'range_lo' as before.
+    check("box: trim is always-on (isFinite), not gated on a range radio mode",
+          "var rhi=isFinite(yFlt.yhi)?yFlt.yhi:Infinity;" in src
+          and "yFlt.mode==='range_hi'" not in src and "yFlt.mode==='range_lo'" not in src)
+
+
+def test_box_fail_per_point_limit_and_spec_lines() -> None:
+    """Boxplot pass/fail + spec-line correctness (David 2026-09-21), found on a
+    Harmonics compare:
+
+    1. The table counted #fail against a single flat HI_SPEC/LO_SPEC. That's WRONG
+       when conditions/frequencies have different specs (Harmonic 2's spec staircase
+       != 0.5's) -- it showed ~4.5x phantom failures the plot's own spec line never
+       supported. Pass/fail is now per-point vs each point's OWN Upper/Lower Limit
+       (override wins) via _boxPtLim / _boxFailCountDetail / _boxFailCellDetail.
+    2. The plot min-pooled every condition's spec into ONE line, so 2 and 0.5
+       collapsed to a single (wrong) line. Now one line per DISTINCT per-condition
+       Limit staircase (_limitMapsByGroup), collapsing to one when identical.
+    3. Autoscale Y pinned a Y window that then clipped newly-added conditions
+       off-screen while the table still listed them. An Autoscale-Y pin now re-fits
+       when the plotted set changes (_yPinnedByAutoscale / _yAutoRefit / _condSigY);
+       a manual drag-zoom still persists."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # (1) per-point-own-limit pass/fail
+    check("box: per-point pass/fail helpers present (_boxPtLim/_boxFailCountDetail/_boxFailCellDetail)",
+          "function _boxPtLim(d,yFlt){" in src and "function _boxFailCountDetail(" in src
+          and "function _boxFailCellDetail(" in src)
+    check("box: _boxPtLim uses each point's OWN upper_limit/lower_limit (override wins)",
+          "yFlt.tll_hi:(d?d.upper_limit:null)" in src and "yFlt.tll_lo:(d?d.lower_limit:null)" in src)
+    check("box: flat-spec fail helpers removed (_boxFailCell/_boxFailCount/_boxPfLimits gone)",
+          "function _boxFailCell(" not in src and "function _boxFailCount(" not in src
+          and "function _boxPfLimits(" not in src)
+    # (2) per-condition spec lines
+    check("box: per-group Limit staircase helper present (_limitMapsByGroup)",
+          "function _limitMapsByGroup(selConds,fr,f2l){" in src)
+    check("box: draws one line per DISTINCT staircase, collapses identical",
+          "var _multiSpec=_sigOrder.length>1;" in src and "_limMaps=_limitMapsByGroup(" in src)
+    check("box: hide-spec toggle matches Spec Hi/Lo traces by PREFIX (suffixed names)",
+          "nm.indexOf('Spec Lo')===0||nm.indexOf('Spec Hi')===0" in src)
+    # (3) Autoscale-Y re-fit on condition change
+    check("box: Autoscale-Y re-fit machinery present",
+          "var _yPinnedByAutoscale=false" in src and "function _condSigY()" in src
+          and "if(_yPinnedByAutoscale&&_csY!==_lastCondSigY){ _yAutoRefit=true;" in src)
+    check("box: buildLayout honours _yAutoRefit (re-fit Y this rebuild; Y_LIM still wins)",
+          "var curY=Y_LIM||(_yAutoRefit?null:_liveAxisRange('yaxis'));" in src)
+    check("box: a manual Y drag-zoom clears the autoscale pin (persists)",
+          "_yPinnedByAutoscale=false" in src and "ed['yaxis.range[0]']!==undefined) _yPinnedByAutoscale=false" in src)
 
 
 def test_stat_sum_table_perpoint_rollout() -> None:
@@ -1847,6 +1930,8 @@ def main() -> None:
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
+               test_box_data_filter_passfail_and_trim,
+               test_box_fail_per_point_limit_and_spec_lines,
                test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
                test_reduction_native_render_and_rplots,

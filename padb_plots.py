@@ -12669,14 +12669,10 @@ function toggleAllBoxPort(){
   document.querySelectorAll('.box_port_chk').forEach(function(c){c.checked=allEl?allEl.checked:true;});
   boxPortChkChanged();
 }
-function toggleRangeInputs(){
-  var hiEl=document.getElementById('box_flt_range_hi_inputs');
-  var loEl=document.getElementById('box_flt_range_lo_inputs');
-  var hiChecked=document.querySelector('input[name="box_flt"][value="range_hi"]:checked');
-  var loChecked=document.querySelector('input[name="box_flt"][value="range_lo"]:checked');
-  if(hiEl) hiEl.style.display=hiChecked?'inline-flex':'none';
-  if(loEl) loEl.style.display=loChecked?'inline-flex':'none';
-}
+/* Kept as a harmless no-op after the Q1 cleanup (2026-09-21): the raw-sample trim
+   inputs are now always visible (independent of the pass/fail radio), so there are
+   no per-mode range spans to show/hide. Retained so existing callers don't break. */
+function toggleRangeInputs(){}
 /* ---- Limit display direction (upper/lower/both) ---- */
 /* NOTE: the radio's name attr is still "box_tll_dir" and the override ids are
    still box_tll_hi/box_tll_lo for compatibility, but this control selects which
@@ -12686,23 +12682,17 @@ function getTllDirection(){
   return r?r.value:SPEC_DIRECTION;
 }
 function updateBoxFilterLabels(){
+  /* Only the Spec override inputs are spec-direction-aware now. The pass/fail radios
+     (All/Passing/Failing) and the raw-sample trim inputs are direction-agnostic
+     (Q1 cleanup 2026-09-21): Passing/Failing already handle a one-sided spec via a
+     null passLo/passHi, and the trim is pure data-cleaning. */
   var dir=getTllDirection();
   var showHi=dir==='hi'||dir==='both';
   var showLo=dir==='lo'||dir==='both';
-  var hiWrap=document.getElementById('box_flt_hi_wrap');
-  var loWrap=document.getElementById('box_flt_lo_wrap');
-  if(hiWrap) hiWrap.style.display=showHi?'':'none';
-  if(loWrap) loWrap.style.display=showLo?'':'none';
   var tllHiWrap=document.getElementById('box_tll_hi_wrap');
   var tllLoWrap=document.getElementById('box_tll_lo_wrap');
   if(tllHiWrap) tllHiWrap.style.display=showHi?'':'none';
   if(tllLoWrap) tllLoWrap.style.display=showLo?'':'none';
-  var checked=document.querySelector('input[name="box_flt"]:checked');
-  if(checked&&((checked.value==='range_hi'&&!showHi)||(checked.value==='range_lo'&&!showLo))){
-    var allRad=document.querySelector('input[name="box_flt"][value="all"]');
-    if(allRad) allRad.checked=true;
-  }
-  toggleRangeInputs();
 }
 /* "Passing only" has nothing to exclude when the relevant side(s) have
    neither a real CSV spec nor a typed TLL override -- that's correct
@@ -12885,6 +12875,36 @@ function _specFromStats(selConds,freqToLabel){
   });
   return {hi:hi,lo:lo};
 }
+/* Per-GROUP Upper/Lower LIMIT staircase (David 2026-09-21) -- the pass/fail
+   reference (each point's own Upper_Limit/Lower_Limit, median per (group, freq) to
+   fold out per-unit MU noise). Used to draw a spec line PER condition/group so two
+   conditions with genuinely different specs (e.g. Harmonic 2 vs 0.5) each show their
+   own, instead of one min-pooled line that misrepresents both. gk = getGroupKey(cd),
+   the same key the boxes are colored by. */
+function _limitMapsByGroup(selConds,fr,f2l){
+  function _med(a){ if(!a.length) return undefined; var s=a.slice().sort(function(x,y){return x-y;}); var m=Math.floor(s.length/2); return s.length%2?s[m]:(s[m-1]+s[m])/2; }
+  var acc={};
+  BOX_DATA.forEach(function(cd){
+    if(selConds.indexOf(cd.condition)<0) return;
+    var gk=getGroupKey(cd);
+    (cd.freq_stats||[]).forEach(function(fs){
+      if(fs.freq<fr.lo||fs.freq>fr.hi) return;
+      var fl=fs.freq_label; if(!fl) return;
+      (fs.vals_detail||[]).forEach(function(d){
+        if((d.upper_limit==null||d.upper_limit===undefined)&&(d.lower_limit==null||d.lower_limit===undefined)) return;
+        acc[gk]=acc[gk]||{}; acc[gk][fl]=acc[gk][fl]||{hi:[],lo:[]};
+        if(d.upper_limit!=null&&d.upper_limit!==undefined) acc[gk][fl].hi.push(d.upper_limit);
+        if(d.lower_limit!=null&&d.lower_limit!==undefined) acc[gk][fl].lo.push(d.lower_limit);
+      });
+    });
+  });
+  var out={};
+  Object.keys(acc).forEach(function(gk){ var hi={},lo={};
+    Object.keys(acc[gk]).forEach(function(fl){ var h=_med(acc[gk][fl].hi), l=_med(acc[gk][fl].lo);
+      if(h!==undefined) hi[fl]=h; if(l!==undefined) lo[fl]=l; });
+    out[gk]={hi:hi,lo:lo}; });
+  return out;
+}
 /* Shared by buildPortSerialTraces (the plot) and updateStatsTable (the
    table) so a Serial Number/Port "Group by" always pools the exact same
    population in both places -- pulled out after a real, confirmed gap:
@@ -12934,7 +12954,7 @@ function _boxDimLabel(colId){
   return dim?dim.label:colId;
 }
 function _computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
-    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
+    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo,failActive){
   /* cols is the selected-parameter set (multi-select Group by). Empty is
      handled by the caller (Condition path); here cols is always non-empty. */
   /* Real bug reported by the user (2026-08-31): Group by only ever pooled
@@ -12967,6 +12987,7 @@ function _computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
         if(d.v>rhi) return;
         if(d.v<rlo) return;
         if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
+        if(failActive&&!((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
         if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return;}
         var gk=_boxGroupKeyForPoint(cols,cd,d);
         if(!freqVals[gk]) freqVals[gk]={};
@@ -13013,9 +13034,9 @@ function _computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
   return result;
 }
 function buildPortSerialTraces(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
-    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo){
+    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo,failActive){
   var grouped=_computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
-    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
+    serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo,failActive);
   var groups=Object.keys(grouped).sort();
   var condIdxMap={};groups.forEach(function(g,i){condIdxMap[g]=i;});
   var traces=[];
@@ -13064,20 +13085,26 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
   var allPorts=getAllBoxPorts();var selPorts=getSelectedBoxPorts();
   var portActive=allPorts.length>1&&selPorts.length<allPorts.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
-  var yActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
+  var failActive=yFlt&&yFlt.mode==='failing';
+  /* Trim (Upper/Lower "trim raw samples") is now an independent, always-on data
+     clean -- active whenever a value is typed, regardless of the pass/fail radio,
+     so it can combine with Passing/Failing only (Q1 cleanup, David 2026-09-21). */
+  var yActive=yFlt&&isFinite(yFlt.yhi);
+  var yActiveLo=yFlt&&isFinite(yFlt.ylo);
   var kChanged=Math.abs(k-1.5)>0.001;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0;
   var boxGfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
-  var passHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
-  var passLo=passActive?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
-  var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
-  var rlo=yActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+  /* Effective spec thresholds for BOTH Passing-only and Failing-only (its exact
+     complement) -- override wins over the CSV spec. */
+  var passHi=(passActive||failActive)?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
+  var passLo=(passActive||failActive)?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
+  var rhi=isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+  var rlo=isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
   var fr=getBoxFreqRange();
   var _bxGrpCols=_boxGroupCols();
   if(_bxGrpCols.length){
     return buildPortSerialTraces(_bxGrpCols,selConds,selBoxSers,selTemps,yFlt,fr,k,
-      serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo);
+      serActive,portActive,selPorts,gfActive,boxGfFocus,passActive,passLo,passHi,rhi,rlo,failActive);
   }
   var traces=[];
   var condIdxMap={};var ci=0;
@@ -13115,6 +13142,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
           if(d.v>rhi) return false;
           if(d.v<rlo) return false;
           if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
+          if(failActive&&!((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
           if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return false;}
           return true;
         });
@@ -13212,32 +13240,61 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
         hovertemplate:'%{text}<extra></extra>'});
     }
   });
-  /* Dynamic per-freq-cat spec lines derived from active conditions (filtered to current freq range) */
+  /* Per-CONDITION Limit lines (David 2026-09-21). Each group's own Upper/Lower Limit
+     staircase (the pass/fail reference the table now uses). Draw one line per DISTINCT
+     staircase among the shown groups -- so Harmonic 2 and 0.5 (different limits) each
+     get their own line, but identical staircases collapse to a single red line (the
+     common case, byte-identical to the old single-line output). Falls back to the flat
+     HI_SPEC/LO_SPEC line only when the data carries no per-point limits at all. */
   var f2l=_getFreqToLabel();
-  var specMaps=_specFromStats(selConds,f2l);
   var _specActiveLabels=new Set();
   BOX_DATA.forEach(function(cd){
     (cd.freq_stats||[]).forEach(function(fs){if(fs.freq>=fr.lo&&fs.freq<=fr.hi)_specActiveLabels.add(fs.freq_label);});
   });
   var _specOrder=BOX_FREQ_ORDER.filter(function(l){return _specActiveLabels.has(l);});
-  var hiX=[],hiY=[],loX=[],loY=[];
-  _specOrder.forEach(function(fl){
-    var hv=specMaps.hi[fl]; if(hv===undefined&&HI_SPEC!==null) hv=HI_SPEC;
-    var lv=specMaps.lo[fl]; if(lv===undefined&&LO_SPEC!==null) lv=LO_SPEC;
-    if(hv!==undefined){hiX.push(fl);hiY.push(hv);}
-    if(lv!==undefined){loX.push(fl);loY.push(lv);}
-  });
-  /* Built unconditionally (not gated on hideSpec) with a visible flag,
-     and named so toggleBoxHideSpec() can find + restyle them by name
-     without a full rebuild -- see scatter's identical toggleHideSpec(). */
   var _boxHideSpecEl=document.getElementById('box_hide_spec_chk');
   var _boxHideSpec=_boxHideSpecEl?_boxHideSpecEl.checked:false;
-  if(loX.length) traces.push({type:'scatter',mode:(loX.length<2?'markers':'lines'),x:loX,y:loY,
-    visible:!_boxHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Lo',
-    hovertemplate:'Spec Lo: %{y:.4f}<extra></extra>'});
-  if(hiX.length) traces.push({type:'scatter',mode:(hiX.length<2?'markers':'lines'),x:hiX,y:hiY,
-    visible:!_boxHideSpec,line:{color:'red',dash:'dash',width:1.5},name:'Spec Hi',
-    hovertemplate:'Spec Hi: %{y:.4f}<extra></extra>'});
+  var _ovHi=(yFlt&&yFlt.tll_hi!=null&&yFlt.tll_hi!==undefined);
+  var _ovLo=(yFlt&&yFlt.tll_lo!=null&&yFlt.tll_lo!==undefined);
+  var _limMaps=_limitMapsByGroup(selConds,fr,f2l);
+  var _grpKeys=Object.keys(_limMaps);
+  var _sigMap={},_sigOrder=[];
+  if(_grpKeys.length){
+    _grpKeys.forEach(function(gk){
+      var m=_limMaps[gk]; var hiX=[],hiY=[],loX=[],loY=[];
+      _specOrder.forEach(function(fl){
+        var hv=_ovHi?yFlt.tll_hi:m.hi[fl]; if((hv===undefined||hv===null)&&HI_SPEC!==null) hv=HI_SPEC;
+        var lv=_ovLo?yFlt.tll_lo:m.lo[fl]; if((lv===undefined||lv===null)&&LO_SPEC!==null) lv=LO_SPEC;
+        if(hv!==undefined&&hv!==null){hiX.push(fl);hiY.push(hv);}
+        if(lv!==undefined&&lv!==null){loX.push(fl);loY.push(lv);}
+      });
+      var sig=JSON.stringify(hiX)+'|'+JSON.stringify(hiY)+'|'+JSON.stringify(loX)+'|'+JSON.stringify(loY);
+      if(!_sigMap[sig]){_sigMap[sig]={hiX:hiX,hiY:hiY,loX:loX,loY:loY,gks:[]};_sigOrder.push(sig);}
+      _sigMap[sig].gks.push(gk);
+    });
+  } else {
+    /* No per-point limits at all -> single flat HI_SPEC/LO_SPEC line (back-compat). */
+    var fhiX=[],fhiY=[],floX=[],floY=[];
+    _specOrder.forEach(function(fl){
+      var hv=_ovHi?yFlt.tll_hi:(HI_SPEC!==null?HI_SPEC:undefined);
+      var lv=_ovLo?yFlt.tll_lo:(LO_SPEC!==null?LO_SPEC:undefined);
+      if(hv!==undefined&&hv!==null){fhiX.push(fl);fhiY.push(hv);}
+      if(lv!==undefined&&lv!==null){floX.push(fl);floY.push(lv);}
+    });
+    if(fhiX.length||floX.length){_sigMap['_flat']={hiX:fhiX,hiY:fhiY,loX:floX,loY:floY,gks:[]};_sigOrder.push('_flat');}
+  }
+  var _multiSpec=_sigOrder.length>1;
+  _sigOrder.forEach(function(sig){
+    var e=_sigMap[sig];
+    var col=(_multiSpec&&e.gks.length)?PALETTE[(condIdxMap[e.gks[0]]||0)%PALETTE.length]:'red';
+    var suffix=(_multiSpec&&e.gks.length)?(' ['+e.gks[0]+(e.gks.length>1?(' +'+(e.gks.length-1)):'')+']'):'';
+    if(e.loX.length) traces.push({type:'scatter',mode:(e.loX.length<2?'markers':'lines'),x:e.loX,y:e.loY,
+      visible:!_boxHideSpec,line:{color:col,dash:'dash',width:1.5},name:'Spec Lo'+suffix,
+      hovertemplate:'Spec Lo'+suffix+': %{y:.4f}<extra></extra>'});
+    if(e.hiX.length) traces.push({type:'scatter',mode:(e.hiX.length<2?'markers':'lines'),x:e.hiX,y:e.hiY,
+      visible:!_boxHideSpec,line:{color:col,dash:'dash',width:1.5},name:'Spec Hi'+suffix,
+      hovertemplate:'Spec Hi'+suffix+': %{y:.4f}<extra></extra>'});
+  });
   /* Manual Spec override line(s) -- upper and lower are independent overrides,
      each drawn only when set, same as Spec Hi/Lo above. */
   if(yFlt&&yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined&&_specOrder.length){
@@ -13270,7 +13327,7 @@ function buildLayout(){
      categories after a filter change) for comparatively little benefit --
      nobody drag-zooms a category axis the way they zoom a continuous one.
      See the scatter view's _liveAxisRange() for the general mechanism. */
-  var curY=Y_LIM||_liveAxisRange('yaxis');
+  var curY=Y_LIM||(_yAutoRefit?null:_liveAxisRange('yaxis'));
   return {
     title:{text:BOX_TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
@@ -13356,28 +13413,40 @@ function _dupBreakdown(items,keyFn,labelFn){
    pass/fail RULE matches the scatter table / Site spec-mode: vs the effective
    limit (Passing-only TLL override else page HI_SPEC/LO_SPEC), side-aware. */
 function _boxTableMode(){ var el=document.getElementById('box_table_mode'); return el?el.value:'grouped'; }
-function _boxPfLimits(yFlt){
-  var hi=(yFlt&&yFlt.tll_hi!=null&&yFlt.tll_hi!==undefined)?yFlt.tll_hi:HI_SPEC;
-  var lo=(yFlt&&yFlt.tll_lo!=null&&yFlt.tll_lo!==undefined)?yFlt.tll_lo:LO_SPEC;
-  var _n=function(x){return (x==null||x===undefined||x==='')?null:(isFinite(Number(x))?Number(x):null);};
-  return {hi:_n(hi),lo:_n(lo)};
-}
 function _boxPointStatus(v,lim){
   var fail=PADB_isFail(v,lim.hi,lim.lo);   // single shared rule (_COMMON_JS)
   if(fail===null) return {t:'—',c:'#aaa'};
   return fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'};
 }
-/* Count of a population failing the effective limit -- the Grouped-mode "#fail/n"
-   column, so a pooled row still carries a pass/fail signal. */
-function _boxFailCount(vals,lim){ if(lim.hi==null&&lim.lo==null) return null; var n=0;
-  vals.forEach(function(v){ if(PADB_isFail(v,lim.hi,lim.lo)===true) n++; }); return n; }   // single shared rule
-function _boxFailCell(vals,lim){ var n=_boxFailCount(vals,lim); if(n===null) return '<td style="color:#aaa">&mdash;</td>';
-  return '<td>'+(n>0?'<b style="color:#c00">'+n+'</b>':'0')+' / '+vals.length+'</td>'; }
+/* Per-point pass/fail limit (David 2026-09-21): a flat global HI_SPEC/LO_SPEC was
+   WRONG whenever conditions/frequencies carry different specs (e.g. Harmonic 2 has a
+   different spec staircase than 0.5) -- it counted phantom failures the plot's own
+   per-frequency spec line never showed. Pass/fail is now judged against each point's
+   OWN Upper/Lower Limit (carried per point in vals_detail), with a manual Spec override
+   (box_tll_hi/lo) taking precedence. Inherently per-condition + per-frequency. */
+function _boxPtLim(d,yFlt){
+  var _n=function(x){return (x==null||x===undefined||x==='')?null:(isFinite(Number(x))?Number(x):null);};
+  var hi=(yFlt&&yFlt.tll_hi!=null&&yFlt.tll_hi!==undefined)?yFlt.tll_hi:(d?d.upper_limit:null);
+  var lo=(yFlt&&yFlt.tll_lo!=null&&yFlt.tll_lo!==undefined)?yFlt.tll_lo:(d?d.lower_limit:null);
+  return {hi:_n(hi),lo:_n(lo)};
+}
+function _boxFailCountDetail(detail,yFlt){ var scored=0,fail=0;
+  (detail||[]).forEach(function(d){ var lim=_boxPtLim(d,yFlt); if(lim.hi==null&&lim.lo==null) return; scored++;
+    if(PADB_isFail(d.v,lim.hi,lim.lo)===true) fail++; }); return {fail:fail,scored:scored}; }
+function _boxFailCellDetail(detail,yFlt){ var r=_boxFailCountDetail(detail,yFlt);
+  if(r.scored===0) return '<td style="color:#aaa">&mdash;</td>';
+  return '<td>'+(r.fail>0?'<b style="color:#c00">'+r.fail+'</b>':'0')+' / '+r.scored+'</td>'; }
 function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
   var fr=getBoxFreqRange();
   var allSers=getAllBoxSerials(), serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0, gfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
-  var collapse=isCollapseDup(), grpCols=_boxGroupCols(), lim=_boxPfLimits(yFlt), pts=[];
+  var collapse=isCollapseDup(), grpCols=_boxGroupCols(), pts=[];
+  /* Honour the same raw-sample trim + pass/fail (All/Passing/Failing) filter the plot
+     and grouped table apply, so per-point mode can't show rows the plot has dropped
+     (Q1 cleanup 2026-09-21). Pass/fail is per-POINT vs its own Upper/Lower Limit
+     (override wins) -- a flat spec was wrong for per-condition/per-frequency specs. */
+  var _rhi=isFinite(yFlt.yhi)?yFlt.yhi:Infinity, _rlo=isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+  var _pass=yFlt&&yFlt.mode==='passing', _fail=yFlt&&yFlt.mode==='failing';
   BOX_DATA.forEach(function(cd){
     if(selConds.indexOf(cd.condition)<0) return;
     if(selTemps&&selTemps.indexOf(cd.temp)<0) return;
@@ -13387,26 +13456,31 @@ function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
       if(collapse) det=_collapseDupRuns(det,function(d){return d.s+'|'+cd.condition+'|'+(d.p||'')+'|'+cd.temp;});
       det.forEach(function(d){
         if(serActive&&selBoxSers.indexOf(d.s)<0) return;
+        if(d.v>_rhi||d.v<_rlo) return;
+        var _lim=_boxPtLim(d,yFlt);
+        var _oos=((_lim.lo!=null&&d.v<_lim.lo)||(_lim.hi!=null&&d.v>_lim.hi));
+        if(_pass&&_oos) return;
+        if(_fail&&!_oos) return;
         if(gfActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);var _ig=_boxIsInGf(_ck);if(gfFocus?!_ig:_ig) return;}
-        pts.push({gk:grpCols.length?_boxGroupKeyForPoint(grpCols,cd,d):cd.condition,temp:cd.temp,freq:f.freq,fl:f.freq_label,s:d.s,p:d.p||'',v:d.v});
+        pts.push({gk:grpCols.length?_boxGroupKeyForPoint(grpCols,cd,d):cd.condition,temp:cd.temp,freq:f.freq,fl:f.freq_label,s:d.s,p:d.p||'',v:d.v,lim:_lim});
       });
     });
   });
   if(!pts.length) return '<p style="color:#888;padding:8px">No points match the current filters.</p>';
   pts.sort(function(a,b){ if(a.gk!==b.gk)return a.gk<b.gk?-1:1; if(a.temp!==b.temp)return a.temp<b.temp?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
-  var hasLim=(lim.hi!=null||lim.lo!=null), nFail=0;
-  if(hasLim) pts.forEach(function(pt){ if(_boxPointStatus(pt.v,lim).t==='FAIL')nFail++; });
+  var hasLim=pts.some(function(pt){return pt.lim.hi!=null||pt.lim.lo!=null;}), nFail=0;
+  if(hasLim) pts.forEach(function(pt){ if(_boxPointStatus(pt.v,pt.lim).t==='FAIL')nFail++; });
   var cap=5000, shown=pts.slice(0,cap);
   var out='<div style="font-size:12px;color:#555;padding:2px 2px 4px">'+pts.length.toLocaleString()+' point'+(pts.length===1?'':'s')+
     (hasLim?(' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail limit'):'')+
     (pts.length>cap?(' &mdash; showing first '+cap.toLocaleString()+'; use Save CSV for all'):'')+
-    ' &mdash; <i>per-point mode; Group by sorts/sections rows</i></div>';
+    ' &mdash; <i>per-point mode; each point vs its own limit; Group by sorts/sections rows</i></div>';
   out+='<table class="stbl"><thead><tr><th>Group</th><th>Temp</th><th>'+X_SHORT_LABEL+'('+X_UNIT+')</th><th>Serial</th><th>Port</th><th>Value</th>'+
     (hasLim?'<th>Limit&nbsp;lo</th><th>Limit&nbsp;hi</th><th>Status</th>':'')+'</tr></thead><tbody>';
   var body=[];
-  shown.forEach(function(pt){ var st=_boxPointStatus(pt.v,lim);
+  shown.forEach(function(pt){ var st=_boxPointStatus(pt.v,pt.lim);
     body.push('<tr><td>'+pt.gk+'</td><td>'+pt.temp+'</td><td>'+(pt.fl||pt.freq)+'</td><td>'+pt.s+'</td><td>'+pt.p+'</td><td>'+pt.v.toFixed(4)+'</td>'+
-      (hasLim?('<td>'+(lim.lo!=null?lim.lo.toFixed(4):'&mdash;')+'</td><td>'+(lim.hi!=null?lim.hi.toFixed(4):'&mdash;')+'</td><td style="color:'+st.c+';font-weight:bold">'+st.t+'</td>'):'')+'</tr>'); });
+      (hasLim?('<td>'+(pt.lim.lo!=null?pt.lim.lo.toFixed(4):'&mdash;')+'</td><td>'+(pt.lim.hi!=null?pt.lim.hi.toFixed(4):'&mdash;')+'</td><td style="color:'+st.c+';font-weight:bold">'+st.t+'</td>'):'')+'</tr>'); });
   out+=body.join('')+'</tbody></table>';
   return out;
 }
@@ -13423,15 +13497,15 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   }
   _setTableBtnStale(rb,false);
   if(_boxTableMode()==='perpoint'){ el.innerHTML=_boxPerPointTable(selConds,yFlt,selBoxSers,selTemps); return; }
-  var _pfLim=_boxPfLimits(yFlt);   // effective limit for the Grouped-mode "#fail/n" column
   var showNp=isBoxNpTI();
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yFltActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
-  var yFltActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
-  var stPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
-  var stPassLo=passActive?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
+  var failActive=yFlt&&yFlt.mode==='failing';
+  var yFltActive=yFlt&&isFinite(yFlt.yhi);
+  var yFltActiveLo=yFlt&&isFinite(yFlt.ylo);
+  var stPassHi=(passActive||failActive)?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
+  var stPassLo=(passActive||failActive)?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
   var fr=getBoxFreqRange();
   var rows=[];
   var tempActive=selTemps&&selTemps.length<TEMPS_PRESENT.length;
@@ -13456,7 +13530,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
     var rhiSt=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rloSt=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var grouped=_computeBoxGroupedByColId(_bxGrpColsSt,selConds,selBoxSers,selTemps,yFlt,fr,getIqrK(),
-      serActive,portActiveSt,selPortsSt,_gfActiveSt,_gfFocusSt,passActive,stPassLo,stPassHi,rhiSt,rloSt);
+      serActive,portActiveSt,selPortsSt,_gfActiveSt,_gfFocusSt,passActive,stPassLo,stPassHi,rhiSt,rloSt,failActive);
     /* A COND_DIM grouping where a group is a SINGLE real condition
        (nCondsHere===1) and Room-only, with no filter that changes that Room
        population, is exactly the population BOX_STATS' server-side Shapiro was
@@ -13480,7 +13554,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           Condition mode). Its temp is read back from the group key.
         - Temperature is NOT a group dim -> the group pools every selected
           temp, so it's Room-only only when Room is the sole selected temp. */
-    var _stReuseBase=!_hasUnitDimSt&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive
+    var _stReuseBase=!_hasUnitDimSt&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive&&!failActive
       &&!gfFocusActive&&!_gfActiveSt&&!isExclRoom()&&!isExclDEnv()&&!isCollapseDup()&&!portActiveSt;
     var _stTempColIdx=_bxGrpColsSt.indexOf('__temp__');
     var _stRoomOnlySel=(selTemps||[]).length>0&&(selTemps||[]).every(function(t){return t==='Room';});
@@ -13561,10 +13635,10 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
           normTd+npTdG+
-          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCell(fv,_pfLim)+'</tr>');
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(fs.vals_detail,yFlt)+'</tr>');
       });
     });
-  } else if(serActive||yFltActive||yFltActiveLo||passActive||tempActive||gfFocusActive||_gfActiveSt||isExclRoom()||isExclDEnv()||isCollapseDup()){
+  } else if(serActive||yFltActive||yFltActiveLo||passActive||failActive||tempActive||gfFocusActive||_gfActiveSt||isExclRoom()||isExclDEnv()||isCollapseDup()){
     var rhi=yFltActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
     var rlo=yFltActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
     var exclRoomSt=isExclRoom(),exclDEnvSt=isExclDEnv();
@@ -13572,6 +13646,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
                  (serActive&&(yFltActive||yFltActiveLo))?'Serial+Y-filtered':
                  serActive?'Serial-filtered':
                  passActive?'Passing only':
+                 failActive?'Failing only':
                  tempActive?'Temp-filtered':
                  yFltActiveLo?'Y-filtered [lo='+rlo.toFixed(3)+']':
                  yFltActive?'Y-filtered [hi='+rhi.toFixed(3)+']':
@@ -13594,7 +13669,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
        computed from, so the placeholder stays correct for every other
        filter combination and for non-Room rows (no normality test exists
        for those at all, filtered or not). */
-    var tempOnlyFilter=tempActive&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive&&
+    var tempOnlyFilter=tempActive&&!serActive&&!yFltActive&&!yFltActiveLo&&!passActive&&!failActive&&
       !gfFocusActive&&!_gfActiveSt&&!exclRoomSt&&!exclDEnvSt&&!isCollapseDup();
     var _boxStatsByCondFreqSt={};
     if(tempOnlyFilter) BOX_STATS.forEach(function(cd){
@@ -13616,7 +13691,8 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           .filter(function(d){
             if(_gfActiveSt){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);var _ig=_boxIsInGf(_ck);if(_gfFocusSt?!_ig:_ig) return false;}
             return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
-              &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi));
+              &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi))
+              &&(!failActive||((stPassLo!==null&&d.v<stPassLo)||(stPassHi!==null&&d.v>stPassHi)));
           });
         if(isCollapseDup()) detail=_collapseDupRuns(detail);
         if(!detail.length) return;
@@ -13655,7 +13731,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+bs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+bs.q1.toFixed(4)+'</td><td>'+bs.q2.toFixed(4)+'</td><td>'+bs.q3.toFixed(4)+'</td>'+
           normCell+npCellSt+
-          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCell(bv,_pfLim)+'</tr>');
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(boxDet,yFlt)+'</tr>');
       });
     });
   } else {
@@ -13722,7 +13798,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+meanV.toFixed(4)+'</td><td>'+stdV.toFixed(4)+'</td>'+
           '<td>'+q1v.toFixed(4)+'</td><td>'+q2v.toFixed(4)+'</td><td>'+q3v.toFixed(4)+'</td>'+
-          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCell(raw?raw.map(function(d){return d.v;}):[],_pfLim)+'</tr>');
+          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(raw||[],yFlt)+'</tr>');
       });
     });
     /* BOX_STATS (above) is _aggregate_stat_data()'s output, built for
@@ -13762,7 +13838,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
           '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(no&nbsp;normality&nbsp;test&nbsp;at&nbsp;non-Room&nbsp;temps)</td>'+
           (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
-          '<td>'+outStr2+'</td><td>'+devCells2.pos+'</td><td>'+devCells2.neg+'</td>'+_boxFailCell(fv,_pfLim)+'</tr>');
+          '<td>'+outStr2+'</td><td>'+devCells2.pos+'</td><td>'+devCells2.neg+'</td>'+_boxFailCellDetail(detail,yFlt)+'</tr>');
       });
     });
   }
@@ -13848,12 +13924,13 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
   var allSers=getAllBoxSerials();
   var serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   var passActive=yFlt&&yFlt.mode==='passing';
-  var yActive=yFlt&&yFlt.mode==='range_hi'&&isFinite(yFlt.yhi);
-  var yActiveLo=yFlt&&yFlt.mode==='range_lo'&&isFinite(yFlt.ylo);
-  var olPassHi=passActive?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
-  var olPassLo=passActive?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
-  var rhi=yActive&&isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
-  var rlo=yActiveLo&&isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
+  var failActive=yFlt&&yFlt.mode==='failing';
+  var yActive=yFlt&&isFinite(yFlt.yhi);
+  var yActiveLo=yFlt&&isFinite(yFlt.ylo);
+  var olPassHi=(passActive||failActive)?(yFlt.tll_hi!==null&&yFlt.tll_hi!==undefined?yFlt.tll_hi:HI_SPEC):null;
+  var olPassLo=(passActive||failActive)?(yFlt.tll_lo!==null&&yFlt.tll_lo!==undefined?yFlt.tll_lo:LO_SPEC):null;
+  var rhi=isFinite(yFlt.yhi)?yFlt.yhi:Infinity;
+  var rlo=isFinite(yFlt.ylo)?yFlt.ylo:-Infinity;
   var fr=getBoxFreqRange();
   var result=[];
   BOX_DATA.forEach(function(cd){
@@ -13864,7 +13941,8 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
       var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
       var detail=allDet.filter(function(d){
         return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
-          &&(!passActive||(olPassLo===null||d.v>=olPassLo)&&(olPassHi===null||d.v<=olPassHi));
+          &&(!passActive||(olPassLo===null||d.v>=olPassLo)&&(olPassHi===null||d.v<=olPassHi))
+          &&(!failActive||((olPassLo!==null&&d.v<olPassLo)||(olPassHi!==null&&d.v>olPassHi)));
       });
       if(detail.length<2) return;
       var fv=detail.map(function(d){return d.v;});
@@ -14598,12 +14676,26 @@ function toggleBoxLfPanel(){
    leaving any active zoom untouched. The X axis here is categorical, but
    Plotly's own autorange still restricts the Y fit to the categories
    currently in view, same mechanism as a continuous axis. */
+/* Q1/Autoscale-Y fix (David 2026-09-21): an Autoscale-Y "fit to current data" pin
+   must NOT silently hide data once the plotted set changes -- e.g. autoscale to
+   Harmonic 2, then add 0.5 whose values fall outside the pinned window and clip
+   off-screen while the table still lists them. So: re-fit Y when the plotted
+   condition/serial/temp/freq selection changes (_yAutoRefit forces autorange for
+   that one rebuild). A manual drag-zoom is deliberately NOT re-fit -- it's a "look
+   here" the viewer chose, distinguished by _yPinnedByAutoscale (only autoscaleY
+   sets it; a manual y-zoom clears it in _onPlotRelayout). Y_LIM (configured) always
+   wins. */
+var _yPinnedByAutoscale=false, _yAutoRefit=false, _lastCondSigY=null, _inAutoscale=false;
+function _condSigY(){ try{ return getSelectedConds().join('\x1f')+'||'+getSelectedBoxSerials().join(',')+'||'+getSelectedTemps().join(',')+'||'+JSON.stringify(getBoxFreqRange()); }catch(e){ return ''; } }
 function autoscaleY(){
   var gd=document.getElementById('plot');
   if(!gd) return;
+  _inAutoscale=true;
   Plotly.relayout('plot',{'yaxis.autorange':true}).then(function(){
     var yr=gd.layout&&gd.layout.yaxis&&gd.layout.yaxis.range;
-    if(Array.isArray(yr)) Plotly.relayout('plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false});
+    if(Array.isArray(yr)){ Plotly.relayout('plot',{'yaxis.range':yr.slice(),'yaxis.autorange':false}).then(function(){
+      _yPinnedByAutoscale=true; _lastCondSigY=_condSigY(); _inAutoscale=false; }); }
+    else { _inAutoscale=false; }
   });
 }
 function clearEverything(){
@@ -14632,6 +14724,8 @@ function clearEverything(){
   /* Data filter */
   var allFlt=document.querySelector('input[name="box_flt"][value="all"]');
   if(allFlt)allFlt.checked=true;
+  var yhiClr=document.getElementById('box_flt_yhi');if(yhiClr)yhiClr.value='';
+  var yloClr=document.getElementById('box_flt_ylo');if(yloClr)yloClr.value='';
   var dirRad=document.querySelector('input[name="box_tll_dir"][value="'+SPEC_DIRECTION+'"]');
   if(dirRad)dirRad.checked=true;
   var tllHiEl=document.getElementById('box_tll_hi');if(tllHiEl)tllHiEl.value='';
@@ -14675,6 +14769,7 @@ function clearEverything(){
      reset above, Plotly's own index-based category zoom is a separate,
      Plotly-internal view state that a fresh (but same-shape) categoryarray
      from update() wouldn't otherwise disturb. */
+  _yPinnedByAutoscale=false; _yAutoRefit=false; _lastCondSigY=null;
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
   update();
 }
@@ -15690,7 +15785,11 @@ var _boxLabelToFreq=(function(){
    the same categoryarray from it via getBoxFreqRange(), with nothing left
    for Plotly's own index reinterpretation to get wrong. */
 function _onPlotRelayout(ed){
-  if(!ed) return;
+  if(!ed||_inAutoscale) return;
+  /* A manual Y drag-zoom (or Reset-axes) is the viewer choosing a Y window -- it
+     should persist across filter changes, so drop the "this pin came from Autoscale
+     Y" flag (which is what triggers an auto re-fit on a condition change). */
+  if(ed['yaxis.autorange']!==undefined||ed['yaxis.range']!==undefined||ed['yaxis.range[0]']!==undefined) _yPinnedByAutoscale=false;
   if(ed['xaxis.autorange']){
     document.getElementById('box_freq_lo').value=BOX_FREQ_MIN;
     document.getElementById('box_freq_hi').value=BOX_FREQ_MAX;
@@ -15718,14 +15817,20 @@ function toggleBoxHideSpec(){
   var gd=document.getElementById('plot');
   if(!gd||!gd.data) return;
   var idxs=[];
-  gd.data.forEach(function(t,i){if(t.name==='Spec Lo'||t.name==='Spec Hi') idxs.push(i);});
+  gd.data.forEach(function(t,i){var nm=t.name||'';if(nm.indexOf('Spec Lo')===0||nm.indexOf('Spec Hi')===0) idxs.push(i);});
   if(idxs.length) Plotly.restyle('plot',{visible:!hideSpec},idxs);
 }
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
   _updatePassingWarn(yFlt);
+  /* If an Autoscale-Y pin is active and the plotted set changed since it was set,
+     re-fit Y this rebuild (so newly-shown boxes can't clip off-screen). */
+  var _csY=_condSigY();
+  if(_yPinnedByAutoscale&&_csY!==_lastCondSigY){ _yAutoRefit=true; _yPinnedByAutoscale=false; }
+  _lastCondSigY=_csY;
   Plotly.react('plot',buildBoxTraces(selConds,selTemps,yFlt,selBoxSers),buildLayout());
+  _yAutoRefit=false;
   updateStatsTable(selConds,yFlt,selBoxSers,selTemps);
   updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
   updateDeltaOutlierPanel(selConds,selTemps,selBoxSers);
@@ -16165,31 +16270,30 @@ def _build_box_interactive_html(
         )
         env_bar = f'<div class="env-bar">\n  <b>Temperature&nbsp;steps:</b>\n{env_items}</div>\n'
 
-    y_lo_val = y_lim[0] if y_lim else ""
-    y_hi_val = y_lim[1] if y_lim else ""
     filter_bar = (
         '<div class="flt-bar">\n'
         '  <b>Data&nbsp;filter:</b>\n'
-        '  <label><input type="radio" name="box_flt" value="all" checked'
-        ' onchange="toggleRangeInputs();update()">&nbsp;All&nbsp;data</label>\n'
-        '  <label><input type="radio" name="box_flt" value="passing"'
-        ' onchange="toggleRangeInputs();update()">&nbsp;Passing&nbsp;only</label>\n'
+        '  <label title="Show every measurement (no pass/fail filter)">'
+        '<input type="radio" name="box_flt" value="all" checked'
+        ' onchange="update()">&nbsp;All&nbsp;data</label>\n'
+        '  <label title="Show only measurements that PASS the effective spec (CSV Spec/Limit, or the Spec override below)">'
+        '<input type="radio" name="box_flt" value="passing"'
+        ' onchange="update()">&nbsp;Passing&nbsp;only</label>\n'
+        '  <label title="Show only measurements that FAIL the effective spec -- the exact complement of Passing only">'
+        '<input type="radio" name="box_flt" value="failing"'
+        ' onchange="update()">&nbsp;Failing&nbsp;only</label>\n'
         '  <span id="box_passing_warn" style="display:none;background:#fff0e8;color:#c04000;'
         'font-weight:bold;padding:1px 6px;border-radius:3px"></span>\n'
-        '  <label id="box_flt_hi_wrap"><input type="radio" name="box_flt" value="range_hi"'
-        ' onchange="toggleRangeInputs();update()">&nbsp;Upper&nbsp;limit</label>\n'
-        '  <span id="box_flt_range_hi_inputs" style="display:none;align-items:center;gap:4px">\n'
-        f'    <input type="number" id="box_flt_yhi" placeholder="dBc limit" step="0.001"'
-        f' value="{y_hi_val}" oninput="update()">\n'
-        '    <small style="color:#666">(removes raw samples above limit before computing Q1/Q2/Q3/whiskers)</small>\n'
-        '  </span>\n'
-        '  <label id="box_flt_lo_wrap"><input type="radio" name="box_flt" value="range_lo"'
-        ' onchange="toggleRangeInputs();update()">&nbsp;Lower&nbsp;limit</label>\n'
-        '  <span id="box_flt_range_lo_inputs" style="display:none;align-items:center;gap:4px">\n'
-        f'    <input type="number" id="box_flt_ylo" placeholder="min (dBm)" step="0.001"'
-        f' value="{y_lo_val}" oninput="update()">\n'
-        '    <small style="color:#666">(removes raw samples below limit before computing Q1/Q2/Q3/whiskers)</small>\n'
-        '  </span>\n'
+        '  <span class="sep"></span>\n'
+        '  <label title="Data-cleaning trim: drop raw samples beyond a hard value BEFORE computing'
+        ' Q1/Q2/Q3/whiskers. Independent of the pass/fail filter and the Spec override -- combine with'
+        ' either. Leave blank for no trim.">Trim&nbsp;raw&nbsp;samples:</label>\n'
+        '  <label style="font-size:12px" title="Drop raw samples ABOVE this value before computing the box">above&nbsp;'
+        '<input type="number" id="box_flt_yhi" placeholder="none" step="0.001" style="width:80px"'
+        ' value="" oninput="update()"></label>\n'
+        '  <label style="font-size:12px" title="Drop raw samples BELOW this value before computing the box">below&nbsp;'
+        '<input type="number" id="box_flt_ylo" placeholder="none" step="0.001" style="width:80px"'
+        ' value="" oninput="update()"></label>\n'
         '  <span class="sep"></span>\n'
         + tll_selector_html +
         '  <label id="box_tll_hi_wrap" title="Override Spec&#8593; for the Passing-only filter and draw a manual limit line (id kept as box_tll_hi for compatibility)">'
