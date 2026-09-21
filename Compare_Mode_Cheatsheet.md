@@ -60,5 +60,5 @@ See `Interactive_Plots_User_Guide.md` → **Cross-Site Comparison** for the plai
 
 ## 6. Known gaps
 
-- `boxplot`, `stat_summary`, and `summary` have the Site Population Check. `env_coverage` and `distribution` render the merged data fine (Site is just a filterable condition dimension to them too) but have no dedicated comparison feature yet.
+- The Site Population Check is now on **all six views** — `boxplot`, `stat_summary`, `summary`, `env_coverage`, `distribution`, and `histogram` (switching-speed compares). `env_coverage`/`distribution` add a selectable fence basis (Room vs ΔEnv-drift / Absolute vs ΔTemp) and a live `k`; `histogram` has no Global Filter, so it cleans via CSV export/edit/import instead.
 - The check compares only exact-matching frequencies between the two sites' sweeps — a frequency present in only one site reports `n/a`, not a near-match guess.

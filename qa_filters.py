@@ -1081,9 +1081,9 @@ _HARNESS_JS = r"""
       _ssel.value='primary'; basisEl.value='dist'; levelEl.value='aggressive'; statAutoFilterPreview(); ar=window._statAutoResult;
     } else skip('site-scope[stat]','not a compare stat_summary (no stat_auto_site / PRIMARY_SITE)');
     if(ar && ar.auto.length && typeof statAutoFilterApply==='function'){
-      var autoKeyCount=0; ar.auto.forEach(function(d){autoKeyCount+=d.keys.length;});
+      var _ak={}; ar.auto.forEach(function(d){d.keys.forEach(function(k){_ak[k]=1;});}); var autoKeyCount=Object.keys(_ak).length;
       statAutoFilterApply();
-      chk('auto-apply-adds-exactly-auto-keys', gfN()===autoKeyCount, 'gf='+gfN()+' autoKeys='+autoKeyCount);
+      chk('auto-apply-adds-exactly-auto-keys', gfN()===autoKeyCount, 'gf='+gfN()+' distinctAutoKeys='+autoKeyCount);
       var allExcl=true; (window._statAutoResult?window._statAutoResult.auto:ar.auto).forEach(function(d){
         d.pts.forEach(function(p){ if(!_isStatGfExcl(p.serial,p.cond,'Room',p.freqLabel,p.port)) allExcl=false; }); });
       chk('auto-apply-excludes-auto-DUTs', allExcl, 'all auto points GF-excluded='+allExcl);
@@ -1198,9 +1198,13 @@ _HARNESS_JS = r"""
       _ssel.value='primary'; basisEl.value='dist'; levelEl.value='aggressive'; CTX.previewFn(); ar=window[CTX.resultVar];
     } else skip('site-scope['+tag+']','not a compare view (no siteSel / PRIMARY_SITE)');
     if(ar&&ar.auto.length){
-      var keys=0; ar.auto.forEach(function(d){keys+=d.keys.length;});
+      // Distinct keys, not sum-of-lengths: the GF is a Set (_mergeGf unions), so a DUT
+      // whose key list repeats an identical serial||cond||temp||freqLabel (e.g. repeat
+      // rows collapsing to one freq box) legitimately dedups. Still full teeth: a
+      // genuinely dropped distinct key makes gfN() < distinct -> FAIL.
+      var _ak={}; ar.auto.forEach(function(d){d.keys.forEach(function(k){_ak[k]=1;});}); var keys=Object.keys(_ak).length;
       _afApply(CTX);
-      chk('auto-apply-adds-keys['+tag+']', gfN()===keys, 'gf='+gfN()+' keys='+keys);
+      chk('auto-apply-adds-keys['+tag+']', gfN()===keys, 'gf='+gfN()+' distinctKeys='+keys);
       clr(); chk('auto-clear-restores['+tag+']', gfN()===0, 'gf='+gfN());
     } else skip('auto-apply['+tag+']','no auto DUT at dist/aggressive on this data');
     clr(); var wa=_afAnalyze(CTX), rec=_afRecommend(wa);
@@ -1420,15 +1424,30 @@ _HARNESS_JS = r"""
     var slices; try{ slices=ctx.subpopSlices(); }catch(e){ chk('subpop-slices',false,String(e)); return; }
     if(!slices||!slices.length){ skip('subpop','no slices (no per-DUT data)'); return; }
     // >=1 bucket (histogram slices are single-bucket: one dim-combo, per-DUT means).
-    var sl=null; for(var i=0;i<slices.length;i++){ if(slices[i].serials&&slices[i].serials.length>=5&&slices[i].vals_by_freq.length>=1){ sl=slices[i]; break; } }
-    if(!sl){ skip('subpop','no slice >=5 DUTs & >=1 bucket'); return; }
+    // Pick a slice the detector can actually ASSESS: >=5 DUTs AND at least its own
+    // effective min_buckets (histogram overrides to 1 via slice.opts; others need 3).
+    // A slice with too few buckets, or where the planted DUTs are null in most buckets,
+    // makes _spDetect return clean regardless of the offset -- a false red. So also plant
+    // into the two DENSEST DUTs (most non-null buckets), each with >= min_buckets of data.
+    // This keeps full teeth (a genuine detector/slice bug still reds) while removing the
+    // env_coverage false red where the first two columns of a sparse delta slice had no data.
+    var sl=null, plantCols=null;
+    for(var i=0;i<slices.length;i++){
+      var cand=slices[i]; if(!cand.serials||cand.serials.length<5||!cand.vals_by_freq.length) continue;
+      var mb=(cand.opts&&cand.opts.min_buckets)||3; if(cand.vals_by_freq.length<mb) continue;
+      var nd=cand.serials.length, cnt=[]; for(var d=0;d<nd;d++)cnt.push(0);
+      cand.vals_by_freq.forEach(function(row){ for(var d=0;d<nd;d++){ if(typeof row[d]==='number'&&isFinite(row[d]))cnt[d]++; } });
+      var order=[]; for(var d=0;d<nd;d++)order.push(d); order.sort(function(a,b){return cnt[b]-cnt[a];});
+      if(cnt[order[0]]>=mb && cnt[order[1]]>=mb){ sl=cand; plantCols=[order[0],order[1]]; break; }
+    }
+    if(!sl){ skip('subpop','no slice with >=5 DUTs, >= min_buckets buckets, and 2 densely-measured DUTs to plant'); return; }
     var opt={budget_by_freq:sl.budget_by_freq,station_by_dut:sl.station_by_dut};
     if(sl.opts){for(var _k in sl.opts)opt[_k]=sl.opts[_k];}   // per-view overrides (histogram min_buckets:1)
     var base=_spDetect(sl.vals_by_freq, sl.serials, opt);
     var sset={}; sl.serials.forEach(function(s){sset[s]=1;});
     chk('subpop-baseline-flags-are-real-serials',
         base.flagged.every(function(s){return sset[s];}), 'flagged='+JSON.stringify(base.flagged));
-    var plant=[sl.serials[0], sl.serials[1]];
+    var plant=[sl.serials[plantCols[0]], sl.serials[plantCols[1]]];
     // Dominance-guaranteed offset: set the 2 planted DUTs FAR above the slice's own
     // range, so they form an unambiguous separate mode regardless of the data's native
     // scale/spread. A fixed +1000 fails on wide real data (e.g. switching speed in the
@@ -1436,7 +1455,7 @@ _HARNESS_JS = r"""
     var _all=[]; sl.vals_by_freq.forEach(function(row){row.forEach(function(v){if(typeof v==='number'&&isFinite(v))_all.push(v);});});
     var _mx=_all.length?Math.max.apply(null,_all):0, _mn=_all.length?Math.min.apply(null,_all):0;
     var _big=_mx + ((_mx-_mn)||Math.abs(_mx)||1)*1000 + 1e6;
-    var mut=sl.vals_by_freq.map(function(row){ return row.map(function(v,di){ return (v==null)?v:(di<2?_big:v); }); });
+    var mut=sl.vals_by_freq.map(function(row){ return row.map(function(v,di){ return (v==null)?v:((di===plantCols[0]||di===plantCols[1])?_big:v); }); });
     var r=_spDetect(mut, sl.serials, opt); var flg={}; r.flagged.forEach(function(s){flg[s]=1;});
     chk('subpop-planted-flags-exactly-the-2-offset-duts',
         r.status==='flagged'&&r.flagged.length===2&&flg[plant[0]]&&flg[plant[1]],

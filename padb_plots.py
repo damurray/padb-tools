@@ -12416,7 +12416,13 @@ function _syncLfFromAllDims(){
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
       /* Use lookahead for double-space or end-of-string so multi-word values are captured */
       var m=cond.match(new RegExp(safe+':\\s*(.+?)(?=  |$)'));
-      return m&&sel.indexOf(m[1].trim())>=0;
+      /* A dimension whose key is ABSENT from this condition (m===null) imposes NO
+         constraint on it -- e.g. a cross-site compare where one site's rows carry a
+         grouping key (Test Event Status) the other site's rows don't. Treating a
+         missing key as a match-FAILURE made deselecting ANY filter zero the site that
+         lacks that key (_syncLfFromAllDims unchecked every one of its rows). No-op for
+         single-site pods, where every condition carries every key so m is never null. */
+      return m ? (sel.indexOf(m[1].trim())>=0) : true;
     });
     row.querySelector('.box_cond_lf_chk').checked=ok;
   });
@@ -12535,7 +12541,7 @@ function getSelectedConds(){
       var allowed=getSelected('box_cond_'+dim.col_id);
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
       var m=cond.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
-      return m&&allowed.indexOf(m[1].trim())>=0;
+      return m ? (allowed.indexOf(m[1].trim())>=0) : true;  // absent dim = no constraint (compare-safe; see _syncLfFromAllDims)
     });
   });
 }
@@ -16344,11 +16350,7 @@ def _build_box_interactive_html(
            '<b>Clear everything</b> to reset.</div>\n')
         + '<div id="plot"></div>\n'
         + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">\n'
-        + '  <button class="toggle-btn" id="box_wf_btn" onclick="toggleBoxWorkflow()"'
-        + ' title="Pre-analyzes this dataset (DUTs / conditions / temps / compare / spec presence / skew /'
-        + ' population size) and recommends auto-filter settings + a tailored workflow. Includes a one-click,'
-        + ' fully-reversible, audited Run that auto-executes the conservative part of the workflow.">'
-        + '&#9432; Workflow &amp; Recommendations</button>\n'
+        + _af_workflow_button_html('box', 'toggleBoxWorkflow')
         + '  <button class="toggle-btn" id="box_stat_toggle_btn"'
         ' onclick="toggleStatPanel()">&#9658; Statistics Table</button>\n'
         + '  <label style="font-size:12px" title="Grouped stats = one row per condition/frequency'

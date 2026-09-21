@@ -12,7 +12,7 @@ Most results are organized as a gallery: an `index.html` page with links to ever
 
 A large view can take a few seconds to parse and draw its data. While it does, the page shows a **"Loading plot data…" spinner** so it never just looks dead — the spinner clears automatically once the plot has rendered. If a page is genuinely enormous (hundreds of MB), see **Large-dataset viewer** below.
 
-There are up to six kinds of view. Not every result has all six — which ones exist depends on the data (see **"Why don't I see a Distribution/Env Coverage/Summary view?"** below):
+Which views a result has depends on the data — not every result has all of them (see **"Why don't I see a Distribution/Env Coverage/Summary view?"** below):
 
 | View | One-line summary |
 |---|---|
@@ -22,6 +22,8 @@ There are up to six kinds of view. Not every result has all six — which ones e
 | **Summary** | All-temperature min/max/mean bands, one view for everything |
 | **Env Coverage** | How much the environment (temperature) shifts the measurement |
 | **Distribution** | Histogram/density curves of how measurements are spread |
+| **Reference Statistics** | A "1000 ft" summary — headline counts, a Pareto of worst offenders, and per-group stats |
+| **Histogram** | Value-distribution view for tests with no swept axis (e.g. switching speed) |
 
 ---
 
@@ -138,6 +140,41 @@ Zooming in on the plot (drag a box, or scroll) now also narrows the Statistics T
 
 ---
 
+## Reference Statistics
+
+**What it shows:** a "1000 ft view" of a single dataset rather than a plot of every point — headline **Overall** and **pass / fail** counts, a **Pareto chart** ranking groups by how many fails/outliers each contributes, and a **per-group descriptive-stats table** (n / mean / std / median / min / max / IQR-outliers). Below that, a **value-distribution histogram** (coloured by pass/fail when a pass/fail rule applies) and an **outlier-points table** — the actual 1.5×IQR-fence points behind the Overall count, sorted by deviation, with a CSV export.
+
+**Good for:** a fast "how healthy is this dataset, and which group is the worst offender?" overview *before* drilling into Scatter/Boxplot — and for reporting a single set of headline numbers.
+
+**Why the counts are trustworthy:** everything on this page is recomputed **live under the filter bar** and over **every** measured point (this view aggregates rather than drawing 40,000 markers, so it never decimates). The Pareto chart, the tables and the headline numbers therefore always agree with each other and with whatever filters you've set.
+
+**How pass/fail is decided** (first available wins): the pod's own status field (e.g. a "Test Run Status" of P/F) → the CSV's Upper/Lower spec limits → a manual override limit you type in (useful for a compare dataset with no spec). If none of those exist, the page shows counts and distributions without a pass/fail split.
+
+**Controls specific to this view:**
+- **Group by** — which dimension the Pareto chart and the per-group table break down by.
+- Standard filter bar (conditions, serial, temperature, frequency) — narrows every number, table and chart together.
+- **Auto-filter preview** — the same *basis / level* control as the plot views, but here it only *previews* the before/after impact on the headline numbers (total / pass / fail / outliers / mean / median / std). It never writes the Global Filter — apply a real clean on a plot view; it flows back here automatically.
+
+**Note:** this view honours the shared cross-view **Global Filter** point-precisely, so a unit you excluded on the Boxplot page drops out of these numbers too. It's part of the default set for room-temperature-only data (Scatter + Boxplot + Reference Statistics + Summary + Stat Summary).
+
+---
+
+## Histogram (switching-speed and other no-swept-axis tests)
+
+**What it shows:** a value-distribution view for tests that produce **one number per measurement with no swept axis** — the classic case is **switching speed** (a population of switching times in µs against an upper limit), where there's nothing meaningful to put on an X axis, so a Scatter or Boxplot-vs-frequency can't be drawn. It overlays a histogram per condition, with the spec limit marked, plus a statistics table (n / mean / median / p95 / p99 / max / **% out-of-spec**).
+
+**Why it's a special case:** most views plot *value vs. frequency (or another swept parameter)*. Switching-speed-style pods have no such axis, so this is the view they route to automatically — you'll see it *instead of* Scatter/Boxplot for those tests, not alongside them.
+
+**Good for:** "what does the spread of switching times look like, and what fraction is over the limit?" — and, in a cross-site compare, overlaying each site's distribution.
+
+**Controls specific to this view:**
+- **Bins slider + Auto** — histogram bin width (Auto uses a Freedman–Diaconis rule).
+- **Spec: All / Pass only / Fail only** — filter to just the passing or failing measurements (shown only when the data has a spec limit).
+- **Export CSV / Import CSV** — export the currently-filtered rows (one per measurement, with each unit's serial and an out-of-spec flag), or load an edited CSV back into the open page. Because the histogram has **no** shared Global Filter, this export-edit-import round-trip is how you carry a cleaned population to another site or hand it off.
+- **Auto-filter bad DUTs** — same control as the plot views, but its exclusions apply to **this page only** (see the Auto-filter section) — undo with **"Clear auto-exclusion"**.
+
+---
+
 ## Auto-filter bad DUTs (Workflow & Recommendations)
 
 **What it is:** on the population views (**Boxplot, Stat Summary, Summary, Env Coverage,** and **Histogram**) there's an **"Auto-filter bad DUTs"** control (a *basis* and *level* dropdown) plus a **⚙ Workflow & Recommendations** button. It finds clearly-bad units statistically and excludes them, but only after showing you exactly what it will remove and why.
@@ -161,7 +198,7 @@ Zooming in on the plot (drag a box, or scroll) now also narrows the Statistics T
 
 ## Cross-Site Comparison
 
-Some result pages combine data from two sites — e.g. an established site's data against a newer site's first production units — instead of just one. You'll know because the Boxplot, Stat Summary, and Summary pages will have an extra "Site Population Check" button, and "Site" will show up as its own filter dimension alongside the usual conditions. Want to build one of these yourself? See `Compare_Mode_Cheatsheet.md` for the one-page steps.
+Some result pages combine data from two sites — e.g. an established site's data against a newer site's first production units — instead of just one. You'll know because the pages will have an extra "Site Population Check" button, and "Site" will show up as its own filter dimension alongside the usual conditions. Want to build one of these yourself? See `Compare_Mode_Cheatsheet.md` for the one-page steps.
 
 **What Site Population Check tells you:** for each new-site DUT, whether its measurements at each frequency/temperature fall inside the range the established site's own units produced there. Anything outside that range is worth a look — the table it shows breaks that down further:
 - If one specific DUT is flagged repeatedly across many frequencies, while its own site's other units look fine — that's likely a bad unit.
@@ -175,6 +212,17 @@ There's also an always-visible amber banner near the top noting anything one sit
 **On the Boxplot page specifically**, two extra columns help tell apart "this DUT was measured under more real test conditions than others" from "this DUT's own measurement was genuinely repeated": **Dup runs** / **Genuinely repeated freqs** in the per-DUT table, and **"SR dup pts"** in the per-point detail table (listing which established-site units, if any, have more than one raw measurement at that exact point, e.g. `US65080419×2`). See the FAQ below for why this distinction matters.
 
 **Export CSV (All)** / **Export CSV (Outside only)** buttons (Boxplot, Stat Summary, and Summary) download the per-point detail table exactly as shown, so you can take the flagged points into Excel or elsewhere.
+
+### What's new in comparison mode
+
+Recent additions, if you're returning to a compare after a while:
+
+- **Site Population Check is now on every view.** It started on Boxplot / Stat Summary / Summary; it's since been added to **Env Coverage, Distribution, and Histogram** too. So whichever view a compare lands on (including a switching-speed compare, which routes to Histogram), you get the same fence-membership check.
+- **Pick what the fence is built from — "Site check vs:".** A selector on each view lets you check the new site against the established site's own spread (**fence**), against the **spec** limit, or **both**. On Env Coverage and Distribution you also choose the *basis* — Env Coverage: room-temperature baseline vs. ΔEnv (temperature-drift); Distribution: absolute value vs. ΔTemp — and there's a **live "k" control** to tighten or loosen the fence (higher k = looser, fewer points flagged).
+- **Auto-filter can be scoped by site.** On a compare, the **Auto-filter bad DUTs** control gets a **site scope** dropdown — **Reference only** (default: only clean the established site), **Onboarding only** (only the new site), or **Both**. The preview shows the false-removal **risk per site** so you can make an informed choice rather than cleaning a site you didn't mean to.
+- **Subpopulation advisory.** The **⚙ Workflow & Recommendations** panel now flags when **two or more units behave as a separate distribution** from the rest — the tell-tale of a real unit/station/condition problem that per-unit calibration didn't iron out. It complements the Site Population Check (which catches subtle *overlapping* shifts); this one catches genuinely *separated* clusters. It's advisory only — it never filters anything.
+- **Compatibility check before you build.** When you create a compare through the web app, a **Check compatibility** step warns about soft gaps (missing temperatures/ports, non-overlapping frequency ranges) and *blocks* a genuine unit mismatch (e.g. dBc vs. dBm, or carrier-MHz vs. offset-Hz x-axes) unless you explicitly override — so two datasets that shouldn't be overlaid don't get silently merged.
+- **Giant compares open in the viewer.** A large cross-site merge can produce a page too big for a browser; those folders ship a compact `.parquet` and the **Large-dataset viewer** (below) instead.
 
 ---
 
@@ -192,8 +240,8 @@ For those cases only, a results folder may include a **compact `.parquet` sideca
 
 ## Frequently asked questions
 
-**Why don't I see a Distribution / Env Coverage / Summary view for this result?**
-Those three views only make sense when the data covers more than just room temperature. If a measurement was only ever tested at room temperature, only Scatter and Boxplot (and sometimes Stat Summary/Summary) exist — that's expected, not a missing file.
+**Why don't I see a Distribution or Env Coverage view for this result?**
+Those two views compare each measurement against its room-temperature baseline, so they only exist when the data covers *more than* room temperature. A room-temperature-only result gets **Scatter, Boxplot, Reference Statistics, Summary, and Stat Summary** — Summary and Stat Summary are useful for room-only data too (they're per-condition stats and pass/fail bounds, which need no temperature deltas), so they now appear by default even with no environmental data. Only Distribution and Env Coverage are held back until there's multi-temperature data. Multi-temperature results get all of them. (This is a change from older builds, where Summary/Stat Summary were sometimes withheld for room-only data.)
 
 **Why don't I see a "Segment by" control at all, or why did it find nothing to tab through?**
 Segment by only produces Prev/Next stops when the spec itself genuinely changes at different frequency bands (a "staircase"). If the spec is flat across the whole frequency range — even if the raw numbers look like they vary slightly per unit — there's only one "segment," so there's nothing to page between, and the control disappears entirely rather than showing an inert selector. This isn't a bug; it means the spec for this particular measurement really is constant.

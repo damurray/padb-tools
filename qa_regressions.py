@@ -1162,6 +1162,36 @@ def test_box_table_perpoint_mode() -> None:
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 
 
+def test_compare_boxplot_absent_dim_and_caret() -> None:
+    """Two boxplot fixes surfaced by qa_filters on a cross-site compare (David
+    2026-09-21):
+
+    1. ABSENT-DIM = NO CONSTRAINT. On a compare, one site's rows can carry a
+       grouping key the other's don't (e.g. AMC has 'Test Event Status', SR
+       doesn't). _syncLfFromAllDims / the fallback getSelectedConds matched each
+       COND_DIM against a condition string with a regex; a missing key gave m===null,
+       and the old `m && ...` returned FALSE -> deselecting ANY filter unchecked every
+       row of the site lacking that key, zeroing half the plot (and nothing restored).
+       An absent dimension must impose NO constraint (m===null -> true). No-op for
+       single-site pods (every condition carries every key, so m is never null).
+
+    2. Boxplot's Workflow button must use the shared helper (flipping .wfcaret) like
+       every other view -- it used caret-less inline markup, caught by qa_filters'
+       workflow-toggle check."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("box: _syncLfFromAllDims treats an absent dim key as no-constraint (m?...:true)",
+          "return m ? (sel.indexOf(m[1].trim())>=0) : true;" in src)
+    check("box: fallback getSelectedConds treats an absent dim key as no-constraint",
+          "return m ? (allowed.indexOf(m[1].trim())>=0) : true;" in src)
+    # The pre-fix bug was the bare `m && sel.indexOf(...)>=0` form -- ensure it's gone
+    # from the boxplot sync (its presence would mean the zeroing bug is back).
+    check("box: pre-fix `m&&sel.indexOf` absent-dim-fails-row form removed",
+          "return m&&sel.indexOf(m[1].trim())>=0;" not in src)
+    check("box: workflow button uses the shared helper (flipping .wfcaret)",
+          "_af_workflow_button_html('box', 'toggleBoxWorkflow')" in src
+          and 'id="box_wf_btn" onclick="toggleBoxWorkflow()"' not in src)
+
+
 def test_stat_sum_table_perpoint_rollout() -> None:
     """The per-point/grouped table toggle was rolled out from boxplot to
     stat_summary and summary (2026-09-15, completing the tracked rollout).
@@ -1816,7 +1846,8 @@ def main() -> None:
                test_site_compare_basis_rollout,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
-               test_box_table_perpoint_mode, test_stat_sum_table_perpoint_rollout,
+               test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
+               test_stat_sum_table_perpoint_rollout,
                test_repeat_collapse_is_mean, test_reduction_extraction,
                test_reduction_native_render_and_rplots,
                test_publish_and_parquet_index_link,
