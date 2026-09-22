@@ -960,11 +960,14 @@ def test_scatter_draw_modes() -> None:
 
 
 def test_site_check_compare_basis() -> None:
-    """Boxplot Site Population Check gained a selectable comparison basis (2026-09-15,
-    user request): 'fence' (primary k*IQR fence, existing), 'spec' (judge each
-    non-primary point against its own datasheet Spec/Limit -- reuses the fence path's
-    downstream triage by reclassifying verdict against the limit), and 'both' (fence
-    drives triage + a Spec P/F column). Only on a compare page (PRIMARY_SITE set)."""
+    """Boxplot Site Population Check is FENCE-ONLY (2026-09-22, David-approved). The
+    earlier selectable comparison basis (fence/spec/both) was removed: the spec/both
+    modes overlapped with the datasheet pass/fail already shown by the Data filter +
+    Statistics Table and were being misread as governing the main table. The check now
+    only ever answers the population-shift question (primary k*IQR fence) -- the JS
+    reads no selector and defaults siteBasis to 'fence'. Teeth: re-adding the selector
+    trips the 'no basis selector' pin. Button shown only on a compare page
+    (PRIMARY_SITE set)."""
     import csv as _csv
     with tempfile.TemporaryDirectory() as td:
         pc = Path(td) / "cmp.csv"
@@ -982,19 +985,13 @@ def test_site_check_compare_basis() -> None:
         oc = Path(td) / "cmp.html"
         pp.stat_boxplot(pc, {"y_label": "P", "title_prefix": "T", "primary_site": "SR"}, oc)
         h = oc.read_text(encoding="utf-8")
-        check("site check: comparison-basis selector rendered (fence/spec/both)",
-              'id="box_site_basis"' in h and 'value="fence"' in h and 'value="spec"' in h and 'value="both"' in h)
-        check("site check: spec classifier present (_siteSpecClass, limit-or-page-spec)",
-              "function _siteSpecClass(p)" in h and "typeof HI_SPEC!=='undefined'" in h
-              and "p.limHi!=null" in h)
-        check("site check: spec basis reclassifies verdict + skips <4-primary gate",
-              "if(siteBasis==='spec')" in h and "the <4-primary-points 'n/a' gate does not apply" in h)
-        check("site check: both-mode adds Spec P/F column + null-safe fence bound render",
-              "var showSpecCol=(siteBasis==='both')" in h
-              and "r.lo!==undefined&&r.lo!==null" in h)
-        check("site check: CSV export carries basis + Spec_PF",
-              "'Spec_PF'" in h and "# Comparison basis: " in h)
-        # A non-compare boxplot has no PRIMARY_SITE -> no selector at all.
+        check("site check: fence-only -- NO comparison-basis selector on a compare page",
+              'id="box_site_basis"' not in h and 'Site&nbsp;check&nbsp;vs' not in h)
+        check("site check: Site Population Check button still present on a compare page",
+              'id="box_site_toggle_btn"' in h and "Site Population Check" in h)
+        check("site check: JS defaults siteBasis to fence with no selector element",
+              "(document.getElementById('box_site_basis')||{}).value||'fence'" in h)
+        # A non-compare boxplot has no PRIMARY_SITE -> no button and no selector.
         pn = Path(td) / "nc.csv"
         with pn.open("w", newline="") as f:
             w = _csv.writer(f)
@@ -1004,8 +1001,49 @@ def test_site_check_compare_basis() -> None:
                     w.writerow(["Room", freq, 10.0 + 0.05 * i, f"Serial Number: D{i:02d}", 20, -20])
         on = Path(td) / "nc.html"
         pp.stat_boxplot(pn, {"y_label": "P", "title_prefix": "T"}, on)
-        check("site check: no comparison-basis selector on a non-compare page",
-              'id="box_site_basis"' not in on.read_text(encoding="utf-8"))
+        ontext = on.read_text(encoding="utf-8")
+        check("site check: no basis selector or Site button on a non-compare page",
+              'id="box_site_basis"' not in ontext and 'id="box_site_toggle_btn"' not in ontext)
+
+
+def test_box_control_groups() -> None:
+    """Below-plot boxplot controls are organized into three labeled groups
+    (2026-09-22, David-approved): Analysis (Statistics Table / Outlier / Delta /
+    Site Population Check / Workflow), Global Filter (all GF set/clear/export/import
+    / Copy PADB Filter / GF Mode), and View (Autoscale Y / Clear everything). Teeth:
+    the three uppercase group labels must render in order, Site Population Check must
+    sit inside Analysis (before the Global Filter label), GF controls inside Global
+    Filter, and Autoscale Y + Clear everything inside View."""
+    import csv as _csv
+    with tempfile.TemporaryDirectory() as td:
+        p = Path(td) / "b.csv"
+        with p.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for site in ("SR", "AMC"):
+                for freq in (100.0, 200.0):
+                    for i in range(6):
+                        w.writerow(["Room", freq, 10.0 + 0.05 * i,
+                                    f"Serial Number: {site}D{i:02d}  Site: {site}", 20, -20])
+        oc = Path(td) / "b.html"
+        pp.stat_boxplot(p, {"y_label": "P", "title_prefix": "T", "primary_site": "SR"}, oc)
+        h = oc.read_text(encoding="utf-8")
+        iA = h.find(">Analysis</span>")
+        iG = h.find(">Global Filter</span>")
+        iV = h.find(">View</span>")
+        check("box control groups: Analysis/Global Filter/View labels render in order",
+              -1 < iA < iG < iV)
+        iSite = h.find("Site Population Check")
+        check("box control groups: Site Population Check sits inside Analysis (before Global Filter)",
+              iA < iSite < iG)
+        iSetGf = h.find("Set filter as GF")
+        iGfMode = h.find("GF Mode:")
+        check("box control groups: GF set/mode controls sit inside Global Filter",
+              iG < iSetGf < iV and iG < iGfMode < iV)
+        iAuto = h.find('onclick="autoscaleY()"')
+        iClrEvery = h.find('onclick="clearEverything()"')
+        check("box control groups: Autoscale Y + Clear everything sit inside View",
+              iV < iAuto and iV < iClrEvery)
 
 
 def test_jsrules_behavioral_gate_present() -> None:
@@ -1116,7 +1154,7 @@ def test_common_prelude_and_feature_registry() -> None:
     #    here as the institutional "must be in all views" guard.
     registry = [
         ("axis titles use object form (all 6 views + marginals)", "title:{text:", 6),
-        ("Site compare-to selectors present (box/stat/sum/hist/dist/ec)", "site_basis", 3),
+        ("Site compare-to selectors present (stat/sum/hist/dist/ec; box is fence-only)", "site_basis", 3),
         ("Site spec classifiers (bespoke views)", "function _siteSpecClass(p)", 3),
         ("shared spec classify present", "function _spSpecClass(p)", 1),
     ]
@@ -1978,6 +2016,7 @@ def main() -> None:
                test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
+               test_box_control_groups,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,
