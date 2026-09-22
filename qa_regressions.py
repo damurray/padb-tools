@@ -1653,9 +1653,12 @@ def test_publish_and_parquet_index_link() -> None:
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
             (d / "s.csv").write_text("Frequency (MHz),Value,Group\n100,1,Site: SR\n100,2,Site: AMC\n", encoding="utf-8")
+            (d / "s.parquet").write_bytes(b"PAR1stale")   # a prior sidecar (old compare-blanket rule)
             pv._maybe_export_parquet({"compare_csv": {"SR": "x", "AMC": "y"}}, d / "s.csv", d, None)
             check("small compare does NOT auto-export a parquet (size gate, not compare-blanket)",
                   not list(d.glob("*.parquet")))
+            check("small-compare rebuild REMOVES a stale sidecar (plot-job run self-cleans)",
+                  not (d / "s.parquet").exists())
             d2 = d / "forced"; d2.mkdir()
             (d2 / "s.csv").write_text("Frequency (MHz),Value,Group\n100,1,Site: SR\n100,2,Site: AMC\n", encoding="utf-8")
             pv._maybe_export_parquet({"export_parquet": True}, d2 / "s.csv", d2, None)

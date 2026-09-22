@@ -258,8 +258,20 @@ def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) 
     sidecar + a misleading "Large-dataset viewer" section on its index; the parquet
     viewer only helps when the self-contained HTML is too big to open. Set
     export_parquet:true to force one on a small job.) Never fails the build."""
+    out_path = output_dir / (csv_path.stem + ".parquet")
+
+    def _drop_stale():
+        # A rebuild that no longer exports must REMOVE any prior sidecar, else _write_index
+        # keeps showing the "Large-dataset viewer" section from a stale .parquet (a small
+        # compare built under the old compare-blanket rule). Makes a plot-job rerun self-clean.
+        try:
+            out_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
     explicit = cfg.get("export_parquet")
     if explicit is False:
+        _drop_stale()
         return
     if explicit is not True:
         try:
@@ -271,8 +283,8 @@ def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) 
                      and len(df) >= int(cfg.get("export_parquet_auto_rows",
                                                 AUTO_BINARY_ENCODE_ROWS))))
         if not large:
+            _drop_stale()
             return
-    out_path = output_dir / (csv_path.stem + ".parquet")
     try:
         rows, smb, dmb = _csv_to_parquet(csv_path, out_path)
     except Exception as exc:  # pragma: no cover - defensive; never break a build
