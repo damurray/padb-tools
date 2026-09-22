@@ -1935,7 +1935,9 @@ _HARNESS_JS = r"""
         chk('box-verdict-grouped-fail-total-matches', gt===vFail, 'grouped='+gt+' verdict='+vFail);
         // (3) filter -> plot: Failing-only isolates exactly the fails on the plot
         var sp=document.getElementById('box_show_pts_chk'); if(sp&&!sp.checked){sp.checked=true;}
-        function _mk(){var g=document.getElementById('plot'),n=0;(g.data||[]).forEach(function(t){if(t.type==='scatter'&&(t.mode||'').indexOf('markers')>=0)n+=((t.y&&t.y.length)||0);});return n;}
+        // count ONLY the Show-Points overlay (name ends " pts") -- NOT the outlier-circle
+        // markers (also mode:'markers'), which would double-count points that are outliers.
+        function _mk(){var g=document.getElementById('plot'),n=0;(g.data||[]).forEach(function(t){if(t.type==='scatter'&&(t.mode||'').indexOf('markers')>=0&&/ pts$/.test(t.name||''))n+=((t.y&&t.y.length)||0);});return n;}
         function setm(x){var e=document.querySelector('input[name="box_flt"][value="'+x+'"]');e.checked=true;e.dispatchEvent(new Event('change'));}
         setm('failing'); update(); var pFail=_mk();
         chk('box-verdict-failing-plot-isolates-fails', pFail===vFail, 'plotFailing='+pFail+' verdictFails='+vFail);
@@ -1957,8 +1959,10 @@ _HARNESS_JS = r"""
           var t=el.textContent, mp=t.match(/([\d,]+)\s*point/), mf=t.match(/([\d,]+)\s*fail\b/);
           return {pts:mp?parseInt(mp[1].replace(/,/g,''),10):0, fail:mf?parseInt(mf[1].replace(/,/g,''),10):0, hasStatus:/Status/.test(t)}; }
         // Plotted points = the Show-Points overlay markers (a single/degenerate group can
-        // have data points but no drawn box, so count markers not box traces).
-        function _mkPts(){ var g=document.getElementById('plot'),n=0; (g.data||[]).forEach(function(t){if(t.type==='scatter'&&(t.mode||'').indexOf('markers')>=0)n+=((t.y&&t.y.length)||0);}); return n; }
+        // have data points but no drawn box, so count markers not box traces). Count ONLY
+        // the " pts" overlay -- NOT outlier-circle markers (also mode:'markers'), else a
+        // point that is also an outlier would be counted twice.
+        function _mkPts(){ var g=document.getElementById('plot'),n=0; (g.data||[]).forEach(function(t){if(t.type==='scatter'&&(t.mode||'').indexOf('markers')>=0&&/ pts$/.test(t.name||''))n+=((t.y&&t.y.length)||0);}); return n; }
         function setm(x){var e=document.querySelector('input[name="box_flt"][value="'+x+'"]');if(e){e.checked=true;e.dispatchEvent(new Event('change'));}}
         function chk1(cls,val){var els=document.querySelectorAll('.'+cls);if(els[0]){els[0].checked=val;els[0].dispatchEvent(new Event('change'));return true;}return false;}
         function narrowFreq(){var lo=document.getElementById('box_freq_lo'),hi=document.getElementById('box_freq_hi');if(lo&&hi){var a=parseFloat(lo.value),b=parseFloat(hi.value);if(isFinite(a)&&isFinite(b)&&b>a){lo.value=a+(b-a)*0.25;hi.value=a+(b-a)*0.75;lo.dispatchEvent(new Event('input'));}}}
