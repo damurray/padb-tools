@@ -1149,6 +1149,43 @@ def test_scatter_blank_dim_not_dropped() -> None:
           unguarded == 0)
 
 
+def test_summary_data_filter_rollout() -> None:
+    """Q1 data-filter cleanup rolled out from the boxplot to summary + stat_summary
+    (David 2026-09-22): the pass/fail axis is All / Passing only / Failing only, and
+    the confusing 'Upper limit'/'Lower limit' radios are gone. Summary keeps the manual
+    threshold as a SEPARATE always-on 'Hide conditions beyond' trim (independent of the
+    pass/fail radio); stat_summary's manual limit becomes the single separate Spec
+    override (stat_spec_hi/lo) feeding BOTH plot and table. Failing = exact complement
+    of Passing. Verified live via Playwright (partition, complement, trim, override);
+    source-pinned across both views here. Teeth: re-introducing a range_hi/range_lo
+    radio-mode, or losing the Failing radio, trips this."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # Both views: Failing-only radio present, old range radios gone, no range-mode logic.
+    check("summary: Failing-only radio present", 'name="sum_flt" value="failing"' in src)
+    check("stat_summary: Failing-only radio present", 'name="data_flt" value="failing"' in src)
+    check("both views: old Upper/Lower-limit range radios removed",
+          'name="sum_flt" value="range_hi"' not in src
+          and 'name="sum_flt" value="range_lo"' not in src
+          and 'name="data_flt" value="range_hi"' not in src
+          and 'name="data_flt" value="range_lo"' not in src)
+    check("both views: no residual range_hi/range_lo filter-mode logic",
+          "flt.mode==='range_hi'" not in src and "flt.mode==='range_lo'" not in src)
+    # Summary: always-on trim + failing complement.
+    check("summary: trim is always-on (isFinite), independent of pass/fail radio",
+          "var trimHi=isFinite(flt.yhi), trimLo=isFinite(flt.ylo);" in src
+          and "if(flt.mode==='all'&&!trimHi&&!trimLo) return active;" in src)
+    check("summary: Failing = exact complement of Passing",
+          "if(flt.mode==='passing') return passes;" in src
+          and "if(flt.mode==='failing') return !passes;" in src)
+    # stat_summary: failing complement + single Spec override feeds the plot.
+    check("stat_summary: Failing = complement of Passing (TI within TLL)",
+          "if(flt.mode==='failing') return !(r.pass_up&&r.pass_lo);" in src)
+    check("stat_summary: manual Spec override routed from separate stat_spec inputs (plot+table)",
+          "_statSpecEntry():{hi:null,lo:null}" in src
+          and "params.spec_hi_override=_statMan.hi" in src
+          and "params.spec_lo_override=_statMan.lo" in src)
+
+
 def test_jsrules_behavioral_gate_present() -> None:
     """The behavioral cross-view gate qa_jsrules.py executes the SHIPPED shared JS
     (_COMMON_JS + shared panel) under Playwright and asserts the pass/fail + fence
@@ -2126,7 +2163,7 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_box_control_groups, test_distribution_compare_room_only_site,
-               test_scatter_blank_dim_not_dropped,
+               test_scatter_blank_dim_not_dropped, test_summary_data_filter_rollout,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,

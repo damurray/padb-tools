@@ -8220,11 +8220,18 @@ function toggleRangeInputs(){
   if(loEl) loEl.style.display=loChecked?'inline-flex':'none';
 }
 function applyDataFilter(conds,params,flt){
-  if(flt.mode==='all'||flt.mode==='range_hi'||flt.mode==='range_lo') return conds;
+  /* Q1 data-filter cleanup rolled out from the boxplot (David 2026-09-22): the
+     pass/fail axis is All / Passing only / Failing only. The old "Upper/Lower
+     limit" radios (a second, plot-only spec-override path) are gone -- the manual
+     Spec override is now the single separate Spec/Spec input (stat_spec_hi/lo),
+     which feeds BOTH the plot's TLL/margin and the per-point table. Failing is the
+     EXACT complement of Passing. */
+  if(flt.mode==='all') return conds;
   return conds.map(function(cd){
     var fs2=(cd.freq_stats||[]).filter(function(fs){
       var r=computeFreqResult(fs,params);
       if(flt.mode==='passing') return r.pass_up&&r.pass_lo;
+      if(flt.mode==='failing') return !(r.pass_up&&r.pass_lo);
       return true;
     });
     return Object.assign({},cd,{freq_stats:fs2});
@@ -8577,10 +8584,13 @@ function getFilteredCondsAndParams(){
     });
   }
   var flt=getDataFilter();
-  /* Each radio unambiguously targets one side now, so no more guessing which
-     side a single shared value was meant for. */
-  if(flt.mode==='range_hi'&&isFinite(flt.yhi)) params.spec_hi_override=flt.yhi;
-  if(flt.mode==='range_lo'&&isFinite(flt.ylo)) params.spec_lo_override=flt.ylo;
+  /* Manual Spec override now comes from the single separate Spec/Spec inputs
+     (stat_spec_hi/lo, blank by default so per-frequency specs are preserved),
+     feeding BOTH the plot's TLL/margin here AND the per-point table -- the old
+     plot-only "Upper/Lower limit" radio-override was removed in the Q1 cleanup. */
+  var _statMan=(typeof _statSpecEntry==='function')?_statSpecEntry():{hi:null,lo:null};
+  if(_statMan.hi!==null) params.spec_hi_override=_statMan.hi;
+  if(_statMan.lo!==null) params.spec_lo_override=_statMan.lo;
   conds=applyDataFilter(conds,params,flt);
   return {conds:conds,params:params,fLo:fLo,fHi:fHi};
 }
@@ -9397,23 +9407,13 @@ def _build_stat_summary_html(
         '<div class="flt-bar" onclick="event.stopPropagation()">\n'
         '  <b>Data&nbsp;filter:</b>\n'
         '  <label><input type="radio" name="data_flt" value="all" checked'
-        ' onchange="toggleRangeInputs();update()"> All&nbsp;data</label>\n'
+        ' onchange="update()"> All&nbsp;data</label>\n'
         '  <label><input type="radio" name="data_flt" value="passing"'
-        ' onchange="toggleRangeInputs();update()"> Passing&nbsp;only&nbsp;(TI&#8838;TLL)</label>\n'
-        '  <label id="flt_hi_wrap"><input type="radio" name="data_flt" value="range_hi"'
-        ' onchange="toggleRangeInputs();update()"> Upper&nbsp;limit</label>\n'
-        '  <span id="flt_range_hi_inputs" style="display:none;align-items:center;gap:4px">\n'
-        f'    <input type="number" id="flt_yhi" placeholder="limit" step="0.001" value="{y_lim_hi}"'
-        ' oninput="update()">\n'
-        '    <small style="color:#666">(overrides test data spec; TLL and margin recalculated relative to this limit)</small>\n'
-        '  </span>\n'
-        '  <label id="flt_lo_wrap"><input type="radio" name="data_flt" value="range_lo"'
-        ' onchange="toggleRangeInputs();update()"> Lower&nbsp;limit</label>\n'
-        '  <span id="flt_range_lo_inputs" style="display:none;align-items:center;gap:4px">\n'
-        f'    <input type="number" id="flt_ylo" placeholder="limit" step="0.001" value="{y_lim_lo}"'
-        ' oninput="update()">\n'
-        '    <small style="color:#666">(overrides test data spec; TLL and margin recalculated relative to this limit)</small>\n'
-        '  </span>\n'
+        ' onchange="update()"> Passing&nbsp;only&nbsp;(TI&#8838;TLL)</label>\n'
+        '  <label title="Show only conditions/frequencies that FAIL -- the exact complement of Passing only (TI not within TLL)">'
+        '<input type="radio" name="data_flt" value="failing"'
+        ' onchange="update()"> Failing&nbsp;only</label>\n'
+        '  <small style="color:#888">(to override the spec, use Spec&#8595;/Spec&#8593; below &mdash; recomputes TLL/margin for plot and table)</small>\n'
         '  <span class="sep"></span>\n'
         '  <label title="Use non-parametric (distribution-free) order-statistic TI'
         ' for Non-normal and Marginal frequencies">'
@@ -17688,18 +17688,17 @@ function updateSumFilterLabels(){
   }
   var hiWrap=document.getElementById('sum_flt_hi_wrap');
   var loWrap=document.getElementById('sum_flt_lo_wrap');
+  /* hi/lo now wrap the always-on "Hide conditions beyond above/below" trim inputs.
+     Show only the side(s) the TLL direction actually uses; clear a hidden side's
+     value so a stale trim can't silently keep filtering an irrelevant direction. */
   if(hiWrap) hiWrap.style.display=showHi?'':'none';
   if(loWrap) loWrap.style.display=showLo?'':'none';
+  if(!showHi){var _yh=document.getElementById('sum_yhi');if(_yh)_yh.value='';}
+  if(!showLo){var _yl=document.getElementById('sum_ylo');if(_yl)_yl.value='';}
   var tllHiWrap=document.getElementById('sum_tll_hi_wrap');
   var tllLoWrap=document.getElementById('sum_tll_lo_wrap');
   if(tllHiWrap) tllHiWrap.style.display=showHi?'':'none';
   if(tllLoWrap) tllLoWrap.style.display=showLo?'':'none';
-  var checked=document.querySelector('input[name="sum_flt"]:checked');
-  if(checked&&((checked.value==='range_hi'&&!showHi)||(checked.value==='range_lo'&&!showLo))){
-    var allRad=document.querySelector('input[name="sum_flt"][value="all"]');
-    if(allRad) allRad.checked=true;
-  }
-  toggleRangeInputs();
 }
 function toggleRangeInputs(){
   var hiEl=document.getElementById('sum_range_hi_inputs');
@@ -17711,7 +17710,6 @@ function toggleRangeInputs(){
 }
 function applyDataFilter(active){
   var flt=getDataFilter();
-  if(flt.mode==='all') return active;
   var _fr2=_sumFreqRange();
   var fLo=_fr2.lo,fHi=_fr2.hi;
   /* Temperature-aware, matching what the Results Table itself shows --
@@ -17729,38 +17727,34 @@ function applyDataFilter(active){
      include or exclude table data outwith the prescribed limits." */
   var selTemps=getSelTemps();
   var sumPar=getSumParams();
+  /* Q1 data-filter cleanup rolled out from the boxplot (David 2026-09-22): the
+     pass/fail axis is All / Passing only / Failing only, and the manual
+     upper/lower threshold is now a SEPARATE always-on "Hide conditions beyond"
+     trim (independent of the pass/fail radio -- combine with either). Failing is
+     the EXACT complement of Passing. */
+  var trimHi=isFinite(flt.yhi), trimLo=isFinite(flt.ylo);
+  if(flt.mode==='all'&&!trimHi&&!trimLo) return active;
   return active.filter(function(cd){
     var vis=[];cd.freqs.forEach(function(f,i){if(f>=fLo&&f<=fHi)vis.push(i);});
     if(!vis.length) return false;
     var stats=getSumCondData(cd,selTemps,sumPar);
-    if(flt.mode==='passing'){
-      var tllHiOv=sumPar.tll_hi_override;
-      var tllLoOv=sumPar.tll_lo_override;
-      return vis.every(function(i){
-        var hi=tllHiOv!==null?tllHiOv:((cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi);
-        var lo=tllLoOv!==null?tllLoOv:((cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo);
-        var uOk=(hi===null||stats.uttl[i]===null||Number(stats.uttl[i])<=hi);
-        var lOk=(lo===null||stats.lttl[i]===null||Number(stats.lttl[i])>=lo);
-        return uOk&&lOk;
-      });
-    }
-    if(flt.mode==='range_hi'){
-      /* Hide the whole condition if it exceeds the limit at ANY visible
-         frequency, matching the control's own hint text ("hides conditions
-         where max data exceeds limit") -- must be .every(), not .some():
-         .some() only hid a condition that failed at literally every single
-         frequency, which real multi-frequency sweep data almost never does,
-         making the filter silently do nothing (reported by the user: "setting
-         a lower limit to 18dBm does nothing"). */
-      return vis.every(function(i){
-        return stats.max_data[i]===null||stats.max_data[i]<=flt.yhi;
-      });
-    }
-    if(flt.mode==='range_lo'){
-      return vis.every(function(i){
-        return stats.min_data[i]===null||stats.min_data[i]>=flt.ylo;
-      });
-    }
+    /* Trim (condition-hiding) -- always on when a value is typed, matching the
+       control's hint ("hide conditions whose data crosses a hard value at ANY
+       visible frequency"): .every() over visible freqs, not .some(). */
+    if(trimHi&&!vis.every(function(i){return stats.max_data[i]===null||stats.max_data[i]<=flt.yhi;})) return false;
+    if(trimLo&&!vis.every(function(i){return stats.min_data[i]===null||stats.min_data[i]>=flt.ylo;})) return false;
+    if(flt.mode==='all') return true;
+    var tllHiOv=sumPar.tll_hi_override;
+    var tllLoOv=sumPar.tll_lo_override;
+    var passes=vis.every(function(i){
+      var hi=tllHiOv!==null?tllHiOv:((cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi);
+      var lo=tllLoOv!==null?tllLoOv:((cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo);
+      var uOk=(hi===null||stats.uttl[i]===null||Number(stats.uttl[i])<=hi);
+      var lOk=(lo===null||stats.lttl[i]===null||Number(stats.lttl[i])>=lo);
+      return uOk&&lOk;
+    });
+    if(flt.mode==='passing') return passes;
+    if(flt.mode==='failing') return !passes;
     return true;
   });
 }
@@ -19382,22 +19376,19 @@ def _build_summary_html(
         + '<div class="flt-bar" onclick="event.stopPropagation()">\n'
         + '  <b>Data&nbsp;filter:</b>\n'
         + '  <label><input type="radio" name="sum_flt" value="all" checked'
-        + ' onchange="toggleRangeInputs();update()"> All&nbsp;data</label>\n'
+        + ' onchange="update()"> All&nbsp;data</label>\n'
         + '  <label><input type="radio" name="sum_flt" value="passing"'
-        + ' onchange="toggleRangeInputs();update()"> <span id="sum_passing_lbl">'
+        + ' onchange="update()"> <span id="sum_passing_lbl">'
         + 'Passing&nbsp;only&nbsp;(TTL&nbsp;&#8804;&nbsp;Spec)</span></label>\n'
-        + '  <label id="sum_flt_hi_wrap"><input type="radio" name="sum_flt" value="range_hi"'
-        + ' onchange="toggleRangeInputs();update()"> Upper&nbsp;limit</label>\n'
-        + '  <span id="sum_range_hi_inputs" style="display:none;align-items:center;gap:4px">\n'
-        + '    <input type="number" id="sum_yhi" placeholder="dBc limit" step="0.001" oninput="update()">\n'
-        + '    <small style="color:#666">(hides conditions where max data exceeds limit)</small>\n'
-        + '  </span>\n'
-        + '  <label id="sum_flt_lo_wrap"><input type="radio" name="sum_flt" value="range_lo"'
-        + ' onchange="toggleRangeInputs();update()"> Lower&nbsp;limit</label>\n'
-        + '  <span id="sum_range_lo_inputs" style="display:none;align-items:center;gap:4px">\n'
-        + '    <input type="number" id="sum_ylo" placeholder="min (dBm)" step="0.001" oninput="update()">\n'
-        + '    <small style="color:#666">(hides conditions where min data falls below limit)</small>\n'
-        + '  </span>\n'
+        + '  <label title="Show only conditions that FAIL -- the exact complement of Passing only (TTL crosses Spec at any visible frequency)">'
+        + '<input type="radio" name="sum_flt" value="failing"'
+        + ' onchange="update()"> Failing&nbsp;only</label>\n'
+        + '  <span class="sep"></span>\n'
+        + '  <label title="Data-cleaning trim: hide whole conditions whose data crosses a hard value at any visible frequency. Independent of the pass/fail filter above -- combine with either. Leave blank for no trim.">Hide&nbsp;conditions&nbsp;beyond:</label>\n'
+        + '  <span id="sum_flt_hi_wrap"><label style="font-size:12px" title="Hide conditions whose MAX data exceeds this value">above&nbsp;'
+        + '<input type="number" id="sum_yhi" placeholder="none" step="0.001" style="width:80px" oninput="update()"></label></span>\n'
+        + '  <span id="sum_flt_lo_wrap"><label style="font-size:12px" title="Hide conditions whose MIN data falls below this value">below&nbsp;'
+        + '<input type="number" id="sum_ylo" placeholder="none" step="0.001" style="width:80px" oninput="update()"></label></span>\n'
         + '  <span class="sep"></span>\n'
         + tll_selector_html
         + '  <label id="sum_tll_hi_wrap" title="Override Spec&#8593; for the Passing-only filter and draw a manual limit line (id kept as sum_tll_hi for compatibility)">'
