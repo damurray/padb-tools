@@ -6832,7 +6832,12 @@ function getActiveConditions(){
       if(!allowed.length) return false;
       var safe=dim.col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
       var m=cd.condition.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
-      return m&&allowed.indexOf(m[1].trim())>=0;
+      /* Absent dimension = it does not apply to this condition (e.g. a Test
+         Event Status one site records and another leaves null in a cross-site
+         compare). Absent must NOT exclude -- excluding it silently dropped the
+         whole primary site from stat_summary (David 2026-09-22). Same
+         absent-dimension rule as scatter/boxplot. */
+      return m?(allowed.indexOf(m[1].trim())>=0):true;
     });
   });
 }
@@ -17256,7 +17261,11 @@ function getActive(){
     return COND_DIMS.every(function(dim){
       var allowed=getSelected('cond_'+dim.col_id);
       var v=String(cd.cond_keys[dim.col]!==undefined?cd.cond_keys[dim.col]:'');
-      return allowed.length>0&&allowed.indexOf(v)>=0;
+      /* Blank = this dimension does not apply to the condition (a dim one site
+         records and another leaves null in a compare). Blank is never a checkbox
+         option, so it must NOT be filtered out -- excluding it silently dropped
+         the whole primary site from summary (David 2026-09-22). */
+      return allowed.length>0&&(v===''||allowed.indexOf(v)>=0);
     });
   });
 }
@@ -18701,7 +18710,9 @@ function _segFilterCondDims(seg){
       var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
       if(!dim) continue;
       var v=cd.cond_keys&&cd.cond_keys[dim.col]!==undefined?String(cd.cond_keys[dim.col]):null;
-      if(v!==null&&curDimSel[colId].indexOf(v)<0) return false;
+      /* null (key absent) OR '' (key present but blank for this site) = dimension
+         not applicable -> no constraint (same absent-dimension rule as elsewhere). */
+      if(v!==null&&v!==''&&curDimSel[colId].indexOf(v)<0) return false;
     }
     return true;
   }

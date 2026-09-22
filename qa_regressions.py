@@ -1186,6 +1186,49 @@ def test_summary_data_filter_rollout() -> None:
           and "params.spec_lo_override=_statMan.lo" in src)
 
 
+def test_blank_dim_no_site_drop() -> None:
+    """Blank/absent condition-dimension must never silently drop a row/condition
+    (David 2026-09-22, surfaced by qa_crossview): a cross-site compare where one
+    site records a dimension (e.g. Test Event Status) the other leaves null was
+    erasing the whole other site in scatter, reference, summary, and stat_summary,
+    because a blank value is never a checkbox option. Rule: blank/absent dimension
+    = not applicable = no constraint. Pinned across EVERY per-dimension filter copy
+    (source-contract teeth for the umbrella; the behavioural proof is qa_crossview).
+    Teeth: reverting any copy to its unguarded form trips this."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    ref = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
+    # Guarded forms present:
+    check("scatter/reference-family applyFilters: blank guard x4 (found >=4)",
+          src.count("if(v!==''&&allowed.indexOf(v)<0) return false;") >= 4)
+    check("distribution _distCondKeep: blank/null guard",
+          "if(cv!==''&&cv!=null&&!cf.sel.has(cv)) return false;" in src)
+    check("stat_summary getActiveConditions: absent-dim passes",
+          "return m?(allowed.indexOf(m[1].trim())>=0):true;" in src)
+    check("summary getActive: blank-dim passes",
+          "return allowed.length>0&&(v===''||allowed.indexOf(v)>=0);" in src)
+    check("summary matchesCurSel: blank/null-dim passes",
+          "if(v!==null&&v!==''&&curDimSel[colId].indexOf(v)<0) return false;" in src)
+    check("reference (padb_refstats) applyFilters: blank-dim passes",
+          "if(v!==''&&!sel[c][String(v)])return false;" in ref)
+    # Unguarded forms gone (the exact shapes that dropped a site):
+    check("no unguarded stat_summary form (m&&allowed.indexOf)",
+          "return m&&allowed.indexOf(m[1].trim())>=0;" not in src)
+    check("no unguarded summary form (allowed.indexOf(v)>=0 w/o blank pass)",
+          "return allowed.length>0&&allowed.indexOf(v)>=0;" not in src)
+    check("no unguarded reference form (sel[c][String(v)] w/o blank pass)",
+          "if(v==null)v=''; if(!sel[c][String(v)])return false;" not in ref)
+    # The proactive behavioural proof lives in qa_crossview.py (browser tier): it
+    # generates an adversarial compare (Room-only site + asymmetric dim), renders
+    # every view, and asserts INV-SITE (no site dropped) + INV-PART. Pinned here so
+    # the harness can't be silently deleted (mirrors the qa_jsrules gate pin).
+    xv = HERE / "qa_crossview.py"
+    check("qa_crossview cross-view invariant harness exists", xv.exists())
+    if xv.exists():
+        xvs = xv.read_text(encoding="utf-8")
+        check("qa_crossview asserts INV-SITE/INV-PART + honest-exits 3 without a browser",
+              "INV-SITE" in xvs and "INV-PART" in xvs and "sys.exit(3)" in xvs)
+
+
 def test_jsrules_behavioral_gate_present() -> None:
     """The behavioral cross-view gate qa_jsrules.py executes the SHIPPED shared JS
     (_COMMON_JS + shared panel) under Playwright and asserts the pass/fail + fence
@@ -2164,6 +2207,7 @@ def main() -> None:
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_box_control_groups, test_distribution_compare_room_only_site,
                test_scatter_blank_dim_not_dropped, test_summary_data_filter_rollout,
+               test_blank_dim_no_site_drop,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,

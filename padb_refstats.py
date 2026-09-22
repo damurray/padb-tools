@@ -355,7 +355,12 @@ function applyFilters(rows){
   return rows.filter(function(r){
     if(r.Frequency_MHz<flo||r.Frequency_MHz>fhi)return false;
     for(var i=0;i<cols.length;i++){var c=cols[i];var v=(c==='Serial'||c==='Temperature')?r[c]:r[c];
-      if(v==null)v=''; if(!sel[c][String(v)])return false;}
+      /* Blank = this dimension does not apply to the row (a dim one site records
+         and another leaves null in a cross-site compare). Blank is never a
+         checkbox option, so it must NOT exclude -- excluding it silently dropped
+         the whole primary site from the reference view (David 2026-09-22). Same
+         absent-dimension rule as scatter/summary/stat_summary. */
+      if(v==null)v=''; if(v!==''&&!sel[c][String(v)])return false;}
     if(gfOn&&_refGfExcl(r))return false;
     return true;
   });
