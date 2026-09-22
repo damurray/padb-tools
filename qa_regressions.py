@@ -1186,6 +1186,20 @@ def test_summary_data_filter_rollout() -> None:
           and "params.spec_lo_override=_statMan.lo" in src)
 
 
+def test_reference_busy_overlay() -> None:
+    """Every interactive view shows a busy overlay while its embedded data parses/first
+    renders. The reference view (padb_refstats.py) was the ONLY one without it (David
+    2026-09-22). It now inserts _BUSY_OVERLAY_HTML before the data <script> and removes
+    #padb_busy after the first update() via rAF (this view has no #plot for the shared
+    PADB_busyHide poll to watch). Pinned so the one-view gap can't silently return."""
+    ref = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
+    check("reference: imports + inserts _BUSY_OVERLAY_HTML",
+          ref.count("_BUSY_OVERLAY_HTML") >= 2)
+    check("reference: removes #padb_busy after first render (rAF, no #plot to poll)",
+          "getElementById('padb_busy')" in ref
+          and "removeChild(_b)" in ref and "requestAnimationFrame" in ref)
+
+
 def test_af_apply_line_applied_aware() -> None:
     """The auto-filter 'Will auto-filter ... Apply' line is APPLIED-AWARE (David
     2026-09-22): auto-filter analyzes the raw population and ignores the GF, so r.auto
@@ -2231,6 +2245,7 @@ def main() -> None:
                test_box_control_groups, test_distribution_compare_room_only_site,
                test_scatter_blank_dim_not_dropped, test_summary_data_filter_rollout,
                test_blank_dim_no_site_drop, test_af_apply_line_applied_aware,
+               test_reference_busy_overlay,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,

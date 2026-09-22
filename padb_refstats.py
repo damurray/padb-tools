@@ -33,6 +33,7 @@ import pandas as pd
 from padb_plots import (
     _get_plotlyjs, _checkbox_panel, _detect_group_cols, _short_x_label,
     _floor_dec, _ceil_dec, _freq_label_map, _AUTO_FILTER_SHARED_JS,
+    _BUSY_OVERLAY_HTML,
 )
 
 # Keyword match for the pod's pass/fail status field among the group dims (the JS
@@ -251,6 +252,11 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         "<!DOCTYPE html>\n<html>\n<head>\n<meta charset='utf-8'>\n"
         f"<title>{title}</title>\n"
         f"<script>{_get_plotlyjs()}</script>\n{style}\n</head>\n<body>\n"
+        # Busy overlay while the embedded data parses + the tables build -- the
+        # reference view was the only view without one (David 2026-09-22). Removed
+        # explicitly after the first update() below (this view has no #plot for the
+        # shared PADB_busyHide poll to watch).
+        + _BUSY_OVERLAY_HTML
         + body
         + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
     )
@@ -631,5 +637,8 @@ function resetFilters(){
   var gfChk=document.getElementById('ref_gf_chk'); if(gfChk)gfChk.checked=true;
   update();
 }
-window.addEventListener('DOMContentLoaded',function(){_loadRefGlobalFilter();update();});
+window.addEventListener('DOMContentLoaded',function(){_loadRefGlobalFilter();update();
+  /* Remove the busy overlay once the tables have painted (this view has no #plot for
+     the shared PADB_busyHide poll). rAF so the first render is visible before removal. */
+  requestAnimationFrame(function(){var _b=document.getElementById('padb_busy'); if(_b&&_b.parentNode) _b.parentNode.removeChild(_b);});});
 """
