@@ -587,12 +587,6 @@ def render_env_coverage(
             ' <label><input type="radio" name="ec_site_basis" value="delta" onchange="updateEcSitePanel()">&nbsp;&Delta;Env drift</label></label>\n'
             '  <label style="font-size:11px;color:#555" title="Tukey fence multiplier: fence = Q1 - k*IQR .. Q3 + k*IQR. Lower k = stricter.">'
             '&nbsp;k&times;IQR: <input type="number" id="ec_site_k" value="1.5" min="0" step="0.1" style="width:52px" onchange="updateEcSitePanel()"></label>\n'
-            '  <label style="font-size:11px;color:#555" title="How to judge each non-primary DUT:'
-            ' against the primary site fence (site-population shifts), the datasheet Spec/Limit (real'
-            ' pass/fail; Room baseline only), or both.">&nbsp;Site check vs:'
-            ' <select id="ec_site_cmp" onchange="updateEcSitePanel()">'
-            f'<option value="fence">{_ps} fence</option>'
-            '<option value="spec">Spec/Limit</option><option value="both">Both</option></select></label>\n'
             f'  <span style="color:#888;font-size:11px">(each non-{_ps} DUT vs the {_ps} k&times;IQR fence)</span>\n'
             '</div>\n'
         )

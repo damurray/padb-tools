@@ -1381,7 +1381,7 @@ def test_common_prelude_and_feature_registry() -> None:
     #    here as the institutional "must be in all views" guard.
     registry = [
         ("axis titles use object form (all 6 views + marginals)", "title:{text:", 6),
-        ("Site compare-to selectors present (stat/sum/hist/dist/ec; box is fence-only)", "site_basis", 3),
+        ("Site basis readers default to fence in JS (selectors removed; fence-only)", "site_basis", 3),
         ("Site spec classifiers (bespoke views)", "function _siteSpecClass(p)", 3),
         ("shared spec classify present", "function _spSpecClass(p)", 1),
     ]
@@ -2002,43 +2002,52 @@ def test_site_check_table_cap_and_spinner() -> None:
           "if(show) PADB_deferRender(el, update," in src)
 
 
-def test_site_compare_basis_rollout() -> None:
-    """The Site Population Check "Compare to" selector (fence/spec/both) was rolled
-    out from boxplot to ALL views (2026-09-15): stat_summary, summary, histogram
-    (bespoke panels) and env_coverage + distribution (shared _SITE_PANEL_SHARED_JS).
-    Source-contract drift guard: each view's selector id + spec-classify + basis
-    wiring must be present, and every view must judge spec pass/fail by the same
-    RULE (vs Limit/Spec, side-aware, verdict 'OUTSIDE'==fails)."""
+def test_site_check_fence_only_all_views() -> None:
+    """Site Population Check is FENCE-ONLY in EVERY view (2026-09-22, David: cross-view
+    consistency -- "similar menus should perform the same"). The boxplot was made
+    fence-only earlier; the fence/spec/both basis selector is now removed from
+    stat_summary, summary, histogram, distribution (padb_plots) and env_coverage
+    (padb_v2) too. Distribution keeps its Absolute/ΔTemp basis and env_coverage keeps
+    Room/ΔEnv (those are view-specific axes, not the datasheet-vs-fence choice). The JS
+    defaults every reader to 'fence' when the selector is absent. Teeth: re-adding any
+    fence/spec/both basis selector trips this."""
     ppsrc = (HERE / "padb_plots.py").read_text(encoding="utf-8")
     v2src = (HERE / "padb_v2.py").read_text(encoding="utf-8")
-    # Per-view selector ids (boxplot's box_site_basis is pinned separately).
-    for sid in ('id="stat_site_basis"', 'id="sum_site_basis"', "id='h_site_basis'", 'id="dist_site_cmp"'):
-        check(f"site compare-to selector present: {sid}", sid in ppsrc)
-    check("site compare-to selector present: ec_site_cmp (padb_v2)", 'id="ec_site_cmp"' in v2src)
-    # Label scoping (2026-09-17): the selector governs the Site Population Check
-    # panel, not the main stats table -- relabeled "Compare to:" -> "Site check vs:"
-    # so it doesn't read like a main-table control (user-reported confusion).
-    check("site basis selector relabeled 'Site check vs' (not 'Compare to')",
-          ("Site check vs" in ppsrc or "Site&nbsp;check&nbsp;vs" in ppsrc)
-          and "Site check vs" in v2src)
-    check("no stale 'Compare to' site-basis label remains",
-          "Compare to:" not in ppsrc and "Compare&nbsp;to:" not in ppsrc
-          and "Compare to:" not in v2src)
-    # Bespoke spec classifiers (side-aware, verdict OUTSIDE==fails spec).
-    check("bespoke _siteSpecClass present in >=3 views (box/stat/summary)",
-          ppsrc.count("function _siteSpecClass(p)") >= 3)
-    check("histogram _hSiteSpecClass present", "function _hSiteSpecClass(p)" in ppsrc)
-    # Shared panel: spec classify + per-basis row + basis-aware render/CSV.
-    check("shared _spSpecClass + _spRowForBasis present",
-          "function _spSpecClass(p)" in ppsrc and "function _spRowForBasis(" in ppsrc)
-    check("shared render/CSV honor meta.compareBasis",
-          ppsrc.count("meta.compareBasis||'fence'") >= 2)
-    check("dist + ec supply compareBasis to shared panel",
-          ppsrc.count("compareBasis:cmp") >= 2)
-    # Every classifier delegates to the shared PADB_specClass (the single rule),
-    # so all views' spec verdicts are side-aware and identical by construction.
-    check("all Site spec-classifiers delegate to shared PADB_specClass",
-          ppsrc.count("PADB_specClass(p.value") >= 5)
+    for sid in ('id="box_site_basis"', 'id="stat_site_basis"', 'id="sum_site_basis"',
+                "id='h_site_basis'", 'id="dist_site_cmp"'):
+        check(f"fence-only: basis selector removed from padb_plots ({sid})", sid not in ppsrc)
+    check("fence-only: basis selector removed from env_coverage (ec_site_cmp)",
+          'id="ec_site_cmp"' not in v2src)
+    # No "Site check vs:" basis label should remain anywhere (that label was the selector's).
+    check("fence-only: no 'Site check vs' basis label remains",
+          "Site check vs" not in ppsrc and "Site&nbsp;check&nbsp;vs" not in ppsrc
+          and "Site check vs" not in v2src)
+    # Every reader still resolves to 'fence' when the (now-absent) selector isn't found.
+    check("fence-only: readers default to 'fence' when no selector present",
+          ppsrc.count("||{}).value||'fence'") >= 2
+          and "el?el.value:'fence'" in ppsrc)
+    # The Site Population Check button itself must still exist in each aggregate view.
+    for btn in ('id="stat_site_toggle_btn"', 'id="sum_site_toggle_btn"',
+                'id="dist_site_btn"', "id='h_site_btn'"):
+        check(f"fence-only: Site Population Check button still present ({btn})", btn in ppsrc)
+    check("fence-only: env_coverage Site button still present (padb_v2)",
+          'id="ec_site_btn"' in v2src)
+
+
+def test_gf_clear_in_apply_views() -> None:
+    """F3 cross-view consistency (2026-09-22, David): the shared Global Filter can now be
+    CLEARED from every view that APPLIES it. scatter/distribution/reference previously
+    applied the GF but offered no clear control; each now has a 'Clear global filter'
+    button (shown when a GF exists) + a clear function that removes GF_KEY, reloads the
+    view's GF state and re-renders."""
+    ppsrc = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    ref = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
+    check("scatter: Clear-global-filter button + function",
+          'id="gf_clear_btn"' in ppsrc and "function clearScatterGlobalFilter()" in ppsrc)
+    check("distribution: Clear-global-filter button + function",
+          'id="dist_gf_clear_btn"' in ppsrc and "function clearDistGlobalFilter()" in ppsrc)
+    check("reference: Clear-global-filter button + function",
+          'id="ref_gf_clear_btn"' in ref and "function clearRefGlobalFilter()" in ref)
 
 
 def test_control_context_clarity() -> None:
@@ -2255,7 +2264,7 @@ def main() -> None:
                test_reference_busy_overlay,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
-               test_site_compare_basis_rollout,
+               test_site_check_fence_only_all_views, test_gf_clear_in_apply_views,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,

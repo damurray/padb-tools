@@ -189,6 +189,9 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         ' same cleaned population."><input type="checkbox" id="ref_gf_chk" checked'
         ' onchange="update()"> Apply Global Filter</label>\n'
         '  <span id="ref_gf_badge" class="gfbadge"></span>\n'
+        '  <button id="ref_gf_clear_btn" class="reset-btn" style="display:none;background:#fff0f0;'
+        'border-color:#c00;color:#c00" onclick="clearRefGlobalFilter()"'
+        ' title="Clear the shared Global Filter (affects every view)">Clear&nbsp;global&nbsp;filter</button>\n'
         '  <button class="reset-btn" onclick="resetFilters()">Reset</button>\n'
         '</div>\n'
     )
@@ -341,10 +344,16 @@ function _updateRefGfBadge(){
   var chk=document.getElementById('ref_gf_chk'), on=chk?chk.checked:true;
   var duts=new Set(); if(_gfExcluded)_gfExcluded.forEach(function(k){duts.add(k.split('||')[0]);});
   var n=duts.size, pts=_gfExcluded?_gfExcluded.size:0;
+  var clrBtn=document.getElementById('ref_gf_clear_btn'); if(clrBtn) clrBtn.style.display=n>0?'':'none';
   if(n>0){el.textContent=(on?'GF ON':'GF OFF')+': '+pts+' pt'+(pts!==1?'s':'')+' ('+n+' DUT'+(n!==1?'s':'')+')';
     el.style.background=on?'#ffeaea':'#f0f0f0'; el.style.color=on?'#900':'#888';
     el.style.borderColor=on?'#c88':'#ccc';}
   else{el.textContent='';el.style.background='';el.style.borderColor='transparent';}
+}
+/* Clear the shared Global Filter from the reference view too (F3 consistency 2026-09-22). */
+function clearRefGlobalFilter(){
+  try{if(typeof GF_KEY!=='undefined')localStorage.removeItem(GF_KEY);}catch(e){}
+  _loadRefGlobalFilter(); update();
 }
 window.addEventListener('storage',function(e){if(typeof GF_KEY!=='undefined'&&e.key===GF_KEY){_loadRefGlobalFilter();update();}});
 

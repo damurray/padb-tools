@@ -944,6 +944,12 @@ function _loadGlobalFilter(){
   }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;_gfParsed=null;}
   _updateGfIndicator();
 }
+/* Clear the shared Global Filter from this view too (F3 consistency 2026-09-22): the
+   GF is cross-view, so any view that APPLIES it should also be able to CLEAR it. */
+function clearScatterGlobalFilter(){
+  try{localStorage.removeItem(GF_KEY);}catch(e){}
+  _loadGlobalFilter(); update();
+}
 function _updateGfIndicator(){
   var badge=document.getElementById('gf_badge');
   var lbl=document.getElementById('gf_label');
@@ -953,6 +959,7 @@ function _updateGfIndicator(){
   var hasGf=_gfExcluded&&_gfExcluded.size>0;
   var active=chk&&chk.checked&&_gfCoarseExcluded&&_gfCoarseExcluded.size>0;
   lbl.style.display=hasGf?'':'none';
+  var clrBtn=document.getElementById('gf_clear_btn'); if(clrBtn) clrBtn.style.display=hasGf?'':'none';
   if(focusLbl) focusLbl.style.display=(hasGf&&active)?'':'none';
   var dutSers=new Set();
   if(_gfExcluded) _gfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
@@ -2788,6 +2795,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '<input type="checkbox" id="gf_chk" checked onchange="_updateGfIndicator();update()">'
         '&nbsp;<span id="gf_badge" style="font-size:12px;border:1px solid #ccc;'
         'border-radius:3px;padding:1px 6px"></span></label>\n'
+        '  <button id="gf_clear_btn" class="reset-btn" style="display:none;background:#fff0f0;'
+        'border-color:#c00;color:#c00" onclick="clearScatterGlobalFilter()"'
+        ' title="Clear the shared Global Filter (affects every view)">Clear&nbsp;global&nbsp;filter</button>\n'
         '  <label id="gf_focus_label" style="display:none;white-space:nowrap" '
         'title="Inspect mode: show only GF-flagged data points">'
         '<input type="checkbox" id="gf_focus_chk" onchange="try{localStorage.setItem(GF_MODE_KEY,this.checked?\'focus\':\'exclude\');}catch(e){}update()">'
@@ -5017,16 +5027,24 @@ function _updateDistGfBadge(){
   var isFocus=_distGfFocusMode;
   var chk=document.getElementById('dist_gf_chk');
   var active=chk?chk.checked:true;
+  var clrBtn=document.getElementById('dist_gf_clear_btn');
   if(n>0){
     if(lbl) lbl.style.display='';
+    if(clrBtn) clrBtn.style.display='';
     el.textContent=(active?(isFocus?'GF Inspect ON':'GF ON'):'GF OFF')+': '+pts+' pts ('+n+' DUT'+(n!==1?'s':')')+''+(isFocus&&active?' [inspect]':'');
     el.style.background=!active?'#f0f0f0':isFocus?'#e8f0ff':'#ffeaea';
     el.style.color=!active?'#888':isFocus?'#0044aa':'#900';
     el.style.borderColor=!active?'#ccc':isFocus?'#6688cc':'#c88';
   } else {
     if(lbl) lbl.style.display='none';
+    if(clrBtn) clrBtn.style.display='none';
     el.textContent='';
   }
+}
+/* Clear the shared Global Filter from distribution too (F3 consistency 2026-09-22). */
+function clearDistGlobalFilter(){
+  try{localStorage.removeItem(GF_KEY);}catch(e){}
+  _loadDistGlobalFilter(); update();
 }
 /* Build a condition key without serial parts (matches boxplot/stat_summary format) */
 function _condKeyForDist(cond){
@@ -5967,6 +5985,9 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
         '&nbsp;<span id="dist_gf_badge" style="font-size:11px;background:#fff0e8;'
         'border:1px solid #e0905a;border-radius:3px;padding:1px 7px;color:#c04000"></span>'
         '</label>\n'
+        '  <button id="dist_gf_clear_btn" class="sel-btn" style="display:none;background:#fff0f0;'
+        'border-color:#c00;color:#c00" onclick="clearDistGlobalFilter()"'
+        ' title="Clear the shared Global Filter (affects every view)">Clear&nbsp;global&nbsp;filter</button>\n'
         '  <div class="sep"></div>\n'
         '  <span id="n_pts"></span>\n'
         "</div>\n"
@@ -6007,12 +6028,6 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
             ' <label><input type="radio" name="dist_site_basis" value="delta" onchange="updateDistSitePanel()">&nbsp;&Delta;Temp</label></label>\n'
             '  <label style="font-size:11px;color:#555" title="Tukey fence multiplier: fence = Q1 - k*IQR .. Q3 + k*IQR. Lower k = stricter.">'
             '&nbsp;k&times;IQR: <input type="number" id="dist_site_k" value="1.5" min="0" step="0.1" style="width:52px" onchange="updateDistSitePanel()"></label>\n'
-            '  <label style="font-size:11px;color:#555" title="How to judge each non-primary point:'
-            ' against the primary site fence (site-population shifts), the datasheet Spec/Limit (real'
-            ' pass/fail; Absolute basis only), or both.">&nbsp;Site check vs:'
-            ' <select id="dist_site_cmp" onchange="updateDistSitePanel()">'
-            f'<option value="fence">{_ps_disp} fence</option>'
-            '<option value="spec">Spec/Limit</option><option value="both">Both</option></select></label>\n'
             f'  <span style="color:#888;font-size:11px">(each non-{_ps_disp} point vs the '
             f'{_ps_disp} k&times;IQR fence)</span>\n'
             '</div>\n'
@@ -9530,17 +9545,10 @@ def _build_stat_summary_html(
             ' title="Tests each non-primary-site DUT\'s Room-temperature value at each frequency'
             ' against the 1.5&times;IQR fence built from the primary site\'s (' + primary_site + ')'
             ' own Room population at that frequency -- stat_summary\'s per-DUT data is Room-only,'
-            ' so this check is scoped to Room even on a multi-temp page"'
+            ' so this check is scoped to Room even on a multi-temp page.'
+            ' This is a population-shift check only; datasheet pass/fail lives in the'
+            ' Data filter and Statistics Table, not here."'
             ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>'
-            '  <label style="font-size:12px;margin-left:6px"'
-            ' title="How to judge each non-primary point: against the primary site\'s statistical'
-            ' fence (site-population shifts), against the datasheet Spec/Limit (real pass/fail), or'
-            ' both side by side. Governs the Site Population Check panel above, not the main Statistics Table.">Site&nbsp;check&nbsp;vs:&nbsp;'
-            '<select id="stat_site_basis" onchange="updateSitePanel()">'
-            '<option value="fence">' + primary_site + ' fence</option>'
-            '<option value="spec">Spec/Limit</option>'
-            '<option value="both">Both</option>'
-            '</select></label>'
         )
 
     noise_disclaimer_html = (
@@ -19356,17 +19364,10 @@ def _build_summary_html(
             ' in this condition, same as this view\'s own Mean) at each frequency against the'
             ' 1.5&times;IQR fence built from the primary site\'s (' + primary_site + ') own'
             ' population at that frequency -- summary\'s per-DUT data is blended across temperatures,'
-            ' not per-temperature like boxplot\'s version"'
+            ' not per-temperature like boxplot\'s version.'
+            ' This is a population-shift check only; datasheet pass/fail lives in the'
+            ' Data filter and Results Table, not here."'
             ' onclick="toggleSitePanel()">&#9658; Site Population Check</button>\n'
-            '  <label style="font-size:12px;margin-left:6px"'
-            ' title="How to judge each non-primary point: against the primary site\'s statistical'
-            ' fence (site-population shifts), against the datasheet Spec/Limit (real pass/fail), or'
-            ' both side by side. Governs the Site Population Check panel above, not the main Results Table.">Site&nbsp;check&nbsp;vs:&nbsp;'
-            '<select id="sum_site_basis" onchange="updateSitePanel()">'
-            '<option value="fence">' + primary_site + ' fence</option>'
-            '<option value="spec">Spec/Limit</option>'
-            '<option value="both">Both</option>'
-            '</select></label>\n'
         )
 
     html = (
@@ -20390,11 +20391,6 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
             "Lower k = stricter (more points flagged OUTSIDE); higher k = looser. 1.5 is the standard Tukey fence.'>"
             "&nbsp;k&times;IQR: <input type='number' id='h_site_k' value='1.5' min='0' step='0.1' "
             "style='width:52px' onchange='updateSitePanel()'></label> "
-            "<label style='font-size:11px;color:#555' title='How to judge each non-primary measurement: "
-            "against the primary site fence (site-population shifts), the datasheet Spec/Limit (real pass/fail), or both.'>"
-            "&nbsp;Site check vs: <select id='h_site_basis' onchange='updateSitePanel()'>"
-            f"<option value='fence'>{html.escape(str(primary_site))} fence</option>"
-            "<option value='spec'>Spec/Limit</option><option value='both'>Both</option></select></label> "
             f"<span style='color:#888;font-size:11px'>(compares each non-{html.escape(str(primary_site))} "
             f"measurement against the {html.escape(str(primary_site))} k&times;IQR fence)</span></div>\n"
             "<div id='h_site_panel' style='display:none;padding:0 2px 16px'></div>\n"
