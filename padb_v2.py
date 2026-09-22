@@ -252,8 +252,12 @@ def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) 
     same columns the loader detects (x/value/Serial/Group incl. 'Site: ...').
 
     Gate: explicit cfg['export_parquet'] wins (true/false). Otherwise auto-export
-    for compare jobs, or when the CSV is large by the same size/row thresholds as
-    binary_encode. Never fails the build -- a parquet error is logged and skipped."""
+    only when the CSV is LARGE by the same size/row thresholds as binary_encode --
+    for compares AND non-compares alike. (Until 2026-09-21 this fired for *every*
+    compare regardless of size, so a tiny switching-speed compare got a needless
+    sidecar + a misleading "Large-dataset viewer" section on its index; the parquet
+    viewer only helps when the self-contained HTML is too big to open. Set
+    export_parquet:true to force one on a small job.) Never fails the build."""
     explicit = cfg.get("export_parquet")
     if explicit is False:
         return
@@ -266,7 +270,7 @@ def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) 
                  or (df is not None
                      and len(df) >= int(cfg.get("export_parquet_auto_rows",
                                                 AUTO_BINARY_ENCODE_ROWS))))
-        if not (cfg.get("compare_csv") or large):
+        if not large:
             return
     out_path = output_dir / (csv_path.stem + ".parquet")
     try:

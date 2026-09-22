@@ -1641,6 +1641,26 @@ def test_publish_and_parquet_index_link() -> None:
         check("launcher bat prefers PADB_Viewer.exe then falls back to padb_viewer.py",
               "PADB_Viewer.exe" in bat_txt and "padb_viewer.py" in bat_txt
               and bat_txt.index("PADB_Viewer.exe") < bat_txt.index("padb_viewer.py"))
+    # Parquet gate is SIZE-based, not compare-blanket (David 2026-09-21): a small compare
+    # must NOT auto-export a sidecar (which also added a misleading "Large-dataset viewer"
+    # section); only large jobs, or an explicit export_parquet:true, do.
+    try:
+        import pyarrow  # noqa: F401
+        _has_pa = True
+    except Exception:
+        _has_pa = False
+    if _has_pa:
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            (d / "s.csv").write_text("Frequency (MHz),Value,Group\n100,1,Site: SR\n100,2,Site: AMC\n", encoding="utf-8")
+            pv._maybe_export_parquet({"compare_csv": {"SR": "x", "AMC": "y"}}, d / "s.csv", d, None)
+            check("small compare does NOT auto-export a parquet (size gate, not compare-blanket)",
+                  not list(d.glob("*.parquet")))
+            d2 = d / "forced"; d2.mkdir()
+            (d2 / "s.csv").write_text("Frequency (MHz),Value,Group\n100,1,Site: SR\n100,2,Site: AMC\n", encoding="utf-8")
+            pv._maybe_export_parquet({"export_parquet": True}, d2 / "s.csv", d2, None)
+            check("explicit export_parquet:true still forces a parquet on a small job",
+                  bool(list(d2.glob("*.parquet"))))
     # _publish copies html, *_report.pdf, *.parquet, PADB_Viewer.exe, .bat, reduction report.
     with tempfile.TemporaryDirectory() as td:
         src = Path(td) / "src"; dst = Path(td) / "dst"; src.mkdir()
