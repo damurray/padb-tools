@@ -407,7 +407,13 @@ function applyFilters(data){
       var allowed=selections[col];
       if(!allowed.length) return false;
       var v=String(r[col]===null||r[col]===undefined?'':r[col]);
-      if(allowed.indexOf(v)<0) return false;
+      /* Blank = this dimension does not apply to the row (e.g. a Test Event
+         Status that one site records and another leaves null in a cross-site
+         compare). Blank is never a checkbox option, so "Select all" can't
+         include it; excluding it here silently dropped an entire site (SR
+         shown as only-MY, David 2026-09-22). Blank -> no constraint, matching
+         the boxplot's absent-dimension rule. */
+      if(v!==''&&allowed.indexOf(v)<0) return false;
     }
     return true;
   });
@@ -1271,7 +1277,13 @@ function _recomputeSpecSegments(){
       var allowed=selections[col];
       if(!allowed.length) return false;
       var v=String(r[col]===null||r[col]===undefined?'':r[col]);
-      if(allowed.indexOf(v)<0) return false;
+      /* Blank = this dimension does not apply to the row (e.g. a Test Event
+         Status that one site records and another leaves null in a cross-site
+         compare). Blank is never a checkbox option, so "Select all" can't
+         include it; excluding it here silently dropped an entire site (SR
+         shown as only-MY, David 2026-09-22). Blank -> no constraint, matching
+         the boxplot's absent-dimension rule. */
+      if(v!==''&&allowed.indexOf(v)<0) return false;
     }
     return true;
   });
@@ -3086,7 +3098,13 @@ function applyFilters(data){
       var allowed=selections[col];
       if(!allowed.length) return false;
       var v=String(r[col]===null||r[col]===undefined?'':r[col]);
-      if(allowed.indexOf(v)<0) return false;
+      /* Blank = this dimension does not apply to the row (e.g. a Test Event
+         Status that one site records and another leaves null in a cross-site
+         compare). Blank is never a checkbox option, so "Select all" can't
+         include it; excluding it here silently dropped an entire site (SR
+         shown as only-MY, David 2026-09-22). Blank -> no constraint, matching
+         the boxplot's absent-dimension rule. */
+      if(v!==''&&allowed.indexOf(v)<0) return false;
     }
     return true;
   });
@@ -3225,7 +3243,13 @@ function _recomputeSpecSegments(){
       var allowed=selections[col];
       if(!allowed.length) return false;
       var v=String(r[col]===null||r[col]===undefined?'':r[col]);
-      if(allowed.indexOf(v)<0) return false;
+      /* Blank = this dimension does not apply to the row (e.g. a Test Event
+         Status that one site records and another leaves null in a cross-site
+         compare). Blank is never a checkbox option, so "Select all" can't
+         include it; excluding it here silently dropped an entire site (SR
+         shown as only-MY, David 2026-09-22). Blank -> no constraint, matching
+         the boxplot's absent-dimension rule. */
+      if(v!==''&&allowed.indexOf(v)<0) return false;
     }
     return true;
   });
@@ -5047,7 +5071,11 @@ function _distCondKeep(raw,i,condFilts){
   for(var ci=0;ci<condFilts.length;ci++){
     var cf=condFilts[ci];
     var cv=(raw.c&&raw.c[cf.col_id])?raw.c[cf.col_id][i]:'';
-    if(!cf.sel.has(cv)) return false;
+    /* Blank = this dimension does not apply to the point (e.g. a Test Event
+       Status one site records and another leaves null in a cross-site compare).
+       Blank is never a checkbox option, so it must not be filtered out here --
+       same absent-dimension rule as the scatter applyFilters fix. */
+    if(cv!==''&&cv!=null&&!cf.sel.has(cv)) return false;
   }
   return true;
 }
@@ -16346,10 +16374,24 @@ def _build_box_interactive_html(
         )
         env_bar = f'<div class="env-bar">\n  <b>Temperature&nbsp;steps:</b>\n{env_items}</div>\n'
 
+    # Group-label helper for the Data-filter bar: a small uppercase caption with a
+    # left divider, so the bar reads as labeled clusters (Data filter / Trim / Spec
+    # / Display / Outliers / Frequency / Segment) instead of one long run of
+    # controls (David 2026-09-22: "could the data filter section look less cluttered
+    # and better organized?"). Same visual language as the below-plot button groups.
+    _FG = ('font-weight:700;color:#888;font-size:10px;text-transform:uppercase;'
+           'letter-spacing:.04em;margin:0 2px 0 2px;border-left:1px solid #ccc;'
+           'padding-left:8px;align-self:center;white-space:nowrap')
+
+    def _fgl(text: str, tip: str = "", first: bool = False) -> str:
+        style = _FG.replace("border-left:1px solid #ccc;", "") if first else _FG
+        _ti = f' title="{tip}"' if tip else ""
+        return f'  <span style="{style}"{_ti}>{text}</span>\n'
+
     filter_bar = (
         '<div class="flt-bar">\n'
-        '  <b>Data&nbsp;filter:</b>\n'
-        '  <label title="Show every measurement (no pass/fail filter)">'
+        + _fgl("Data filter", "Filter which measurements are shown by pass/fail vs the effective spec", first=True)
+        + '  <label title="Show every measurement (no pass/fail filter)">'
         '<input type="radio" name="box_flt" value="all" checked'
         ' onchange="update()">&nbsp;All&nbsp;data</label>\n'
         '  <label title="Show only measurements that PASS the effective spec (CSV Spec/Limit, or the Spec override below)">'
@@ -16360,17 +16402,14 @@ def _build_box_interactive_html(
         ' onchange="update()">&nbsp;Failing&nbsp;only</label>\n'
         '  <span id="box_passing_warn" style="display:none;background:#fff0e8;color:#c04000;'
         'font-weight:bold;padding:1px 6px;border-radius:3px"></span>\n'
-        '  <span class="sep"></span>\n'
-        '  <label title="Data-cleaning trim: drop raw samples beyond a hard value BEFORE computing'
-        ' Q1/Q2/Q3/whiskers. Independent of the pass/fail filter and the Spec override -- combine with'
-        ' either. Leave blank for no trim.">Trim&nbsp;raw&nbsp;samples:</label>\n'
-        '  <label style="font-size:12px" title="Drop raw samples ABOVE this value before computing the box">above&nbsp;'
+        + _fgl("Trim", "Data-cleaning trim: drop raw samples beyond a hard value BEFORE computing Q1/Q2/Q3/whiskers. Independent of the pass/fail filter and the Spec override -- combine with either. Leave blank for no trim.")
+        + '  <label style="font-size:12px" title="Drop raw samples ABOVE this value before computing the box">above&nbsp;'
         '<input type="number" id="box_flt_yhi" placeholder="none" step="0.001" style="width:80px"'
         ' value="" oninput="update()"></label>\n'
         '  <label style="font-size:12px" title="Drop raw samples BELOW this value before computing the box">below&nbsp;'
         '<input type="number" id="box_flt_ylo" placeholder="none" step="0.001" style="width:80px"'
         ' value="" oninput="update()"></label>\n'
-        '  <span class="sep"></span>\n'
+        + _fgl("Spec", "Spec direction, manual Spec overrides, and spec-line visibility")
         + tll_selector_html +
         '  <label id="box_tll_hi_wrap" title="Override Spec&#8593; for the Passing-only filter and draw a manual limit line (id kept as box_tll_hi for compatibility)">'
         'Spec&#8593;&nbsp;override:<input type="number" id="box_tll_hi" step="0.001" placeholder="auto"'
@@ -16378,19 +16417,19 @@ def _build_box_interactive_html(
         '  <label id="box_tll_lo_wrap" title="Override Spec&#8595; for the Passing-only filter and draw a manual limit line (id kept as box_tll_lo for compatibility)">'
         'Spec&#8595;&nbsp;override:<input type="number" id="box_tll_lo" step="0.001" placeholder="auto"'
         ' style="width:74px" oninput="update()"></label>\n'
-        '  <span class="sep"></span>\n'
+        '  <label><input type="checkbox" id="box_hide_spec_chk" onchange="toggleBoxHideSpec()">'
+        '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
+        + _fgl("Display", "Plot/statistics display options")
+        + '  <label title="Overlay individual DUT measurement points on each box">'
+        '<input type="checkbox" id="box_show_pts_chk" onchange="update()">'
+        '&nbsp;Show&nbsp;points</label>\n'
         '  <label title="Show non-parametric (order-statistic) TI bounds in the Statistics Table'
         ' for Non-normal and Marginal frequencies">'
         '<input type="checkbox" id="box_np_ti_chk"'
         ' onchange="updateStatsTable(getSelectedConds(),getYFilter())">'
         '&nbsp;Non-parametric&nbsp;TI</label>\n'
-        '  <label title="Overlay individual DUT measurement points on each box">'
-        '<input type="checkbox" id="box_show_pts_chk" onchange="update()">'
-        '&nbsp;Show&nbsp;points</label>\n'
-        '  <label><input type="checkbox" id="box_hide_spec_chk" onchange="toggleBoxHideSpec()">'
-        '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
-        '  <span class="sep"></span>\n'
-        '  <label title="IQR fence multiplier: points beyond Q1 - k×IQR or Q3 + k×IQR are flagged as outliers">'
+        + _fgl("Outliers", "IQR outlier fence and which populations to exclude before computing the box")
+        + '  <label title="IQR fence multiplier: points beyond Q1 - k×IQR or Q3 + k×IQR are flagged as outliers">'
         'k&thinsp;&times;&thinsp;IQR:&nbsp;<input type="number" id="box_iqr_k" value="1.5"'
         ' min="0.5" max="5" step="0.1" style="width:52px" oninput="update()"></label>\n'
         '  <label title="Exclude Room outliers from Q1/Q2/Q3 calculation">'
@@ -16402,8 +16441,8 @@ def _build_box_interactive_html(
         '  <label title="Average a DUT\'s exact repeat measurements (same DUT, same condition, same port, same temperature, same frequency) into one point before computing Q1/Q2/Q3/whiskers -- off by default, so a heavily-repeated DUT keeps its current extra weight unless you opt in">'
         '<input type="checkbox" id="box_collapse_dup_chk" onchange="update()">'
         '&nbsp;Collapse&nbsp;dup&nbsp;runs</label>\n'
-        '  <span class="sep"></span>\n'
-        f'  <label>{_short_x_label(x_label)}&thinsp;min&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_lo"'
+        + _fgl("Frequency", "Restrict the plotted frequency range")
+        + f'  <label>{_short_x_label(x_label)}&thinsp;min&thinsp;({x_unit}):&thinsp;<input type="number" id="box_freq_lo"'
         f' value="{_floor_dec(box_freq_min, 3):.3f}" step="any"'
         ' style="width:90px;font-size:12px;padding:1px 3px;border:1px solid #bbb;border-radius:3px"'
         ' oninput="update()"></label>\n'
@@ -16413,8 +16452,8 @@ def _build_box_interactive_html(
         ' oninput="update()"></label>\n'
         + (
             (
-                '  <span class="sep"></span>\n'
-                '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
+                _fgl("Segment", "Step through contiguous spec/limit/uncertainty bands")
+                + '  <label>Segment&nbsp;by:<select id="segKeySel" onchange="segKeyChange()">\n'
                 '    <option value="spec">Spec</option>\n'
                 '    <option value="limit">Limit</option>\n'
                 '    <option value="uncertainty">Uncertainty</option>\n'

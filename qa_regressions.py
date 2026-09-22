@@ -1130,6 +1130,25 @@ def test_distribution_compare_room_only_site() -> None:
               'id="dist_split_site_chk"' not in hs)
 
 
+def test_scatter_blank_dim_not_dropped() -> None:
+    """Cross-site compare scatter (+ every applyFilters copy) must NOT drop a row
+    whose value for a condition dimension is blank (David 2026-09-22: a Harmonics
+    SR-vs-AMC compare scatter showed only MY/AMC serials -- SR's rows carry a null
+    'Test Event Status' that AMC records as P/F, and the per-column filter excluded
+    every value not in the checkbox options; blank is never an option, so all SR
+    rows were filtered out of the plot AND the table). Fix: blank value = dimension
+    not applicable = no constraint (matching the boxplot's absent-dimension rule),
+    applied to all applyFilters/group-filter copies. Behaviour verified live via
+    Playwright (SR + AMC both survive); source-pinned across every copy here."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    guarded = src.count("if(v!==''&&allowed.indexOf(v)<0) return false;")
+    unguarded = src.count("      if(allowed.indexOf(v)<0) return false;")
+    check(f"scatter/filters: blank-dim guard in every applyFilters copy (>=4; found {guarded})",
+          guarded >= 4)
+    check("scatter/filters: no unguarded per-value exclusion remains (blank would drop a site)",
+          unguarded == 0)
+
+
 def test_jsrules_behavioral_gate_present() -> None:
     """The behavioral cross-view gate qa_jsrules.py executes the SHIPPED shared JS
     (_COMMON_JS + shared panel) under Playwright and asserts the pass/fail + fence
@@ -1333,9 +1352,15 @@ def test_box_data_filter_passfail_and_trim() -> None:
     check("box: old Upper/Lower-limit radios (range_hi/range_lo) removed from box_flt",
           'name="box_flt" value="range_hi"' not in src
           and 'name="box_flt" value="range_lo"' not in src)
-    check("box: trim inputs are a separate always-on control ('Trim raw samples')",
-          "Trim&nbsp;raw&nbsp;samples:" in src
+    check("box: trim inputs are a separate always-on control (labeled 'Trim' group)",
+          '_fgl("Trim"' in src
+          and "Data-cleaning trim: drop raw samples" in src
           and 'id="box_flt_yhi"' in src and 'id="box_flt_ylo"' in src)
+    # Data-filter bar reorganized into labeled clusters (David 2026-09-22:
+    # "could the data filter section look less cluttered and better organized?").
+    check("box: Data-filter bar has labeled groups (Data filter/Spec/Display/Outliers/Frequency)",
+          all(('_fgl("' + g + '"') in src for g in
+              ("Data filter", "Spec", "Display", "Outliers", "Frequency")))
     # Failing must be the EXACT complement of Passing, wired in every point-filter
     # site: the main trace builder + grouped pooler (verdict skip), the outlier collector
     # and non-grouped stats table (verdict-keep clause), and the per-point table. All now
@@ -2101,6 +2126,7 @@ def main() -> None:
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_box_control_groups, test_distribution_compare_room_only_site,
+               test_scatter_blank_dim_not_dropped,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,
