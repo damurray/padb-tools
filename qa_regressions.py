@@ -1174,9 +1174,16 @@ def test_summary_data_filter_rollout() -> None:
     check("summary: trim is always-on (isFinite), independent of pass/fail radio",
           "var trimHi=isFinite(flt.yhi), trimLo=isFinite(flt.ylo);" in src
           and "if(flt.mode==='all'&&!trimHi&&!trimLo) return active;" in src)
-    check("summary: Failing = exact complement of Passing",
-          "if(flt.mode==='passing') return passes;" in src
-          and "if(flt.mode==='failing') return !passes;" in src)
+    check("summary: Passing/Failing are POINT-granular via shared _sumFreqPasses",
+          "function _sumFreqPasses(" in src
+          and "function _sumModeKeepIdx(" in src
+          and "return _sumModeKeepIdx(cd,stats,vis,flt.mode,sumPar).length>0;" in src)
+    check("summary: plot + table share the per-frequency pass rule (table==plot)",
+          "idxs=_sumModeKeepIdx(cd,_stats,idxs,_sumMode,_sumParams);" in src
+          and "if(_bcrMode==='failing'&&_sumFreqPasses(cd,stats,fi,params)) return;" in src)
+    check("summary: point mode draws markers + skips the min-max fill band",
+          "var _pointMode=(_sumMode==='passing'||_sumMode==='failing');" in src
+          and "if(!_pointMode) traces.push({" in src)
     # stat_summary: failing complement + single Spec override feeds the plot.
     check("stat_summary: Failing = complement of Passing (TI within TLL)",
           "if(flt.mode==='failing') return !(r.pass_up&&r.pass_lo);" in src)

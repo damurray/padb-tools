@@ -17477,8 +17477,30 @@ function hexToRgba(hex,a){
   var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return 'rgba('+r+','+g+','+b+','+a+')';
 }
+/* Per-FREQUENCY pass/fail (the single source of truth shared by the plot, the table,
+   and applyDataFilter so "Passing/Failing only" is point-granular AND table==plot).
+   A frequency PASSES when its tolerance interval is within the effective spec on every
+   configured side (a manual Spec override, when set, is the effective spec). Rolled out
+   2026-09-22 (David): summary "Failing only" now shows only the failing FREQUENCIES,
+   matching boxplot (per-measurement) and stat_summary (per-frequency) -- not the whole
+   condition. */
+function _sumFreqPasses(cd,stats,fi,params){
+  var hiOv=(params&&params.tll_hi_override!=null)?params.tll_hi_override:null;
+  var loOv=(params&&params.tll_lo_override!=null)?params.tll_lo_override:null;
+  var hi=hiOv!==null?hiOv:((cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:cd.spec_hi);
+  var lo=loOv!==null?loOv:((cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:cd.spec_lo);
+  var uOk=(hi===null||hi===undefined||stats.uttl[fi]===null||stats.uttl[fi]===undefined||Number(stats.uttl[fi])<=hi);
+  var lOk=(lo===null||lo===undefined||stats.lttl[fi]===null||stats.lttl[fi]===undefined||Number(stats.lttl[fi])>=lo);
+  return uOk&&lOk;
+}
+function _sumModeKeepIdx(cd,stats,idxs,mode,params){
+  if(mode!=='passing'&&mode!=='failing') return idxs;
+  return idxs.filter(function(i){var p=_sumFreqPasses(cd,stats,i,params);return mode==='passing'?p:!p;});
+}
 function buildTraces(active,excl){
   excl=excl||[];
+  var _sumMode=(getDataFilter()||{}).mode||'all';
+  var _pointMode=(_sumMode==='passing'||_sumMode==='failing');
   var _fr0=_sumFreqRange();
   var freqLo=_fr0.lo,freqHi=_fr0.hi;
   var traces=[];
@@ -17512,18 +17534,22 @@ function buildTraces(active,excl){
   var _tllDir=getTllDirection();
   active.forEach(function(cd,ci){
     var color=PALETTE[ci%PALETTE.length];
+    var _stats=getSumCondData(cd,_selTemps,_sumParams);
     var idxs=[];
     cd.freqs.forEach(function(f,i){if(f>=freqLo&&f<=freqHi)idxs.push(i);});
+    /* Point-granular Passing/Failing: keep only the matching frequencies. */
+    idxs=_sumModeKeepIdx(cd,_stats,idxs,_sumMode,_sumParams);
     if(!idxs.length)return;
     var freqs=idxs.map(function(i){return cd.freqs[i];});
-    var _stats=getSumCondData(cd,_selTemps,_sumParams);
     var means=idxs.map(function(i){return _stats.mean[i];});
     var mins=idxs.map(function(i){return _stats.min_data[i];});
     var maxs=idxs.map(function(i){return _stats.max_data[i];});
     var uttls=idxs.map(function(i){return _stats.uttl[i];});
     var lttls=idxs.map(function(i){return _stats.lttl[i];});
-    /* min-max band */
-    traces.push({
+    /* min-max band -- skip in point mode: a filled polygon over sparse, non-contiguous
+       failing/passing frequencies would imply spec/coverage between points that were
+       filtered out. Point mode shows honest markers instead (see _actPtMode). */
+    if(!_pointMode) traces.push({
       type:'scatter',
       x:freqs.concat(freqs.slice().reverse()),
       y:maxs.concat(mins.slice().reverse()),
@@ -17532,11 +17558,11 @@ function buildTraces(active,excl){
       showlegend:false,name:cd.condition,legendgroup:cd.condition,
       hoverinfo:'skip'
     });
-    var _actPtMode=freqs.length<2?'markers':'lines';
-    /* mean line */
+    var _actPtMode=(_pointMode||freqs.length<2)?'markers':'lines';
+    /* mean line (markers in point mode) */
     traces.push({
       type:'scatter',x:freqs,y:means,mode:_actPtMode,
-      line:{color:color,width:2},
+      line:{color:color,width:2},marker:{color:color,size:7},
       name:cd.condition,legendgroup:cd.condition,
       hovertemplate:'<b>'+cd.condition+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>Mean: %{y:.2f}<extra></extra>'
     });
@@ -17545,7 +17571,7 @@ function buildTraces(active,excl){
       var ttlLabel=_stats.uttl_is_estimate?' TTL↑ (est)':' TTL↑';
       traces.push({
         type:'scatter',x:freqs,y:uttls,mode:_actPtMode,
-        line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
+        line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},marker:{color:color,size:5,symbol:'triangle-up'},
         name:cd.condition+ttlLabel,legendgroup:cd.condition,showlegend:false,
         hovertemplate:'<b>'+cd.condition+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+ttlLabel.trim()+': %{y:.2f}<extra></extra>'
       });
@@ -17555,7 +17581,7 @@ function buildTraces(active,excl){
       var ttlLabelLo=_stats.uttl_is_estimate?' TTL↓ (est)':' TTL↓';
       traces.push({
         type:'scatter',x:freqs,y:lttls,mode:_actPtMode,
-        line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},
+        line:{color:color,width:1.5,dash:_stats.uttl_is_estimate?'dot':'dash'},marker:{color:color,size:5,symbol:'triangle-down'},
         name:cd.condition+ttlLabelLo,legendgroup:cd.condition,showlegend:false,
         hovertemplate:'<b>'+cd.condition+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+ttlLabelLo.trim()+': %{y:.2f}<extra></extra>'
       });
@@ -17777,18 +17803,11 @@ function applyDataFilter(active){
     if(trimHi&&!vis.every(function(i){return stats.max_data[i]===null||stats.max_data[i]<=flt.yhi;})) return false;
     if(trimLo&&!vis.every(function(i){return stats.min_data[i]===null||stats.min_data[i]>=flt.ylo;})) return false;
     if(flt.mode==='all') return true;
-    var tllHiOv=sumPar.tll_hi_override;
-    var tllLoOv=sumPar.tll_lo_override;
-    var passes=vis.every(function(i){
-      var hi=tllHiOv!==null?tllHiOv:((cd.spec_hi_list&&cd.spec_hi_list[i]!=null)?cd.spec_hi_list[i]:cd.spec_hi);
-      var lo=tllLoOv!==null?tllLoOv:((cd.spec_lo_list&&cd.spec_lo_list[i]!=null)?cd.spec_lo_list[i]:cd.spec_lo);
-      var uOk=(hi===null||stats.uttl[i]===null||Number(stats.uttl[i])<=hi);
-      var lOk=(lo===null||stats.lttl[i]===null||Number(stats.lttl[i])>=lo);
-      return uOk&&lOk;
-    });
-    if(flt.mode==='passing') return passes;
-    if(flt.mode==='failing') return !passes;
-    return true;
+    /* Point-granular Passing/Failing: keep the condition if it has ANY matching
+       (passing/failing) frequency -- buildTraces + _buildCondRows then show only those
+       frequencies via the SAME _sumFreqPasses rule, so plot, table and this filter all
+       agree (David 2026-09-22: "Failing only" = failing POINTS, not whole conditions). */
+    return _sumModeKeepIdx(cd,stats,vis,flt.mode,sumPar).length>0;
   });
 }
 function saveCSV(withExcluded){
@@ -18458,11 +18477,16 @@ function _sumPerPointTable(active,selTemps,params){
 function _buildCondRows(condList,gfLabel,selTemps,params){
   var _fr4=_sumFreqRange();
   var fLo=_fr4.lo,fHi=_fr4.hi;
+  /* Point-granular Passing/Failing: the table shows only the matching frequencies,
+     so it reflects the plot exactly (both use _sumFreqPasses). */
+  var _bcrMode=(getDataFilter()||{}).mode||'all';
   var rows=[];
   condList.forEach(function(cd){
     var stats=getSumCondData(cd,selTemps,params);
     cd.freqs.forEach(function(f,fi){
       if(f<fLo||f>fHi) return;
+      if(_bcrMode==='passing'&&!_sumFreqPasses(cd,stats,fi,params)) return;
+      if(_bcrMode==='failing'&&_sumFreqPasses(cd,stats,fi,params)) return;
       var tot_n=0;
       selTemps.forEach(function(t){
         var bt=cd.by_temp&&cd.by_temp[t];
