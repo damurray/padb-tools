@@ -3827,8 +3827,7 @@ function _afPreview(ctx){
     }
   }
   if(!r.auto.length && !r.marginal.length && r.review.length){ h+=_afNoApplyBanner(r,ctx); }
-  h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
-    (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+ctx.applyFn+'()">Apply → add to '+_an+'</button>':'')+'</div>';
+  h+=_afApplyLineHtml(r,ctx.applyFn,_an);
   var _applN=(typeof GF_KEY!=='undefined'&&ctx.removeFn)?_afAppliedInGf(ctx).length:0;
   if(_applN) h+='<div style="margin:2px 0 4px"><button class="toggle-btn" style="background:#fff0f0;border-color:#c88;color:#a33" onclick="'+ctx.removeFn+'()">Remove auto-filter ('+_applN+' pt'+(_applN!==1?'s':'')+') from '+_an+'</button> <span style="font-size:11px;color:#888">subtracts only what auto-filter added; your manual exclusions stay ('+_undo+' clears everything)</span></div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+
@@ -3853,6 +3852,32 @@ function _afGfExcludedArr(){ try{ if(typeof GF_KEY==='undefined')return []; var 
 function _afAppliedSet(ctx){ var n=ctx.resultVar+'__applied'; if(!window[n])window[n]=new Set(); return window[n]; }
 function _afMarkApplied(ctx,keys){ if(typeof GF_KEY==='undefined')return; var cur={}; _afGfExcludedArr().forEach(function(k){cur[k]=1;}); var s=_afAppliedSet(ctx); keys.forEach(function(k){ if(!cur[k]) s.add(k); }); }
 function _afAppliedInGf(ctx){ if(typeof GF_KEY==='undefined')return []; var s=_afAppliedSet(ctx); return _afGfExcludedArr().filter(function(k){return s.has(k);}); }
+/* The "Will auto-filter ... Apply" line, made APPLIED-AWARE (David 2026-09-22): the
+   auto-filter analyzes the raw population and ignores the GF, so r.auto stays the
+   same size after Apply -- leaving a live "Apply -> add 9 DUTs" button next to a
+   "Remove auto-filter" button told a contradictory story ("already added, yet asking
+   to add"). Compare the current auto set's point-keys against what's actually in the
+   GF now and render one of three honest states: already-applied (no Apply button),
+   partially-applied ("Apply remaining"), or nothing-applied (the plain Apply). */
+function _afApplyLineHtml(r,applyFn,an){
+  var autoPts=r.auto.reduce(function(a,d){return a+d.pts.length;},0);
+  var base='font-weight:600;margin:6px 0 2px;';
+  if(!r.auto.length) return '<div style="'+base+'color:#c04000">Will auto-filter: 0 DUTs (0 pts)</div>';
+  var gf={}; _afGfExcludedArr().forEach(function(k){gf[k]=1;});
+  var appliedPts=0,pendingPts=0;
+  r.auto.forEach(function(d){(d.keys||[]).forEach(function(k){ if(gf[k])appliedPts++; else pendingPts++; });});
+  var nD=r.auto.length, dl='DUT'+(nD!==1?'s':'');
+  if(pendingPts===0&&appliedPts>0){
+    return '<div style="'+base+'color:#2a7a2a">✓ Auto-filter applied: '+nD+' '+dl+' ('+appliedPts+' pts) already in the '+an+
+      '. <span style="font-weight:400;font-size:11px;color:#888">Use “Remove auto-filter” below to undo, or re-run at a higher level to add more.</span></div>';
+  }
+  var lbl=(appliedPts>0)?('Apply remaining → add to '+an):('Apply → add to '+an);
+  var pre=(appliedPts>0)
+    ? 'Will auto-filter: '+nD+' '+dl+' ('+autoPts+' pts) — '+appliedPts+' already applied, '+pendingPts+' pending'
+    : 'Will auto-filter: '+nD+' '+dl+' ('+autoPts+' pts)';
+  return '<div style="'+base+'color:#c04000">'+pre+
+    ' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="'+applyFn+'()">'+lbl+'</button></div>';
+}
 function _afRemoveApplied(ctx){
   if(typeof GF_KEY==='undefined')return;
   var inGf=_afAppliedInGf(ctx);
@@ -15184,8 +15209,7 @@ function autoFilterPreview(){
     }
   }
   if(!r.auto.length && !r.marginal.length && r.review.length){ h+=_afNoApplyBanner(r); }
-  h+='<div style="font-weight:600;margin:6px 0 2px;color:#c04000">Will auto-filter: '+r.auto.length+' DUT'+(r.auto.length!==1?'s':'')+' ('+autoPts+' pts)'+
-    (r.auto.length?' &nbsp;<button class="toggle-btn" style="background:#fff0e8;border-color:#e0905a;color:#c04000;font-weight:600" onclick="autoFilterApply()">Apply → add to Global Filter</button>':'')+'</div>';
+  h+=_afApplyLineHtml(r,'autoFilterApply','Global Filter');
   var _boxApplN=(typeof GF_KEY!=='undefined')?_afAppliedInGf(BOX_AF).length:0;
   if(_boxApplN) h+='<div style="margin:2px 0 4px"><button class="toggle-btn" style="background:#fff0f0;border-color:#c88;color:#a33" onclick="boxRemoveAuto()">Remove auto-filter ('+_boxApplN+' pt'+(_boxApplN!==1?'s':'')+') from Global Filter</button> <span style="font-size:11px;color:#888">subtracts only what auto-filter added; your manual exclusions stay (Clear global filter clears everything)</span></div>';
   if(r.auto.length) h+='<table class="stbl"><thead><tr><th>Serial</th><th>Pts</th><th>Max</th><th>Risk</th><th>High</th><th>Low</th><th>Reason</th></tr></thead><tbody>'+

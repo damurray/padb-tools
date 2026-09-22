@@ -1186,6 +1186,29 @@ def test_summary_data_filter_rollout() -> None:
           and "params.spec_lo_override=_statMan.lo" in src)
 
 
+def test_af_apply_line_applied_aware() -> None:
+    """The auto-filter 'Will auto-filter ... Apply' line is APPLIED-AWARE (David
+    2026-09-22): auto-filter analyzes the raw population and ignores the GF, so r.auto
+    stays the same size after Apply -- a persistent 'Apply -> add N DUTs' button sitting
+    next to a 'Remove auto-filter' button told a contradictory 'already added, yet asking
+    to add' story. _afApplyLineHtml compares the auto set's point-keys to the LIVE GF and
+    renders one of three honest states: already-applied (green check, NO Apply button) /
+    partially-applied ('Apply remaining') / nothing-applied. Shared by the generic
+    _afPreview AND boxplot's own autoFilterPreview so the two can't diverge. Behaviour
+    verified via Playwright (Apply -> line flips to the green check, button gone). Teeth:
+    reverting either preview to the raw inline Apply line trips this."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("af: _afApplyLineHtml helper present with all three states",
+          "function _afApplyLineHtml(" in src
+          and "Auto-filter applied: " in src
+          and "Apply remaining " in src)
+    check("af: definition + both preview builders use _afApplyLineHtml (>=3)",
+          src.count("_afApplyLineHtml(") >= 3)
+    check("af: no raw inline 'Apply -> add' line left in a preview builder",
+          'onclick="autoFilterApply()">Apply' not in src
+          and "()\">Apply → add to '+_an+'" not in src)
+
+
 def test_blank_dim_no_site_drop() -> None:
     """Blank/absent condition-dimension must never silently drop a row/condition
     (David 2026-09-22, surfaced by qa_crossview): a cross-site compare where one
@@ -2207,7 +2230,7 @@ def main() -> None:
                test_scatter_table_spec_status, test_site_check_compare_basis,
                test_box_control_groups, test_distribution_compare_room_only_site,
                test_scatter_blank_dim_not_dropped, test_summary_data_filter_rollout,
-               test_blank_dim_no_site_drop,
+               test_blank_dim_no_site_drop, test_af_apply_line_applied_aware,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,
