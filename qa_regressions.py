@@ -1109,7 +1109,7 @@ def test_common_prelude_and_feature_registry() -> None:
     check("scatter/boxplot pass-fail route through PADB_isFail",
           "PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit)" in src
           and "var fail=PADB_isFail(v,lim.hi,lim.lo);" in src
-          and "if(PADB_isFail(d.v,lim.hi,lim.lo)===true) fail++;" in src)
+          and "if(lim.hi!=null||lim.lo!=null) return PADB_isFail(d.v,lim.hi,lim.lo);" in src)
     # 4) Cross-view feature registry: (label, marker, min occurrences). A feature
     #    dropped from a view drops the count and trips the check. Grounded in the
     #    dedicated pins (axis titles / compare-basis / segment-by) but consolidated
@@ -1215,16 +1215,22 @@ def test_box_data_filter_passfail_and_trim() -> None:
           "Trim&nbsp;raw&nbsp;samples:" in src
           and 'id="box_flt_yhi"' in src and 'id="box_flt_ylo"' in src)
     # Failing must be the EXACT complement of Passing, wired in every point-filter
-    # site: the main trace builder, the grouped pooler, the outlier collector, the
-    # non-grouped stats table, and the per-point table. Count the complement form.
-    fail_skip = "failActive&&!((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))"
-    check("box: failing = complement-of-passing skip in the main trace builder + grouped pooler",
-          src.count(fail_skip) >= 2)
-    check("box: outlier collector honours failing (olPass* vars, filter-keep form)",
-          "!failActive||((olPassLo!==null&&d.v<olPassLo)||(olPassHi!==null&&d.v>olPassHi))" in src)
-    check("box: non-grouped stats-table + per-point table honour failing too",
-          "!failActive||((stPassLo!==null&&d.v<stPassLo)||(stPassHi!==null&&d.v>stPassHi))" in src
-          and "_fail&&!_oos" in src)
+    # site: the main trace builder + grouped pooler (verdict skip), the outlier collector
+    # and non-grouped stats table (verdict-keep clause), and the per-point table. All now
+    # route through _boxVerdict so Passing/Failing = pass/fail verdict (limit OR status),
+    # never the old flat passLo/passHi comparison.
+    check("box: failing skip via _boxVerdict in main trace builder + grouped pooler",
+          src.count("if(passActive&&_vd===true) return false; if(failActive&&_vd!==true) return false;") >= 1
+          and "if(passActive&&_vd===true) return; if(failActive&&_vd!==true) return;" in src)
+    check("box: outlier collector + non-grouped stats-table honour failing via _boxVerdict",
+          src.count("!failActive||_boxVerdict(cd.condition,d,yFlt)===true") >= 2
+          and src.count("!passActive||_boxVerdict(cd.condition,d,yFlt)!==true") >= 2)
+    check("box: per-point table filters via _boxVerdict (pass/fail)",
+          "if(_pass&&_vd===true) return;" in src and "if(_fail&&_vd!==true) return;" in src)
+    check("box: old flat passLo/passHi pass/fail skip fully removed",
+          "failActive&&!((passLo!==null&&d.v<passLo)" not in src
+          and "!failActive||((olPassLo!==null" not in src
+          and "!failActive||((stPassLo!==null" not in src)
     # Trim is now independent of the pass/fail radio (active whenever a value is typed),
     # not gated on mode==='range_hi'/'range_lo' as before.
     check("box: trim is always-on (isFinite), not gated on a range radio mode",
@@ -1258,6 +1264,18 @@ def test_box_fail_per_point_limit_and_spec_lines() -> None:
     check("box: flat-spec fail helpers removed (_boxFailCell/_boxFailCount/_boxPfLimits gone)",
           "function _boxFailCell(" not in src and "function _boxFailCount(" not in src
           and "function _boxPfLimits(" not in src)
+    # (1b) VERDICT fallback -- no numeric limit but a recorded P/F field (Test Event Status).
+    # Drives Passing/Failing-only + table Status/#fail so filter->plot->table agree.
+    check("box: verdict helpers present (_condStatusFail/_boxVerdict) + BOX_STATUS_FIELD emitted",
+          "function _condStatusFail(condStr){" in src and "function _boxVerdict(condStr,d,yFlt){" in src
+          and "var BOX_STATUS_FIELD=" in src)
+    check("box: server detects a P/F status cond-dim (box_status_field)",
+          "box_status_field = \"\"" in src and "_PF_TOKENS" in src and "status_field=box_status_field" in src)
+    check("box: Passing/Failing filter routes through _boxVerdict (not flat passLo/passHi)",
+          "if(passActive&&_vd===true) return false; if(failActive&&_vd!==true) return false;" in src
+          and "passActive&&((passLo!==null&&d.v<passLo)" not in src)
+    check("box: per-point table Status shows when a verdict exists (limit OR status field)",
+          "var hasStatus=pts.some(function(pt){return pt.vd!==null;})" in src)
     # (2) per-condition spec lines
     check("box: per-group Limit staircase helper present (_limitMapsByGroup)",
           "function _limitMapsByGroup(selConds,fr,f2l){" in src)

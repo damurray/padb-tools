@@ -12986,8 +12986,7 @@ function _computeBoxGroupedByColId(cols,selConds,selBoxSers,selTemps,yFlt,fr,k,
         if(portActive&&selPorts.indexOf(d.p||'')<0) return;
         if(d.v>rhi) return;
         if(d.v<rlo) return;
-        if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
-        if(failActive&&!((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return;
+        if(passActive||failActive){var _vd=_boxVerdict(d._cond||'',d,yFlt); if(passActive&&_vd===true) return; if(failActive&&_vd!==true) return;}
         if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return;}
         var gk=_boxGroupKeyForPoint(cols,cd,d);
         if(!freqVals[gk]) freqVals[gk]={};
@@ -13141,8 +13140,7 @@ function buildBoxTraces(selConds,selTemps,yFlt,selBoxSers){
           if(portActive&&selPorts.indexOf(d.p||'')<0) return false;
           if(d.v>rhi) return false;
           if(d.v<rlo) return false;
-          if(passActive&&((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
-          if(failActive&&!((passLo!==null&&d.v<passLo)||(passHi!==null&&d.v>passHi))) return false;
+          if(passActive||failActive){var _vd=_boxVerdict(cd.condition,d,yFlt); if(passActive&&_vd===true) return false; if(failActive&&_vd!==true) return false;}
           if(gfActive){var _ig=_boxIsInGf(_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f));if(boxGfFocus?!_ig:_ig) return false;}
           return true;
         });
@@ -13430,10 +13428,31 @@ function _boxPtLim(d,yFlt){
   var lo=(yFlt&&yFlt.tll_lo!=null&&yFlt.tll_lo!==undefined)?yFlt.tll_lo:(d?d.lower_limit:null);
   return {hi:_n(hi),lo:_n(lo)};
 }
-function _boxFailCountDetail(detail,yFlt){ var scored=0,fail=0;
-  (detail||[]).forEach(function(d){ var lim=_boxPtLim(d,yFlt); if(lim.hi==null&&lim.lo==null) return; scored++;
-    if(PADB_isFail(d.v,lim.hi,lim.lo)===true) fail++; }); return {fail:fail,scored:scored}; }
-function _boxFailCellDetail(detail,yFlt){ var r=_boxFailCountDetail(detail,yFlt);
+/* Pass/fail VERDICT for a point (David 2026-09-21). Numeric limit wins (each point's
+   OWN Upper/Lower Limit, or a manual override); with NO numeric limit, fall back to
+   PADB's recorded verdict (BOX_STATUS_FIELD, e.g. "Test Event Status" = P/F) parsed
+   from the point's condition string. Returns true=fail, false=pass, null=unknown.
+   One rule for the plot's Passing/Failing filter AND the table Status/#fail, so
+   filter -> plot -> table always agree. */
+function _condStatusFail(condStr){
+  if(!BOX_STATUS_FIELD||!condStr) return null;
+  var safe=BOX_STATUS_FIELD.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&');
+  var m=condStr.match(new RegExp(safe+':\\s*(.+?)(?=\\s{2,}|$)'));
+  if(!m) return null;
+  var v=m[1].trim().toUpperCase();
+  if(v==='F'||v==='FAIL'||v==='FAILED') return true;
+  if(v==='P'||v==='PASS'||v==='PASSED') return false;
+  return null;
+}
+function _boxVerdict(condStr,d,yFlt){
+  var lim=_boxPtLim(d,yFlt);
+  if(lim.hi!=null||lim.lo!=null) return PADB_isFail(d.v,lim.hi,lim.lo);
+  return _condStatusFail(condStr);
+}
+function _boxFailCountDetail(detail,yFlt,condFallback){ var scored=0,fail=0;
+  (detail||[]).forEach(function(d){ var vd=_boxVerdict(d._cond||condFallback||'',d,yFlt); if(vd===null) return; scored++;
+    if(vd===true) fail++; }); return {fail:fail,scored:scored}; }
+function _boxFailCellDetail(detail,yFlt,condFallback){ var r=_boxFailCountDetail(detail,yFlt,condFallback);
   if(r.scored===0) return '<td style="color:#aaa">&mdash;</td>';
   return '<td>'+(r.fail>0?'<b style="color:#c00">'+r.fail+'</b>':'0')+' / '+r.scored+'</td>'; }
 function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
@@ -13458,29 +13477,32 @@ function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
         if(serActive&&selBoxSers.indexOf(d.s)<0) return;
         if(d.v>_rhi||d.v<_rlo) return;
         var _lim=_boxPtLim(d,yFlt);
-        var _oos=((_lim.lo!=null&&d.v<_lim.lo)||(_lim.hi!=null&&d.v>_lim.hi));
-        if(_pass&&_oos) return;
-        if(_fail&&!_oos) return;
+        var _vd=_boxVerdict(cd.condition,d,yFlt);
+        if(_pass&&_vd===true) return;
+        if(_fail&&_vd!==true) return;
         if(gfActive){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);var _ig=_boxIsInGf(_ck);if(gfFocus?!_ig:_ig) return;}
-        pts.push({gk:grpCols.length?_boxGroupKeyForPoint(grpCols,cd,d):cd.condition,temp:cd.temp,freq:f.freq,fl:f.freq_label,s:d.s,p:d.p||'',v:d.v,lim:_lim});
+        pts.push({gk:grpCols.length?_boxGroupKeyForPoint(grpCols,cd,d):cd.condition,temp:cd.temp,freq:f.freq,fl:f.freq_label,s:d.s,p:d.p||'',v:d.v,lim:_lim,vd:_vd});
       });
     });
   });
   if(!pts.length) return '<p style="color:#888;padding:8px">No points match the current filters.</p>';
   pts.sort(function(a,b){ if(a.gk!==b.gk)return a.gk<b.gk?-1:1; if(a.temp!==b.temp)return a.temp<b.temp?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
-  var hasLim=pts.some(function(pt){return pt.lim.hi!=null||pt.lim.lo!=null;}), nFail=0;
-  if(hasLim) pts.forEach(function(pt){ if(_boxPointStatus(pt.v,pt.lim).t==='FAIL')nFail++; });
+  var hasLim=pts.some(function(pt){return pt.lim.hi!=null||pt.lim.lo!=null;});
+  var hasStatus=pts.some(function(pt){return pt.vd!==null;});   // limit OR recorded Test Event Status
+  var nFail=0; if(hasStatus) pts.forEach(function(pt){ if(pt.vd===true)nFail++; });
   var cap=5000, shown=pts.slice(0,cap);
   var out='<div style="font-size:12px;color:#555;padding:2px 2px 4px">'+pts.length.toLocaleString()+' point'+(pts.length===1?'':'s')+
-    (hasLim?(' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail limit'):'')+
+    (hasStatus?(' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail'):'')+
     (pts.length>cap?(' &mdash; showing first '+cap.toLocaleString()+'; use Save CSV for all'):'')+
-    ' &mdash; <i>per-point mode; each point vs its own limit; Group by sorts/sections rows</i></div>';
+    ' &mdash; <i>per-point mode; each point vs its own limit'+(BOX_STATUS_FIELD?(' or recorded '+BOX_STATUS_FIELD):'')+'; Group by sorts/sections rows</i></div>';
   out+='<table class="stbl"><thead><tr><th>Group</th><th>Temp</th><th>'+X_SHORT_LABEL+'('+X_UNIT+')</th><th>Serial</th><th>Port</th><th>Value</th>'+
-    (hasLim?'<th>Limit&nbsp;lo</th><th>Limit&nbsp;hi</th><th>Status</th>':'')+'</tr></thead><tbody>';
+    (hasLim?'<th>Limit&nbsp;lo</th><th>Limit&nbsp;hi</th>':'')+(hasStatus?'<th>Status</th>':'')+'</tr></thead><tbody>';
   var body=[];
-  shown.forEach(function(pt){ var st=_boxPointStatus(pt.v,pt.lim);
+  shown.forEach(function(pt){
+    var stc=pt.vd===true?'#c00':(pt.vd===false?'#2a7a2a':'#aaa'), stt=pt.vd===true?'FAIL':(pt.vd===false?'PASS':'&mdash;');
     body.push('<tr><td>'+pt.gk+'</td><td>'+pt.temp+'</td><td>'+(pt.fl||pt.freq)+'</td><td>'+pt.s+'</td><td>'+pt.p+'</td><td>'+pt.v.toFixed(4)+'</td>'+
-      (hasLim?('<td>'+(pt.lim.lo!=null?pt.lim.lo.toFixed(4):'&mdash;')+'</td><td>'+(pt.lim.hi!=null?pt.lim.hi.toFixed(4):'&mdash;')+'</td><td style="color:'+st.c+';font-weight:bold">'+st.t+'</td>'):'')+'</tr>'); });
+      (hasLim?('<td>'+(pt.lim.lo!=null?pt.lim.lo.toFixed(4):'&mdash;')+'</td><td>'+(pt.lim.hi!=null?pt.lim.hi.toFixed(4):'&mdash;')+'</td>'):'')+
+      (hasStatus?('<td style="color:'+stc+';font-weight:bold">'+stt+'</td>'):'')+'</tr>'); });
   out+=body.join('')+'</tbody></table>';
   return out;
 }
@@ -13635,7 +13657,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+fs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+fs.q1.toFixed(4)+'</td><td>'+fs.q2.toFixed(4)+'</td><td>'+fs.q3.toFixed(4)+'</td>'+
           normTd+npTdG+
-          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(fs.vals_detail,yFlt)+'</tr>');
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(fs.vals_detail,yFlt,'')+'</tr>');
       });
     });
   } else if(serActive||yFltActive||yFltActiveLo||passActive||failActive||tempActive||gfFocusActive||_gfActiveSt||isExclRoom()||isExclDEnv()||isCollapseDup()){
@@ -13691,8 +13713,8 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           .filter(function(d){
             if(_gfActiveSt){var _ck=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p)+'|Temp='+cd.temp+'|Freq='+_gfFreqKey(f);var _ig=_boxIsInGf(_ck);if(_gfFocusSt?!_ig:_ig) return false;}
             return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
-              &&(!passActive||(stPassLo===null||d.v>=stPassLo)&&(stPassHi===null||d.v<=stPassHi))
-              &&(!failActive||((stPassLo!==null&&d.v<stPassLo)||(stPassHi!==null&&d.v>stPassHi)));
+              &&(!passActive||_boxVerdict(cd.condition,d,yFlt)!==true)
+              &&(!failActive||_boxVerdict(cd.condition,d,yFlt)===true);
           });
         if(isCollapseDup()) detail=_collapseDupRuns(detail);
         if(!detail.length) return;
@@ -13731,7 +13753,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+bs.mean.toFixed(4)+'</td><td>'+std.toFixed(4)+'</td>'+
           '<td>'+bs.q1.toFixed(4)+'</td><td>'+bs.q2.toFixed(4)+'</td><td>'+bs.q3.toFixed(4)+'</td>'+
           normCell+npCellSt+
-          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(boxDet,yFlt)+'</tr>');
+          '<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(boxDet,yFlt,cd.condition)+'</tr>');
       });
     });
   } else {
@@ -13798,7 +13820,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+(dupRuns?'<span class="out">'+dupRuns+'</span>':'<span style="color:#aaa">0</span>')+'</td>'+
           '<td>'+meanV.toFixed(4)+'</td><td>'+stdV.toFixed(4)+'</td>'+
           '<td>'+q1v.toFixed(4)+'</td><td>'+q2v.toFixed(4)+'</td><td>'+q3v.toFixed(4)+'</td>'+
-          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(raw||[],yFlt)+'</tr>');
+          '<td>'+nrmStr+'</td>'+npCell+'<td>'+outStr+'</td><td>'+devCells.pos+'</td><td>'+devCells.neg+'</td>'+_boxFailCellDetail(raw||[],yFlt,cd.condition)+'</tr>');
       });
     });
     /* BOX_STATS (above) is _aggregate_stat_data()'s output, built for
@@ -13838,7 +13860,7 @@ function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
           '<td>'+s.q1.toFixed(4)+'</td><td>'+s.q2.toFixed(4)+'</td><td>'+s.q3.toFixed(4)+'</td>'+
           '<td style="color:#aaa;font-size:11px">&#8212;&nbsp;(no&nbsp;normality&nbsp;test&nbsp;at&nbsp;non-Room&nbsp;temps)</td>'+
           (showNp?'<td style="color:#aaa;font-size:11px">&#8212;</td>':'')+
-          '<td>'+outStr2+'</td><td>'+devCells2.pos+'</td><td>'+devCells2.neg+'</td>'+_boxFailCellDetail(detail,yFlt)+'</tr>');
+          '<td>'+outStr2+'</td><td>'+devCells2.pos+'</td><td>'+devCells2.neg+'</td>'+_boxFailCellDetail(detail,yFlt,cd.condition)+'</tr>');
       });
     });
   }
@@ -13941,8 +13963,8 @@ function _collectOutliers(selConds,selTemps,yFlt,selBoxSers){
       var allDet=(f.vals_detail||f.vals.map(function(v){return {s:'unknown',v:v};}));
       var detail=allDet.filter(function(d){
         return (!serActive||selBoxSers.indexOf(d.s)>=0)&&d.v<=rhi&&d.v>=rlo
-          &&(!passActive||(olPassLo===null||d.v>=olPassLo)&&(olPassHi===null||d.v<=olPassHi))
-          &&(!failActive||((olPassLo!==null&&d.v<olPassLo)||(olPassHi!==null&&d.v>olPassHi)));
+          &&(!passActive||_boxVerdict(cd.condition,d,yFlt)!==true)
+          &&(!failActive||_boxVerdict(cd.condition,d,yFlt)===true);
       });
       if(detail.length<2) return;
       var fv=detail.map(function(d){return d.v;});
@@ -16067,6 +16089,7 @@ def _build_box_interactive_html(
     coverage_gap_html: str = "",
     has_segments: bool = True,
     drop_points: bool = False,
+    status_field: str = "",
 ) -> str:
     css = (
         "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
@@ -16381,6 +16404,7 @@ def _build_box_interactive_html(
         f"var X_UNIT={json.dumps(x_unit)};",
         f"var X_SHORT_LABEL={json.dumps(_short_x_label(x_label))};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
+        f"var BOX_STATUS_FIELD={json.dumps(status_field)};",
         f"var TEMPS_PRESENT={json.dumps(all_temps)};",
         f"var PALETTE={json.dumps(palette)};",
         f"var ALL_BOX_SERIALS={json.dumps(all_box_serials or [])};",
@@ -16842,6 +16866,21 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         {"col": key, "col_id": re.sub(r"\W+", "_", key), "label": key, "vals": _sort_numeric(v)}
         for key, v in sorted(dim_vals.items()) if len(v) > 1
     ]
+    # Pass/fail VERDICT field (David 2026-09-21): a pod can carry PADB's own per-run
+    # pass/fail verdict (e.g. "Test Event Status" = P/F) with NO numeric spec limit.
+    # Detect such a condition dim (status-like name, values are pass/fail tokens incl.
+    # at least one fail) so the boxplot can drive Passing/Failing-only + the table
+    # Status/#fail from it when there's no limit. Empty => no verdict field.
+    _PF_TOKENS = {"P", "F", "PASS", "FAIL", "PASSED", "FAILED"}
+    _STATUS_KWS = ("event status", "status", "verdict", "disposition", "result", "pass/fail")
+    box_status_field = ""
+    for _d in cond_dims:
+        if not any(kw in _d["col"].lower() for kw in _STATUS_KWS):
+            continue
+        _uv = {str(x).strip().upper() for x in _d["vals"] if str(x).strip()}
+        if _uv and _uv <= _PF_TOKENS and any(t in _uv for t in ("F", "FAIL", "FAILED")):
+            box_status_field = _d["col"]
+            break
     help_panel_html = _build_help_panel_html(
         df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims],
         pod_filter_expression=cfg.get("pod_filter_expression", ""),
@@ -16919,6 +16958,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         coverage_gap_html=coverage_gap_html,
         has_segments=has_segments,
         drop_points=bool(cfg.get("box_drop_points", False)),
+        status_field=box_status_field,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")

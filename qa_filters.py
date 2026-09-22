@@ -1891,37 +1891,55 @@ _HARNESS_JS = r"""
         yhi.value=''; so.value=''; setMode('all'); update();
       })();
 
-      // ---- Table #fail must be per-point OWN limit, NOT a flat global spec (David 2026-09-21) ----
-      // The reported bug: the table counted failures against a single flat HI_SPEC/LO_SPEC,
-      // showing phantom failures the plot's own per-condition spec line never supported
-      // (Harmonic 2's spec staircase != 0.5's). Per-point mode judges each point vs its OWN
-      // Upper/Lower Limit -- independently recompute and require an EXACT match, and require
-      // the result to DIFFER from the flat-spec count (else a flat-spec regression is invisible
-      // on this data, so skip with that stated).
+      // ---- Verdict-driven pass/fail: filter -> plot -> table must all agree (David 2026-09-21) ----
+      // Pass/fail is per-point vs its OWN Upper/Lower Limit; with NO numeric limit it falls back
+      // to PADB's recorded verdict (BOX_STATUS_FIELD, e.g. Test Event Status = P/F). Catches two
+      // real bugs: (a) the table counted #fail vs a single flat HI_SPEC/LO_SPEC (phantom fails
+      // when conditions have different specs); (b) with no numeric limit, Failing-only showed
+      // NOTHING on the plot and the table had no Status, ignoring the P/F verdict. Independently
+      // recompute the verdict fails and require the per-point table, the grouped table, AND the
+      // Failing-only plot to ALL equal it -- and to DIFFER from the flat-spec count (teeth).
       (function(){
-        if(typeof _boxPtLim==='undefined'){ skip('box-fail-own-limit','no _boxPtLim (older build)'); return; }
+        if(typeof _boxVerdict==='undefined'){ skip('box-verdict','no _boxVerdict (older build)'); return; }
         if(typeof clearGlobalFilter==='function') clearGlobalFilter();
         reset();
+        var statusField=(typeof BOX_STATUS_FIELD!=='undefined')?BOX_STATUS_FIELD:'';
+        function _statusFail(cond){ if(!statusField||!cond) return null;
+          var mm=cond.match(new RegExp(statusField.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&')+':\\s*(.+?)(?=\\s{2,}|$)'));
+          if(!mm) return null; var v=mm[1].trim().toUpperCase();
+          if(v==='F'||v==='FAIL'||v==='FAILED') return true; if(v==='P'||v==='PASS'||v==='PASSED') return false; return null; }
         var flatHi=(typeof HI_SPEC!=='undefined')?HI_SPEC:null, flatLo=(typeof LO_SPEC!=='undefined')?LO_SPEC:null;
-        var anyLim=false, ownFail=0, flatFail=0;
+        var anyVerdict=false, vFail=0, flatFail=0;
         BOX_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(fs){ (fs.vals_detail||[]).forEach(function(d){
           if(typeof d.v!=='number'||!isFinite(d.v)) return;
           var oh=(d.upper_limit!=null&&d.upper_limit!==undefined)?d.upper_limit:null;
           var ol=(d.lower_limit!=null&&d.lower_limit!==undefined)?d.lower_limit:null;
-          if(oh!=null||ol!=null){ anyLim=true; if(PADB_isFail(d.v,oh,ol)===true) ownFail++; }
+          var vd=(oh!=null||ol!=null)?PADB_isFail(d.v,oh,ol):_statusFail(cd.condition);
+          if(vd!==null){ anyVerdict=true; if(vd===true) vFail++; }
           if(PADB_isFail(d.v,flatHi,flatLo)===true) flatFail++;
         }); }); });
-        if(!anyLim){ skip('box-fail-own-limit','no per-point limits in this data'); return; }
+        if(!anyVerdict){ skip('box-verdict','no per-point limit or recorded verdict in this data'); return; }
+        // (1) per-point table #fail + Status column == independent verdict
         var tm=document.getElementById('box_table_mode'); if(tm){ tm.value='perpoint'; tm.dispatchEvent(new Event('change')); }
         var el=document.getElementById('box_stat_panel'); if(!el||el.style.display==='none'){ if(typeof toggleStatPanel==='function') toggleStatPanel(); }
         update();
-        var hdr=el?el.textContent:''; var m=hdr.match(/([\d,]+)\s*fail limit/);
+        var hdr=el?el.textContent:''; var m=hdr.match(/([\d,]+)\s*fail\b/);
         var tblFail=m?parseInt(m[1].replace(/,/g,''),10):-1;
-        chk('box-perpoint-fail-equals-own-limit', tblFail===ownFail, 'table='+tblFail+' ownLimit='+ownFail+' flatSpec='+flatFail);
-        if(ownFail===flatFail){ skip('box-perpoint-fail-teeth','own-limit==flat-spec here; a flat-spec regression would be invisible on this data'); }
-        else { chk('box-perpoint-fail-not-flat-spec', tblFail!==flatFail, 'table='+tblFail+' flatSpec='+flatFail+' (must NOT match the flat global spec)'); }
-        if(tm){ tm.value='grouped'; tm.dispatchEvent(new Event('change')); }
-        reset();
+        chk('box-perpoint-fail-equals-independent-verdict', tblFail===vFail, 'table='+tblFail+' verdict='+vFail+' flatSpec='+flatFail);
+        chk('box-perpoint-status-column-present-when-verdict', /Status/.test(hdr), 'Status header present='+/Status/.test(hdr));
+        if(vFail===flatFail){ skip('box-verdict-not-flat-teeth','verdict==flat-spec here; a flat-spec regression would be invisible on this data'); }
+        else { chk('box-verdict-not-flat-spec', tblFail!==flatFail, 'table='+tblFail+' flatSpec='+flatFail+' (must NOT be the flat global spec)'); }
+        // (2) grouped table #fail total == verdict
+        if(tm){ tm.value='grouped'; tm.dispatchEvent(new Event('change')); } update();
+        var gt=0; el.querySelectorAll('tbody tr').forEach(function(tr){var t=tr.querySelectorAll('td');if(!t.length)return;var mm2=t[t.length-1].textContent.match(/(\d+)\s*\/\s*\d+/);if(mm2)gt+=parseInt(mm2[1],10);});
+        chk('box-verdict-grouped-fail-total-matches', gt===vFail, 'grouped='+gt+' verdict='+vFail);
+        // (3) filter -> plot: Failing-only isolates exactly the fails on the plot
+        var sp=document.getElementById('box_show_pts_chk'); if(sp&&!sp.checked){sp.checked=true;}
+        function _mk(){var g=document.getElementById('plot'),n=0;(g.data||[]).forEach(function(t){if(t.type==='scatter'&&(t.mode||'').indexOf('markers')>=0)n+=((t.y&&t.y.length)||0);});return n;}
+        function setm(x){var e=document.querySelector('input[name="box_flt"][value="'+x+'"]');e.checked=true;e.dispatchEvent(new Event('change'));}
+        setm('failing'); update(); var pFail=_mk();
+        chk('box-verdict-failing-plot-isolates-fails', pFail===vFail, 'plotFailing='+pFail+' verdictFails='+vFail);
+        setm('all'); reset();
       })();
 
       // ---- reset-restores ----
