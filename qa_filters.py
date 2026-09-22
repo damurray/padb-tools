@@ -1942,6 +1942,60 @@ _HARNESS_JS = r"""
         setm('all'); reset();
       })();
 
+      // ---- Filters verified SINGLY and CROSSED: filter -> plot -> table invariants (David 2026-09-21) ----
+      // For each filter (singly) and several crossed combinations, hold the invariants that
+      // encode "table follows plot follows filters": in per-point mode, Failing-only => every
+      // shown point is a FAIL, Passing-only => zero fails, both are subsets of All, and the
+      // plot has boxes IFF the table has rows. These must hold under ANY filter combination.
+      (function(){
+        if(typeof _boxVerdict==='undefined'){ skip('filter-cross','no _boxVerdict (older build)'); return; }
+        var haveVerdict=(typeof BOX_STATUS_FIELD!=='undefined'&&BOX_STATUS_FIELD)?true:(function(){var any=false;BOX_DATA.forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){(fs.vals_detail||[]).forEach(function(d){if(d.upper_limit!=null||d.lower_limit!=null)any=true;});});});return any;})();
+        var sp=document.getElementById('box_show_pts_chk');
+        function _pp(){ var tm=document.getElementById('box_table_mode'); if(tm){tm.value='perpoint';tm.dispatchEvent(new Event('change'));}
+          var el=document.getElementById('box_stat_panel'); if(!el||el.style.display==='none') toggleStatPanel();
+          if(sp&&!sp.checked){sp.checked=true;} update();
+          var t=el.textContent, mp=t.match(/([\d,]+)\s*point/), mf=t.match(/([\d,]+)\s*fail\b/);
+          return {pts:mp?parseInt(mp[1].replace(/,/g,''),10):0, fail:mf?parseInt(mf[1].replace(/,/g,''),10):0, hasStatus:/Status/.test(t)}; }
+        // Plotted points = the Show-Points overlay markers (a single/degenerate group can
+        // have data points but no drawn box, so count markers not box traces).
+        function _mkPts(){ var g=document.getElementById('plot'),n=0; (g.data||[]).forEach(function(t){if(t.type==='scatter'&&(t.mode||'').indexOf('markers')>=0)n+=((t.y&&t.y.length)||0);}); return n; }
+        function setm(x){var e=document.querySelector('input[name="box_flt"][value="'+x+'"]');if(e){e.checked=true;e.dispatchEvent(new Event('change'));}}
+        function chk1(cls,val){var els=document.querySelectorAll('.'+cls);if(els[0]){els[0].checked=val;els[0].dispatchEvent(new Event('change'));return true;}return false;}
+        function narrowFreq(){var lo=document.getElementById('box_freq_lo'),hi=document.getElementById('box_freq_hi');if(lo&&hi){var a=parseFloat(lo.value),b=parseFloat(hi.value);if(isFinite(a)&&isFinite(b)&&b>a){lo.value=a+(b-a)*0.25;hi.value=a+(b-a)*0.75;lo.dispatchEvent(new Event('input'));}}}
+        function gbSerial(){var s=document.getElementById('box_group_by');if(s){[].forEach.call(s.options,function(o){o.selected=(o.value==='__serial__');});s.dispatchEvent(new Event('change'));}}
+        function condOff(){if(typeof COND_DIMS!=='undefined'&&COND_DIMS.length)chk1('box_cond_'+COND_DIMS[0].col_id,false);}
+        function tempOff(){var e=document.querySelectorAll('.box_env_chk');if(e.length>1){e[0].checked=false;e[0].dispatchEvent(new Event('change'));}}
+        function scenario(name,setup){
+          reset(); if(typeof clearGlobalFilter==='function') clearGlobalFilter();
+          try{ setup(); }catch(e){ chk('filter-cross['+name+']-setup',false,String(e)); return; }
+          setm('all'); var a=_pp();
+          setm('passing'); var pz=_pp();
+          setm('failing'); var fz=_pp(); var mkFail=_mkPts();
+          var gbOn=(function(){var s=document.getElementById('box_group_by');return s?[].some.call(s.selectedOptions,function(o){return !!o.value;}):false;})();
+          // Group-by pools into boxes without a per-point overlay, so plot-markers != per-point
+          // rows there (different representation, not a desync); the semantics below still apply.
+          if(gbOn){ skip('filter-cross['+name+']-plot-points==table-rows','group-by pools (no per-point overlay)'); }
+          else { chk('filter-cross['+name+']-plot-points==table-rows', mkFail===fz.pts, 'plotMarkers='+mkFail+' failRows='+fz.pts); }
+          chk('filter-cross['+name+']-pass/fail-subset-of-all', fz.pts<=a.pts&&pz.pts<=a.pts, 'all='+a.pts+' pass='+pz.pts+' fail='+fz.pts);
+          if(haveVerdict&&a.hasStatus){
+            chk('filter-cross['+name+']-failing=all-shown-fail', fz.fail===fz.pts, 'fail='+fz.fail+' shown='+fz.pts);
+            chk('filter-cross['+name+']-passing=zero-fail', pz.fail===0, 'passFail='+pz.fail);
+          }
+        }
+        // singly
+        scenario('base', function(){});
+        scenario('serial', function(){ chk1('box_ser_chk',false); });
+        scenario('temp', tempOff);
+        scenario('cond', condOff);
+        scenario('freq', narrowFreq);
+        scenario('groupby-serial', gbSerial);
+        // crossed
+        scenario('serial+freq', function(){ chk1('box_ser_chk',false); narrowFreq(); });
+        scenario('serial+cond+temp', function(){ chk1('box_ser_chk',false); condOff(); tempOff(); });
+        scenario('groupby-serial+cond', function(){ gbSerial(); condOff(); });
+        setm('all'); reset();
+      })();
+
       // ---- reset-restores ----
       reset();
       chk('reset-restores', cnt()===P0, 'after='+cnt()+' P0='+P0);

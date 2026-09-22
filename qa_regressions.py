@@ -1291,6 +1291,19 @@ def test_box_fail_per_point_limit_and_spec_lines() -> None:
           "var curY=Y_LIM||(_yAutoRefit?null:_liveAxisRange('yaxis'));" in src)
     check("box: a manual Y drag-zoom clears the autoscale pin (persists)",
           "_yPinnedByAutoscale=false" in src and "ed['yaxis.range[0]']!==undefined) _yPinnedByAutoscale=false" in src)
+    # Browser-tier teeth must exist in qa_filters (run explicitly on affected pages, not in
+    # the umbrella): the verdict end-to-end check + the singly/crossed filter sweep. Pinned
+    # here so they can't silently rot.
+    qf = HERE / "qa_filters.py"
+    check("qa_filters.py exists", qf.exists())
+    if qf.exists():
+        qs = qf.read_text(encoding="utf-8")
+        check("qa_filters: verdict end-to-end check (plot Failing == table == independent verdict)",
+              "box-verdict-failing-plot-isolates-fails" in qs
+              and "box-perpoint-fail-equals-independent-verdict" in qs)
+        check("qa_filters: filters verified singly AND crossed (filter-cross sweep)",
+              "filter-cross[" in qs and "scenario('serial+cond+temp'" in qs
+              and "failing=all-shown-fail" in qs)
 
 
 def test_stat_sum_table_perpoint_rollout() -> None:
