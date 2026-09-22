@@ -1096,6 +1096,17 @@ def test_distribution_compare_room_only_site() -> None:
         sites, _ = _room_abs(hc)
         check("distribution compare: Room-only non-primary site (AMC) retained in Absolute Room",
               "AMC" in sites and "SR" in sites)
+        # Per-site split (2026-09-22, David-approved): a compare page offers a
+        # "Split by site" checkbox (default on) so each site draws its own KDE curve
+        # in Absolute mode (primary solid / others dashed), instead of pooling all
+        # sites into one temperature curve. Behaviour verified live via Playwright
+        # (Room -> Room.SR + Room.AMC traces); source-pinned here so it can't rot.
+        check("distribution compare: 'Split by site' checkbox present + default on",
+              'id="dist_split_site_chk" checked' in hc)
+        check("distribution compare: site list embedded + split helper + per-site bucketing",
+              '"AMC"' in _re.search(r"var DIST_SITE_VALS=(\[[^;]*\]);", hc).group(1)
+              and "function _distSplitSite()" in hc
+              and "raw.c['Site']" in hc)
 
         # Single-site: multi-temp + one Room-only DUT -> still thinned (no Site dim).
         ps = Path(td) / "single.csv"
@@ -1115,6 +1126,8 @@ def test_distribution_compare_room_only_site() -> None:
         _, sers = _room_abs(hs)
         check("distribution single-site: Room-only DUT still thinned (env_serials nicety preserved)",
               "US65089999" not in sers and any(s.startswith("US6508") for s in sers))
+        check("distribution single-site: no 'Split by site' control (not a compare)",
+              'id="dist_split_site_chk"' not in hs)
 
 
 def test_jsrules_behavioral_gate_present() -> None:

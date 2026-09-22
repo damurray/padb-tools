@@ -4681,6 +4681,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var SERIALS={json.dumps(all_serials)};",
         f"var PORTS={json.dumps(all_ports)};",
         f"var PRIMARY_SITE={json.dumps(dist_primary_site if dist_site_enabled else None)};",
+        f"var DIST_SITE_VALS={json.dumps(_dist_site_vals if dist_site_enabled else [])};",
         # Categorical box-identity labels (same _freq_label_map the boxplot uses),
         # so a GF key the boxplot stores (keyed on freq_label) matches point-precisely.
         f"var FREQ_LABEL_PAIRS={json.dumps([[float(_f), _l] for _f, _l in _freq_label_map(sorted(df['Frequency_MHz'].dropna().unique()), x_unit).items()])};",
@@ -5319,6 +5320,13 @@ function _recomputeSpecSegments(){
   document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
 }
 
+/* Per-site split (compare pages only): one density curve per site instead of
+   pooling every site into each temperature curve. Absolute mode only. */
+function _distSplitSite(){
+  var el=document.getElementById('dist_split_site_chk');
+  return !!(el&&el.checked&&(typeof DIST_SITE_VALS!=='undefined')&&DIST_SITE_VALS.length>1);
+}
+
 /* ---- main KDE plot update ---- */
 function update(){
   _distUpdateBadge('spur');
@@ -5342,11 +5350,41 @@ function update(){
 
   if(isAbs){
     var tempIdxs=getSelTempIdxs();
+    var splitSite=_distSplitSite();
     spurs.forEach(function(si){
       tempIdxs.forEach(function(ti){
-        var kde,vals=null;
-        if((freqFlt||serFlt||condFlt||gfFlt)&&RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti]){
-          var raw=RAW_ABS[si][ti];vals=[];
+        var raw=(RAW_ABS&&RAW_ABS[si]&&RAW_ABS[si][ti])||null;
+        /* Split-by-site always needs the per-point raw (KDE_ABS is site-pooled). */
+        var needRaw=(freqFlt||serFlt||condFlt||gfFlt||splitSite)&&raw;
+        var col=TEMP_COLORS[TEMPS[ti]]||'#999';
+        var spurLabel=SPUR_TYPES[si],tempLabel=TEMPS[ti];
+        function emit(sk,vals,kde){
+          var siteSuffix=(splitSite&&sk!=='')?(' · '+sk):'';
+          var name=(multiSpur?(spurLabel+' — '+tempLabel):tempLabel)+siteSuffix;
+          /* Colour still encodes temperature; site is encoded by line dash
+             (primary solid, other sites dashed) so a Room-only onboarding site
+             sits right next to the reference Room curve but stays distinct. */
+          var dash=(splitSite&&sk!==''&&PRIMARY_SITE&&sk!==PRIMARY_SITE)?'dash':'solid';
+          if(!kde){
+            /* Too few points for a density curve (jsKde needs n>=4). Rather than a
+               silent blank on a narrow selection (e.g. a single frequency), show the
+               raw value(s) as a rug so the actual measurements are still visible. */
+            if(vals&&vals.length){
+              traces.push({x:vals,y:vals.map(function(){return 0;}),type:'scatter',mode:'markers',
+                name:name+' ('+vals.length+' pt'+(vals.length>1?'s':'')+', n<4 for KDE)',
+                marker:{color:col,size:11,symbol:'line-ns-open',line:{color:col,width:2}},
+                hovertemplate:'<b>'+spurLabel+'</b><br>'+tempLabel+siteSuffix+'<br>'+Y_LABEL+': %{x:.3f} (raw pt, n<4 for KDE)<extra></extra>'});
+            }
+            return;
+          }
+          traces.push({x:kde.x,y:kde.y,type:'scatter',mode:'lines',name:name,
+            line:{color:col,width:multiSpur?1:2,dash:dash},opacity:multiSpur?0.65:1.0,
+            hovertemplate:'<b>'+spurLabel+'</b><br>'+tempLabel+siteSuffix+'<br>'+Y_LABEL+': %{x:.3f}<br>density: %{y:.5f}<extra></extra>'});
+        }
+        if(needRaw){
+          /* Bucket the filtered points by site ('' bucket = not splitting). */
+          var siteArr=(raw.c&&raw.c['Site'])?raw.c['Site']:null;
+          var buckets={},order=[];
           for(var i=0;i<raw.f.length;i++){
             if(raw.f[i]<fr.lo||raw.f[i]>fr.hi) continue;
             if(serFlt){
@@ -5356,30 +5394,14 @@ function update(){
             }
             if(condFlt&&!_distCondKeep(raw,i,condFilts)) continue;
             if(gfFlt){var _ex=_isDistGfExcl(raw.s?raw.s[i]:'',raw.g?raw.g[i]:'',TEMPS[ti],(raw.fl?raw.fl[i]:_distFreqLabel(raw.f[i])),raw.p?raw.p[i]:'');if(_distGfFocusMode?!_ex:_ex) continue;}
-            vals.push(raw.v[i]);
+            var sk=splitSite?((siteArr&&siteArr[i]!=null&&siteArr[i]!=='')?siteArr[i]:'(no site)'):'';
+            if(!(sk in buckets)){buckets[sk]=[];order.push(sk);}
+            buckets[sk].push(raw.v[i]);
           }
-          kde=jsKde(vals);
+          order.forEach(function(sk){var vals=buckets[sk];emit(sk,vals,jsKde(vals));});
         } else {
-          kde=KDE_ABS[si]&&KDE_ABS[si][ti];
+          emit('',null,KDE_ABS[si]&&KDE_ABS[si][ti]);
         }
-        var col=TEMP_COLORS[TEMPS[ti]]||'#999';
-        var spurLabel=SPUR_TYPES[si],tempLabel=TEMPS[ti];
-        var name=multiSpur?(spurLabel+' — '+tempLabel):tempLabel;
-        if(!kde){
-          /* Too few points for a density curve (jsKde needs n>=4). Rather than a
-             silent blank on a narrow selection (e.g. a single frequency), show the
-             raw value(s) as a rug so the actual measurements are still visible. */
-          if(vals&&vals.length){
-            traces.push({x:vals,y:vals.map(function(){return 0;}),type:'scatter',mode:'markers',
-              name:name+' ('+vals.length+' pt'+(vals.length>1?'s':'')+', n<4 for KDE)',
-              marker:{color:col,size:11,symbol:'line-ns-open',line:{color:col,width:2}},
-              hovertemplate:'<b>'+spurLabel+'</b><br>'+tempLabel+'<br>'+Y_LABEL+': %{x:.3f} (raw pt, n<4 for KDE)<extra></extra>'});
-          }
-          return;
-        }
-        traces.push({x:kde.x,y:kde.y,type:'scatter',mode:'lines',name:name,
-          line:{color:col,width:multiSpur?1:2},opacity:multiSpur?0.65:1.0,
-          hovertemplate:'<b>'+spurLabel+'</b><br>'+tempLabel+'<br>'+Y_LABEL+': %{x:.3f}<br>density: %{y:.5f}<extra></extra>'});
       });
     });
     var warn=document.getElementById('multimodal_warn');
@@ -5832,7 +5854,18 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
         ' onchange="update()">&nbsp;Absolute</label>\n'
         '  <label><input type="radio" name="view_mode" value="delta"'
         ' checked onchange="update()">&nbsp;ΔTemp</label>\n'
-        '  <div class="sep"></div>\n'
+        + (
+            '  <label id="dist_split_site_wrap" style="white-space:nowrap"'
+            ' title="Draw one density curve per site instead of pooling all sites'
+            ' into each temperature curve. The primary site (' + _ps_disp + ') is solid,'
+            ' other sites dashed; colour still encodes temperature. Absolute mode only'
+            ' -- a &Delta;Temp curve spans Room+env within one site. Lets a Room-only'
+            ' onboarding site be compared directly against the reference site at Room.">'
+            '<input type="checkbox" id="dist_split_site_chk" checked onchange="update()">'
+            '&nbsp;Split&nbsp;by&nbsp;site</label>\n'
+            if dist_site_enabled else ''
+        )
+        + '  <div class="sep"></div>\n'
         + f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="dist_freq_lo"'
         f' min="{dist_freq_min:.1f}" max="{dist_freq_max:.1f}" value="{dist_freq_min:.1f}"'
         f' step="0.1" style="width:100px" oninput="syncFreqDist()" onchange="update()">'
