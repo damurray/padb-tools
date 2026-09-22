@@ -1046,6 +1046,77 @@ def test_box_control_groups() -> None:
               iV < iAuto and iV < iClrEvery)
 
 
+def test_distribution_compare_room_only_site() -> None:
+    """Distribution Absolute-mode Room must retain a Room-only NON-PRIMARY site in a
+    cross-site compare (2026-09-22, David-reported). The env_serials nicety (thin Room
+    to DUTs that also have non-Room data, so Room-abs matches env-abs populations) was
+    unconditional -- it silently erased an onboarding site measured only at Room (real
+    case: SR multi-temp vs AMC/MY-serial Room-only Close-In compare -- AMC never in
+    env_serials -> dropped from every Room curve AND the Site Population Check). Gate:
+    skip the restriction whenever a Site dimension is present. Single-site pods still
+    thin a Room-only DUT (population-matching preserved). Teeth: the compare Room-abs
+    must contain the Room-only site; the single-site case must still thin its
+    Room-only DUT."""
+    import csv as _csv, json as _json, re as _re
+    import padb_v2 as _v2  # load_scatter promotes serial-in-Group -> Serial (env_serials teeth)
+
+    def _room_abs(html):
+        temps = _json.loads(_re.search(r"var TEMPS=(\[[^;]*?\]);", html).group(1))
+        raw = _json.loads(_re.search(r"var RAW_ABS=(\[.*?\]);", html, _re.S).group(1))
+        ri = temps.index("Room")
+        sites, sers = set(), set()
+        for sp in raw:
+            cell = sp[ri]
+            sers.update(cell.get("s") or [])
+            for g in (cell.get("g") or []):
+                m = _re.search(r"Site:\s*([^|]+?)(?:\s{2,}|$)", g)
+                if m:
+                    sites.add(m.group(1).strip())
+        return sites, sers
+
+    with tempfile.TemporaryDirectory() as td:
+        # Compare: SR multi-temp (Room + 55C) + AMC (MY-serial) Room-only.
+        pc = Path(td) / "cmp.csv"
+        with pc.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for i in range(8):
+                sn = f"US6508{i:04d}"
+                for ts in ("Room", "55.0 Deg C"):
+                    for fr in (100.0, 200.0):
+                        w.writerow([ts, fr, -60.0 + 0.1 * i + (2 if ts != "Room" else 0),
+                                    f"SpurType: CloseIn  Serial Number: {sn}  Site: SR", -50, -70])
+            for i in range(6):
+                sn = f"MY6625{i:04d}"
+                for fr in (100.0, 200.0):
+                    w.writerow(["Room", fr, -59.0 + 0.1 * i,
+                                f"SpurType: CloseIn  Serial Number: {sn}  Site: AMC", -50, -70])
+        d = _v2.load_scatter(pc, {})
+        hc = pp._build_env_distribution_html(d, {"y_label": "P", "title": "cmp", "primary_site": "SR"}, "cmp")
+        sites, _ = _room_abs(hc)
+        check("distribution compare: Room-only non-primary site (AMC) retained in Absolute Room",
+              "AMC" in sites and "SR" in sites)
+
+        # Single-site: multi-temp + one Room-only DUT -> still thinned (no Site dim).
+        ps = Path(td) / "single.csv"
+        with ps.open("w", newline="") as f:
+            w = _csv.writer(f)
+            w.writerow(["Test Step", "Frequency (MHz)", "Power (dBc)", "Group", "Upper Limit", "Lower Limit"])
+            for i in range(8):
+                sn = f"US6508{i:04d}"
+                for ts in ("Room", "55.0 Deg C"):
+                    for fr in (100.0, 200.0):
+                        w.writerow([ts, fr, -60.0 + 0.1 * i,
+                                    f"SpurType: CloseIn  Serial Number: {sn}", -50, -70])
+            for fr in (100.0, 200.0):  # Room-only DUT
+                w.writerow(["Room", fr, -59.0, "SpurType: CloseIn  Serial Number: US65089999", -50, -70])
+        d2 = _v2.load_scatter(ps, {})
+        hs = pp._build_env_distribution_html(d2, {"y_label": "P", "title": "single"}, "single")
+        _, sers = _room_abs(hs)
+        check("distribution single-site: Room-only DUT still thinned (env_serials nicety preserved)",
+              "US65089999" not in sers and any(s.startswith("US6508") for s in sers))
+
+
 def test_jsrules_behavioral_gate_present() -> None:
     """The behavioral cross-view gate qa_jsrules.py executes the SHIPPED shared JS
     (_COMMON_JS + shared panel) under Playwright and asserts the pass/fail + fence
@@ -2016,7 +2087,7 @@ def main() -> None:
                test_room_only_default_views, test_scatter_room_temp_filterable,
                test_reference_stats, test_axis_titles_object_form,
                test_scatter_table_spec_status, test_site_check_compare_basis,
-               test_box_control_groups,
+               test_box_control_groups, test_distribution_compare_room_only_site,
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_compare_basis_rollout,

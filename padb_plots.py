@@ -4463,6 +4463,26 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
     # data so Room and env KDEs are computed from the same set of DUTs.
     env_serials: set = set(df[df["Temperature"] != "Room"]["Serial"].unique())
 
+    # Cross-site compare detection (needed EARLY). In Absolute mode Room must NOT be
+    # thinned to env_serials when a compare has a Room-only site: that site's DUTs
+    # have no non-Room rows, so they are never in env_serials and the whole site
+    # silently vanishes from the Room curve AND the Site Population Check (reported
+    # 2026-09-22 -- a MY-Room-only vs SR-multi-temp Close-In spurs compare). The
+    # population-matching nicety only makes sense for a single-site thermal study;
+    # a compare's whole point is to show every site's Room data. When a Site
+    # dimension exists we keep every Room DUT in Absolute mode. (The later
+    # dist_site_* block re-derives this for the Site panel; kept separate so this
+    # gate is available before the abs-KDE/raw_abs loops below.)
+    _has_site_dim = False
+    if "Group" in df.columns:
+        _site_vals_early: set = set()
+        for _g in df["Group"].dropna().astype(str):
+            _m = re.search(r"Site:\s*([^|]+?)(?:\s{2,}|$)", _g)
+            if _m:
+                _site_vals_early.add(_m.group(1).strip())
+        _has_site_dim = len(_site_vals_early) > 1
+    _restrict_room_abs = bool(env_serials) and not _has_site_dim
+
     # -------------------------------------------------------------------------
     # 2.  Abs mode KDE: aggregate per (SpurType, Temperature)
     # -------------------------------------------------------------------------
@@ -4476,7 +4496,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         spur_df = df[df["_spur"] == spur]
         for temp in temps_present:
             t_df = spur_df[spur_df["Temperature"] == temp]
-            if temp == "Room" and env_serials:
+            if temp == "Room" and _restrict_room_abs:
                 t_df = t_df[t_df["Serial"].isin(env_serials)]
             vals = t_df["Value"].dropna().tolist()
             row.append(_kde_curve(vals))
@@ -4588,7 +4608,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         row: list = []
         for temp in temps_present:
             t_df = spur_df[spur_df["Temperature"] == temp][_abs_cols].dropna(subset=["Frequency_MHz", "Value"])
-            if temp == "Room" and env_serials:
+            if temp == "Room" and _restrict_room_abs:
                 t_df = t_df[t_df["Serial"].isin(env_serials)]
             row.append({
                 "f":  [round(float(x), 1) for x in t_df["Frequency_MHz"]],
