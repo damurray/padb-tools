@@ -12983,6 +12983,60 @@ function getBoxFreqRange(){
   var hi=parseFloat(document.getElementById('box_freq_hi').value);
   return {lo:isNaN(lo)?-Infinity:lo,hi:isNaN(hi)?Infinity:hi};
 }
+/* ---- Locked filters adapter (cross-view; see _COMMON_JS) ----
+   Boxplot filters conditions via per-condition longform checkboxes (value = the full
+   condition string). READ reconstructs per-dimension narrowing (a dim whose value-set
+   among CHECKED conditions is a strict subset of all its values); APPLY checks a
+   longform box iff its condition matches ALL locked dims that actually exist here
+   (a locked value absent from this dataset is skipped, never emptying the view -- same
+   best-effort/blank-dim rule as getSelectedConds). */
+function _bxDimRe(col){ return new RegExp(col.replace(/[-\/\\^$*+?.()|[\]{}]/g,'\\$&')+':\\s*(.+?)(?=\\s{2,}|$)'); }
+function _bxLockRead(){
+  var dims={},lf=document.querySelectorAll('.box_cond_lf_chk');
+  if(lf.length&&COND_DIMS&&COND_DIMS.length){
+    var all={},sel={}; COND_DIMS.forEach(function(d){all[d.label]={};sel[d.label]={};});
+    Array.prototype.forEach.call(lf,function(c){ COND_DIMS.forEach(function(d){
+      var m=c.value.match(_bxDimRe(d.col)); if(m){var v=m[1].trim(); all[d.label][v]=1; if(c.checked) sel[d.label][v]=1;} }); });
+    COND_DIMS.forEach(function(d){ var a=Object.keys(all[d.label]),s=Object.keys(sel[d.label]);
+      if(s.length&&s.length<a.length) dims[d.label]=s; });
+  }
+  var fr=getBoxFreqRange();
+  var pf=document.querySelector('input[name="box_flt"]:checked');
+  var mode=(pf&&(pf.value==='all'||pf.value==='passing'||pf.value==='failing'))?pf.value:'all';
+  return {dims:dims, freq:{lo:isFinite(fr.lo)?fr.lo:null, hi:isFinite(fr.hi)?fr.hi:null}, passfail:mode};
+}
+function _bxLockApply(o){
+  var applied=[],skipped=[],lf=document.querySelectorAll('.box_cond_lf_chk');
+  var lockedDims=Object.keys((o&&o.dims)||{});
+  if(lockedDims.length&&lf.length&&COND_DIMS&&COND_DIMS.length){
+    var rules=[]; lockedDims.forEach(function(label){
+      var d=COND_DIMS.filter(function(x){return x.label===label;})[0];
+      if(!d){skipped.push(label);return;}
+      var want={}; (o.dims[label]||[]).forEach(function(v){want[String(v)]=1;});
+      rules.push({label:label,re:_bxDimRe(d.col),want:want,applicable:false}); });
+    /* a rule only applies if at least one condition here actually has a wanted value --
+       else applying it would uncheck every box (empty view). */
+    rules.forEach(function(r){ Array.prototype.forEach.call(lf,function(c){ var m=c.value.match(r.re); if(m&&r.want[m[1].trim()]) r.applicable=true; }); });
+    var active=rules.filter(function(r){return r.applicable;});
+    rules.filter(function(r){return !r.applicable;}).forEach(function(r){skipped.push(r.label);});
+    if(active.length){
+      Array.prototype.forEach.call(lf,function(c){ var keep=true;
+        active.forEach(function(r){ var m=c.value.match(r.re); if(m&&!r.want[m[1].trim()]) keep=false; });
+        c.checked=keep; });
+      active.forEach(function(r){applied.push(r.label);});
+      if(typeof _syncDimsFromLf==='function') _syncDimsFromLf();
+    }
+  } else { lockedDims.forEach(function(l){skipped.push(l);}); }
+  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
+    var s1=document.getElementById('box_freq_lo'),s2=document.getElementById('box_freq_hi');
+    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
+      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+      if(lo<=hi){s1.value=lo;s2.value=hi;}}
+  }
+  if(o&&o.passfail){var r=document.querySelector('input[name="box_flt"][value="'+o.passfail+'"]');if(r)r.checked=true;}
+  if(typeof update==='function') update();
+  return {applied:applied,skipped:skipped};
+}
 function isBoxNpTI(){var c=document.getElementById('box_np_ti_chk');return c?c.checked:false;}
 function isShowPoints(){var c=document.getElementById('box_show_pts_chk');return c?c.checked:false;}
 /* Group By: extract the value for the selected dimension from a condition string.
@@ -16384,6 +16438,9 @@ function loadState(){
   if(typeof ALL_BOX_PORTS!=='undefined'&&ALL_BOX_PORTS&&ALL_BOX_PORTS.length){
     var _mc=document.getElementById('box_padb_mc_note');if(_mc)_mc.style.display='';
   }
+  /* Locked filters: register this view's adapters + auto-apply any saved lock. */
+  PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply});
+  PADB_lockInit();
 })();
 """
 

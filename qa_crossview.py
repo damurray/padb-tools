@@ -206,6 +206,14 @@ _LOCK_APPLY_STAT = r"""
   return { rep:rep, sites:Object.keys(s), passfail:pf?pf.value:null };
 } catch(e){ return { error:String(e) }; } }
 """
+_LOCK_APPLY_BOX = r"""
+(L) => { try { var o=JSON.parse(L); PADB_lockSet(o); var rep=PADB_lockApply();
+  var pf=document.querySelector('input[name="box_flt"]:checked');
+  var sel=(typeof getSelectedConds==='function')?getSelectedConds():[]; var s={};
+  sel.forEach(function(c){ var m=/Site:\s*([^\s|]+)/.exec(c||''); if(m) s[m[1]]=1; });
+  return { rep:rep, sites:Object.keys(s), passfail:pf?pf.value:null };
+} catch(e){ return { error:String(e) }; } }
+"""
 
 
 
@@ -372,8 +380,10 @@ def main() -> None:
                     else:
                         want = rd["site"]
                         L = json.dumps(rd["lock"])
-                        for key, reader in (("summary", _LOCK_APPLY_SUM),
-                                            ("stat_summary", _LOCK_APPLY_STAT)):
+                        _targets = [("summary", _LOCK_APPLY_SUM), ("stat_summary", _LOCK_APPLY_STAT)]
+                        if "boxplot" in rmap:
+                            _targets.append(("boxplot", _LOCK_APPLY_BOX))
+                        for key, reader in _targets:
                             pg = browser.new_page(); pg.goto(rmap[key].as_uri()); pg.wait_for_timeout(1200)
                             st = pg.evaluate(reader, L); pg.close()
                             if not isinstance(st, dict) or st.get("error"):
