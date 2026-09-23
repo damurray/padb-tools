@@ -659,7 +659,7 @@ function buildTraces(filtered){
   var sortBy=document.getElementById('sortby').value;
   var _drawEl=document.getElementById('drawmode');
   var drawMode=_drawEl?_drawEl.value:TRACE_MODE;
-  var _lineShape='linear';   /* "Smooth" (spline) control removed 2026-09-22 -- imperceptible on dense sweeps */
+  var _lineShape='spline';   /* Smooth always on 2026-09-22 (David): spline by default, no toggle */
   /* Envelope-decimate the POINT set only (when the toggle is on and "Show all
      points" is off) -- `filtered` itself is left intact so the spec mask and the
      data-rows table still see every filtered row. */
@@ -2812,9 +2812,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'    <option value="lines+markers"{" selected" if _draw_mode_default not in ("markers","lines") else ""}>Lines + markers</option>\n'
         '    <option value="sticks">Vertical (per freq)</option>\n'
         '  </select></label>\n'
-        # "Smooth" (spline) checkbox removed 2026-09-22 (David): it was wired (spline vs
-        # linear line shape) but imperceptible on the dense sweeps this view plots, so it
-        # added a control with no visible effect. Lines always draw linear now.
+        # "Smooth" (spline) checkbox removed 2026-09-22 (David): it was a control with no
+        # obvious effect, so smoothing is now simply ALWAYS ON (spline by default; see
+        # _lineShape in buildTraces) with no toggle.
         '  <div class="sep"></div>\n'
         f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'
