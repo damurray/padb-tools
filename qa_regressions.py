@@ -1292,6 +1292,30 @@ def test_stat_perpoint_passfail_pointwise() -> None:
           "_statPerPointTable(condsAll||conds,params)" in src)
 
 
+def test_summary_group_by_serial() -> None:
+    """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
+    a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
+    condition dim, injected only when >1 serial. getGroupedConditions branches on
+    '__serial__' into _poolSumBySerial, which emits one virtual record per unit
+    (dut_info length 1, labelled 'Serial Number: <s>' so the shared GF matcher can
+    hide/focus it), pooling that DUT's per-frequency value across the selected
+    conditions. Verified via Playwright on a real compare page (20 serials -> 20
+    single-DUT groups, band = each unit's cross-condition spread, no console
+    errors). Source-pinned so the option + per-DUT path can't silently regress."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("summary injects a __serial__ Group-by option when >1 serial",
+          '<option value="__serial__">Serial Number</option>' in src
+          and "if len(all_sum_serials) > 1:" in src)
+    check("summary getGroupedConditions branches on __serial__ into _poolSumBySerial",
+          "cols.indexOf('__serial__')>=0" in src and "return _poolSumBySerial(active,dims);" in src)
+    check("summary _poolSumBySerial emits one single-DUT record per serial, GF-labelled",
+          "function _poolSumBySerial(active,dims)" in src
+          and "dut_info:[{s:g.serial}]" in src
+          and "lblParts.push('Serial Number: '+g.serial);" in src)
+    check("summary serial pool respects the live serial filter (deselected = not emitted)",
+          "if(_serFlt&&!_selSet[serial]) return;" in src)
+
+
 def test_systemic_label_covers_batch() -> None:
     """The auto-filter 'systemic' classification (a DUT whose outliers are shared with other
     DUTs at the same frequency/direction -> never auto-removed) must NOT editorialize toward a
@@ -2382,7 +2406,7 @@ def main() -> None:
                test_site_check_table_cap_and_spinner,
                test_site_check_fence_only_all_views, test_gf_clear_in_apply_views,
                test_scatter_passfail_and_crossfilter, test_systemic_label_covers_batch,
-               test_stat_perpoint_passfail_pointwise,
+               test_stat_perpoint_passfail_pointwise, test_summary_group_by_serial,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,

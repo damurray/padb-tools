@@ -18396,7 +18396,13 @@ function getGroupedConditions(){
   var active=getActive();
   var cols=_sumGroupCols();
   if(!cols.length) return active;
-  var dims=cols.map(function(c){return (COND_DIMS||[]).filter(function(d){return d.col===c;})[0];}).filter(Boolean);
+  /* "Serial Number" (__serial__) is a per-DUT identifier, not a parsed condition
+     dim, so it takes a dedicated per-DUT regroup path (one line per unit, pooled
+     across the currently-selected conditions) -- mirrors boxplot's __serial__. */
+  var hasSerial=cols.indexOf('__serial__')>=0;
+  var dimCols=cols.filter(function(c){return c!=='__serial__';});
+  var dims=dimCols.map(function(c){return (COND_DIMS||[]).filter(function(d){return d.col===c;})[0];}).filter(Boolean);
+  if(hasSerial) return _poolSumBySerial(active,dims);
   if(!dims.length) return active;
   var groups={},order=[];
   active.forEach(function(cd){
@@ -18407,6 +18413,81 @@ function getGroupedConditions(){
   });
   var labelPrefix=dims.map(function(d){return d.label;}).join(' + ');
   return order.sort().map(function(key){return _poolSumRecords(groups[key],labelPrefix+': '+key);});
+}
+/* Group by Serial Number: emit one virtual record per DUT (optionally sub-split
+   by other selected condition dims), pooling that DUT's per-frequency mean value
+   ACROSS every currently-selected condition -- the same "isolate each unit"
+   intent as boxplot's __serial__ box. The min/max band becomes that unit's own
+   spread across the pooled conditions (n=1 population per group, so no NP-TI:
+   uttl/lttl are null, honest). Each virtual record keeps the exact shape
+   getSumCondData()/buildTraces()/the tables already expect, and its label
+   carries "Serial Number: <s>" so the shared GF matcher (_sumSerFromCond /
+   _isGfCond) can hide/focus it per-unit. Respects the live serial filter panel
+   directly: a deselected serial simply isn't emitted. */
+function _poolSumBySerial(active,dims){
+  var _selSers=getSumSelectedSerials(),_allSers=getSumAllSerials();
+  if(_selSers.length===0&&_allSers.length>0)_selSers=_allSers.slice();
+  var _serFlt=_allSers.length>1&&_selSers.length<_allSers.length;
+  var _selSet={}; _selSers.forEach(function(s){_selSet[s]=1;});
+  var freqSet={},flByFreq={};
+  active.forEach(function(r){(r.freqs||[]).forEach(function(f,i){freqSet[f]=true;if(r.freq_labels&&r.freq_labels[i]!=null)flByFreq[f]=r.freq_labels[i];});});
+  var freqs=Object.keys(freqSet).map(Number).sort(function(a,b){return a-b;});
+  var freq_labels=freqs.map(function(f){return flByFreq[f]!=null?flByFreq[f]:String(f);});
+  var specFields={};
+  active.forEach(function(r){Object.keys(r.dut_spec_vals||{}).forEach(function(k){specFields[k]=true;});});
+  var groups={},order=[];
+  active.forEach(function(r){
+    var dimParts=dims.map(function(dim){return (r.cond_keys&&r.cond_keys[dim.col]!==undefined)?r.cond_keys[dim.col]:'';});
+    (r.dut_info||[]).forEach(function(di,dIdx){
+      var serial=di.s;
+      if(_serFlt&&!_selSet[serial]) return;
+      var key=dimParts.concat([serial]).join('  |  ');
+      var g=groups[key];
+      if(!g){g={serial:serial,dimParts:dimParts,vals:{},spec:{},sh:{},sl:{}};groups[key]=g;order.push(key);}
+      (r.freqs||[]).forEach(function(f,rfi){
+        var v=(r.dut_vals&&r.dut_vals[rfi])?r.dut_vals[rfi][dIdx]:null;
+        if(v!=null){(g.vals[f]=g.vals[f]||[]).push(v);}
+        Object.keys(specFields).forEach(function(k){
+          var arr=(r.dut_spec_vals&&r.dut_spec_vals[k])?r.dut_spec_vals[k][rfi]:null;
+          var sv=arr?arr[dIdx]:null;
+          if(sv!=null){(g.spec[k]=g.spec[k]||{});(g.spec[k][f]=g.spec[k][f]||[]).push(sv);}
+        });
+        if(r.spec_hi_list&&r.spec_hi_list[rfi]!=null){var _sh=r.spec_hi_list[rfi];if(g.sh[f]==null||_sh<g.sh[f])g.sh[f]=_sh;}
+        if(r.spec_lo_list&&r.spec_lo_list[rfi]!=null){var _sl=r.spec_lo_list[rfi];if(g.sl[f]==null||_sl>g.sl[f])g.sl[f]=_sl;}
+      });
+    });
+  });
+  var dimLabel=dims.map(function(d){return d.label;}).join(' + ');
+  return order.sort().map(function(key){
+    var g=groups[key];
+    var mean=[],min_data=[],max_data=[],spec_hi_list=[],spec_lo_list=[];
+    var dut_vals=freqs.map(function(){return [null];});
+    var dut_spec_vals={};
+    Object.keys(specFields).forEach(function(k){dut_spec_vals[k]=freqs.map(function(){return [null];});});
+    freqs.forEach(function(f,fi){
+      var vv=g.vals[f]||[];
+      if(vv.length){var m=vv.reduce(function(a,b){return a+b;},0)/vv.length;
+        mean.push(m);min_data.push(Math.min.apply(null,vv));max_data.push(Math.max.apply(null,vv));dut_vals[fi][0]=m;}
+      else{mean.push(null);min_data.push(null);max_data.push(null);}
+      Object.keys(specFields).forEach(function(k){
+        var sv=(g.spec[k]&&g.spec[k][f])||[];
+        if(sv.length)dut_spec_vals[k][fi][0]=sv.reduce(function(a,b){return a+b;},0)/sv.length;
+      });
+      spec_hi_list.push(g.sh[f]!=null?g.sh[f]:null);
+      spec_lo_list.push(g.sl[f]!=null?g.sl[f]:null);
+    });
+    var shVals=spec_hi_list.filter(function(v){return v!=null;});
+    var slVals=spec_lo_list.filter(function(v){return v!=null;});
+    var lblParts=[];
+    if(dimLabel)lblParts.push(dimLabel+': '+g.dimParts.join('  |  '));
+    lblParts.push('Serial Number: '+g.serial);
+    return {condition:lblParts.join('  '),cond_keys:{},freqs:freqs,freq_labels:freq_labels,
+      mean:mean,min_data:min_data,max_data:max_data,
+      uttl:freqs.map(function(){return null;}),lttl:freqs.map(function(){return null;}),uttl_is_estimate:true,
+      spec_hi:shVals.length?shVals[0]:null,spec_lo:slVals.length?slVals[0]:null,
+      spec_hi_list:spec_hi_list,spec_lo_list:spec_lo_list,by_temp:null,temps:[],
+      dut_info:[{s:g.serial}],dut_vals:dut_vals,dut_spec_vals:dut_spec_vals};
+  });
 }
 /* Pool multiple original records sharing one Group-by dimension value into a
    single virtual record with the identical shape getSumCondData()/
@@ -19291,24 +19372,34 @@ def _build_summary_html(
         )
     panels_html = "\n  ".join(panels)
 
-    group_by_opts = '<option value="" selected>Condition</option>\n' + "\n".join(
-        f'<option value="{dim["col"]}">{dim["label"]}</option>' for dim in cond_dims
-    )
-    _sum_grp_size = min(6, max(3, len(cond_dims) + 1))
-    group_by_html = (
-        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition. Regroups BOTH the plot traces and the Statistics/Results table below.">'
-        f'Group&nbsp;by:<select id="sumGroupBySel" multiple size="{_sum_grp_size}" '
-        f'style="vertical-align:middle" onchange="_sumGrpChanged();update()">\n{group_by_opts}\n</select></label>'
-        if cond_dims else ""
-    )
-
-    # Build serial filter panel from all unique serials across all records
+    # Unique serials across all records (needed for both the Group-by
+    # "Serial Number" option and the serial filter panel below).
     all_sum_serials = sorted(set(
         di["s"]
         for r in records
         for di in r.get("dut_info", [])
         if di.get("s")
     ))
+    # Group-by options: Condition + each parsed condition dimension, plus a
+    # special "Serial Number" pooling option (only when >1 serial). Serial is a
+    # per-DUT identifier -- never a parsed condition dim -- so, like boxplot's
+    # __serial__/__port__, it is injected here rather than coming from cond_dims.
+    # Summary carries no per-DUT port (dut_info is {s: serial}), so no __port__.
+    group_by_opts = '<option value="" selected>Condition</option>\n' + "\n".join(
+        f'<option value="{dim["col"]}">{dim["label"]}</option>' for dim in cond_dims
+    )
+    if len(all_sum_serials) > 1:
+        group_by_opts += '\n<option value="__serial__">Serial Number</option>'
+    _sum_n_grp_opts = len(cond_dims) + (2 if len(all_sum_serials) > 1 else 1)
+    _sum_grp_size = min(6, max(3, _sum_n_grp_opts))
+    group_by_html = (
+        f'<label title="Ctrl/Cmd-click to group by multiple parameters; none = Condition. Serial Number gives one line per DUT (pooled across conditions). Regroups BOTH the plot traces and the Statistics/Results table below.">'
+        f'Group&nbsp;by:<select id="sumGroupBySel" multiple size="{_sum_grp_size}" '
+        f'style="vertical-align:middle" onchange="_sumGrpChanged();update()">\n{group_by_opts}\n</select></label>'
+        if (cond_dims or len(all_sum_serials) > 1) else ""
+    )
+
+    # Build serial filter panel from all unique serials across all records
     if len(all_sum_serials) > 1:
         _ser_items_html = "".join(
             f'<label class="fitem"><input type="checkbox" class="sum_ser_chk"'
