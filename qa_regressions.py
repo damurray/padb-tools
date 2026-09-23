@@ -2182,6 +2182,9 @@ def test_scatter_spec_line_caveat() -> None:
     html_bad = pp._build_av_freq_html(df, {}, "T")
     check("scatter caveat fires on heterogeneous/mostly-null limits under a spec line",
           "Spec-line caveat" in html_bad and "its <b>own</b> limit" in html_bad)
+    check("scatter caveat points to the Data filter (per-point pass/fail), not just the line",
+          "Data&nbsp;filter" in html_bad
+          and ("Passing&nbsp;only" in html_bad or "Passing only" in html_bad))
     check("scatter caveat names the Measurement dim + values to filter",
           "Measurement" in html_bad and "AM Noise" in html_bad and "filter" in html_bad)
     # (b) clean: one limit per offset, all limited -> NO banner.

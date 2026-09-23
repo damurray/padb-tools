@@ -2657,9 +2657,11 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
                 '<div style="background:#fff8e1;border:1px solid #e0c05a;border-radius:4px;'
                 'padding:6px 12px;margin:4px 0;font-size:12px;color:#6b5a00">'
                 '&#9888;&nbsp;<b>Spec-line caveat:</b> ' + " and ".join(_parts) + '. '
-                'The single spec line shown is only one representative value &mdash; each point is '
-                'judged against its <b>own</b> limit, so a passing point can legitimately sit above '
-                'this line.' + _meas_hint + '</div>'
+                'The single spec line shown is only one representative value, so a passing point can '
+                'legitimately sit above it. But every point carries its <b>own</b> limit here &mdash; '
+                'use the <b>Data&nbsp;filter</b> (Passing&nbsp;only / Failing&nbsp;only) above to show '
+                'exactly which points pass or fail against their own limit, instead of eyeballing this '
+                'line.' + _meas_hint + '</div>'
             )
 
     # Frequency band preset buttons
