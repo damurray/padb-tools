@@ -2034,6 +2034,35 @@ def test_site_check_fence_only_all_views() -> None:
           'id="ec_site_btn"' in v2src)
 
 
+def test_scatter_passfail_and_crossfilter() -> None:
+    """Scatter gained two consistency features (David 2026-09-22):
+    (a) an All/Passing/Failing data filter, per-point vs each point's OWN effective limit
+        (per-point Upper/Lower Limit -> raw Spec -> page spec) via the shared PADB_isFail,
+        gated on the dataset having a spec, applied inside applyFilters so the plot AND the
+        data-rows table (both fed by applyFilters) stay consistent -- Passing keeps pass +
+        no-limit, Failing keeps only true fails (boxplot convention);
+    (b) cross-filter greying -- opening a dimension panel greys options not present under
+        the OTHER dimensions' current selections (visual only, never unchecks).
+    Behaviourally verified via Playwright (pass/fail partitions + table row-count matches;
+    RUN_B greyed when AlcState=FALSE). Source-pinned here."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("scatter: All/Passing/Failing data-filter radios (name=scat_flt)",
+          'name="scat_flt" value="all"' in src
+          and 'name="scat_flt" value="passing"' in src
+          and 'name="scat_flt" value="failing"' in src)
+    check("scatter: per-point fail via shared PADB_isFail + effective-limit precedence",
+          "function _scatRowFail(r)" in src and "PADB_isFail(r.Value,hi,lo)" in src)
+    check("scatter: pass/fail applied in applyFilters (plot+table consistent)",
+          "if(pfMode==='passing'&&_fl===true) return false;" in src
+          and "if(pfMode==='failing'&&_fl!==true) return false;" in src)
+    check("scatter: pass/fail control gated on the dataset having a spec",
+          "_scat_has_spec" in src)
+    check("scatter: cross-filter availability helpers present",
+          "function _crossFilterAvail(" in src and "function _applyCrossFilterGrey(" in src)
+    check("scatter: cross-filter greying invoked on panel open",
+          "panel.classList.add('open'); _applyCrossFilterGrey();" in src)
+
+
 def test_gf_clear_in_apply_views() -> None:
     """F3 cross-view consistency (2026-09-22, David): the shared Global Filter can now be
     CLEARED from every view that APPLIES it. scatter/distribution/reference previously
@@ -2265,6 +2294,7 @@ def main() -> None:
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_check_fence_only_all_views, test_gf_clear_in_apply_views,
+               test_scatter_passfail_and_crossfilter,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,

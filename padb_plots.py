@@ -167,7 +167,7 @@ function togglePanel(col){
   var panel=document.getElementById('panel_'+col);
   var isOpen=panel.classList.contains('open');
   document.querySelectorAll('.filter-panel').forEach(function(p){p.classList.remove('open');});
-  if(!isOpen) panel.classList.add('open');
+  if(!isOpen){ panel.classList.add('open'); _applyCrossFilterGrey(); }
 }
 document.addEventListener('click',function(e){
   if(!e.target.closest('.filter-wrap'))
@@ -199,6 +199,46 @@ function updateBadge(col){
 }
 function getSelected(col){
   return Array.from(document.querySelectorAll('.fchk[data-col="'+col+'"]:checked')).map(function(c){return c.value;});
+}
+/* Cross-filter availability (David 2026-09-22): grey out options in each dimension
+   panel that are NOT present under the CURRENT selections of the OTHER dimensions --
+   e.g. picking AlcState=FALSE shows which Test Run Datetimes actually exist for it, so
+   the panels reflect each other. Visual only -- never changes a checked state. Blank
+   values pass (same absent-dimension rule as applyFilters). Skipped on very large data
+   (those ship the parquet viewer) to keep interaction snappy. */
+var _CF_MAX_ROWS=400000;
+function _crossFilterAvail(){
+  if(typeof DATA==='undefined'||!DATA||DATA.length>_CF_MAX_ROWS) return null;
+  var cols=GROUP_COLS.map(function(p){return p[0];});
+  var sel={},avail={};
+  cols.forEach(function(c){sel[c]=new Set(getSelected(c));avail[c]=new Set();});
+  for(var i=0;i<DATA.length;i++){
+    var r=DATA[i];
+    for(var ci=0;ci<cols.length;ci++){
+      var ok=true;
+      for(var cj=0;cj<cols.length;cj++){
+        if(cj===ci) continue;
+        var oc=cols[cj],v=String(r[oc]==null?'':r[oc]);
+        if(v!==''&&!sel[oc].has(v)){ok=false;break;}
+      }
+      if(ok) avail[cols[ci]].add(String(r[cols[ci]]==null?'':r[cols[ci]]));
+    }
+  }
+  return avail;
+}
+function _applyCrossFilterGrey(){
+  try{
+    var avail=_crossFilterAvail(); if(!avail) return;
+    GROUP_COLS.forEach(function(p){
+      var c=p[0],s=avail[c];
+      document.querySelectorAll('.fchk[data-col="'+c+'"]').forEach(function(b){
+        var lab=b.closest('label'); if(!lab) return;
+        var has=s.has(String(b.value));
+        lab.style.opacity=has?'':'0.4';
+        lab.title=has?'':'not present under the current other-dimension filters';
+      });
+    });
+  }catch(e){}
 }
 function getHoverSelected(){
   return Array.from(document.querySelectorAll('.hchk:checked')).map(function(c){return c.value;});
@@ -387,6 +427,15 @@ function saveCSV(withExcluded){
 }
 
 /* ---------- filter & render ---------- */
+/* Per-point pass/fail vs the point's OWN effective limit (per-point Upper/Lower Limit ->
+   raw Spec -> page HI/LO_SPEC), via the single shared PADB_isFail rule (_COMMON_JS).
+   true=fail / false=pass / null=no limit. Same effective-limit precedence as the other
+   views, so scatter's "Passing/Failing only" agrees with them (2026-09-22, David). */
+function _scatRowFail(r){
+  var hi=(r.Upper_Limit!=null)?r.Upper_Limit:((r.Spec_Hi!=null&&r.Spec_Hi!=='')?Number(r.Spec_Hi):(typeof HI_SPEC!=='undefined'?HI_SPEC:null));
+  var lo=(r.Lower_Limit!=null)?r.Lower_Limit:((r.Spec_Lo!=null&&r.Spec_Lo!=='')?Number(r.Spec_Lo):(typeof LO_SPEC!=='undefined'?LO_SPEC:null));
+  return PADB_isFail(r.Value,hi,lo);
+}
 function applyFilters(data){
   var _flt=document.getElementById('freq_lo_txt'),_fht=document.getElementById('freq_hi_txt');
   var freqLo=_flt&&_flt.value!==''?parseFloat(_flt.value):parseFloat(document.getElementById('freq_lo').value);
@@ -394,10 +443,19 @@ function applyFilters(data){
   var selTemps=getSelectedTemps();
   var gfChk=document.getElementById('gf_chk');
   var applyGf=gfChk&&gfChk.checked&&_gfParsed&&_gfParsed.size>0;
+  var _pfEl=document.querySelector('input[name="scat_flt"]:checked');
+  var pfMode=_pfEl?_pfEl.value:'all';
   var selections={};
   GROUP_COLS.forEach(function(pair){selections[pair[0]]=getSelected(pair[0]);});
   return data.filter(function(r){
     if(r.Frequency_MHz<freqLo||r.Frequency_MHz>freqHi) return false;
+    if(pfMode!=='all'){
+      /* Passing keeps pass + no-limit (drop only true fails); Failing keeps only true
+         fails -- same convention as the boxplot verdict filter. */
+      var _fl=_scatRowFail(r);
+      if(pfMode==='passing'&&_fl===true) return false;
+      if(pfMode==='failing'&&_fl!==true) return false;
+    }
     if(selTemps){
       var t=String(r.Test_Step===null||r.Test_Step===undefined?'':r.Test_Step);
       if(selTemps.indexOf(t)<0) return false;
@@ -2620,6 +2678,15 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     lo_js = "null" if np.isnan(lo_spec) else repr(float(lo_spec))
     hi_js = "null" if np.isnan(hi_spec) else repr(float(hi_spec))
 
+    # Does the dataset carry ANY pass/fail limit? Gates the All/Passing/Failing data
+    # filter (2026-09-22, David: scatter pass/fail filter for consistency with the other
+    # views). Without a limit there is nothing to pass/fail against, so the control is
+    # hidden rather than showing a "Failing = nothing" trap.
+    _scat_has_spec = (not (np.isnan(lo_spec) and np.isnan(hi_spec))) or any(
+        c in df.columns and df[c].notna().any()
+        for c in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo")
+    )
+
     constants = "\n".join([
         f"var DATA={json.dumps(records)};",
         f"var FREQ_B64={json.dumps(freq_b64)};",
@@ -2804,6 +2871,23 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         '&nbsp;Inspect</label>\n'
         '  <span id="n_points"></span>\n'
         "</div>\n"
+        + (
+            '<div class="flt-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;'
+            'padding:5px 14px;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:6px;'
+            'margin-bottom:4px;font-size:13px">\n'
+            '  <b>Data&nbsp;filter:</b>\n'
+            '  <label title="Show every measurement (no pass/fail filter)">'
+            '<input type="radio" name="scat_flt" value="all" checked onchange="update()">&nbsp;All&nbsp;data</label>\n'
+            '  <label title="Show only points that PASS their own effective limit (per-point Upper/Lower'
+            ' Limit, else Spec, else the page spec) -- same rule as the other views. Points with no limit'
+            ' count as passing.">'
+            '<input type="radio" name="scat_flt" value="passing" onchange="update()">&nbsp;Passing&nbsp;only</label>\n'
+            '  <label title="Show only points that FAIL their own effective limit -- the exact complement'
+            ' of Passing only.">'
+            '<input type="radio" name="scat_flt" value="failing" onchange="update()">&nbsp;Failing&nbsp;only</label>\n'
+            '</div>\n'
+            if _scat_has_spec else ''
+        )
         + decimation_banner_html
         + spec_caveat_banner_html
         + env_bar_html + "\n"
