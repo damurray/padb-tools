@@ -659,8 +659,7 @@ function buildTraces(filtered){
   var sortBy=document.getElementById('sortby').value;
   var _drawEl=document.getElementById('drawmode');
   var drawMode=_drawEl?_drawEl.value:TRACE_MODE;
-  var _smoothEl=document.getElementById('smooth_chk');
-  var _lineShape=(_smoothEl&&_smoothEl.checked)?'spline':'linear';
+  var _lineShape='linear';   /* "Smooth" (spline) control removed 2026-09-22 -- imperceptible on dense sweeps */
   /* Envelope-decimate the POINT set only (when the toggle is on and "Show all
      points" is off) -- `filtered` itself is left intact so the spec mask and the
      data-rows table still see every filtered row. */
@@ -1138,7 +1137,6 @@ function saveState(){
   _stSet('hide_spec',document.getElementById('hide_spec_chk').checked?'1':'0');
   var _sap=document.getElementById('show_all_pts_chk'); if(_sap) _stSet('show_all_pts',_sap.checked?'1':'0');
   var _dm=document.getElementById('drawmode'); if(_dm) _stSet('drawmode',_dm.value);
-  var _sm=document.getElementById('smooth_chk'); if(_sm) _stSet('smooth',_sm.checked?'1':'0');
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   GROUP_COLS.forEach(function(pair){
     var col=pair[0];
@@ -1152,7 +1150,6 @@ function loadState(){
   var hs=_stGet('hide_spec');if(hs!==null)document.getElementById('hide_spec_chk').checked=(hs==='1');
   var sap=_stGet('show_all_pts');var sapEl=document.getElementById('show_all_pts_chk');if(sap!==null&&sapEl)sapEl.checked=(sap==='1');
   var dm=_stGet('drawmode');var dmEl=document.getElementById('drawmode');if(dm!==null&&dmEl)dmEl.value=dm;
-  var sm=_stGet('smooth');var smEl=document.getElementById('smooth_chk');if(sm!==null&&smEl)smEl.checked=(sm==='1');
   if(typeof _showAllWarnText==='function')_showAllWarnText();
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   GROUP_COLS.forEach(function(pair){
@@ -2815,11 +2812,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f'    <option value="lines+markers"{" selected" if _draw_mode_default not in ("markers","lines") else ""}>Lines + markers</option>\n'
         '    <option value="sticks">Vertical (per freq)</option>\n'
         '  </select></label>\n'
-        f'  <label title="Draw connected lines as smooth curves (Plotly spline) instead of'
-        ' straight segments between points. Purely cosmetic -- the underlying data points'
-        ' are unchanged; on sparse data a spline can bow between points, so it is off by'
-        ' default.">'
-        f'<input type="checkbox" id="smooth_chk" onchange="update()"{" checked" if cfg.get("scatter_smooth") else ""}> Smooth</label>\n'
+        # "Smooth" (spline) checkbox removed 2026-09-22 (David): it was wired (spline vs
+        # linear line shape) but imperceptible on the dense sweeps this view plots, so it
+        # added a control with no visible effect. Lines always draw linear now.
         '  <div class="sep"></div>\n'
         f'  <label>{_short_x_label(x_label)}&nbsp;min:<input type="range" id="freq_lo"'
         f' min="{freq_min:.4f}" max="{freq_max:.4f}" value="{freq_min:.4f}"'

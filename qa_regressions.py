@@ -918,13 +918,13 @@ def test_reference_stats():
 
 
 def test_scatter_draw_modes() -> None:
-    """Scatter gained Draw modes + Smooth for phase-noise-style plots (2026-09-15,
-    user request): Markers / Lines / Lines+markers / Vertical(per-freq sticks), a
-    Smooth (spline) toggle, and a default group-by of Serial (one curve per DUT) for
-    a real swept measurement with a modest DUT count. 'lines' collapses repeat
-    measurements to one mean point per x (unified to mean 2026-09-16); 'sticks' draws a vertical
-    min..max segment per frequency (right for discrete spurs); Smooth is off by
-    default (honest linear) and can be defaulted on via cfg 'scatter_smooth'."""
+    """Scatter Draw modes for phase-noise-style plots (2026-09-15, user request):
+    Markers / Lines / Lines+markers / Vertical(per-freq sticks), and a default group-by
+    of Serial (one curve per DUT) for a real swept measurement with a modest DUT count.
+    'lines' collapses repeat measurements to one mean point per x (unified to mean
+    2026-09-16); 'sticks' draws a vertical min..max segment per frequency (right for
+    discrete spurs). The Smooth (spline) toggle was REMOVED 2026-09-22 (David) -- it was
+    wired but imperceptible on the dense sweeps this view plots; lines now draw linear."""
     import csv as _csv
     with tempfile.TemporaryDirectory() as td:
         p = Path(td) / "pn.csv"
@@ -943,8 +943,9 @@ def test_scatter_draw_modes() -> None:
         check("scatter: Draw selector has markers/lines/lines+markers/sticks",
               'id="drawmode"' in h and 'value="markers"' in h and 'value="lines"' in h
               and 'value="lines+markers"' in h and 'value="sticks"' in h)
-        check("scatter: Smooth (spline) toggle present, spline shape wired",
-              'id="smooth_chk"' in h and "?'spline':'linear'" in h)
+        check("scatter: Smooth (spline) toggle REMOVED (imperceptible on dense sweeps; lines draw linear)",
+              'id="smooth_chk"' not in h and "?'spline':'linear'" not in h
+              and "var _lineShape='linear';" in h)
         check("scatter: lines mode collapses repeats to one mean point per x",
               "meanOf(byXl[x])" in h and "(mean of repeats)" in h
               and "median(byXl[x])" not in h)
