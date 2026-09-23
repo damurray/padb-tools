@@ -1274,6 +1274,24 @@ def test_blank_dim_no_site_drop() -> None:
               "INV-SITE" in xvs and "INV-PART" in xvs and "sys.exit(3)" in xvs)
 
 
+def test_stat_perpoint_passfail_pointwise() -> None:
+    """stat_summary PER-POINT table: 'Passing/Failing only' filters by each point's OWN
+    status, built over the pre-pass/fail conds (condsAll) rather than the per-frequency
+    TI-vs-spec filter that governs the plot + grouped table. Otherwise 'Failing only'
+    showed every point at a failing FREQUENCY -- mostly PASS/no-limit -- and Passing+Failing
+    didn't partition All (a passing point at a failing frequency fell through both). David
+    2026-09-23. Verified via Playwright (ALL=PASS+FAIL; PASSING=only pass; FAILING=only FAIL;
+    partition holds). Source-pinned."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("stat per-point: rows filtered by each point's own status (failing/passing)",
+          "if(_ppMode==='failing') pts=pts.filter(function(pt){return pt.st.t==='FAIL';});" in src
+          and "else if(_ppMode==='passing') pts=pts.filter(function(pt){return pt.st.t!=='FAIL';});" in src)
+    check("stat per-point: getFilteredCondsAndParams exposes pre-pass/fail condsAll",
+          "var condsAll=conds;" in src and "condsAll:condsAll" in src)
+    check("stat per-point: the per-point table is built from condsAll (partition holds)",
+          "_statPerPointTable(condsAll||conds,params)" in src)
+
+
 def test_systemic_label_covers_batch() -> None:
     """The auto-filter 'systemic' classification (a DUT whose outliers are shared with other
     DUTs at the same frequency/direction -> never auto-removed) must NOT editorialize toward a
@@ -2320,6 +2338,7 @@ def main() -> None:
                test_site_check_table_cap_and_spinner,
                test_site_check_fence_only_all_views, test_gf_clear_in_apply_views,
                test_scatter_passfail_and_crossfilter, test_systemic_label_covers_batch,
+               test_stat_perpoint_passfail_pointwise,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,

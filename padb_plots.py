@@ -7736,7 +7736,7 @@ function toggleStatPanel(){
   if(el.style.display==='none'){
     el.style.display='';btn.textContent='&#9660; Statistics Table';
     var _r=getFilteredCondsAndParams();
-    updateStatPanel(_r.conds,_r.params);
+    updateStatPanel(_r.conds,_r.params,undefined,_r.condsAll);
   } else {
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
@@ -7829,6 +7829,14 @@ function _statPerPointTable(conds,params){
       });
     });
   });
+  /* Passing/Failing only must filter the per-point rows by each point's OWN status, not
+     just by the (per-frequency, TI-vs-spec) frequency filter upstream -- otherwise
+     "Failing only" showed every point at a failing frequency, most of them PASS/no-limit
+     (David 2026-09-23). Failing keeps only per-point fails; Passing keeps pass + no-limit
+     (same convention as the boxplot/scatter per-point verdict filter). */
+  var _ppMode=(typeof getDataFilter==='function'?(getDataFilter()||{}).mode:'all')||'all';
+  if(_ppMode==='failing') pts=pts.filter(function(pt){return pt.st.t==='FAIL';});
+  else if(_ppMode==='passing') pts=pts.filter(function(pt){return pt.st.t!=='FAIL';});
   if(!pts.length) return '<p style="color:#888;padding:8px">No points match the current filters.</p>';
   pts.sort(function(a,b){ if(a.cond!==b.cond)return a.cond<b.cond?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
   var nFail=pts.filter(function(pt){return pt.st.t==='FAIL';}).length;
@@ -7847,7 +7855,7 @@ function _statPerPointTable(conds,params){
   out+=body.join('')+'</tbody></table>';
   return out;
 }
-function updateStatPanel(conds,params,force){
+function updateStatPanel(conds,params,force,condsAll){
   var el=document.getElementById('stat_panel');if(!el||el.style.display==='none')return;
   var rb=document.getElementById('stat_refresh_table_btn');
   if(!force&&(conds||[]).length>STATS_TABLE_AUTO_THRESHOLD){
@@ -7858,7 +7866,7 @@ function updateStatPanel(conds,params,force){
   }
   _setTableBtnStale(rb,false);
   try{
-  if(_statTableMode()==='perpoint'){ el.innerHTML=_statPerPointTable(conds,params); return; }
+  if(_statTableMode()==='perpoint'){ el.innerHTML=_statPerPointTable(condsAll||conds,params); return; }
   var nFail=0,rows=[];
   var _hasLo=false,_hasHi=false;
   (conds||[]).forEach(function(cd){(cd.freq_stats||[]).forEach(function(fs){
@@ -8717,8 +8725,15 @@ function getFilteredCondsAndParams(){
   var _statMan=(typeof _statSpecEntry==='function')?_statSpecEntry():{hi:null,lo:null};
   if(_statMan.hi!==null) params.spec_hi_override=_statMan.hi;
   if(_statMan.lo!==null) params.spec_lo_override=_statMan.lo;
+  /* condsAll = freq-range + serial/port/GF filtered, but WITHOUT the per-frequency
+     pass/fail (TI-vs-spec) narrowing. The per-point table uses this so "Passing/Failing
+     only" is a purely PER-POINT split (partition holds: pass + no-limit + fail = all),
+     rather than being gated by the frequency-level filter that governs the plot + grouped
+     table (David 2026-09-23: "Failing only" per-point was showing points at failing
+     frequencies, most of them passing). */
+  var condsAll=conds;
   conds=applyDataFilter(conds,params,flt);
-  return {conds:conds,params:params,fLo:fLo,fHi:fHi};
+  return {conds:conds,condsAll:condsAll,params:params,fLo:fLo,fHi:fHi};
 }
 function update(){
   /* Capture the live axis state BEFORE Plotly.purge() below destroys it --
@@ -8727,7 +8742,7 @@ function update(){
   var _preservedX=_liveAxisRange('xaxis');
   var _preservedY=_liveAxisRange('yaxis');
   var _r=getFilteredCondsAndParams();
-  var conds=_r.conds,params=_r.params,fLo=_r.fLo,fHi=_r.fHi;
+  var conds=_r.conds,params=_r.params,fLo=_r.fLo,fHi=_r.fHi,condsAll=_r.condsAll;
   updateFilterLabel();
   Plotly.purge('plot');Plotly.newPlot('plot',buildTraces(conds,params),buildLayout(conds,params,fLo,fHi,_preservedX,_preservedY),{responsive:true});
   /* Plotly.purge() tears down previously-attached event listeners along with
@@ -8746,7 +8761,7 @@ function update(){
     var _tel=document.getElementById('tll_display');
     if(_tel) _tel.textContent='Error: '+e.message;
   }
-  updateStatPanel(conds,params);
+  updateStatPanel(conds,params,undefined,condsAll);
   updateSitePanel();
   var nEl=document.getElementById('n_footnote');
   if(nEl){
@@ -9674,14 +9689,14 @@ def _build_stat_summary_html(
         ' population (Group by pools; a #fail column counts DUTs past the go/no-go limit). Per-point ='
         ' one row per DUT (per-DUT mean) with PASS/FAIL vs the limit; Group by then just sorts/sections'
         ' the rows.">Table:<select id="stat_table_mode"'
-        ' onchange="var _r=getFilteredCondsAndParams();updateStatPanel(_r.conds,_r.params,true)">'
+        ' onchange="var _r=getFilteredCondsAndParams();updateStatPanel(_r.conds,_r.params,true,_r.condsAll)">'
         '<option value="grouped">Grouped stats</option>'
         '<option value="perpoint">Per-point</option></select></label>'
         + '<button id="stat_refresh_table_btn" class="reset-btn"'
         + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
         + ' this click instead"'
-        + ' onclick="var _r=getFilteredCondsAndParams();PADB_deferRender(document.getElementById(\'stat_panel\'),function(){updateStatPanel(_r.conds,_r.params,true);},\'Building Statistics Table&hellip;\')">'
+        + ' onclick="var _r=getFilteredCondsAndParams();PADB_deferRender(document.getElementById(\'stat_panel\'),function(){updateStatPanel(_r.conds,_r.params,true,_r.condsAll);},\'Building Statistics Table&hellip;\')">'
         + 'Refresh&nbsp;table</button>'
         + site_btn_html
         + '</div>\n'
