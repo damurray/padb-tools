@@ -340,7 +340,7 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
   try {
     // Create the compare job.json only -- do NOT auto-run it. Running from the
     // standard jobs table is the single, consistent run path with all its options
-    // (Publish to share, Build PDF report, dry-run); auto-running here silently
+    // (Publish to share, dry-run); auto-running here silently
     // bypassed them (e.g. never published). David's call 2026-09-17.
     const res = await fetch("/api/compare-create", {
       method: "POST",
@@ -497,14 +497,16 @@ document.getElementById("runSelectedBtn").addEventListener("click", async () => 
   const btn = document.getElementById("runSelectedBtn");
   const publishEl = document.getElementById("publishCheckbox");
   const doPublish = publishEl ? publishEl.checked : false;
-  const pdfEl = document.getElementById("pdfReportCheckbox");
-  const doPdf = pdfEl ? pdfEl.checked : false;
+  // PDF report is on-demand only (Generate PDF report button below); the
+  // per-run "Build PDF report" checkbox was dropped -- it forced the
+  // minutes-long PDF cost onto every run. Server still accepts pdf_report
+  // for API/back-compat, defaulting off.
   btn.disabled = true;
   try {
     const res = await fetch("/api/execute-job", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ paths, dry_run: false, publish: doPublish, pdf_report: doPdf }),
+      body: JSON.stringify({ paths, dry_run: false, publish: doPublish }),
     });
     const data = await res.json();
     if (!res.ok) {

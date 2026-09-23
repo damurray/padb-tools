@@ -93,7 +93,7 @@
         </div>
         <div class="toolbar">
           <button type="button" id="compareCheckBtn" title="Loads both CSVs and checks compatibility: blocks on a genuine measurement-unit mismatch (e.g. dBc vs dBm), and warns (without blocking) on softer gaps like missing temperatures/ports or non-overlapping frequency ranges. Run this before Create job -- it's required once per selection.">Check compatibility</button>
-          <button type="submit" id="compareCreateRunBtn" disabled title="Builds the compare_csv job.json only -- it does NOT run it. Then select it in the Jobs table below and click Run Selected, where you choose Publish to share / Build PDF report / dry-run. (Creating and running are separate so a compare run uses the same, fully-configurable path as every other job.) Disabled until Check compatibility has run against the current selection.">Create job</button>
+          <button type="submit" id="compareCreateRunBtn" disabled title="Builds the compare_csv job.json only -- it does NOT run it. Then select it in the Jobs table below and click Run Selected, where you choose Publish to share / dry-run. (Creating and running are separate so a compare run uses the same, fully-configurable path as every other job.) Disabled until Check compatibility has run against the current selection.">Create job</button>
           <span id="compareCreateHint" class="hint">&#8592; Run &ldquo;Check compatibility&rdquo; first to enable Create job.</span>
         </div>
       </form>
@@ -133,8 +133,9 @@
       <button id="selectFilteredBtn" class="secondary" title="Checks every job matching the current Mode/Kind/Name filters (all rows shown in the table), Run and Plot alike, and unchecks everything else.">Select Filtered</button>
       <button id="runSelectedBtn" title="Queues every checked job. PADB-R.exe runs are strictly serialized (one at a time, others wait as queued); Run jobs are always queued ahead of Plot jobs regardless of selection order, since a Plot job may read a CSV its own Run job just produced.">Run Selected</button>
       <label title="Off by default: builds locally only (--no-publish). Check to also publish results to each job's own configured publish_to on the network share. Never rewrites the job file -- it's a per-run choice."><input type="checkbox" id="publishCheckbox"> Publish to share after run</label>
-      <label title="Off by default. Check to also build a comprehensive multi-view PDF report (cover + every view with its stats table) alongside the HTML, saved as &lt;prefix&gt;_report.pdf in the results folder. Interactive plot jobs only. Requires Playwright + Chromium (py -m pip install playwright pypdf && py -m playwright install chromium); if missing, it's skipped with a note and the build still succeeds."><input type="checkbox" id="pdfReportCheckbox"> Build PDF report</label>
     </div>
+    <details id="optionalActions" class="optional-actions">
+      <summary title="Optional per-job actions -- not part of the required drop &rarr; generate &rarr; run flow. Collapsed by default to reduce clutter."><span class="opt-chip">optional</span> More actions &mdash; PDF report, Test-point Reduce, Schedule, Convert site</summary>
     <div class="toolbar">
       <span class="opt-chip" title="Optional -- not part of the required drop &rarr; generate &rarr; run flow.">optional</span>
       <button id="generatePdfBtn" title="Generate the comprehensive multi-view PDF report NOW from the checked jobs' already-built results -- no plot rebuild. Use this to defer the (minutes-long) PDF cost until you actually want it, e.g. after reviewing/filtering. Saved as &lt;prefix&gt;_report.pdf and linked from the results index.">Generate PDF report (on demand)</button>
@@ -229,6 +230,7 @@
       <label class="inline" title="Allow overwriting an already-converted job.json of the same name."><input type="checkbox" id="convertJobForce"> Overwrite existing</label>
       <button id="convertSelectedBtn" title="Repoints each checked job's pod/results_dir/publish path to the target site -- auto-creates the site-converted pod first if it doesn't exist yet (prints when it does).">Convert Selected</button>
     </div>
+    </details>
     <div class="toolbar">
       <span class="danger-chip" title="Destructive -- permanently deletes the checked job.json file(s) and (if ticked) their local results. Cannot be undone.">destructive</span>
       <label class="inline" title="If unchecked, only the job.json file itself is deleted -- its results_dir is left on disk."><input type="checkbox" id="deleteDataCheckbox" checked> Also delete local results data</label>

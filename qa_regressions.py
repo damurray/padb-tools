@@ -2192,12 +2192,34 @@ def test_webapp_optional_toolbars() -> None:
           'ph.value = ""' in appjs and "select site" in appjs)
     check("convert handlers guard an empty target site",
           appjs.count("Pick a target site to convert") >= 2)
+    # The optional toolbars are wrapped in a single collapsible <details> to cut
+    # clutter (David 2026-09-23). All four optional actions live inside it; the
+    # required Run/Publish controls and the destructive Delete row stay outside.
+    check("optional actions wrapped in a collapsible <details id=optionalActions>",
+          'id="optionalActions"' in idx and 'class="optional-actions"' in idx)
+    check(".optional-actions styling defined in style.css",
+          ".optional-actions" in css)
+    _optpos = idx.find('id="optionalActions"')
+    _optend = idx.find("</details>", idx.rfind('id="convertSelectedBtn"'))
+    for anchor in ('id="generatePdfBtn"', 'id="reduceBtn"', 'id="scheduleSelectedBtn"', 'id="convertSelectedBtn"'):
+        _p = idx.find(anchor)
+        check(f"{anchor} is inside the collapsible optional block",
+              _optpos >= 0 and _optend > _optpos and _optpos < _p < _optend)
+    # The per-run "Build PDF report" checkbox was dropped -- PDF is on-demand only
+    # (Generate PDF report button) so a slow PDF isn't forced onto every run.
+    check("per-run Build PDF report checkbox removed (PDF is on-demand only)",
+          'id="pdfReportCheckbox"' not in idx and "Build PDF report" not in idx)
+    check("Run Selected no longer sends pdf_report from a per-run checkbox",
+          "pdfReportCheckbox" not in appjs)
     # The Delete row is tagged 'destructive' (red chip), not 'optional' -- it's an
-    # irreversible action, so it gets a distinct warning marker.
+    # irreversible action, so it gets a distinct warning marker, and it stays
+    # visible (outside the collapsible optional block).
     check(".danger-chip class defined in style.css", ".danger-chip{" in css or ".danger-chip {" in css)
     del_toolbar = idx.split('id="deleteSelectedBtn"', 1)[0].rsplit('<div class="toolbar">', 1)[-1]
     check("destructive chip precedes Delete Selected (and it's not mislabeled optional)",
           'class="danger-chip"' in del_toolbar and 'class="opt-chip"' not in del_toolbar)
+    check("Delete row stays outside the collapsible optional block",
+          idx.find('id="deleteSelectedBtn"') > _optend)
 
 
 def test_scatter_spec_line_caveat() -> None:

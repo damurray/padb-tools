@@ -297,6 +297,20 @@ pre {
   border-radius:3px;font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;
   padding:0 5px;margin-right:4px;vertical-align:middle;}
 
+/* Collapsible wrapper for the optional per-job action toolbars (PDF report,
+   Test-point Reduce, Schedule, Convert site). Collapsed by default to cut
+   clutter; the required drop -> generate -> run controls stay always visible. */
+.optional-actions{margin:2px 0 4px;border:1px solid #e2e2e2;border-radius:5px;background:#fafafa;}
+.optional-actions>summary{cursor:pointer;list-style:none;padding:6px 10px;font-size:13px;
+  color:#444;font-weight:600;user-select:none;display:flex;align-items:center;gap:4px;}
+.optional-actions>summary::-webkit-details-marker{display:none;}
+.optional-actions>summary::before{content:"\25B8";color:#0066cc;font-weight:700;
+  display:inline-block;transition:transform .12s ease;}
+.optional-actions[open]>summary::before{transform:rotate(90deg);}
+.optional-actions>summary:hover{background:#f0f4f8;border-radius:5px;}
+.optional-actions>.toolbar{margin-left:6px;margin-right:6px;}
+.optional-actions>.toolbar:last-of-type{margin-bottom:6px;}
+
 /* "destructive" chip -- marks an irreversible action row (e.g. Delete). Red, to
    read as a warning, distinct from the neutral grey .opt-chip. */
 .danger-chip{display:inline-block;color:#a11;background:#fdecec;border:1px solid #e0a0a0;
