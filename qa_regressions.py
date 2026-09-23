@@ -1354,6 +1354,40 @@ def test_summary_stat_perpoint_own_limit_only() -> None:
           and "else if(_ppMode==='passing') pts=pts.filter(function(pt){return pt.st.t!=='FAIL';});" in src)
 
 
+def test_locked_filters_crossview() -> None:
+    """Cross-view LOCKED FILTERS (David 2026-09-23): save the common filters (condition
+    dims, frequency range, pass/fail) on any view; other views auto-apply them on load.
+    Same pattern as the Global Filter: localStorage, applied at load, loud banner +
+    Clear + Export/Import (file:// fallback). The lock is a VIEW-AGNOSTIC object matched
+    by dimension LABEL; apply is BEST-EFFORT (only values present here; a missing dim/value
+    is ignored, never emptying the view). v1 covers scatter/stat_summary/summary (the .fchk
+    trio); boxplot/env_coverage/distribution/histogram/reference are a later increment.
+    Behaviourally verified by qa_crossview INV-LOCK (a lock read on scatter auto-applies on
+    summary + stat_summary). Source-pinned so the core + per-view adapters can't regress."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # Shared core (in _COMMON_JS -> every view)
+    for fn in ("function PADB_lockRegister(", "function PADB_lockGet(", "function PADB_lockSet(",
+               "function PADB_lockApply(", "function PADB_lockSave(", "function PADB_lockClear(",
+               "function PADB_lockInit(", "function PADB_lockRenderBar(",
+               "function PADB_lockExport(", "function PADB_lockImport(",
+               "function PADB_lockSetChecks(", "function PADB_lockReadChecks("):
+        check(f"lock core present: {fn}", fn in src)
+    check("lock stored in localStorage under a stable key",
+          "PADB_LOCK_KEY='padb_v2_locked_filters'" in src)
+    check("lock apply is BEST-EFFORT (no matching value here -> leave as-is, don't empty)",
+          "if(!anyHere) return false;" in src)
+    check("lock read locks only NARROWED dims (strict subset), not fully-open ones",
+          "checked.length<boxes.length" in src)
+    # Per-view adapters registered + auto-applied on load (the .fchk trio)
+    for rd, ap in (("_avLockRead", "_avLockApply"), ("_ssLockRead", "_ssLockApply"),
+                   ("_sumLockRead", "_sumLockApply")):
+        check(f"view adapter registered: {rd}/{ap}",
+              f"function {rd}(" in src and f"function {ap}(" in src
+              and f"PADB_lockRegister({{read:{rd},apply:{ap}}})" in src)
+    check("scatter/stat_summary/summary auto-apply the lock on load (>=3 PADB_lockInit calls)",
+          src.count("PADB_lockInit();") >= 3)
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -2469,7 +2503,7 @@ def main() -> None:
                test_site_check_fence_only_all_views, test_gf_clear_in_apply_views,
                test_scatter_passfail_and_crossfilter, test_systemic_label_covers_batch,
                test_stat_perpoint_passfail_pointwise, test_summary_group_by_serial,
-               test_summary_stat_perpoint_own_limit_only,
+               test_summary_stat_perpoint_own_limit_only, test_locked_filters_crossview,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,

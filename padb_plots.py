@@ -1441,6 +1441,35 @@ Plotly.newPlot('plot',buildTraces(_initData),buildLayout(_initData));
 document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);
 _recomputeSpecSegments();
 document.getElementById('n_points').textContent=_initData.length.toLocaleString()+' pts';
+/* ---- Locked filters adapter (cross-view; see _COMMON_JS) ---- */
+function _avLockRead(){
+  var groups=GROUP_COLS.map(function(p){ return {label:p[1], boxes:document.querySelectorAll('.fchk[data-col="'+p[0]+'"]')}; });
+  var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
+  var pf=document.querySelector('input[name="scat_flt"]:checked');
+  return {dims:PADB_lockReadChecks(groups),
+    freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},
+    passfail:pf?pf.value:'all'};
+}
+function _avLockApply(o){
+  var applied=[],skipped=[],byLabel={}; GROUP_COLS.forEach(function(p){byLabel[p[1]]=p[0];});
+  Object.keys((o&&o.dims)||{}).forEach(function(label){ var col=byLabel[label];
+    if(!col){skipped.push(label);return;}
+    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),o.dims[label])?applied:skipped).push(label); });
+  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
+    var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+    if(s1&&s2){ var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
+      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+      if(lo<=hi){ s1.value=lo;s2.value=hi;
+        document.getElementById('freq_lo_txt').value=lo.toFixed(3);
+        document.getElementById('freq_hi_txt').value=hi.toFixed(3); } }
+  }
+  if(o&&o.passfail){ var r=document.querySelector('input[name="scat_flt"][value="'+o.passfail+'"]'); if(r)r.checked=true; }
+  if(typeof update==='function') update();
+  if(typeof _applyCrossFilterGrey==='function') _applyCrossFilterGrey();
+  return {applied:applied,skipped:skipped};
+}
+PADB_lockRegister({read:_avLockRead,apply:_avLockApply});
+PADB_lockInit();
 """
 
 
@@ -3653,6 +3682,102 @@ function PADB_deferRender(el,buildFn,msg){ if(!el){ buildFn(); return; }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(poll,50);});
   else setTimeout(poll,50);
 })();
+
+/* ==================== Locked filters (cross-view) ====================
+   Save the common filters (condition dims, frequency range, pass/fail) on ANY view,
+   then every other view auto-applies them on load -- so you dial filters in once and
+   swap views without re-doing them (David 2026-09-23). Same proven pattern as the
+   Global Filter: browser localStorage, applied at load, with a loud banner + one-click
+   Clear + Export/Import (the file:// fallback, since a share-opened page may not share
+   localStorage across files). The lock is a VIEW-AGNOSTIC object:
+     {v, ts, title, dims:{'<label>':[values]}, freq:{lo,hi}, passfail:'all'|'passing'|'failing'}
+   Each view registers a reader (its controls -> object) and an applier (object ->
+   its controls, BEST-EFFORT: only values that exist here are applied; a locked value
+   absent from this view/dataset is ignored, never emptying the view -- same rule as the
+   blank-dim guard). Only dims the source NARROWED (subset selected) are locked, so a
+   fully-open dim never constrains another view. */
+var PADB_LOCK_KEY='padb_v2_locked_filters';
+var _padbLockReg=null;   /* {read:fn->obj, apply:fn(obj)->{applied:[],skipped:[]}} */
+function PADB_lockRegister(a){ _padbLockReg=a; }
+function PADB_lockGet(){ try{var s=localStorage.getItem(PADB_LOCK_KEY); return s?JSON.parse(s):null;}catch(e){return null;} }
+function PADB_lockSet(o){ try{localStorage.setItem(PADB_LOCK_KEY,JSON.stringify(o));}catch(e){} }
+function PADB_lockSummary(o){ if(!o) return '';
+  var parts=[]; var d=o.dims||{}; Object.keys(d).forEach(function(k){ var v=d[k]||[]; parts.push(k+'='+(v.length>3?(v.slice(0,3).join(',')+'+'+(v.length-3)):v.join(','))); });
+  if(o.freq&&(o.freq.lo!=null||o.freq.hi!=null)) parts.push('freq '+(o.freq.lo==null?'*':o.freq.lo)+'-'+(o.freq.hi==null?'*':o.freq.hi));
+  if(o.passfail&&o.passfail!=='all') parts.push(o.passfail==='failing'?'Failing only':'Passing only');
+  return parts.length?parts.join('  ·  '):'(no narrowed filters)'; }
+function PADB_lockSave(){ if(!_padbLockReg){return;} var o=_padbLockReg.read()||{}; o.v=1; o.ts=Date.now();
+  o.title=(typeof TITLE!=='undefined'?TITLE:document.title); PADB_lockSet(o); PADB_lockRenderBar({saved:true}); }
+function PADB_lockApply(){ var o=PADB_lockGet(); if(!o||!_padbLockReg) return null; var rep=_padbLockReg.apply(o)||{}; rep.applied2=true; PADB_lockRenderBar(rep); return rep; }
+function PADB_lockClear(){ try{localStorage.removeItem(PADB_LOCK_KEY);}catch(e){} PADB_lockRenderBar({cleared:true}); }
+function PADB_lockExport(){ var o=PADB_lockGet(); if(!o){alert('No locked filters to export.');return;}
+  var blob=new Blob([JSON.stringify(o,null,2)],{type:'application/json'}); var url=URL.createObjectURL(blob);
+  var a=document.createElement('a'); a.href=url; a.download='padb_locked_filters.json'; document.body.appendChild(a); a.click();
+  document.body.removeChild(a); URL.revokeObjectURL(url); }
+function PADB_lockImport(file){ var r=new FileReader(); r.onload=function(){ try{ var o=JSON.parse(r.result); PADB_lockSet(o); PADB_lockApply(); }catch(e){ alert('Could not read locked-filters file: '+e); } }; r.readAsText(file); }
+function PADB_lockRenderBar(rep){
+  var bar=document.getElementById('padb_lock_bar');
+  if(!bar){ bar=document.createElement('div'); bar.id='padb_lock_bar';
+    bar.style.cssText='position:fixed;top:6px;right:6px;z-index:9000;max-width:44vw;font:12px system-ui,Segoe UI,sans-serif;'+
+      'background:#fff;border:1px solid #cbd5e1;border-radius:6px;box-shadow:0 1px 4px rgba(0,0,0,.12);padding:5px 8px;color:#333';
+    document.body.appendChild(bar);
+    var imp=document.createElement('input'); imp.type='file'; imp.accept='.json,application/json'; imp.id='padb_lock_import'; imp.style.display='none';
+    imp.addEventListener('change',function(){ if(this.files&&this.files[0]) PADB_lockImport(this.files[0]); this.value=''; });
+    bar.appendChild(imp);
+  }
+  var o=PADB_lockGet();
+  var btn='display:inline-block;cursor:pointer;border:1px solid #bbb;border-radius:4px;background:#f6f8fa;padding:2px 7px;margin-left:5px;color:#0b60c0';
+  var html='';
+  if(o){
+    var applied = rep&&rep.applied&&rep.applied.length!==undefined ? rep.applied.length : null;
+    var skipped = rep&&rep.skipped ? rep.skipped : [];
+    html += '<span style="font-weight:700;color:#0b60c0">🔒 Locked filters</span>'+
+      (rep&&rep.saved?' <span style="color:#2a7a2a">saved</span>':'')+
+      (rep&&rep.applied2&&applied!=null?' <span style="color:#2a7a2a">applied '+applied+'</span>':'')+
+      '<div style="margin:3px 0;color:#444">'+PADB_lockSummary(o)+'</div>'+
+      (skipped&&skipped.length?'<div style="color:#b26a00;font-size:11px">not in this view: '+skipped.join(', ')+'</div>':'')+
+      '<div style="margin-top:3px">'+
+      '<span onclick="PADB_lockApply()" title="Re-apply the locked filters to this view" style="'+btn+'">Apply</span>'+
+      '<span onclick="PADB_lockSave()" title="Overwrite the lock with THIS view\'s current filters" style="'+btn+'">Update from this view</span>'+
+      '<span onclick="PADB_lockClear()" title="Remove the lock (this + other views stop auto-applying it)" style="'+btn+';color:#b00">Clear</span>'+
+      '<span onclick="PADB_lockExport()" title="Export the lock to a file (portable to a share-opened page)" style="'+btn+'">Export</span>'+
+      '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>'+
+      '</div>';
+  } else {
+    html += '<span onclick="PADB_lockSave()" title="Save this view\'s condition/frequency/pass-fail filters as a cross-view lock; other views auto-apply it" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
+      '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>';
+  }
+  // keep the hidden import input
+  var imp=document.getElementById('padb_lock_import');
+  bar.innerHTML=html; if(imp) bar.appendChild(imp); else {
+    var i2=document.createElement('input'); i2.type='file'; i2.accept='.json,application/json'; i2.id='padb_lock_import'; i2.style.display='none';
+    i2.addEventListener('change',function(){ if(this.files&&this.files[0]) PADB_lockImport(this.files[0]); this.value=''; }); bar.appendChild(i2);
+  }
+}
+/* Call at the END of a view's init (after its filter fns + first render): draw the bar
+   and, if a lock exists, auto-apply it (best-effort) so this view matches the others. */
+function PADB_lockInit(){ try{ PADB_lockRenderBar(); if(PADB_lockGet()) PADB_lockApply(); }catch(e){} }
+/* ---- helpers views reuse in their read/apply adapters ---- */
+/* Best-effort checkbox set: given a NodeList of checkboxes and the desired values,
+   check only values that exist; if NONE of the desired values exist here, leave all
+   as-is (no constraint) and report the dim as skipped. Returns true if applied. */
+function PADB_lockSetChecks(boxes,vals){
+  boxes=Array.prototype.slice.call(boxes||[]); if(!boxes.length) return false;
+  var want={}; (vals||[]).forEach(function(v){ want[String(v)]=1; });
+  var anyHere=boxes.some(function(c){ return want[String(c.value)]; });
+  if(!anyHere) return false;               // none of the locked values exist here -> don't touch
+  boxes.forEach(function(c){ c.checked=!!want[String(c.value)]; });
+  return true;
+}
+/* Read narrowed dims from a set of checkbox groups keyed by label. groups = [{label, boxes}].
+   Returns {label:[checkedValues]} ONLY where a strict subset is checked (a fully-open dim
+   is omitted so it never constrains another view). */
+function PADB_lockReadChecks(groups){
+  var out={}; (groups||[]).forEach(function(g){ var boxes=Array.prototype.slice.call(g.boxes||[]);
+    if(!boxes.length) return; var checked=boxes.filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+    if(checked.length && checked.length<boxes.length) out[g.label]=checked; });
+  return out;
+}
 """
 
 # Static loading overlay, painted before the giant data <script> parses (so the page
@@ -8987,6 +9112,34 @@ loadState();
    attaches the plotly_relayout listener and calls _recomputeSpecSegments(), so
    those bespoke init lines are no longer needed. */
 update();
+/* ---- Locked filters adapter (cross-view; see _COMMON_JS) ---- */
+function _ssLockRead(){
+  var groups=(COND_DIMS||[]).map(function(d){return {label:d.label,boxes:document.querySelectorAll('.fchk[data-col="cond_'+d.col_id+'"]')};});
+  var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
+  var pf=document.querySelector('input[name="data_flt"]:checked');
+  return {dims:PADB_lockReadChecks(groups),
+    freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},
+    passfail:pf?pf.value:'all'};
+}
+function _ssLockApply(o){
+  var applied=[],skipped=[],byLabel={};(COND_DIMS||[]).forEach(function(d){byLabel[d.label]=d.col_id;});
+  Object.keys((o&&o.dims)||{}).forEach(function(label){var cid=byLabel[label];
+    if(cid==null){skipped.push(label);return;}
+    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),o.dims[label])?applied:skipped).push(label);});
+  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
+    var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
+      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+      if(lo<=hi){s1.value=lo;s2.value=hi;
+        var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
+        if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
+  }
+  if(o&&o.passfail){var r=document.querySelector('input[name="data_flt"][value="'+o.passfail+'"]');if(r)r.checked=true;}
+  if(typeof update==='function') update();
+  return {applied:applied,skipped:skipped};
+}
+PADB_lockRegister({read:_ssLockRead,apply:_ssLockApply});
+PADB_lockInit();
 /* ---- Auto-filter bad DUTs (population view: stat_summary) ----
    Gathers per-(condition, frequency) DUT populations from the RAW active
    conditions (getActiveConditions, respecting the condition-dim checkboxes),
@@ -19255,6 +19408,36 @@ if(_sumInitActive.length<=STATS_TABLE_AUTO_THRESHOLD){
   _setTableBtnStale(_rb0,true);
 }
 _recomputeSpecSegments();
+/* ---- Locked filters adapter (cross-view; see _COMMON_JS) ---- */
+function _sumLockRead(){
+  var groups=(COND_DIMS||[]).map(function(d){return {label:d.label,boxes:document.querySelectorAll('.fchk[data-col="cond_'+d.col_id+'"]')};});
+  var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
+  var pf=document.querySelector('input[name="sum_flt"]:checked');
+  var mode=(pf&&(pf.value==='all'||pf.value==='passing'||pf.value==='failing'))?pf.value:'all';
+  return {dims:PADB_lockReadChecks(groups),
+    freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},
+    passfail:mode};
+}
+function _sumLockApply(o){
+  var applied=[],skipped=[],byLabel={};(COND_DIMS||[]).forEach(function(d){byLabel[d.label]=d.col_id;});
+  Object.keys((o&&o.dims)||{}).forEach(function(label){var cid=byLabel[label];
+    if(cid==null){skipped.push(label);return;}
+    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),o.dims[label])?applied:skipped).push(label);});
+  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
+    var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
+    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
+      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+      if(lo<=hi){s1.value=lo;s2.value=hi;
+        var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
+        if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
+  }
+  if(o&&o.passfail){var r=document.querySelector('input[name="sum_flt"][value="'+o.passfail+'"]');if(r)r.checked=true;
+    if(typeof updateSumFilterLabels==='function') updateSumFilterLabels();}
+  if(typeof update==='function') update();
+  return {applied:applied,skipped:skipped};
+}
+PADB_lockRegister({read:_sumLockRead,apply:_sumLockApply});
+PADB_lockInit();
 /* ---- Auto-filter bad DUTs + Workflow (population view: summary) ----
    Per-(condition, frequency) DUT population = each DUT's cross-temperature mean
    at that freq (dut_vals[fi][dutIdx]); summary is temp/port-agnostic. Writes

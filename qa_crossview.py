@@ -33,6 +33,7 @@ Usage:  py qa_crossview.py            (generate data, render, verify)
 from __future__ import annotations
 
 import csv
+import json
 import re
 import sys
 import tempfile
@@ -173,6 +174,40 @@ _PROBE_STAT = """
   return { sites: Array.from(s), ids: ids };
 } catch(e){ return { error: String(e) }; } }
 """
+
+# ---- INV-LOCK: read a lock on scatter, apply on another view, read back its state ----
+# Narrow scatter to ONE site + Failing, save the cross-view lock, then confirm the
+# other views auto-apply it (their active conditions restrict to that site + failing).
+_LOCK_READ_SCATTER = r"""
+() => { try {
+  var sc=null; (GROUP_COLS||[]).forEach(function(p){ if(/site/i.test(p[1])) sc=p[0]; });
+  var first=null;
+  if(sc){ var bx=document.querySelectorAll('.fchk[data-col="'+sc+'"]');
+    if(bx.length){ first=String(bx[0].value);
+      bx.forEach(function(c){ c.checked=(String(c.value)===first); }); } }
+  var fr=document.querySelector('input[name="scat_flt"][value="failing"]'); if(fr) fr.checked=true;
+  if(typeof update==='function') update();
+  return { lock:_avLockRead(), site:first };
+} catch(e){ return { error:String(e) }; } }
+"""
+_LOCK_APPLY_SUM = r"""
+(L) => { try { var o=JSON.parse(L); PADB_lockSet(o); var rep=PADB_lockApply();
+  var pf=document.querySelector('input[name="sum_flt"]:checked');
+  var act=(typeof getActive==='function')?getActive():[]; var s={};
+  act.forEach(function(cd){ var m=/Site:\s*([^\s|]+)/.exec(cd.condition||''); if(m) s[m[1]]=1; });
+  return { rep:rep, sites:Object.keys(s), passfail:pf?pf.value:null };
+} catch(e){ return { error:String(e) }; } }
+"""
+_LOCK_APPLY_STAT = r"""
+(L) => { try { var o=JSON.parse(L); PADB_lockSet(o); var rep=PADB_lockApply();
+  var pf=document.querySelector('input[name="data_flt"]:checked');
+  var act=(typeof getActiveConditions==='function')?getActiveConditions():[]; var s={};
+  act.forEach(function(cd){ var m=/Site:\s*([^\s|]+)/.exec(cd.condition||''); if(m) s[m[1]]=1; });
+  return { rep:rep, sites:Object.keys(s), passfail:pf?pf.value:null };
+} catch(e){ return { error:String(e) }; } }
+"""
+
+
 
 
 def main() -> None:
@@ -323,6 +358,37 @@ def main() -> None:
                     _check_partition(key, set(a.get("ids", [])),
                                      set(p.get("ids", [])), set(fpart.get("ids", [])))
                 page.close()
+
+            # ---- INV-LOCK: a lock saved on one view applies to the others ----
+            rmap = {k: out for (k, out, _pr, _kd) in rendered}
+            if all(k in rmap for k in ("scatter", "summary", "stat_summary")):
+                try:
+                    sp = browser.new_page()
+                    sp.goto(rmap["scatter"].as_uri()); sp.wait_for_timeout(1200)
+                    rd = sp.evaluate(_LOCK_READ_SCATTER)
+                    sp.close()
+                    if not isinstance(rd, dict) or rd.get("error") or not rd.get("site"):
+                        _bad("INV-LOCK: could not read a lock on scatter", str(rd))
+                    else:
+                        want = rd["site"]
+                        L = json.dumps(rd["lock"])
+                        for key, reader in (("summary", _LOCK_APPLY_SUM),
+                                            ("stat_summary", _LOCK_APPLY_STAT)):
+                            pg = browser.new_page(); pg.goto(rmap[key].as_uri()); pg.wait_for_timeout(1200)
+                            st = pg.evaluate(reader, L); pg.close()
+                            if not isinstance(st, dict) or st.get("error"):
+                                _bad(f"INV-LOCK {key}: apply probe error", str(st)); continue
+                            sites = set(st.get("sites", [])); pf = st.get("passfail")
+                            rep = st.get("rep") or {}
+                            applied = rep.get("applied") or []
+                            if sites == {want} and pf == "failing" and "Site" in applied:
+                                _ok(f"INV-LOCK {key}: scatter's lock (Site={want}, Failing) auto-applied")
+                            else:
+                                _bad(f"INV-LOCK {key}: scatter's lock did NOT propagate",
+                                     f"want Site={{{want}}} + failing; got sites={sorted(sites)} "
+                                     f"pf={pf} applied={applied}")
+                except Exception as exc:
+                    _bad("INV-LOCK: probe raised", str(exc))
             browser.close()
     except SystemExit:
         raise
