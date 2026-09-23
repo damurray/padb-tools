@@ -1274,6 +1274,27 @@ def test_blank_dim_no_site_drop() -> None:
               "INV-SITE" in xvs and "INV-PART" in xvs and "sys.exit(3)" in xvs)
 
 
+def test_systemic_label_covers_batch() -> None:
+    """The auto-filter 'systemic' classification (a DUT whose outliers are shared with other
+    DUTs at the same frequency/direction -> never auto-removed) must NOT editorialize toward a
+    station/fixture artifact: a shared multi-DUT pattern can equally be a REAL population defect
+    (a bad component lot / common circuit-build issue), and the values alone can't distinguish
+    them (David 2026-09-23, from the US65080433 example). The reason string (shared + boxplot
+    copies), the triage label (3 copies), the workflow summary, and the control tooltip now name
+    BOTH interpretations. Teeth: the old station-only wording must be gone."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("systemic: old 'likely station/systemic, not one bad DUT' reason removed",
+          "likely station/systemic, not one bad DUT" not in src)
+    check("systemic: old 'Likely station/systemic' triage label removed",
+          "Likely station/systemic" not in src)
+    check("systemic: reason names a common cause across DUTs + a population defect (bad lot)",
+          "a COMMON CAUSE across DUTs" in src and "bad component lot" in src)
+    check("systemic: triage label is neutral (station or batch)",
+          "Common cause (station or batch)" in src)
+    check("systemic: workflow summary + tooltip name a population defect / bad batch",
+          "bad batch" in src and "population defect" in src)
+
+
 def test_jsrules_behavioral_gate_present() -> None:
     """The behavioral cross-view gate qa_jsrules.py executes the SHIPPED shared JS
     (_COMMON_JS + shared panel) under Playwright and asserts the pass/fail + fence
@@ -2298,7 +2319,7 @@ def main() -> None:
                test_scatter_draw_modes, test_scatter_worst_first_spec_relative,
                test_site_check_table_cap_and_spinner,
                test_site_check_fence_only_all_views, test_gf_clear_in_apply_views,
-               test_scatter_passfail_and_crossfilter,
+               test_scatter_passfail_and_crossfilter, test_systemic_label_covers_batch,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,

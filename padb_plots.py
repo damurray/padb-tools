@@ -3656,7 +3656,7 @@ function _spRowForBasis(p,fenceRow,basis,towardFail){
 function _spTriage(d,towardFail,primary){ if(!d.outside) return null;
   var ms=d.sharedCount/d.outside>0.5, mh=d.high/d.outside>0.5, ml=d.low/d.outside>0.5;
   var bad=towardFail==='high'?mh:towardFail==='low'?ml:null;
-  if(ms) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(ms) return {label:'Common cause (station or batch)',cls:'sev-hi'};
   if(bad===true&&d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
   if(bad===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
   if(bad===false) return {label:'Below '+primary+' population (benign)',cls:'sev-lo'};
@@ -3852,7 +3852,7 @@ function _afCompute(pts,ctx){
       d.reason=d.pts.length+' peer-outlier pt(s), all AWAY from the '+(dir==='hi'?'upper':'lower')+' spec — can’t fail spec (benign)'+riskTxt; review.push(d); return;
     }
     if(systemic){
-      d.reason=d.pts.length+' pt(s), most shared with other DUTs at the same frequency — likely station/systemic, not one bad DUT'+riskTxt; review.push(d); return;
+      d.reason=d.pts.length+' pt(s) shared with other DUTs at the same frequency/direction -- a COMMON CAUSE across DUTs, not one isolated DUT. Could be a station/fixture artifact OR a real population defect (e.g. a bad component lot / common circuit-build issue) -- the values alone cannot tell these apart. Left for you to investigate (Site Population Check / Distribution), never auto-removed'+riskTxt; review.push(d); return;
     }
     if(meetsBar){
       d.reason=d.pts.length+' pt(s), max '+d.maxMag.toFixed(1)+' '+unit+', not shared → auto ('+thr.label+')'+riskTxt; auto.push(d);
@@ -3873,7 +3873,7 @@ function _afNoApplyBanner(r,ctx){
   (r.review||[]).forEach(function(d){var rs=(d.reason||'');
     if(/systemic/.test(rs))nSys++; else if(/benign/.test(rs))nBen++; else if(/scope/.test(rs))nScope++; else nOther++;});
   var bits=[];
-  if(nSys)bits.push(nSys+' likely station/systemic (whole-population, not one bad DUT)');
+  if(nSys)bits.push(nSys+' common-cause across DUTs (station/fixture or a population defect, e.g. bad batch -- investigate, not one isolated DUT)');
   if(nBen)bits.push(nBen+' benign (away from the failing side, can’t fail spec)');
   if(nScope)bits.push(nScope+' outside the current auto-filter site scope');
   if(nOther)bits.push(nOther+' below the level bar / risk too high');
@@ -8024,7 +8024,7 @@ function _siteTriageTag(d,towardFail){
   var mostlyHigh=d.high/d.outside>0.5;
   var mostlyLow=d.low/d.outside>0.5;
   var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
-  if(mostlyShared) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(mostlyShared) return {label:'Common cause (station or batch)',cls:'sev-hi'};
   if(badDir===true&&d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
   if(badDir===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
   if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
@@ -9576,7 +9576,9 @@ def _build_stat_summary_html(
         '  LEVEL = how aggressive:  Conservative (6&sigma; / 3+ pts) filters only the unambiguous tail,'
         ' Moderate (4&sigma; / 2+ pts), Aggressive (3&sigma; / 1+ pt) lower the bar.'
         '  A per-DUT false-removal RISK must be under 5% for a DUT to auto-filter, even if the level bar'
-        ' is met.  SYSTEMIC (several DUTs failing the same way at one frequency = likely station/fixture)'
+        ' is met.  SYSTEMIC (several DUTs failing the same way at one frequency = a common cause across'
+        ' DUTs -- a station/fixture artifact OR a real population defect like a bad component lot; the'
+        ' values cannot tell these apart, so investigate rather than remove)'
         ' and BENIGN (peer-outlier away from a one-sided spec, cannot fail) are NEVER auto-filtered --'
         ' always left for you.  On a compare page only the reference site is auto-cleaned; onboarding-site'
         ' DUTs are listed for manual review.  A Preview lists every DUT with a plain-language reason'
@@ -14377,7 +14379,7 @@ function _siteTriageTag(d, towardFail){
   var mostlyHigh=d.high/d.outside>0.5;
   var mostlyLow=d.low/d.outside>0.5;
   var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
-  if(mostlyShared) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(mostlyShared) return {label:'Common cause (station or batch)',cls:'sev-hi'};
   if(badDir===true && d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
   if(badDir===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
   if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
@@ -15254,7 +15256,7 @@ function _autoFilterCompute(basis,level){
       d.reason=d.pts.length+' peer-outlier pt(s), all AWAY from the '+(dir==='hi'?'upper':'lower')+' spec — can’t fail spec (benign)'+riskTxt; review.push(d); return;
     }
     if(systemic){
-      d.reason=d.pts.length+' pt(s), most shared with other DUTs at the same frequency — likely station/systemic, not one bad DUT'+riskTxt; review.push(d); return;
+      d.reason=d.pts.length+' pt(s) shared with other DUTs at the same frequency/direction -- a COMMON CAUSE across DUTs, not one isolated DUT. Could be a station/fixture artifact OR a real population defect (e.g. a bad component lot / common circuit-build issue) -- the values alone cannot tell these apart. Left for you to investigate (Site Population Check / Distribution), never auto-removed'+riskTxt; review.push(d); return;
     }
     // A high false-removal risk blocks auto even if the level bar is met -- the
     // whole point of the risk metric is to not auto-remove a shaky call.
@@ -18079,7 +18081,7 @@ function _siteTriageTag(d,towardFail){
   var mostlyHigh=d.high/d.outside>0.5;
   var mostlyLow=d.low/d.outside>0.5;
   var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
-  if(mostlyShared) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(mostlyShared) return {label:'Common cause (station or batch)',cls:'sev-hi'};
   if(badDir===true&&d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
   if(badDir===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
   if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
@@ -20077,7 +20079,7 @@ function _hSiteBasis(){ var el=document.getElementById('h_site_basis'); return e
 function _hSiteTriage(d,towardFail){ if(!d.outside) return null;
   var mostlyShared=d.sharedCount/d.outside>0.5, mostlyHigh=d.high/d.outside>0.5, mostlyLow=d.low/d.outside>0.5;
   var badDir=towardFail==='high'?mostlyHigh:towardFail==='low'?mostlyLow:null;
-  if(mostlyShared) return {label:'Likely station/systemic',cls:'sev-hi'};
+  if(mostlyShared) return {label:'Common cause (station or batch)',cls:'sev-hi'};
   if(badDir===true&&d.outside>=2) return {label:'Likely bad DUT',cls:'sev-hi'};
   if(badDir===true) return {label:'Isolated -- worth a look',cls:'sev-med'};
   if(badDir===false) return {label:'Below '+PRIMARY_SITE+' population (benign)',cls:'sev-lo'};
