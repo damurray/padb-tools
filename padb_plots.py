@@ -7798,13 +7798,18 @@ function _statSpecEntry(){
   return {hi:n('stat_spec_hi'), lo:n('stat_spec_lo')};
 }
 /* Effective per-DUT go/no-go limit: embedded per-DUT Limit -> raw Spec -> the manual
-   Spec entry -> page HI_SPEC/LO_SPEC. The manual entry was previously skipped, so the
-   per-point table's Limit hi/lo + Status (and the grouped "# fail / n" cell) stayed
-   "—" even after a spec was typed on a no-spec-in-data compare (David 2026-09-18). */
+   Spec entry. The manual entry was previously skipped, so the per-point table's Limit
+   hi/lo + Status (and the grouped "# fail / n" cell) stayed "—" even after a spec was
+   typed on a no-spec-in-data compare (David 2026-09-18). Deliberately does NOT fall
+   back to the page-global HI_SPEC/LO_SPEC: a single global value misapplied to every
+   offset of a swept measurement marked genuinely limit-less, PADB-passed points as
+   FAIL, inflating the fail count vs scatter (David 2026-09-23, same fix as summary's
+   _sumDutLimit). A point with no real limit and no manual spec is unscored ('-'),
+   matching scatter's table (raw Upper/Lower_Limit only). */
 function _statDutLimits(d){
   var man=_statSpecEntry();
-  var hi=(d.upper_limit!=null?d.upper_limit:(d.spec_hi!=null?d.spec_hi:(man.hi!=null?man.hi:(typeof HI_SPEC!=='undefined'?HI_SPEC:null))));
-  var lo=(d.lower_limit!=null?d.lower_limit:(d.spec_lo!=null?d.spec_lo:(man.lo!=null?man.lo:(typeof LO_SPEC!=='undefined'?LO_SPEC:null))));
+  var hi=(d.upper_limit!=null?d.upper_limit:(d.spec_hi!=null?d.spec_hi:(man.hi!=null?man.hi:null)));
+  var lo=(d.lower_limit!=null?d.lower_limit:(d.spec_lo!=null?d.spec_lo:(man.lo!=null?man.lo:null)));
   return {hi:_siteNum(hi),lo:_siteNum(lo)};
 }
 function _statDutStatus(d){
@@ -17583,25 +17588,19 @@ function hexToRgba(hex,a){
   var r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);
   return 'rgba('+r+','+g+','+b+','+a+')';
 }
-/* Per-FREQUENCY pass/fail (the single source of truth shared by the plot, the table,
-   and applyDataFilter so "Passing/Failing only" is point-granular AND table==plot).
-   A frequency PASSES when its tolerance interval is within the effective spec on every
-   configured side (a manual Spec override, when set, is the effective spec). Rolled out
-   2026-09-22 (David): summary "Failing only" now shows only the failing FREQUENCIES,
-   matching boxplot (per-measurement) and stat_summary (per-frequency) -- not the whole
-   condition. */
-function _sumFreqPasses(cd,stats,fi,params){
-  var hiOv=(params&&params.tll_hi_override!=null)?params.tll_hi_override:null;
-  var loOv=(params&&params.tll_lo_override!=null)?params.tll_lo_override:null;
-  var hi=hiOv!==null?hiOv:((cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:cd.spec_hi);
-  var lo=loOv!==null?loOv:((cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:cd.spec_lo);
-  var uOk=(hi===null||hi===undefined||stats.uttl[fi]===null||stats.uttl[fi]===undefined||Number(stats.uttl[fi])<=hi);
-  var lOk=(lo===null||lo===undefined||stats.lttl[fi]===null||stats.lttl[fi]===undefined||Number(stats.lttl[fi])>=lo);
-  return uOk&&lOk;
-}
+/* Summary "Passing/Failing only" is PER-POINT (David 2026-09-23): a frequency is
+   kept when it holds a real measurement point matching the mode, and the tables
+   score each DUT-point against its OWN limit (see _sumFreqMatch / _sumPtFail /
+   _sumDutLimit near the table helpers). This replaced an earlier per-FREQUENCY
+   tolerance-interval-vs-spec test (_sumFreqPasses), which counted a frequency as
+   failing whenever its statistical TTL band exceeded spec even if no individual
+   point failed -- inflating the fail count vs scatter and marking limit-less,
+   PADB-passed points as FAIL. */
 function _sumModeKeepIdx(cd,stats,idxs,mode,params){
   if(mode!=='passing'&&mode!=='failing') return idxs;
-  return idxs.filter(function(i){var p=_sumFreqPasses(cd,stats,i,params);return mode==='passing'?p:!p;});
+  /* Per-POINT: keep a frequency if it holds any real point matching the mode
+     (was the per-frequency TTL-vs-spec test _sumFreqPasses). */
+  return idxs.filter(function(i){return _sumFreqMatch(cd,i,mode,params);});
 }
 function buildTraces(active,excl){
   excl=excl||[];
@@ -17846,11 +17845,7 @@ function updateSumFilterLabels(){
   var showHi=dir==='hi'||dir==='both';
   var showLo=dir==='lo'||dir==='both';
   var pLbl=document.getElementById('sum_passing_lbl');
-  if(pLbl){
-    if(dir==='lo') pLbl.innerHTML='Passing&nbsp;only&nbsp;(TTL&nbsp;&#8805;&nbsp;Spec)';
-    else if(dir==='hi') pLbl.innerHTML='Passing&nbsp;only&nbsp;(TTL&nbsp;&#8804;&nbsp;Spec)';
-    else pLbl.innerHTML='Passing&nbsp;only&nbsp;(TTL&nbsp;vs&nbsp;Spec)';
-  }
+  if(pLbl) pLbl.innerHTML='Passing&nbsp;only&nbsp;(points&nbsp;within&nbsp;limit)';
   var hiWrap=document.getElementById('sum_flt_hi_wrap');
   var loWrap=document.getElementById('sum_flt_lo_wrap');
   /* hi/lo now wrap the always-on "Hide conditions beyond above/below" trim inputs.
@@ -17910,9 +17905,9 @@ function applyDataFilter(active){
     if(trimLo&&!vis.every(function(i){return stats.min_data[i]===null||stats.min_data[i]>=flt.ylo;})) return false;
     if(flt.mode==='all') return true;
     /* Point-granular Passing/Failing: keep the condition if it has ANY matching
-       (passing/failing) frequency -- buildTraces + _buildCondRows then show only those
-       frequencies via the SAME _sumFreqPasses rule, so plot, table and this filter all
-       agree (David 2026-09-22: "Failing only" = failing POINTS, not whole conditions). */
+       (passing/failing) real POINT -- buildTraces + _buildCondRows then show only those
+       frequencies via the SAME _sumFreqMatch rule, so plot, table and this filter all
+       agree (David: "Failing only" = failing POINTS, not whole conditions or TTL bands). */
     return _sumModeKeepIdx(cd,stats,vis,flt.mode,sumPar).length>0;
   });
 }
@@ -18606,16 +18601,56 @@ function _sumInclAtFi(cd,fi){
   });
   return idxs;
 }
-function _sumDutLimit(cd,fi,di,effHi,effLo){
+/* Per-POINT limit for a single DUT at one frequency -- the point's OWN limit only:
+   its upper/lower_limit, else its own Group-derived spec_hi/lo, else a manual Spec
+   OVERRIDE (ovHi/ovLo). It deliberately does NOT fall back to (a) the per-frequency
+   aggregate spec_hi_list[fi] -- which borrows a limit from OTHER points at the same
+   offset -- nor (b) the page-global HI_SPEC/LO_SPEC -- a single value misapplied to
+   every offset of a swept measurement. Both fabricated FAILs on genuinely limit-less,
+   PADB-passed points (Test Event Status: P, null Upper Limit) and inflated the count
+   vs scatter (David 2026-09-23). This matches scatter's TABLE status, which scores on
+   raw Upper_Limit/Lower_Limit only. A point with no real limit -> {hi:null,lo:null}
+   -> PADB_isFail null -> unscored ('-'), never FAIL. */
+function _sumDutLimit(cd,fi,di,ovHi,ovLo){
   function pick(field){ var a=cd.dut_spec_vals&&cd.dut_spec_vals[field]; var row=a&&a[fi]; return (row&&row[di]!=null)?row[di]:null; }
-  var hi=pick('upper_limit'); if(hi==null)hi=pick('spec_hi'); if(hi==null)hi=effHi;
-  var lo=pick('lower_limit'); if(lo==null)lo=pick('spec_lo'); if(lo==null)lo=effLo;
+  var hi=pick('upper_limit'); if(hi==null)hi=pick('spec_hi'); if(hi==null&&ovHi!=null)hi=ovHi;
+  var lo=pick('lower_limit'); if(lo==null)lo=pick('spec_lo'); if(lo==null&&ovLo!=null)lo=ovLo;
   return {hi:PADB_num(hi),lo:PADB_num(lo)};
 }
-function _sumFailAt(cd,fi,effHi,effLo){
+/* Manual Spec-override values (or null) from the params -- the only legitimate
+   caller-supplied fallback for _sumDutLimit's ovHi/ovLo. */
+function _sumOv(params){
+  return {hi:(params&&params.tll_hi_override!=null)?params.tll_hi_override:null,
+          lo:(params&&params.tll_lo_override!=null)?params.tll_lo_override:null};
+}
+/* Per-point pass/fail (true=fail, false=pass, null=unscored) using the real
+   per-point limit. */
+function _sumPtFail(cd,fi,di,params){
+  var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[]; var v=row[di];
+  if(v==null) return null;
+  var ov=_sumOv(params),lim=_sumDutLimit(cd,fi,di,ov.hi,ov.lo);
+  return PADB_isFail(v,lim.hi,lim.lo);
+}
+/* Does frequency fi (under the current serial/GF inclusion) contain any real point
+   matching the pass/fail mode? Per-POINT -- NOT the TTL-vs-spec population test the
+   old _sumFreqPasses used -- so plot, table and count all agree on real points. */
+function _sumFreqMatch(cd,fi,mode,params){
+  var idxs=_sumInclAtFi(cd,fi),hit=false;
+  var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[];
+  /* Same convention as scatter/boxplot/stat_summary: Failing keeps only TRUE fails;
+     Passing keeps everything else that is a real measurement (pass OR no-limit) --
+     so Passing + Failing == All (exact complement). */
+  idxs.forEach(function(di){ if(hit) return;
+    if(row[di]==null) return;
+    var f=_sumPtFail(cd,fi,di,params);
+    if(mode==='failing'){ if(f===true) hit=true; }
+    else { if(f!==true) hit=true; } });
+  return hit;
+}
+function _sumFailAt(cd,fi,params){
   var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[]; var n=0,scored=0;
   _sumInclAtFi(cd,fi).forEach(function(di){ var v=row[di]; if(v==null) return;
-    var lim=_sumDutLimit(cd,fi,di,effHi,effLo); var f=PADB_isFail(v,lim.hi,lim.lo);
+    var f=_sumPtFail(cd,fi,di,params);
     if(f===null) return; scored++; if(f===true)n++; });
   return {fail:n,scored:scored};
 }
@@ -18626,23 +18661,28 @@ function _sumFailTd(pf){
 }
 function _sumPerPointTable(active,selTemps,params){
   var _fr=_sumFreqRange(),fLo=_fr.lo,fHi=_fr.hi,pts=[];
+  var ov=_sumOv(params);
   (active||[]).forEach(function(cd){
     (cd.freqs||[]).forEach(function(f,fi){
       if(f<fLo||f>fHi) return;
-      var realHi=(cd.spec_hi_list&&cd.spec_hi_list[fi]!=null)?cd.spec_hi_list[fi]:(cd.spec_hi!=null?cd.spec_hi:null);
-      var realLo=(cd.spec_lo_list&&cd.spec_lo_list[fi]!=null)?cd.spec_lo_list[fi]:(cd.spec_lo!=null?cd.spec_lo:null);
-      var hiOv=(params.tll_hi_override!==null&&params.tll_hi_override!==undefined);
-      var loOv=(params.tll_lo_override!==null&&params.tll_lo_override!==undefined);
-      var effHi=hiOv?params.tll_hi_override:realHi, effLo=loOv?params.tll_lo_override:realLo;
       var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[];
       _sumInclAtFi(cd,fi).forEach(function(di){
         var v=row[di]; if(v==null) return;
-        var lim=_sumDutLimit(cd,fi,di,effHi,effLo), fail=PADB_isFail(v,lim.hi,lim.lo);
+        /* Real per-point limit only (no per-frequency fabrication) -- a limit-less
+           point scores '-' (unscored), never FAIL. Matches scatter + PADB status. */
+        var lim=_sumDutLimit(cd,fi,di,ov.hi,ov.lo), fail=PADB_isFail(v,lim.hi,lim.lo);
         var st=fail===null?{t:'—',c:'#aaa'}:(fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'});
         pts.push({cond:cd.condition,freq:f,s:(cd.dut_info[di]||{}).s||'',v:v,lo:lim.lo,hi:lim.hi,st:st});
       });
     });
   });
+  /* Point-granular Passing/Failing: show only the matching points (not every point
+     at a matching frequency). Failing = TRUE fails only; Passing = everything not a
+     true fail (pass + no-limit), so Passing + Failing == All -- the exact-complement
+     convention scatter/boxplot/stat_summary already use (David 2026-09-23). */
+  var _ppMode=(getDataFilter()||{}).mode||'all';
+  if(_ppMode==='failing') pts=pts.filter(function(pt){return pt.st.t==='FAIL';});
+  else if(_ppMode==='passing') pts=pts.filter(function(pt){return pt.st.t!=='FAIL';});
   var wrap=document.getElementById('sum_table_wrap');
   if(!pts.length){ if(wrap) wrap.innerHTML='<p style="color:#888;font-size:12px;margin:4px 8px">No data in current view.</p>'; return; }
   pts.sort(function(a,b){ if(a.cond!==b.cond)return a.cond<b.cond?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
@@ -18664,16 +18704,17 @@ function _sumPerPointTable(active,selTemps,params){
 function _buildCondRows(condList,gfLabel,selTemps,params){
   var _fr4=_sumFreqRange();
   var fLo=_fr4.lo,fHi=_fr4.hi;
-  /* Point-granular Passing/Failing: the table shows only the matching frequencies,
-     so it reflects the plot exactly (both use _sumFreqPasses). */
+  /* Point-granular Passing/Failing: the table shows only frequencies that hold a
+     matching real point, so it reflects the plot exactly (both use _sumFreqMatch --
+     per-point, not the old TTL-vs-spec population test). */
   var _bcrMode=(getDataFilter()||{}).mode||'all';
   var rows=[];
   condList.forEach(function(cd){
     var stats=getSumCondData(cd,selTemps,params);
     cd.freqs.forEach(function(f,fi){
       if(f<fLo||f>fHi) return;
-      if(_bcrMode==='passing'&&!_sumFreqPasses(cd,stats,fi,params)) return;
-      if(_bcrMode==='failing'&&_sumFreqPasses(cd,stats,fi,params)) return;
+      if(_bcrMode==='passing'&&!_sumFreqMatch(cd,fi,'passing',params)) return;
+      if(_bcrMode==='failing'&&!_sumFreqMatch(cd,fi,'failing',params)) return;
       var tot_n=0;
       selTemps.forEach(function(t){
         var bt=cd.by_temp&&cd.by_temp[t];
@@ -18702,7 +18743,7 @@ function _buildCondRows(condList,gfLabel,selTemps,params){
       var sLo=loOv?params.tll_lo_override:realLo;
       var tUp=stats.uttl[fi];
       var tLo=stats.lttl[fi];
-      var _pf=_sumFailAt(cd,fi,sHi,sLo);
+      var _pf=_sumFailAt(cd,fi,params);
       rows.push({
         condition:cd.condition,freq:f,n:tot_n,gf:gfLabel,
         n_fail:_pf.fail,n_scored:_pf.scored,

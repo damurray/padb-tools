@@ -1175,13 +1175,13 @@ def test_summary_data_filter_rollout() -> None:
     check("summary: trim is always-on (isFinite), independent of pass/fail radio",
           "var trimHi=isFinite(flt.yhi), trimLo=isFinite(flt.ylo);" in src
           and "if(flt.mode==='all'&&!trimHi&&!trimLo) return active;" in src)
-    check("summary: Passing/Failing are POINT-granular via shared _sumFreqPasses",
-          "function _sumFreqPasses(" in src
+    check("summary: Passing/Failing are POINT-granular via shared _sumFreqMatch",
+          "function _sumFreqMatch(" in src
           and "function _sumModeKeepIdx(" in src
           and "return _sumModeKeepIdx(cd,stats,vis,flt.mode,sumPar).length>0;" in src)
-    check("summary: plot + table share the per-frequency pass rule (table==plot)",
+    check("summary: plot + table share the per-point match rule (table==plot)",
           "idxs=_sumModeKeepIdx(cd,_stats,idxs,_sumMode,_sumParams);" in src
-          and "if(_bcrMode==='failing'&&_sumFreqPasses(cd,stats,fi,params)) return;" in src)
+          and "if(_bcrMode==='failing'&&!_sumFreqMatch(cd,fi,'failing',params)) return;" in src)
     check("summary: point mode draws markers + skips the min-max fill band",
           "var _pointMode=(_sumMode==='passing'||_sumMode==='failing');" in src
           and "if(!_pointMode) traces.push({" in src)
@@ -1290,6 +1290,48 @@ def test_stat_perpoint_passfail_pointwise() -> None:
           "var condsAll=conds;" in src and "condsAll:condsAll" in src)
     check("stat per-point: the per-point table is built from condsAll (partition holds)",
           "_statPerPointTable(condsAll||conds,params)" in src)
+
+
+def test_summary_stat_perpoint_own_limit_only() -> None:
+    """summary + stat_summary score each DUT-point against its OWN limit only -- never a
+    fabricated fallback (David 2026-09-23). Two fabrications were removed: (a) the
+    per-frequency aggregate spec_hi_list[fi] (borrowed from OTHER points at the same
+    offset), and (b) the page-global HI_SPEC/LO_SPEC (one value misapplied to every
+    offset of a swept measurement). Both marked genuinely limit-less, PADB-passed points
+    (Test Event Status: P, null Upper Limit) as FAIL -- inflating summary's fail count to
+    145/234 vs scatter's ~85. A point with no real per-point limit (and no manual Spec
+    override/entry) is unscored ('-'), matching scatter's table (raw Upper/Lower_Limit
+    only). Passing/Failing is per-POINT (was per-frequency TTL-vs-spec), exact-complement:
+    Failing = true fails; Passing = pass + no-limit. Verified via Playwright on the EP6
+    phase-noise compare (85 fails; failing-only all FAIL; partition holds). Source-pinned."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    import re
+    def _fn(name):
+        m = re.search(r"function " + re.escape(name) + r"\(", src)
+        if not m: return ""
+        i = m.start(); depth = 0; started = False
+        for j in range(i, min(len(src), i + 4000)):
+            c = src[j]
+            if c == "{": depth += 1; started = True
+            elif c == "}":
+                depth -= 1
+                if started and depth == 0: return src[i:j+1]
+        return src[i:i+4000]
+    sdl = _fn("_sumDutLimit"); stl = _fn("_statDutLimits")
+    check("summary _sumDutLimit does not fabricate from HI_SPEC/LO_SPEC or spec_hi_list",
+          bool(sdl) and "HI_SPEC" not in sdl and "LO_SPEC" not in sdl and "spec_hi_list" not in sdl)
+    check("summary _sumDutLimit uses own upper_limit/spec_hi + manual override only",
+          "pick('upper_limit')" in sdl and "pick('spec_hi')" in sdl and "ovHi" in sdl)
+    check("stat_summary _statDutLimits does not fabricate from HI_SPEC/LO_SPEC",
+          bool(stl) and "HI_SPEC" not in stl and "LO_SPEC" not in stl)
+    check("stat_summary _statDutLimits keeps own limit/spec + manual entry",
+          "d.upper_limit" in stl and "man.hi" in stl)
+    # per-point (not per-frequency TTL) pass/fail, exact-complement in both tables
+    check("summary Passing/Failing is per-point via _sumFreqMatch (old _sumFreqPasses gone)",
+          "function _sumFreqMatch(" in src and "function _sumFreqPasses(" not in src)
+    check("summary per-point table filters rows by point status (exact complement)",
+          "if(_ppMode==='failing') pts=pts.filter(function(pt){return pt.st.t==='FAIL';});" in src
+          and "else if(_ppMode==='passing') pts=pts.filter(function(pt){return pt.st.t!=='FAIL';});" in src)
 
 
 def test_summary_group_by_serial() -> None:
@@ -2407,6 +2449,7 @@ def main() -> None:
                test_site_check_fence_only_all_views, test_gf_clear_in_apply_views,
                test_scatter_passfail_and_crossfilter, test_systemic_label_covers_batch,
                test_stat_perpoint_passfail_pointwise, test_summary_group_by_serial,
+               test_summary_stat_perpoint_own_limit_only,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
