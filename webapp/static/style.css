@@ -14,15 +14,6 @@ body {
 }
 
 header h1 { margin-bottom: 0; }
-#tooltipToggleWrap {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  font-size: 0.85rem;
-  color: #666;
-  margin-top: 0.3rem;
-  cursor: pointer;
-}
 .subtitle { color: #666; margin-top: 0.2rem; }
 
 section {

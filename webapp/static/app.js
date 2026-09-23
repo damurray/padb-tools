@@ -4,38 +4,12 @@ let currentPodPath = null;
 let allJobs = [];
 const activePolls = new Set();
 
-// ---------------------------------------------------------------------------
-// Tooltip help toggle
-// ---------------------------------------------------------------------------
-
-// Native title-attribute tooltips can only be suppressed by removing the
-// attribute itself (CSS has no effect on them) -- so the real text is
-// stashed in a data- attribute the first time an element is seen, and
-// title is added/removed from that backup based on the current preference.
-// Idempotent and safe to call repeatedly, including on elements whose
-// tooltip was created after page load (job table rows, status cards) --
-// already-processed elements have no title left to (re-)back up, so a
-// second call just re-applies the current preference from the stash.
-let _tooltipsEnabled = true;
-function applyTooltipPref() {
-  document.querySelectorAll("[title]").forEach(el => {
-    if (el.dataset.tooltipText === undefined) el.dataset.tooltipText = el.getAttribute("title");
-  });
-  document.querySelectorAll("[data-tooltip-text]").forEach(el => {
-    if (_tooltipsEnabled) el.setAttribute("title", el.dataset.tooltipText);
-    else el.removeAttribute("title");
-  });
-}
-
-const tooltipToggle = document.getElementById("tooltipToggle");
-_tooltipsEnabled = localStorage.getItem("padb_web_tooltips") !== "0";
-tooltipToggle.checked = _tooltipsEnabled;
-applyTooltipPref();
-tooltipToggle.addEventListener("change", () => {
-  _tooltipsEnabled = tooltipToggle.checked;
-  localStorage.setItem("padb_web_tooltips", _tooltipsEnabled ? "1" : "0");
-  applyTooltipPref();
-});
+// Tooltip help is always on: every control carries a native title-attribute
+// tooltip inline in the HTML (static and dynamically-rendered rows alike), so
+// there's nothing to toggle -- the old show/hide checkbox was removed
+// (David 2026-09-23). No-op kept so late callers after row/card renders don't
+// need touching.
+function applyTooltipPref() {}
 
 // ---------------------------------------------------------------------------
 // Upload / drop

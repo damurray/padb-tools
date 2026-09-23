@@ -2220,6 +2220,15 @@ def test_webapp_optional_toolbars() -> None:
           'class="danger-chip"' in del_toolbar and 'class="opt-chip"' not in del_toolbar)
     check("Delete row stays outside the collapsible optional block",
           idx.find('id="deleteSelectedBtn"') > _optend)
+    # Tooltip help is always on (David 2026-09-23): the show/hide checkbox was
+    # removed -- help is a default, not an option. Inline title= tooltips remain,
+    # and the JS no longer wires a toggle or persists a padb_web_tooltips pref.
+    check("tooltip show/hide checkbox removed (help is always on)",
+          'id="tooltipToggle"' not in idx and "Show tooltip help" not in idx)
+    check("inline title tooltips still present on the page",
+          idx.count('title="') >= 30)
+    check("app.js no longer wires a tooltip toggle or persists the pref",
+          "tooltipToggle" not in appjs and "padb_web_tooltips" not in appjs)
 
 
 def test_scatter_spec_line_caveat() -> None:
