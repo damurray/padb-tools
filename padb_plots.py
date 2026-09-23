@@ -427,6 +427,18 @@ function saveCSV(withExcluded){
 }
 
 /* ---------- filter & render ---------- */
+/* PADB's recorded verdict for a point with NO numeric limit -- parsed from the
+   status field (SCAT_STATUS_FIELD, e.g. "Test Event Status" = P/F). Mirrors boxplot's
+   _condStatusFail / reference's status precedence so the raw-point views agree
+   (David 2026-09-23). true=fail / false=pass / null=no verdict. */
+function _scatStatusFail(r){
+  if(typeof SCAT_STATUS_FIELD==='undefined'||!SCAT_STATUS_FIELD) return null;
+  var v=r[SCAT_STATUS_FIELD]; if(v==null) return null;
+  var t=String(v).trim().toUpperCase();
+  if(t==='F'||t==='FAIL'||t==='FAILED') return true;
+  if(t==='P'||t==='PASS'||t==='PASSED') return false;
+  return null;
+}
 /* Per-point pass/fail vs the point's OWN effective limit (per-point Upper/Lower Limit ->
    its own raw Spec_Hi/Lo), via the single shared PADB_isFail rule (_COMMON_JS).
    true=fail / false=pass / null=no limit. Deliberately does NOT fall back to the
@@ -434,11 +446,14 @@ function saveCSV(withExcluded){
    misapplied to every offset of a swept measurement, marking limit-less, PADB-passed
    points as FAIL -- so scatter's "Failing only" FILTER reported 156 while its own TABLE
    (own-limit only) showed 85 (David 2026-09-23, same fabrication class as summary's
-   _sumDutLimit). Table + filter now share THIS one rule, so they agree with each other
-   and with summary/stat_summary/boxplot. A point with no real limit -> null -> unscored. */
+   _sumDutLimit). Table + filter share THIS one rule, so they agree with each other and
+   with summary/stat_summary/boxplot. When a point carries NO numeric limit, fall back to
+   PADB's recorded status verdict (raw-point views honor it; aggregate views can't attribute
+   a single status to a per-DUT mean, so they stay unscored). Else null -> unscored. */
 function _scatRowFail(r){
   var hi=(r.Upper_Limit!=null)?r.Upper_Limit:((r.Spec_Hi!=null&&r.Spec_Hi!=='')?Number(r.Spec_Hi):null);
   var lo=(r.Lower_Limit!=null)?r.Lower_Limit:((r.Spec_Lo!=null&&r.Spec_Lo!=='')?Number(r.Spec_Lo):null);
+  if(hi==null&&lo==null) return _scatStatusFail(r);
   return PADB_isFail(r.Value,hi,lo);
 }
 function applyFilters(data){
@@ -2485,6 +2500,24 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     # Exclude Test_Step here because it's filtered via env_chk checkboxes instead.
     filter_cols = [(c, l) for c, l in group_cols if not (c == "Test_Step" and show_env_bar)]
 
+    # PADB pass/fail status field (e.g. "Test Event Status" = P/F) -- a group dim with
+    # NO numeric spec limit. Detect it (status-like name, values are pass/fail tokens
+    # incl. at least one fail) so scatter can fall back to PADB's recorded verdict for
+    # points that carry no extracted Upper/Lower_Limit -- matching boxplot/reference
+    # (David 2026-09-23: honor PADB status on the raw-point views). Empty => none.
+    _PF_TOKENS = {"P", "F", "PASS", "FAIL", "PASSED", "FAILED"}
+    _STATUS_KWS = ("event status", "status", "verdict", "disposition", "result", "pass/fail")
+    scat_status_field = ""
+    for _c, _lbl in group_cols:
+        if not any(kw in _lbl.lower() or kw in _c.lower() for kw in _STATUS_KWS):
+            continue
+        if _c not in df.columns:
+            continue
+        _uv = {str(x).strip().upper() for x in df[_c].dropna().unique() if str(x).strip()}
+        if _uv and _uv <= _PF_TOKENS and any(t in _uv for t in ("F", "FAIL", "FAILED")):
+            scat_status_field = _c
+            break
+
     # Columns available for hover tooltip (group dims + spec limits)
     has_spec = (("Spec_Hi" in df.columns and df["Spec_Hi"].notna().any())
                 or ("Spec_Lo" in df.columns and df["Spec_Lo"].notna().any()))
@@ -2711,6 +2744,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var LOG_X={'true' if log_x else 'false'};",
         f"var TITLE={json.dumps(title)};",
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in filter_cols])};",
+        f"var SCAT_STATUS_FIELD={json.dumps(scat_status_field)};",
         f"var HOVER_COLS={json.dumps([[c, l] for c, l in hover_col_list])};",
         f"var TRACE_MODE={json.dumps(cfg.get('mode', 'lines+markers'))};",
         f"var SCATTER_DECIMATE_TOGGLE={json.dumps(scatter_toggle)};",

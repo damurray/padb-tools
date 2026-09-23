@@ -1335,6 +1335,17 @@ def test_summary_stat_perpoint_own_limit_only() -> None:
           and "HI_SPEC" not in srf and "LO_SPEC" not in srf)
     check("scatter table status shares the filter rule (_scatterStatus calls _scatRowFail)",
           "var fail=_scatRowFail(r);" in src)
+    # Raw-point views (scatter, boxplot, reference) honor PADB's recorded Test Event
+    # Status for a point with NO numeric limit -- so limit-less points get PADB's P/F
+    # verdict instead of '-' (David 2026-09-23). scatter gained this to match boxplot
+    # (_condStatusFail) + reference. Aggregate views (summary/stat_summary) stay '-'
+    # because a per-DUT mean has no single PADB verdict.
+    check("scatter falls back to PADB status (_scatStatusFail) when no numeric limit",
+          "function _scatStatusFail(r)" in src
+          and "if(hi==null&&lo==null) return _scatStatusFail(r);" in src
+          and "SCAT_STATUS_FIELD" in src)
+    check("scatter emits the detected SCAT_STATUS_FIELD constant",
+          'f"var SCAT_STATUS_FIELD=' in src and "scat_status_field = " in src)
     # per-point (not per-frequency TTL) pass/fail, exact-complement in both tables
     check("summary Passing/Failing is per-point via _sumFreqMatch (old _sumFreqPasses gone)",
           "function _sumFreqMatch(" in src and "function _sumFreqPasses(" not in src)
