@@ -2229,6 +2229,19 @@ def test_webapp_optional_toolbars() -> None:
           idx.count('title="') >= 30)
     check("app.js no longer wires a tooltip toggle or persists the pref",
           "tooltipToggle" not in appjs and "padb_web_tooltips" not in appjs)
+    # The compare panel's inline "Run test-point reduction on merged data" control
+    # was removed as redundant (David 2026-09-23): reduction on a compare job's
+    # merged CSV is run from the standard job-menu Test-point Reduce action, which
+    # resolves _compare_merged.csv. The compare panel creates the job only; all
+    # post-run analytics go through the one standard path. Backend reduce_on_merged
+    # is kept for API/job.json back-compat, so only the UI wiring is pinned gone.
+    check("compare panel's inline reduce control removed (redundant with job-menu)",
+          'id="compareReduceChk"' not in idx and 'id="compareReduceMode"' not in idx
+          and 'id="compareReducePct"' not in idx)
+    check("compare-create body no longer sends reduce_on_merged from the panel",
+          "compareReduceChk" not in appjs)
+    check("standalone job-menu Test-point Reduce control still present",
+          'id="reduceBtn"' in idx)
 
 
 def test_scatter_spec_line_caveat() -> None:

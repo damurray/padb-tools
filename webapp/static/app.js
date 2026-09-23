@@ -295,9 +295,6 @@ document.getElementById("compareForm").addEventListener("submit", async e => {
     primary_site: document.getElementById("comparePrimarySite").value,
     description: document.getElementById("compareDescription").value.trim(),
     override: document.getElementById("compareOverrideChk")?.checked || false,
-    reduce_on_merged: document.getElementById("compareReduceChk")?.checked || false,
-    reduce_pct: parseFloat(document.getElementById("compareReducePct")?.value) || 25,
-    reduce_mode: document.getElementById("compareReduceMode")?.value || "target",
   };
   // Real reported bug: "Create and Run does not work if another compare job
   // is already running" -- confirmed by direct testing that queuing itself
@@ -557,7 +554,9 @@ document.getElementById("reduceBtn").addEventListener("click", async () => {
 });
 
 // Auto (adaptive) mode ignores the reduction %, so grey the box out to make that
-// obvious. Applies to both the standalone reduce control and the compare-embedded one.
+// obvious. Used by the standalone Test-point Reduce control (the compare-embedded
+// reduce control was removed -- reduction on the merged CSV is run from the
+// standard job-menu Test-point Reduce action, David 2026-09-23).
 function _syncReduceModeUi(modeId, pctId) {
   const m = document.getElementById(modeId), p = document.getElementById(pctId);
   if (!m || !p) return;
@@ -571,11 +570,6 @@ if (["reduceMode", "reducePct"].every(id => document.getElementById(id))) {
   document.getElementById("reduceMode").addEventListener("change",
     () => _syncReduceModeUi("reduceMode", "reducePct"));
   _syncReduceModeUi("reduceMode", "reducePct");
-}
-if (["compareReduceMode", "compareReducePct"].every(id => document.getElementById(id))) {
-  document.getElementById("compareReduceMode").addEventListener("change",
-    () => _syncReduceModeUi("compareReduceMode", "compareReducePct"));
-  _syncReduceModeUi("compareReduceMode", "compareReducePct");
 }
 
 // ---------------------------------------------------------------------------
