@@ -428,12 +428,17 @@ function saveCSV(withExcluded){
 
 /* ---------- filter & render ---------- */
 /* Per-point pass/fail vs the point's OWN effective limit (per-point Upper/Lower Limit ->
-   raw Spec -> page HI/LO_SPEC), via the single shared PADB_isFail rule (_COMMON_JS).
-   true=fail / false=pass / null=no limit. Same effective-limit precedence as the other
-   views, so scatter's "Passing/Failing only" agrees with them (2026-09-22, David). */
+   its own raw Spec_Hi/Lo), via the single shared PADB_isFail rule (_COMMON_JS).
+   true=fail / false=pass / null=no limit. Deliberately does NOT fall back to the
+   page-global HI_SPEC/LO_SPEC: on this dataset that single value (e.g. -80) was
+   misapplied to every offset of a swept measurement, marking limit-less, PADB-passed
+   points as FAIL -- so scatter's "Failing only" FILTER reported 156 while its own TABLE
+   (own-limit only) showed 85 (David 2026-09-23, same fabrication class as summary's
+   _sumDutLimit). Table + filter now share THIS one rule, so they agree with each other
+   and with summary/stat_summary/boxplot. A point with no real limit -> null -> unscored. */
 function _scatRowFail(r){
-  var hi=(r.Upper_Limit!=null)?r.Upper_Limit:((r.Spec_Hi!=null&&r.Spec_Hi!=='')?Number(r.Spec_Hi):(typeof HI_SPEC!=='undefined'?HI_SPEC:null));
-  var lo=(r.Lower_Limit!=null)?r.Lower_Limit:((r.Spec_Lo!=null&&r.Spec_Lo!=='')?Number(r.Spec_Lo):(typeof LO_SPEC!=='undefined'?LO_SPEC:null));
+  var hi=(r.Upper_Limit!=null)?r.Upper_Limit:((r.Spec_Hi!=null&&r.Spec_Hi!=='')?Number(r.Spec_Hi):null);
+  var lo=(r.Lower_Limit!=null)?r.Lower_Limit:((r.Spec_Lo!=null&&r.Spec_Lo!=='')?Number(r.Spec_Lo):null);
   return PADB_isFail(r.Value,hi,lo);
 }
 function applyFilters(data){
@@ -1077,9 +1082,10 @@ function _scatterBounds(){
 }
 function _scatterHasBounds(){var b=_scatterBounds();return b.spec||b.limit;}
 function _scatterStatus(r){
-  /* {t:text, c:cssColor} -- Pass/Fail vs the derived Limit (Upper/Lower Limit),
-     via the single shared PADB_isFail rule (see _COMMON_JS). */
-  var fail=PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit);
+  /* {t:text, c:cssColor} -- Pass/Fail via the SAME per-point rule the "Failing only"
+     filter uses (_scatRowFail: own Upper/Lower_Limit -> own Spec_Hi/Lo), so the table
+     status column can never disagree with the filter (David 2026-09-23). */
+  var fail=_scatRowFail(r);
   if(fail===null) return {t:'—',c:'#aaa'};
   return fail?{t:'FAIL',c:'#c00'}:{t:'PASS',c:'#2a7a2a'};
 }

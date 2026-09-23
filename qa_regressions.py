@@ -1326,6 +1326,15 @@ def test_summary_stat_perpoint_own_limit_only() -> None:
           bool(stl) and "HI_SPEC" not in stl and "LO_SPEC" not in stl)
     check("stat_summary _statDutLimits keeps own limit/spec + manual entry",
           "d.upper_limit" in stl and "man.hi" in stl)
+    # scatter: table + filter share ONE per-point rule (_scatRowFail), own limit/spec
+    # only -- no page-global HI_SPEC/LO_SPEC. Before this, the filter fabricated fails
+    # from HI_SPEC (156) while the table (own-limit) showed 85 (David 2026-09-23).
+    srf = _fn("_scatRowFail")
+    check("scatter _scatRowFail scores own Upper/Lower_Limit -> own Spec, no HI_SPEC",
+          bool(srf) and "r.Upper_Limit" in srf and "r.Spec_Hi" in srf
+          and "HI_SPEC" not in srf and "LO_SPEC" not in srf)
+    check("scatter table status shares the filter rule (_scatterStatus calls _scatRowFail)",
+          "var fail=_scatRowFail(r);" in src)
     # per-point (not per-frequency TTL) pass/fail, exact-complement in both tables
     check("summary Passing/Failing is per-point via _sumFreqMatch (old _sumFreqPasses gone)",
           "function _sumFreqMatch(" in src and "function _sumFreqPasses(" not in src)
@@ -1478,7 +1487,7 @@ def test_common_prelude_and_feature_registry() -> None:
           busy_inserts >= 7)
     # 3) Pure pass/fail sites route through the single rule (no divergent inline copy).
     check("scatter/boxplot pass-fail route through PADB_isFail",
-          "PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit)" in src
+          "return PADB_isFail(r.Value,hi,lo);" in src
           and "var fail=PADB_isFail(v,lim.hi,lim.lo);" in src
           and "if(lim.hi!=null||lim.lo!=null) return PADB_isFail(d.v,lim.hi,lim.lo);" in src)
     # 4) Cross-view feature registry: (label, marker, min occurrences). A feature
@@ -2412,9 +2421,9 @@ def test_scatter_table_spec_status() -> None:
         h = out.read_text(encoding="utf-8")
         check("scatter table: bounds gating present (_scatterBounds spec/limit)",
               "function _scatterBounds()" in h and "spec:spec,limit:limit" in h)
-        check("scatter table: Pass/Fail judged vs Limit via shared PADB_isFail rule",
+        check("scatter table: Pass/Fail judged via the shared _scatRowFail rule",
               "function _scatterStatus(r)" in h
-              and "PADB_isFail(r.Value,r.Upper_Limit,r.Lower_Limit)" in h)
+              and "var fail=_scatRowFail(r);" in h)
         check("scatter table: Spec/Limit/Status column headers emitted",
               "'Spec Hi','Spec Lo'" in h and "'Limit Hi','Limit Lo'" in h and "extraH.push('Status')" in h)
         check("scatter CSV export carries the same Spec/Limit/Status columns",
