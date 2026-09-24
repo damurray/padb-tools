@@ -802,9 +802,11 @@ def main(argv=None):
     ap.add_argument("--no-open", action="store_true", help="Do not open a browser")
     ap.add_argument("--bands", help="JSON file of named frequency bands "
                     "(default: bands.json / padb_viewer_bands.json next to the parquet)")
-    ap.add_argument("--auto-bands", action="store_true",
+    ap.add_argument("--auto-bands", dest="auto_bands", action="store_true", default=True,
                     help="If no band file is found, auto-generate an editable starter "
-                         "from the swept data (off by default; an existing file always loads)")
+                         "from the swept data (ON by default; an existing file always loads)")
+    ap.add_argument("--no-auto-bands", dest="auto_bands", action="store_false",
+                    help="Do NOT auto-generate a band file (an existing one still loads)")
     args = ap.parse_args(argv)
 
     global DS

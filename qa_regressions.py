@@ -1529,16 +1529,17 @@ def test_named_band_segments_crossview() -> None:
     check("padb_v2 resolves named bands via padb_bands.find_or_create_bands",
           "import padb_bands" in v2 and "padb_bands.find_or_create_bands(" in v2
           and 'cfg["_named_bands"] = _bands' in v2)
-    # Auto-generation is OPT-IN (David 2026-09-24: don't drop a file into every results
-    # folder). An existing sidecar always loads; creation is gated on the auto_bands key /
-    # --auto-bands flag. TEETH: allow_create must be the flag, never a hardcoded True.
-    check("padb_v2 gates auto-generation on the auto_bands opt-in (not hardcoded True)",
-          '_allow_auto = bool(cfg.get("auto_bands", False))' in v2
+    # Auto-generation defaults ON (David 2026-09-24: "flip autobands on") but stays gated on
+    # the auto_bands key so a job can opt out with false; --no-auto-bands forces it off.
+    # TEETH: default must be True, and the opt-out must exist.
+    check("padb_v2 auto-generation defaults ON (auto_bands key, default True) + --no-auto-bands opt-out",
+          '_allow_auto = bool(cfg.get("auto_bands", True))' in v2
           and "allow_create=_allow_auto)" in v2
-          and 'cfg["auto_bands"] = True' in v2)  # --auto-bands CLI override
+          and 'cfg["auto_bands"] = False' in v2)  # --no-auto-bands CLI override
     vw = (HERE / "padb_viewer.py").read_text(encoding="utf-8")
-    check("viewer gates auto-generation on --auto-bands (existing sidecar still loads)",
-          "allow_create=args.auto_bands)" in vw and '"--auto-bands"' in vw)
+    check("viewer auto-generation defaults ON with a --no-auto-bands opt-out",
+          "allow_create=args.auto_bands)" in vw and 'action="store_true", default=True' in vw
+          and '"--no-auto-bands"' in vw)
     check("has_segments ORs named bands so the control shows even with no spec",
           'or bool(cfg.get("_named_bands"))' in src
           and 'or bool(cfg.get("_named_bands"))' in v2)

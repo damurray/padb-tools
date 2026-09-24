@@ -1247,12 +1247,13 @@ def generate_report(
 
     # Named bands for the "Segment by: Named bands" control (shared with the parquet
     # viewer). An existing sidecar next to the results ALWAYS loads; auto-generation of an
-    # editable starter is OPT-IN via the `auto_bands` job key (David 2026-09-24 -- don't
-    # drop a file into every results folder by default). Stored on cfg so every view
-    # builder inherits it (see _cfg_for_view). Never fatal.
+    # editable starter defaults ON (David 2026-09-24 -- "flip autobands on"; every build gets
+    # an editable starter band file so the Named-bands step is always available). A job can
+    # opt out with "auto_bands": false. Stored on cfg so every view builder inherits it
+    # (see _cfg_for_view). Never fatal.
     if "_named_bands" not in cfg:
         try:
-            _allow_auto = bool(cfg.get("auto_bands", False))
+            _allow_auto = bool(cfg.get("auto_bands", True))
             _bands, _bpath, _bcreated = padb_bands.find_or_create_bands(
                 df["Frequency_MHz"].dropna().tolist(), cfg.get("x_unit", "MHz"),
                 [output_dir, csv_path.parent], allow_create=_allow_auto)
@@ -1890,10 +1891,17 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--auto-bands",
         action="store_true",
-        help="Auto-generate an editable starter named-band file next to the "
-             "results when none exists (drives the 'Segment by: Named bands' "
-             "step). Off by default -- an existing bands.json/padb_viewer_bands.json "
-             "is always used. Runtime override for the job's auto_bands key.",
+        help="Force auto-generation of an editable starter named-band file next to "
+             "the results when none exists (drives the 'Segment by: Named bands' "
+             "step). ON by default now; use --no-auto-bands to disable. Runtime "
+             "override for the job's auto_bands key.",
+    )
+    parser.add_argument(
+        "--no-auto-bands",
+        action="store_true",
+        help="Do NOT auto-generate a starter band file (an existing "
+             "bands.json/padb_viewer_bands.json is still used). Overrides the job's "
+             "auto_bands key. Wins over --auto-bands.",
     )
     parser.add_argument(
         "--pdf-report",
@@ -1941,6 +1949,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.auto_bands:
         cfg["auto_bands"] = True
+    if args.no_auto_bands:
+        cfg["auto_bands"] = False
     if args.pdf_report:
         cfg["build_pdf_report"] = True
     if args.pdf_apply_filter:
