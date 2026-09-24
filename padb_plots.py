@@ -2188,9 +2188,12 @@ def _build_help_panel_html(
         '<li><b>Filter dropdowns</b> (buttons above) &mdash; uncheck values to '
         'exclude matching rows from every chart, segment, and statistic on '
         'this page.</li>',
-        '<li><b>&#128274; Locked filters</b> (floating panel, top-right) &mdash; '
-        'saves the common filters (condition dropdowns, frequency range, Passing/'
-        'Failing, serial/port, and temperature) so you don&#39;t re-enter them on every view. '
+        '<li><b>&#128274; Locked filters</b> (floating panel, top-right; drag it by the '
+        '&#9143; grip if it covers a control) &mdash; here &quot;filters&quot; means '
+        '<i>every control that narrows the data</i>: the condition dropdowns, frequency '
+        'range, Passing/Failing, serial/port, and temperature. It saves that whole set so '
+        'you don&#39;t re-enter it on every view (plot type, group-by, table mode and zoom '
+        'stay per-view and are not locked). '
         'Set them on any view, click <i>Lock these filters</i>, and every other '
         'view auto-applies the same set when it opens. Use <i>Apply</i> to re-apply '
         'here, <i>Update from this view</i> to overwrite the lock, <i>Clear</i> to '
@@ -3797,7 +3800,7 @@ function PADB_lockRenderBar(rep){
       '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>'+
       '</div>';
   } else {
-    html += '<span onclick="PADB_lockSave()" title="Save this view\'s condition/frequency/pass-fail filters as a cross-view lock; other views auto-apply it" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
+    html += '<span onclick="PADB_lockSave()" title="Save ALL of this view\'s data filters -- conditions, frequency range, temperature, serial/port, and Passing/Failing -- as a cross-view lock; other views auto-apply it. (Plot type, group-by, table mode and zoom stay per-view.)" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
       '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>';
   }
   // keep the hidden import input

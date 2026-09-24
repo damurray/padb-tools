@@ -1445,6 +1445,12 @@ def test_locked_filters_crossview() -> None:
     check("the shared Help (i) panel documents locked filters",
           "Locked filters</b>" in src and "Lock these filters" in src
           and "separate from the Global Filter" in src)
+    # Naming clarity (David 2026-09-24): keep "Locked filters" but spell out that it means
+    # ALL data-narrowing controls (conditions/frequency/temperature/serial-port/pass-fail),
+    # so temperature/frequency reading as non-"filters" doesn't confuse newcomers.
+    check("lock help + button clarify 'filters' = every data-narrowing control",
+          "every control that narrows the data" in src
+          and "Save ALL of this view" in src and "data filters" in src)
     # Draggable lock bar (David 2026-09-24: "sometimes blocks filter features"). Grip handle,
     # drag listener on the persistent bar element (survives innerHTML rewrites), position
     # persisted in localStorage across views. Lives in the shared _LOCK_JS -> every view + ref.
