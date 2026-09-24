@@ -1447,6 +1447,63 @@ def test_locked_filters_crossview() -> None:
           and "separate from the Global Filter" in src)
 
 
+def test_named_band_segments_crossview() -> None:
+    """Named-band segment step across the swept-x HTML views (David 2026-09-24): a band
+    file (padb_bands.py) partitions the swept x into named chunks; every swept-x view's
+    "Segment by" control gains a "Named bands" mode that reuses the existing
+    segTab()/_segFilterCondDims()/setFreqBand() machinery -- so Filter->Plot->Tables stay
+    coupled. Bands come from an auto-generated (or user-edited) sidecar next to the results,
+    injected as `var NAMED_BANDS`. Shared helpers live in _COMMON_JS and every reference is
+    typeof-guarded so the EXCLUDED legacy distribution() (no _COMMON_JS) is unaffected when
+    the shared replace_all touches its duplicated segment functions. Behaviourally verified
+    live on all 6 views (boxplot Filter->Plot->Table proven to the band's freqs); source- and
+    module-pinned here so it can't silently regress. TEETH: strings unique to the feature."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    v2 = (HERE / "padb_v2.py").read_text(encoding="utf-8")
+    # Shared band-segment core in _COMMON_JS.
+    check("band-seg core defined + appended to _COMMON_JS",
+          '_BANDSEG_JS = r"""' in src
+          and '_COMMON_JS = _COMMON_JS + "\\n" + _LOCK_JS + "\\n" + _BANDSEG_JS' in src)
+    for fn in ("function PADB_hasNamedBands(", "function PADB_bandSegs(",
+               "function PADB_ensureBandOption("):
+        check(f"band-seg helper present: {fn}", fn in src)
+    check("PADB_bandSegs clamps bands to the data x-range (drops non-overlapping)",
+          "Math.max(Number(b.lo),xmin)" in src and "Math.min(Number(b.hi),xmax)" in src)
+    # NAMED_BANDS injected into exactly the 6 active swept-x views (via the shared GF_KEY line).
+    check("NAMED_BANDS injected into the 6 active swept-x view constants",
+          src.count("var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])}") == 6,
+          f"count={src.count(chr(39)+'var NAMED_BANDS=')}")
+    # Every _recomputeSpecSegments adds the option (typeof-guarded) + branches to bands.
+    check("recompute adds the Named-bands option (typeof-guarded so legacy is safe)",
+          "if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();" in src)
+    check("segment build branches to PADB_bandSegs when the key is 'bands' (guarded)",
+          src.count("(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():") >= 6)
+    check("default seg key falls back to 'bands' when no spec but bands exist (guarded)",
+          "return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';" in src)
+    check("segment label shows the band name when present",
+          "(seg.name?seg.name+': ':'')" in src)
+    # env_coverage/boxplot builders received a cfg param so they can inject NAMED_BANDS.
+    check("env_coverage + boxplot builders take cfg (to inject NAMED_BANDS)",
+          src.count("cfg: dict | None = None,") >= 2)
+    # padb_v2 resolves bands (sidecar-or-auto) and ORs them into has_segments.
+    check("padb_v2 resolves named bands via padb_bands.find_or_create_bands",
+          "import padb_bands" in v2 and "padb_bands.find_or_create_bands(" in v2
+          and 'cfg["_named_bands"] = _bands' in v2)
+    check("has_segments ORs named bands so the control shows even with no spec",
+          'or bool(cfg.get("_named_bands"))' in src
+          and 'or bool(cfg.get("_named_bands"))' in v2)
+    # The guarded option-adder call reaches ALL 7 _recomputeSpecSegments copies (6 active
+    # + the EXCLUDED legacy distribution(), which has no _COMMON_JS): the typeof guard is
+    # what makes that shared replace_all safe there. If a future edit dropped the guard,
+    # the legacy view would throw ReferenceError -- so pin the guarded form on every copy.
+    check("all 7 _recomputeSpecSegments copies got the typeof-guarded option-adder",
+          src.count("if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();")
+          == src.count("function _recomputeSpecSegments(){"))
+    check("there are the expected 7 _recomputeSpecSegments copies (6 active + 1 legacy)",
+          src.count("function _recomputeSpecSegments(){") == 7,
+          f"count={src.count('function _recomputeSpecSegments(){')}")
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -2590,6 +2647,7 @@ def main() -> None:
                test_publish_and_parquet_index_link,
                test_run_index_derivation, test_dataset_summary_lines,
                test_common_prelude_and_feature_registry,
+               test_named_band_segments_crossview,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()

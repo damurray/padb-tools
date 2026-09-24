@@ -89,6 +89,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import padb_run
+import padb_bands
 
 # ---------------------------------------------------------------------------
 # Reuse V1.0 internals — same directory
@@ -553,7 +554,7 @@ def render_env_coverage(
         df, [(f"_grp_{d['col']}", d["label"]) for d in cond_dims],
         pod_filter_expression=cfg.get("pod_filter_expression", ""),
     )
-    has_segments = _pp._has_segmentable_spec(df)
+    has_segments = _pp._has_segmentable_spec(df) or bool(cfg.get("_named_bands"))
 
     all_freqs = sorted(set(f for cd in env_data for f in cd["freqs"] if f is not None))
     freq_min = float(min(all_freqs)) if all_freqs else 0.0
@@ -625,6 +626,7 @@ def render_env_coverage(
         has_segments=has_segments,
         primary_site=ec_primary_site if ec_site_enabled else None,
         site_btn_html=ec_site_btn_html,
+        cfg=cfg,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -860,7 +862,7 @@ def render_summary(
     freq_vals = sorted(float(f) for f in df["Frequency_MHz"].dropna().unique())
     freq_min  = freq_vals[0] if freq_vals else 0.0
     freq_max  = freq_vals[-1] if freq_vals else 1.0
-    has_segments = _pp._has_segmentable_spec(df)
+    has_segments = _pp._has_segmentable_spec(df) or bool(cfg.get("_named_bands"))
 
     # Cross-site comparison (compare_csv tags each row's Group text "Site: <name>"
     # before this function ever sees it -- see _build_compare_csv). "Site" already
@@ -1242,6 +1244,28 @@ def generate_report(
         df_ec = _fill_spec_nulls(df_ec, cfg.get("spec_interp", "none"))
         print(f"    Rows: {len(df_ec):,}  |  Temps: {sorted(df_ec['Temperature'].unique())}",
               flush=True)
+
+    # Named bands for the "Segment by: Named bands" control (shared with the parquet
+    # viewer). An existing sidecar next to the results wins; otherwise auto-generate an
+    # editable starter from the actual swept x and invite the user to rename/re-range
+    # (David 2026-09-24). Stored on cfg so every view builder inherits it (see
+    # _cfg_for_view). Never fatal.
+    if "_named_bands" not in cfg:
+        try:
+            _bands, _bpath, _bcreated = padb_bands.find_or_create_bands(
+                df["Frequency_MHz"].dropna().tolist(), cfg.get("x_unit", "MHz"),
+                [output_dir, csv_path.parent], allow_create=True)
+            cfg["_named_bands"] = _bands
+            if _bcreated and _bpath:
+                print(f"  Auto-generated {len(_bands)} starter band(s) -> {Path(_bpath).name} "
+                      f"(edit to rename/re-range; drives the 'Named bands' segment step)",
+                      flush=True)
+            elif _bands and _bpath:
+                print(f"  Loaded {len(_bands)} named band(s) from {Path(_bpath).name} "
+                      f"(drives the 'Named bands' segment step)", flush=True)
+        except Exception as _exc:
+            cfg["_named_bands"] = []
+            print(f"  [bands] skipped ({_exc})", flush=True)
 
     room_values = set(cfg.get("room_values", ["Room"]))
     is_room_only = set(df["Temperature"].dropna().unique()) <= room_values

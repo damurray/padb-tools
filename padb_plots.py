@@ -1220,7 +1220,7 @@ function _defaultSegKey(){
   if(has('Spec_Hi')||has('Spec_Lo')) return 'spec';
   if(has('Upper_Limit')||has('Lower_Limit')) return 'limit';
   if(has('Unc_Hi')||has('Unc_Lo')) return 'uncertainty';
-  return 'spec';
+  return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
@@ -1230,7 +1230,7 @@ function _segLabelText(seg,i,n){
   var parts=[];
   if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
+  return 'Segment '+(i+1)+' of '+n+'  ('+(seg.name?seg.name+': ':'')+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+((parts.length)?(', '+parts.join(', ')):(seg.name?'':', no value'))+')';
 }
 /* Narrow every condition-dim dropdown (SpurType, Upper/Lower Limit/Spec/
    Uncertainty, etc.) to only the value(s) actually present among rows
@@ -1330,6 +1330,7 @@ function segTab(dir){
    the segment list up live, instead of staying stuck with whatever the full
    unfiltered dataset produced. */
 function _recomputeSpecSegments(){
+  if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
     _segKey=_defaultSegKey();
     var sel=document.getElementById('segKeySel');
@@ -1371,7 +1372,7 @@ function _recomputeSpecSegments(){
     return true;
   });
   var mask=getSpecMaskByKey(groupFiltered,_segKey);
-  _specSegments=getSpecSegments(mask.hi,mask.lo);
+  _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(mask.hi,mask.lo);
   }
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
@@ -2453,7 +2454,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     x_unit    = cfg.get("x_unit", "MHz")
     y_lim     = cfg.get("y_lim")
     log_x_cfg = cfg.get("log_x", None)   # None = auto-detect
-    has_segments = _has_segmentable_spec(df)
+    has_segments = _has_segmentable_spec(df) or bool(cfg.get("_named_bands"))
 
     group_cols = _detect_group_cols(df)
 
@@ -2807,6 +2808,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         # -- so a Global Filter built on one dataset never bleeds onto an
         # unrelated one. See "Global Filter scope" note.
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
     ])
 
@@ -3383,7 +3385,7 @@ function _defaultSegKey(){
   if(has('Spec_Hi')||has('Spec_Lo')) return 'spec';
   if(has('Upper_Limit')||has('Lower_Limit')) return 'limit';
   if(has('Unc_Hi')||has('Unc_Lo')) return 'uncertainty';
-  return 'spec';
+  return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
@@ -3407,6 +3409,7 @@ function segTab(dir){
    view's identical reasoning. Re-run on every update() so isolating a group
    (e.g. one SpurType) cleans the segment list up live. */
 function _recomputeSpecSegments(){
+  if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
     _segKey=_defaultSegKey();
     var sel=document.getElementById('segKeySel');
@@ -3430,7 +3433,7 @@ function _recomputeSpecSegments(){
     return true;
   });
   var mask=getSpecMaskByKey(groupFiltered,_segKey);
-  _specSegments=getSpecSegments(mask.hi,mask.lo);
+  _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(mask.hi,mask.lo);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -3866,7 +3869,43 @@ function PADB_lockReadSP(dims,serialClass,portClass,tempClass){
       if(ct.length&&ct.length<t.length) dims['Temperature']=ct; } }
 }
 """
-_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS
+
+# ---- Named-band segment stepper (cross-view; David 2026-09-24) --------------------
+# A band file (padb_bands.py) partitions the swept x-axis into named chunks. Each view
+# injects `var NAMED_BANDS=[{name,lo,hi},...]` (already in the view's x unit); these
+# helpers let the existing "Segment by" control add a "Named bands" mode that reuses the
+# very same segTab()/_segFilterCondDims()/setFreqBand() machinery as the spec/limit
+# stepper -- so Filter -> Plot -> Tables stay coupled exactly as they already do. Every
+# reference is typeof-guarded so the excluded legacy views (which don't include
+# _COMMON_JS) are unaffected when the shared replace_all touches their duplicated
+# segment functions.
+_BANDSEG_JS = r"""
+function PADB_hasNamedBands(){ return typeof NAMED_BANDS!=='undefined'&&NAMED_BANDS&&NAMED_BANDS.length>0; }
+function PADB_bandSegs(){
+  /* Named-band "segments" for the segment stepper, clamped to the data's x range
+     (FREQ_MIN/FREQ_MAX / BOX_FREQ_MIN.. when present) so a band with no data in this
+     view is dropped. hiValue/loValue null -> _segLabelText shows the band name only. */
+  var out=[];
+  if(!PADB_hasNamedBands()) return out;
+  var xmin=(typeof FREQ_MIN!=='undefined')?FREQ_MIN:((typeof BOX_FREQ_MIN!=='undefined')?BOX_FREQ_MIN:-Infinity);
+  var xmax=(typeof FREQ_MAX!=='undefined')?FREQ_MAX:((typeof BOX_FREQ_MAX!=='undefined')?BOX_FREQ_MAX:Infinity);
+  NAMED_BANDS.forEach(function(b){
+    var lo=Math.max(Number(b.lo),xmin), hi=Math.min(Number(b.hi),xmax);
+    if(isFinite(lo)&&isFinite(hi)&&hi>lo) out.push({lo:lo,hi:hi,name:String(b.name||''),hiValue:null,loValue:null});
+  });
+  out.sort(function(a,b){return a.lo-b.lo;});
+  return out;
+}
+function PADB_ensureBandOption(){
+  /* Add the "Named bands" option to the view's Segment-by dropdown once, if bands
+     are present. No-op when the control or bands are absent. */
+  if(!PADB_hasNamedBands()) return;
+  var sel=document.getElementById('segKeySel'); if(!sel) return;
+  for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value==='bands') return; }
+  var o=document.createElement('option'); o.value='bands'; o.textContent='Named bands'; sel.appendChild(o);
+}
+"""
+_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS
 
 # Static loading overlay, painted before the giant data <script> parses (so the page
 # never just looks dead). Hidden by PADB_busyHide (_COMMON_JS) after the first render.
@@ -4720,7 +4759,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
 
     x_unit = cfg.get("x_unit", "MHz")
     x_label = cfg.get("x_label", "Frequency (MHz)")
-    has_segments = _has_segmentable_spec(df)
+    has_segments = _has_segmentable_spec(df) or bool(cfg.get("_named_bands"))
 
     # -------------------------------------------------------------------------
     # 0.  KDE helpers
@@ -5089,6 +5128,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var TITLE={json.dumps(title)};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var RAW_ABS={json.dumps(raw_abs)};",
         f"var RAW_DELTA={json.dumps(raw_delta)};",
@@ -5620,7 +5660,7 @@ function _defaultSegKey(){
   if(has('spec_hi')||has('spec_lo')) return 'spec';
   if(has('hi')||has('lo')) return 'limit';
   if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
-  return 'spec';
+  return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
@@ -5630,7 +5670,7 @@ function _segLabelText(seg,i,n){
   var parts=[];
   if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
+  return 'Segment '+(i+1)+' of '+n+'  ('+(seg.name?seg.name+': ':'')+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+((parts.length)?(', '+parts.join(', ')):(seg.name?'':', no value'))+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -5701,6 +5741,7 @@ function _segFilterCondDims(seg){
    SpurType/serial/port filters apply -- same ones update() itself uses for
    its own freq/serial-triggered raw recompute. */
 function _recomputeSpecSegments(){
+  if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
     _segKey=_defaultSegKey();
     var sel=document.getElementById('segKeySel');
@@ -5740,7 +5781,7 @@ function _recomputeSpecSegments(){
      _segFilterCondDims() narrows conditions to the tabbed-to segment, and
      rebuilding from those would collapse the list to 1 and hide the Prev/Next
      bar. Genuine filter changes still rebuild. See scatter's fuller note. */
-  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
+  if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -8764,7 +8805,7 @@ function _defaultSegKey(){
   if(has('spec_hi')||has('spec_lo')) return 'spec';
   if(has('upper_limit')||has('lower_limit')) return 'limit';
   if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
-  return 'spec';
+  return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
@@ -8774,7 +8815,7 @@ function _segLabelText(seg,i,n){
   var parts=[];
   if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
+  return 'Segment '+(i+1)+' of '+n+'  ('+(seg.name?seg.name+': ':'')+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+((parts.length)?(', '+parts.join(', ')):(seg.name?'':', no value'))+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -8895,6 +8936,7 @@ function _segFilterCondDims(seg){
    representative value per freq_stats entry) carries these fields -- see
    _aggregate_stat_data (padb_plots.py). */
 function _recomputeSpecSegments(){
+  if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
     _segKey=_defaultSegKey();
     var sel=document.getElementById('segKeySel');
@@ -8935,7 +8977,7 @@ function _recomputeSpecSegments(){
      _segFilterCondDims() narrows conditions to the tabbed-to segment, and
      rebuilding from those would collapse the list to 1 and hide the Prev/Next
      bar. Genuine filter changes still rebuild. See scatter's fuller note. */
-  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
+  if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -9404,7 +9446,7 @@ def _build_stat_summary_html(
     x_unit = cfg.get("x_unit", "MHz")
     y_lim = cfg.get("y_lim")
     log_x_cfg = cfg.get("log_x", None)
-    has_segments = _has_segmentable_spec(df)
+    has_segments = _has_segmentable_spec(df) or bool(cfg.get("_named_bands"))
 
     freq_min = float(df["Frequency_MHz"].min()) if len(df) else 0.0
     freq_max = float(df["Frequency_MHz"].max()) if len(df) else 1.0
@@ -9631,6 +9673,7 @@ def _build_stat_summary_html(
         f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site if site_compare_enabled else None)};",
     ])
@@ -11228,7 +11271,7 @@ function _defaultSegKey(){
   if(has('spec_hi')||has('spec_lo')) return 'spec';
   if(has('upper_limit')||has('lower_limit')) return 'limit';
   if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
-  return 'spec';
+  return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
@@ -11238,7 +11281,7 @@ function _segLabelText(seg,i,n){
   var parts=[];
   if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+EC_X_UNIT+', '+(parts.join(', ')||'no value')+')';
+  return 'Segment '+(i+1)+' of '+n+'  ('+(seg.name?seg.name+': ':'')+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+EC_X_UNIT+((parts.length)?(', '+parts.join(', ')):(seg.name?'':', no value'))+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -11341,6 +11384,7 @@ function _segFilterCondDims(seg){
    moves) -- see the scatter view's identical reasoning. Reuses getActiveDuts
    exactly, so the same serial/port/GF filtering as the actual plot applies. */
 function _recomputeSpecSegments(){
+  if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
     _segKey=_defaultSegKey();
     var sel=document.getElementById('segKeySel');
@@ -11383,7 +11427,7 @@ function _recomputeSpecSegments(){
      _segFilterCondDims() narrows conditions to the tabbed-to segment, and
      rebuilding from those would collapse the list to 1 and hide the Prev/Next
      bar. Genuine filter changes still rebuild. See scatter's fuller note. */
-  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
+  if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -11876,6 +11920,7 @@ def _build_env_coverage_html(
     has_segments: bool = True,
     primary_site: str = None,
     site_btn_html: str = "",
+    cfg: dict | None = None,
 ) -> str:
     css = (
         "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
@@ -12226,6 +12271,7 @@ def _build_env_coverage_html(
         f"var EC_ALL_PORTS={json.dumps(all_ports or [])};",
         f"var STATE_KEY='padb_{results_dir}';",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var TITLE={json.dumps(title)};",
         f"var PRIMARY_SITE={json.dumps(primary_site)};",
@@ -16207,7 +16253,7 @@ function _defaultSegKey(){
   if(has('spec_hi')||has('spec_lo')) return 'spec';
   if(has('upper_limit')||has('lower_limit')) return 'limit';
   if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
-  return 'spec';
+  return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
@@ -16217,7 +16263,7 @@ function _segLabelText(seg,i,n){
   var parts=[];
   if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
+  return 'Segment '+(i+1)+' of '+n+'  ('+(seg.name?seg.name+': ':'')+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+((parts.length)?(', '+parts.join(', ')):(seg.name?'':', no value'))+')';
 }
 /* Narrow the condition filter (longform checkboxes, or the per-dimension
    Upper/Lower Limit/Spec/Uncertainty dropdowns when longform isn't
@@ -16361,6 +16407,7 @@ function segTab(dir){
    why vals_detail (not one representative value per freq_stats entry)
    carries these fields -- see _aggregate_box_data_by_temp (padb_plots.py). */
 function _recomputeSpecSegments(){
+  if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
     _segKey=_defaultSegKey();
     var sel=document.getElementById('segKeySel');
@@ -16404,7 +16451,7 @@ function _recomputeSpecSegments(){
      _segFilterCondDims() narrows conditions to the tabbed-to segment, and
      rebuilding from those would collapse the list to 1 and hide the Prev/Next
      bar. Genuine filter changes still rebuild. See scatter's fuller note. */
-  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
+  if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -16736,6 +16783,7 @@ def _build_box_interactive_html(
     has_segments: bool = True,
     drop_points: bool = False,
     status_field: str = "",
+    cfg: dict | None = None,
 ) -> str:
     css = (
         "html{overflow-y:scroll;}"  # reserve the scrollbar gutter -- stops the on/off flicker when a filter/panel/re-render changes page height
@@ -17069,6 +17117,7 @@ def _build_box_interactive_html(
         f"var BOX_COND_HARM={json.dumps(box_cond_harm or [])};",
         f"var STATE_KEY='padb_{results_dir}';",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PADB_FIELD_PREFIX={json.dumps(padb_field_prefix)};",
         f"var PADB_FREQ_FIELD={json.dumps(padb_freq_field)};",
@@ -17304,7 +17353,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     padb_freq_field = (padb_field_prefix + ":" + _x_axis_field) if padb_field_prefix else ""
     y_lim = cfg.get("y_lim")
     lo_spec, hi_spec = _get_spec(df, cfg)
-    has_segments = _has_segmentable_spec(df)
+    has_segments = _has_segmentable_spec(df) or bool(cfg.get("_named_bands"))
 
     # Same rule as the summary view: a detected CSV limit always wins (no
     # selector). With no CSV limit, always show the live TLL-direction
@@ -17628,6 +17677,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         has_segments=has_segments,
         drop_points=bool(cfg.get("box_drop_points", False)),
         status_field=box_status_field,
+        cfg=cfg,
     )
     output_html.parent.mkdir(parents=True, exist_ok=True)
     output_html.write_text(html, encoding="utf-8")
@@ -19346,7 +19396,7 @@ function _defaultSegKey(){
   if(has('spec_hi')||has('spec_lo')) return 'spec';
   if(has('upper_limit')||has('lower_limit')) return 'limit';
   if(has('unc_hi')||has('unc_lo')) return 'uncertainty';
-  return 'spec';
+  return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
@@ -19356,7 +19406,7 @@ function _segLabelText(seg,i,n){
   var parts=[];
   if(seg.hiValue!=null) parts.push('upper: '+seg.hiValue);
   if(seg.loValue!=null) parts.push('lower: '+seg.loValue);
-  return 'Segment '+(i+1)+' of '+n+'  ('+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+', '+(parts.join(', ')||'no value')+')';
+  return 'Segment '+(i+1)+' of '+n+'  ('+(seg.name?seg.name+': ':'')+seg.lo.toFixed(3)+'–'+seg.hi.toFixed(3)+' '+X_UNIT+((parts.length)?(', '+parts.join(', ')):(seg.name?'':', no value'))+')';
 }
 function segTab(dir){
   if(!_specSegments.length) return;
@@ -19485,6 +19535,7 @@ function _sumInclDutIdxs(cd){
    [field][freq_idx][dut_idx], parallel to dut_vals -- see render_summary()
    (padb_v2.py). */
 function _recomputeSpecSegments(){
+  if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
     _segKey=_defaultSegKey();
     var sel=document.getElementById('segKeySel');
@@ -19526,7 +19577,7 @@ function _recomputeSpecSegments(){
      _segFilterCondDims() narrows conditions to the tabbed-to segment, and
      rebuilding from those would collapse the list to 1 and hide the Prev/Next
      bar. Genuine filter changes still rebuild. See scatter's fuller note. */
-  if(!_segIdxPinned) _specSegments=getSpecSegments(hiPoints,loPoints);
+  if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
   if(_specSegments.length<2){bar.style.display='none';return;}
@@ -19953,6 +20004,7 @@ def _build_summary_html(
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in freq_vals))};",
         f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
+        f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site)};",
     ])
