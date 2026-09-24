@@ -547,7 +547,12 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
     if cached and os.path.exists(cached[0]):
         return cached
 
-    t = pqm.read_table(str(DS.path))
+    # Read the raw parquet once and reuse it across band requests (was re-read every call).
+    t = getattr(DS, "_raw_table", None)
+    if t is None:
+        t = pqm.read_table(str(DS.path))
+        try: DS._raw_table = t
+        except Exception: pass
     col = pc.cast(t.column(DS.x_col), pa.float64())
     mask = pc.and_(pc.greater_equal(col, pa.scalar(flo)),
                    pc.less_equal(col, pa.scalar(fhi)))
@@ -581,6 +586,22 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
     padb_v2.generate_report(band_csv, cfg, tmp)
     cands = sorted(tmp.glob(f"*_{view}.html"))
     out = str(cands[0]) if cands else ""
+    # Efficiency: the band HTML is regenerated on every request (unlike the build-once
+    # share HTML), and ~4.5 MB of it is inline Plotly.js re-embedded each time. Point it at
+    # the viewer's own /plotly.js route instead, so the browser downloads/parses Plotly ONCE
+    # and caches it across every band view -- each band HTML drops ~4.5 MB and the iframe
+    # loads far faster (David 2026-09-24: "band render longer than the html"). Self-contained
+    # inlining only matters for the shared .html files, not these in-server renders.
+    if out:
+        try:
+            import padb_plots as _pp
+            marker = "<script>" + _pp._get_plotlyjs() + "</script>"
+            _t = Path(out).read_text(encoding="utf-8")
+            if marker in _t:
+                Path(out).write_text(
+                    _t.replace(marker, '<script src="/plotly.js"></script>', 1), encoding="utf-8")
+        except Exception:
+            pass
     _band_cache[key] = (out, n)
     return out, n
 

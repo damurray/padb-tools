@@ -184,6 +184,15 @@ def main() -> None:
     check("viewer: band-view spinner overlay present",
           'id="vbusy"' in vsrc and "vspin" in vsrc)
 
+    # Efficiency: band HTML references the shared /plotly.js route instead of re-embedding
+    # ~4.5 MB of Plotly on every request (David 2026-09-24: "band render longer than the
+    # html"). The library is then browser-cached across band views.
+    sc_html = _get(client, f"/view?view=scatter&flo={xmin}&fhi={xmax}&full=0").get_data(as_text=True)
+    check("viewer: band HTML uses shared /plotly.js (not ~4.5MB inline)",
+          'src="/plotly.js"' in sc_html and len(sc_html) < 2_000_000, f"len={len(sc_html)}")
+    check("viewer: /plotly.js route serves the library",
+          "Plotly" in client.get("/plotly.js").get_data(as_text=True))
+
     print(f"\nqa_viewer: PASS={_PASS}  FAIL={_FAIL}")
     sys.exit(1 if _FAIL else 0)
 
