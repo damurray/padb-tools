@@ -214,6 +214,29 @@ _LOCK_APPLY_BOX = r"""
   return { rep:rep, sites:Object.keys(s), passfail:pf?pf.value:null };
 } catch(e){ return { error:String(e) }; } }
 """
+# reference/distribution/env_coverage have no pass/fail axis; verify Site propagated
+# by reading which Site checkboxes remain checked after apply.
+_LOCK_APPLY_REF = r"""
+(L) => { try { var o=JSON.parse(L); PADB_lockSet(o); var rep=PADB_lockApply();
+  var sc=null;(GROUP_COLS||[]).forEach(function(p){if(/site/i.test(p[1]))sc=p[0];});
+  var chk=[]; if(sc) document.querySelectorAll('.fchk[data-col="'+sc+'"]:checked').forEach(function(c){chk.push(c.value);});
+  return { rep:rep, sites:chk, passfail:null };
+} catch(e){ return { error:String(e) }; } }
+"""
+_LOCK_APPLY_DIST = r"""
+(L) => { try { var o=JSON.parse(L); PADB_lockSet(o); var rep=PADB_lockApply();
+  var idx=-1;(DIST_COND_DIMS||[]).forEach(function(d,i){if(/site/i.test(d.label))idx=i;});
+  var chk=[]; if(idx>=0) document.querySelectorAll('.dist_cond'+idx+'_chk:checked').forEach(function(c){chk.push(c.value);});
+  return { rep:rep, sites:chk, passfail:null };
+} catch(e){ return { error:String(e) }; } }
+"""
+_LOCK_APPLY_EC = r"""
+(L) => { try { var o=JSON.parse(L); PADB_lockSet(o); var rep=PADB_lockApply();
+  var cid=null;(COND_DIMS||[]).forEach(function(d){if(/site/i.test(d.label))cid=d.col_id;});
+  var chk=[]; if(cid) document.querySelectorAll('.'+cid+':checked').forEach(function(c){chk.push(c.value);});
+  return { rep:rep, sites:chk, passfail:null };
+} catch(e){ return { error:String(e) }; } }
+"""
 
 
 
@@ -380,10 +403,18 @@ def main() -> None:
                     else:
                         want = rd["site"]
                         L = json.dumps(rd["lock"])
-                        _targets = [("summary", _LOCK_APPLY_SUM), ("stat_summary", _LOCK_APPLY_STAT)]
-                        if "boxplot" in rmap:
-                            _targets.append(("boxplot", _LOCK_APPLY_BOX))
-                        for key, reader in _targets:
+                        # (key, reader, strict?) -- strict views carry both sites here;
+                        # env_coverage is delta-only (a Room-only site has no delta), so a
+                        # lenient check: adapter runs, never wrongly selects the other site.
+                        _targets = [("summary", _LOCK_APPLY_SUM, True),
+                                    ("stat_summary", _LOCK_APPLY_STAT, True)]
+                        for k2, rdr in (("boxplot", _LOCK_APPLY_BOX), ("reference", _LOCK_APPLY_REF),
+                                        ("distribution", _LOCK_APPLY_DIST)):
+                            if k2 in rmap:
+                                _targets.append((k2, rdr, True))
+                        if "env_coverage" in rmap:
+                            _targets.append(("env_coverage", _LOCK_APPLY_EC, False))
+                        for key, reader, strict in _targets:
                             pg = browser.new_page(); pg.goto(rmap[key].as_uri()); pg.wait_for_timeout(1200)
                             st = pg.evaluate(reader, L); pg.close()
                             if not isinstance(st, dict) or st.get("error"):
@@ -391,12 +422,20 @@ def main() -> None:
                             sites = set(st.get("sites", [])); pf = st.get("passfail")
                             rep = st.get("rep") or {}
                             applied = rep.get("applied") or []
-                            if sites == {want} and pf == "failing" and "Site" in applied:
-                                _ok(f"INV-LOCK {key}: scatter's lock (Site={want}, Failing) auto-applied")
+                            pf_ok = (pf is None) or (pf == "failing")
+                            if strict:
+                                if sites == {want} and pf_ok and "Site" in applied:
+                                    _ok(f"INV-LOCK {key}: scatter's lock (Site={want}) auto-applied")
+                                else:
+                                    _bad(f"INV-LOCK {key}: scatter's lock did NOT propagate",
+                                         f"want Site={{{want}}}; got sites={sorted(sites)} pf={pf} applied={applied}")
                             else:
-                                _bad(f"INV-LOCK {key}: scatter's lock did NOT propagate",
-                                     f"want Site={{{want}}} + failing; got sites={sorted(sites)} "
-                                     f"pf={pf} applied={applied}")
+                                # lenient: must not have wrongly selected the OTHER site, and no crash
+                                if not (sites - {want}):
+                                    _ok(f"INV-LOCK {key}: lock applied best-effort (delta view; sites={sorted(sites)})")
+                                else:
+                                    _bad(f"INV-LOCK {key}: lock selected an unexpected site",
+                                         f"want subset of {{{want}}}; got {sorted(sites)}")
                 except Exception as exc:
                     _bad("INV-LOCK: probe raised", str(exc))
             browser.close()

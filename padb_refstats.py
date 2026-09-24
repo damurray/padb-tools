@@ -33,7 +33,7 @@ import pandas as pd
 from padb_plots import (
     _get_plotlyjs, _checkbox_panel, _detect_group_cols, _short_x_label,
     _floor_dec, _ceil_dec, _freq_label_map, _AUTO_FILTER_SHARED_JS,
-    _BUSY_OVERLAY_HTML,
+    _BUSY_OVERLAY_HTML, _LOCK_JS,
 )
 
 # Keyword match for the pod's pass/fail status field among the group dims (the JS
@@ -261,7 +261,7 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         # shared PADB_busyHide poll to watch).
         + _BUSY_OVERLAY_HTML
         + body
-        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
+        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_LOCK_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
     )
 
 
@@ -646,7 +646,35 @@ function resetFilters(){
   var gfChk=document.getElementById('ref_gf_chk'); if(gfChk)gfChk.checked=true;
   update();
 }
+/* ---- Locked filters adapter (cross-view; see _LOCK_JS). Reference is an aggregate
+   table with no pass/fail axis, so it locks condition dims + frequency range. ---- */
+function _refLockRead(){
+  /* Reference keeps Serial in GROUP_COLS but labels it "Serial" (other views say
+     "Serial Number"). Read it under the canonical "Serial Number" so a lock made here
+     applies elsewhere; read the remaining group dims (incl. Port) as-is. */
+  var groups=(typeof GROUP_COLS!=='undefined'?GROUP_COLS:[]).filter(function(p){return !/serial|unit id|dut id|s\/n/i.test(p[1]);}).map(function(p){return {label:p[1],boxes:document.querySelectorAll('.fchk[data-col="'+p[0]+'"]')};});
+  var dims=PADB_lockReadChecks(groups);
+  var sb=document.querySelectorAll('.fchk[data-col="Serial"]');
+  if(sb.length){var cs=Array.prototype.slice.call(sb).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+    if(cs.length&&cs.length<sb.length) dims['Serial Number']=cs;}
+  var lo=document.getElementById('f_lo'),hi=document.getElementById('f_hi');
+  return {dims:dims,
+    freq:{lo:(lo&&lo.value!=='')?parseFloat(lo.value):null,hi:(hi&&hi.value!=='')?parseFloat(hi.value):null},passfail:'all'};
+}
+function _refLockApply(o){
+  var applied=[],skipped=[],byLabel={};(typeof GROUP_COLS!=='undefined'?GROUP_COLS:[]).forEach(function(p){byLabel[p[1]]=p[0];});
+  var sp=PADB_lockSplitSP(o);   // serial-like -> the dedicated Serial column; rest (incl. Port) -> by label
+  Object.keys(sp.rest).forEach(function(label){var col=byLabel[label];
+    if(!col){skipped.push(label);return;}
+    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),sp.rest[label])?applied:skipped).push(label);});
+  if(sp.serial!=null){ (PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col="Serial"]'),sp.serial)?applied:skipped).push('Serial Number'); }
+  if(o&&o.freq){var lo=document.getElementById('f_lo'),hi=document.getElementById('f_hi');
+    if(lo&&o.freq.lo!=null)lo.value=o.freq.lo; if(hi&&o.freq.hi!=null)hi.value=o.freq.hi;}
+  if(typeof update==='function') update();
+  return {applied:applied,skipped:skipped};
+}
 window.addEventListener('DOMContentLoaded',function(){_loadRefGlobalFilter();update();
+  if(typeof PADB_lockRegister==='function'){ PADB_lockRegister({read:_refLockRead,apply:_refLockApply}); PADB_lockInit(); }
   /* Remove the busy overlay once the tables have painted (this view has no #plot for
      the shared PADB_busyHide poll). rAF so the first render is visible before removal. */
   requestAnimationFrame(function(){var _b=document.getElementById('padb_busy'); if(_b&&_b.parentNode) _b.parentNode.removeChild(_b);});});

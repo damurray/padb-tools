@@ -3682,7 +3682,13 @@ function PADB_deferRender(el,buildFn,msg){ if(!el){ buildFn(); return; }
   if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(poll,50);});
   else setTimeout(poll,50);
 })();
+"""
 
+# Cross-view locked-filters core kept as its OWN constant so the reference view
+# (padb_refstats.py, which does not include _COMMON_JS) can embed it too. It is appended
+# to _COMMON_JS below, so every interactive view that already includes _COMMON_JS still
+# gets it unchanged.
+_LOCK_JS = r"""
 /* ==================== Locked filters (cross-view) ====================
    Save the common filters (condition dims, frequency range, pass/fail) on ANY view,
    then every other view auto-applies them on load -- so you dial filters in once and
@@ -3778,7 +3784,55 @@ function PADB_lockReadChecks(groups){
     if(checked.length && checked.length<boxes.length) out[g.label]=checked; });
   return out;
 }
+/* Serial Number and Port are CONDITION dims on scatter/reference (they live in
+   GROUP_COLS) but DEDICATED filters on the aggregate views (box_ser_chk, sum_ser_chk,
+   ec_port_chk, ...). So a lock made on scatter carries "Serial Number"/"Port" as dims,
+   and an aggregate view must route them to its own serial/port controls instead of its
+   condition dims -- otherwise it silently skips them (David 2026-09-23: "boxplot does
+   not apply all the locked filters"). PADB_lockSplitSP pulls serial-like + an exact
+   "Port" entry out of a lock's dims, leaving `rest` for the condition-dim logic. */
+function PADB_lockSplitSP(o){
+  var serial=null,port=null,rest={};
+  Object.keys((o&&o.dims)||{}).forEach(function(k){ var lo=k.toLowerCase();
+    if(/serial|unit id|dut id|s\/n/.test(lo)) serial=o.dims[k];
+    else if(lo==='port') port=o.dims[k];
+    else rest[k]=o.dims[k]; });
+  return {serial:serial,port:port,rest:rest};
+}
+/* Serial checkbox matcher: some views key serials port-qualified ("MY123_RF1") while
+   scatter/reference key the base serial ("MY123"). Match on BASE form on both sides (strip
+   a trailing _<port-like> token) so a base-serial lock still selects a port-qualified list
+   and vice-versa (David 2026-09-23: serial skipped because "MY123" != "MY123_RF1"). */
+function _lockSerBase(s){ return String(s).replace(/_[A-Za-z]+\d*$/,''); }
+function PADB_lockSetSerials(boxes,vals){
+  boxes=Array.prototype.slice.call(boxes||[]); if(!boxes.length) return false;
+  var want={}; (vals||[]).forEach(function(v){ want[String(v)]=1; want[_lockSerBase(v)]=1; });
+  var match=function(v){ return !!(want[String(v)]||want[_lockSerBase(v)]); };
+  var anyHere=boxes.some(function(c){ return match(c.value); });
+  if(!anyHere) return false;
+  boxes.forEach(function(c){ c.checked=match(c.value); });
+  return true;
+}
+/* Apply serial/port lock values to a view's dedicated checkbox classes (best-effort;
+   pass null to skip a control). Appends to applied/skipped arrays; reports under the
+   canonical labels so the banner reads the same everywhere. Serial uses base-form
+   matching (PADB_lockSetSerials); Port is an exact match. */
+function PADB_lockApplySP(sp,serialClass,portClass,applied,skipped){
+  if(sp.serial!=null){ (serialClass&&PADB_lockSetSerials(document.querySelectorAll('.'+serialClass),sp.serial)?applied:skipped).push('Serial Number'); }
+  if(sp.port!=null){ (portClass&&PADB_lockSetChecks(document.querySelectorAll('.'+portClass),sp.port)?applied:skipped).push('Port'); }
+}
+/* Read a view's dedicated serial/port controls into a lock's dims (canonical labels),
+   so a lock made ON an aggregate view also carries serial/port. */
+function PADB_lockReadSP(dims,serialClass,portClass){
+  if(serialClass){ var s=document.querySelectorAll('.'+serialClass);
+    if(s.length){ var cs=Array.prototype.slice.call(s).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+      if(cs.length&&cs.length<s.length) dims['Serial Number']=cs; } }
+  if(portClass){ var p=document.querySelectorAll('.'+portClass);
+    if(p.length){ var cp=Array.prototype.slice.call(p).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+      if(cp.length&&cp.length<p.length) dims['Port']=cp; } }
+}
 """
+_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS
 
 # Static loading overlay, painted before the giant data <script> parses (so the page
 # never just looks dead). Hidden by PADB_busyHide (_COMMON_JS) after the first render.
@@ -5356,6 +5410,39 @@ function _distCondFilters(){
   });
   return out;
 }
+/* ---- Locked filters adapter (cross-view; see _COMMON_JS). Distribution has no
+   pass/fail axis (delta KDE), so it locks condition dims + frequency range only. ---- */
+function _distLockRead(){
+  var dims={};
+  (typeof DIST_COND_DIMS!=='undefined'?DIST_COND_DIMS:[]).forEach(function(d,i){
+    var boxes=document.querySelectorAll('.dist_cond'+i+'_chk'); if(!boxes.length) return;
+    var checked=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+    if(checked.length&&checked.length<boxes.length) dims[d.label]=checked;
+  });
+  PADB_lockReadSP(dims,'dist_ser_chk','dist_port_chk');
+  var lt=document.getElementById('dist_freq_lo_txt'),ht=document.getElementById('dist_freq_hi_txt');
+  return {dims:dims,freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},passfail:'all'};
+}
+function _distLockApply(o){
+  var applied=[],skipped=[],byLabel={};
+  (typeof DIST_COND_DIMS!=='undefined'?DIST_COND_DIMS:[]).forEach(function(d,i){byLabel[d.label]=i;});
+  var sp=PADB_lockSplitSP(o);
+  Object.keys(sp.rest).forEach(function(label){
+    if(!(label in byLabel)){skipped.push(label);return;}
+    (PADB_lockSetChecks(document.querySelectorAll('.dist_cond'+byLabel[label]+'_chk'),sp.rest[label])?applied:skipped).push(label);});
+  PADB_lockApplySP(sp,'dist_ser_chk','dist_port_chk',applied,skipped);
+  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
+    var s1=document.getElementById('dist_freq_lo'),s2=document.getElementById('dist_freq_hi');
+    var lt=document.getElementById('dist_freq_lo_txt'),ht=document.getElementById('dist_freq_hi_txt');
+    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
+      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+      if(lo<=hi){s1.value=lo;s2.value=hi; if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
+  }
+  if(typeof update==='function') update();
+  return {applied:applied,skipped:skipped};
+}
+PADB_lockRegister({read:_distLockRead,apply:_distLockApply});
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(PADB_lockInit,400);}); else setTimeout(PADB_lockInit,400);
 function _distCondKeep(raw,i,condFilts){
   for(var ci=0;ci<condFilts.length;ci++){
     var cf=condFilts[ci];
@@ -9115,17 +9202,21 @@ update();
 /* ---- Locked filters adapter (cross-view; see _COMMON_JS) ---- */
 function _ssLockRead(){
   var groups=(COND_DIMS||[]).map(function(d){return {label:d.label,boxes:document.querySelectorAll('.fchk[data-col="cond_'+d.col_id+'"]')};});
+  var dims=PADB_lockReadChecks(groups);
+  PADB_lockReadSP(dims,'ser_chk','ss_port_chk');
   var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
   var pf=document.querySelector('input[name="data_flt"]:checked');
-  return {dims:PADB_lockReadChecks(groups),
+  return {dims:dims,
     freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},
     passfail:pf?pf.value:'all'};
 }
 function _ssLockApply(o){
   var applied=[],skipped=[],byLabel={};(COND_DIMS||[]).forEach(function(d){byLabel[d.label]=d.col_id;});
-  Object.keys((o&&o.dims)||{}).forEach(function(label){var cid=byLabel[label];
+  var sp=PADB_lockSplitSP(o);
+  Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
     if(cid==null){skipped.push(label);return;}
-    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),o.dims[label])?applied:skipped).push(label);});
+    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),sp.rest[label])?applied:skipped).push(label);});
+  PADB_lockApplySP(sp,'ser_chk','ss_port_chk',applied,skipped);
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
     if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
@@ -10333,6 +10424,38 @@ function getSelectedConds(){
     });
   });
 }
+/* ---- Locked filters adapter (cross-view; see _COMMON_JS). env_coverage is a
+   delta view (no pass/fail axis), so it locks condition dims + frequency range. ---- */
+function _ecLockRead(){
+  var dims={};
+  (COND_DIMS||[]).forEach(function(d){
+    var boxes=document.querySelectorAll('.'+d.col_id); if(!boxes.length) return;
+    var checked=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+    if(checked.length&&checked.length<boxes.length) dims[d.label]=checked;
+  });
+  PADB_lockReadSP(dims,'ec_ser_chk','ec_port_chk');
+  var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt');
+  return {dims:dims,freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},passfail:'all'};
+}
+function _ecLockApply(o){
+  var applied=[],skipped=[],byLabel={};(COND_DIMS||[]).forEach(function(d){byLabel[d.label]=d.col_id;});
+  var sp=PADB_lockSplitSP(o);
+  Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
+    if(cid==null){skipped.push(label);return;}
+    (PADB_lockSetChecks(document.querySelectorAll('.'+cid),sp.rest[label])?applied:skipped).push(label);});
+  PADB_lockApplySP(sp,'ec_ser_chk','ec_port_chk',applied,skipped);
+  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
+    var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
+    var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt');
+    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
+      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+      if(lo<=hi){s1.value=lo;s2.value=hi; if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
+  }
+  if(typeof update==='function') update();
+  return {applied:applied,skipped:skipped};
+}
+PADB_lockRegister({read:_ecLockRead,apply:_ecLockApply});
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(PADB_lockInit,400);}); else setTimeout(PADB_lockInit,400);
 /* Regroup checkbox-filtered conditions by a single COND_DIMS value, pooling
    every matching condition's DUTs into one virtual condition -- e.g.
    "Group by: SpurType" collapses dozens of conditions that differ only in
@@ -13000,6 +13123,7 @@ function _bxLockRead(){
     COND_DIMS.forEach(function(d){ var a=Object.keys(all[d.label]),s=Object.keys(sel[d.label]);
       if(s.length&&s.length<a.length) dims[d.label]=s; });
   }
+  PADB_lockReadSP(dims,'box_ser_chk','box_port_chk');   // serial/port are dedicated filters here
   var fr=getBoxFreqRange();
   var pf=document.querySelector('input[name="box_flt"]:checked');
   var mode=(pf&&(pf.value==='all'||pf.value==='passing'||pf.value==='failing'))?pf.value:'all';
@@ -13007,12 +13131,13 @@ function _bxLockRead(){
 }
 function _bxLockApply(o){
   var applied=[],skipped=[],lf=document.querySelectorAll('.box_cond_lf_chk');
-  var lockedDims=Object.keys((o&&o.dims)||{});
+  var sp=PADB_lockSplitSP(o);   // route Serial Number/Port to box_ser_chk/box_port_chk, not conditions
+  var lockedDims=Object.keys(sp.rest);
   if(lockedDims.length&&lf.length&&COND_DIMS&&COND_DIMS.length){
     var rules=[]; lockedDims.forEach(function(label){
       var d=COND_DIMS.filter(function(x){return x.label===label;})[0];
       if(!d){skipped.push(label);return;}
-      var want={}; (o.dims[label]||[]).forEach(function(v){want[String(v)]=1;});
+      var want={}; (sp.rest[label]||[]).forEach(function(v){want[String(v)]=1;});
       rules.push({label:label,re:_bxDimRe(d.col),want:want,applicable:false}); });
     /* a rule only applies if at least one condition here actually has a wanted value --
        else applying it would uncheck every box (empty view). */
@@ -13027,6 +13152,7 @@ function _bxLockApply(o){
       if(typeof _syncDimsFromLf==='function') _syncDimsFromLf();
     }
   } else { lockedDims.forEach(function(l){skipped.push(l);}); }
+  PADB_lockApplySP(sp,'box_ser_chk','box_port_chk',applied,skipped);
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('box_freq_lo'),s2=document.getElementById('box_freq_hi');
     if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
@@ -19468,18 +19594,22 @@ _recomputeSpecSegments();
 /* ---- Locked filters adapter (cross-view; see _COMMON_JS) ---- */
 function _sumLockRead(){
   var groups=(COND_DIMS||[]).map(function(d){return {label:d.label,boxes:document.querySelectorAll('.fchk[data-col="cond_'+d.col_id+'"]')};});
+  var dims=PADB_lockReadChecks(groups);
+  PADB_lockReadSP(dims,'sum_ser_chk',null);   // summary has a serial filter but no port
   var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
   var pf=document.querySelector('input[name="sum_flt"]:checked');
   var mode=(pf&&(pf.value==='all'||pf.value==='passing'||pf.value==='failing'))?pf.value:'all';
-  return {dims:PADB_lockReadChecks(groups),
+  return {dims:dims,
     freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},
     passfail:mode};
 }
 function _sumLockApply(o){
   var applied=[],skipped=[],byLabel={};(COND_DIMS||[]).forEach(function(d){byLabel[d.label]=d.col_id;});
-  Object.keys((o&&o.dims)||{}).forEach(function(label){var cid=byLabel[label];
+  var sp=PADB_lockSplitSP(o);
+  Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
     if(cid==null){skipped.push(label);return;}
-    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),o.dims[label])?applied:skipped).push(label);});
+    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),sp.rest[label])?applied:skipped).push(label);});
+  PADB_lockApplySP(sp,'sum_ser_chk',null,applied,skipped);
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
     if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
@@ -20346,6 +20476,35 @@ function _hFilteredIdx(){ var ds=_hSelDims(), ss=_hSelSer(), hasSer=SERIAL_LIST.
     if(ok) out.push(i);
   } return out; }
 function _hCond(i){ if(!DIMS.length) return 'All'; return DIMS.map(function(d){return d.label+'='+DIMVALS[d.col_id][i];}).join('  |  '); }
+/* ---- Locked filters adapter (cross-view; see _COMMON_JS). Histogram is non-swept
+   (no frequency); its pass/fail select uses all/pass/fail, translated to/from the
+   lock's all/passing/failing. ---- */
+function _hLockRead(){
+  var dims={};
+  (typeof DIMS!=='undefined'?DIMS:[]).forEach(function(d){
+    var boxes=document.querySelectorAll('.hf_'+d.col_id); if(!boxes.length) return;
+    var checked=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+    if(checked.length&&checked.length<boxes.length) dims[d.label]=checked;
+  });
+  PADB_lockReadSP(dims,'hf_serial',null);   // Port is a normal DIM (hf_Port) here; only serial is dedicated
+  var el=document.getElementById('h_pf'),v=el?el.value:'all';
+  var pf=(v==='fail')?'failing':(v==='pass'?'passing':'all');
+  return {dims:dims,freq:{lo:null,hi:null},passfail:pf};
+}
+function _hLockApply(o){
+  var applied=[],skipped=[],byLabel={};(typeof DIMS!=='undefined'?DIMS:[]).forEach(function(d){byLabel[d.label]=d.col_id;});
+  var sp=PADB_lockSplitSP(o);
+  if(sp.port!=null) sp.rest['Port']=sp.port;   // histogram treats Port as a dim, not a dedicated control
+  Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
+    if(cid==null){skipped.push(label);return;}
+    (PADB_lockSetChecks(document.querySelectorAll('.hf_'+cid),sp.rest[label])?applied:skipped).push(label);});
+  PADB_lockApplySP({serial:sp.serial,port:null},'hf_serial',null,applied,skipped);
+  if(o&&o.passfail){var el=document.getElementById('h_pf'); if(el) el.value=(o.passfail==='failing')?'fail':(o.passfail==='passing'?'pass':'all');}
+  if(typeof update==='function') update();
+  return {applied:applied,skipped:skipped};
+}
+PADB_lockRegister({read:_hLockRead,apply:_hLockApply});
+if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(PADB_lockInit,400);}); else setTimeout(PADB_lockInit,400);
 function _hAutoBins(vals){ if(vals.length<2) return 10; var s=vals.slice().sort(function(a,b){return a-b;}); var iqr=_hpct(s,75)-_hpct(s,25); var w=iqr>0?2*iqr/Math.pow(vals.length,1/3):0; var span=s[s.length-1]-s[0]; var n=(w>0&&span>0)?Math.ceil(span/w):30; return Math.max(5,Math.min(200,n)); }
 var _HCOLORS=['#4a78c0','#c0504a','#4aa564','#9a6fb0','#d08a34','#3aa0a0','#b05070','#7f7f2f','#5b8fd0','#d06a6a'];
 function hSetAuto(){ document.getElementById('h_binmode').value='auto'; update(); }

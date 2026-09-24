@@ -1,6 +1,20 @@
-# Changelog — 2026-08-17 to 2026-09-21
+# Changelog — 2026-08-17 to 2026-09-23
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
+
+---
+
+## 2026-09-23
+
+### Cross-view locked filters (all 8 views)
+- **New "🔒 Locked filters" panel on every view.** Set condition dims + frequency range + pass/fail on any view, click **Lock these filters**, and every other view auto-applies the same set on load. Floating panel offers Lock / Apply / Update-from-this-view / Clear / Export / Import (Export/Import JSON is the fallback for pages opened straight off the network share, where browser storage isn't shared). View-agnostic object matched by dimension label; best-effort (a locked filter absent from a view is ignored, never blanks it); only *narrowed* dims are locked. Serial Number/Port are routed to each view's dedicated serial/port controls (serial matched on base form, so a base-serial lock still selects port-qualified `MY123_RF1`). Works from any view to any view. Covers scatter, boxplot, stat_summary, summary, distribution, env_coverage, histogram, and reference.
+
+### Per-point fail correctness + cross-view consistency (found on EP6 phase-noise + Harmonics compares)
+- **summary / stat_summary / scatter no longer fabricate a limit** for points that carry none. They scored limit-less, PADB-passed points (Test Event Status: P, null Upper Limit) against a per-frequency aggregate or the page-global spec, inflating summary's "Failing only" count (e.g. 145/234 vs scatter's ~85) and marking passed points FAIL. Each point is now scored against its **own** limit only; a limit-less point is unscored ("—"), matching scatter's table. summary's Passing/Failing is now per-**point** (was a per-frequency tolerance-interval test). Raw-point views (scatter/boxplot/reference) fall back to PADB's recorded Test Event Status for limit-less points.
+- With identical filters, **all views now report the same fail count** (verified across every harmonic on a Harmonics compare).
+
+### summary "Group by: Serial Number"
+- Added a per-DUT group-by to the Summary view (parity with boxplot).
 
 ---
 

@@ -1360,11 +1360,14 @@ def test_locked_filters_crossview() -> None:
     Same pattern as the Global Filter: localStorage, applied at load, loud banner +
     Clear + Export/Import (file:// fallback). The lock is a VIEW-AGNOSTIC object matched
     by dimension LABEL; apply is BEST-EFFORT (only values present here; a missing dim/value
-    is ignored, never emptying the view). Covers scatter/stat_summary/summary (the .fchk
-    trio) + boxplot (per-condition longform, reconstructed per-dimension);
-    env_coverage/distribution/histogram/reference are a later increment. Behaviourally
-    verified by qa_crossview INV-LOCK (a lock read on scatter auto-applies on summary +
-    stat_summary + boxplot). Source-pinned so the core + per-view adapters can't regress."""
+    is ignored, never emptying the view). Covers ALL views: scatter/stat_summary/summary
+    (the .fchk trio) + boxplot (per-condition longform) + distribution/env_coverage (delta
+    views: dims+freq, no pass/fail) + histogram (dims+pass/fail, no freq; all/pass/fail
+    vocabulary translated) + reference (dims+freq; embeds the standalone _LOCK_JS since it
+    has no _COMMON_JS). Behaviourally verified by qa_crossview INV-LOCK (a scatter lock
+    auto-applies on summary/stat_summary/boxplot/reference/distribution, best-effort on the
+    delta-only env_coverage); histogram is non-swept so it's source-pinned + shares the
+    proven adapter pattern. Source-pinned so the core + per-view adapters can't regress."""
     src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
     # Shared core (in _COMMON_JS -> every view)
     for fn in ("function PADB_lockRegister(", "function PADB_lockGet(", "function PADB_lockSet(",
@@ -1379,16 +1382,47 @@ def test_locked_filters_crossview() -> None:
           "if(!anyHere) return false;" in src)
     check("lock read locks only NARROWED dims (strict subset), not fully-open ones",
           "checked.length<boxes.length" in src)
-    # Per-view adapters registered + auto-applied on load (.fchk trio + boxplot)
+    # Per-view adapters registered + auto-applied on load. All 8 views now:
+    # scatter/stat_summary/summary/boxplot + distribution/env_coverage/histogram (padb_plots)
+    # and reference (padb_refstats). Each registers a read/apply pair.
     for rd, ap in (("_avLockRead", "_avLockApply"), ("_ssLockRead", "_ssLockApply"),
-                   ("_sumLockRead", "_sumLockApply"), ("_bxLockRead", "_bxLockApply")):
+                   ("_sumLockRead", "_sumLockApply"), ("_bxLockRead", "_bxLockApply"),
+                   ("_distLockRead", "_distLockApply"), ("_ecLockRead", "_ecLockApply"),
+                   ("_hLockRead", "_hLockApply")):
         check(f"view adapter registered: {rd}/{ap}",
               f"function {rd}(" in src and f"function {ap}(" in src
               and f"PADB_lockRegister({{read:{rd},apply:{ap}}})" in src)
     check("boxplot lock apply won't empty the view on a non-existent locked value",
           "if(m&&r.want[m[1].trim()]) r.applicable=true;" in src and "if(active.length){" in src)
-    check("4 views auto-apply the lock on load (>=4 PADB_lockInit calls)",
-          src.count("PADB_lockInit();") >= 4)
+    check("histogram translates its all/pass/fail select to the lock's all/passing/failing",
+          "(v==='fail')?'failing':(v==='pass'?'passing':'all')" in src
+          and "(o.passfail==='failing')?'fail':(o.passfail==='passing'?'pass':'all')" in src)
+    check("7 padb_plots views auto-apply the lock on load (>=7 PADB_lockInit references)",
+          src.count("PADB_lockInit") >= 7)
+    # Lock core is a standalone _LOCK_JS constant so the reference view can embed it too.
+    check("lock core extracted to _LOCK_JS and appended to _COMMON_JS",
+          '_LOCK_JS = r"""' in src and '_COMMON_JS = _COMMON_JS + "\\n" + _LOCK_JS' in src)
+    ref = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
+    check("reference embeds _LOCK_JS + registers its adapter",
+          "_LOCK_JS" in ref and "function _refLockRead(" in ref and "function _refLockApply(" in ref
+          and "PADB_lockRegister({read:_refLockRead,apply:_refLockApply})" in ref)
+    # Serial Number / Port are condition dims on scatter/reference but DEDICATED filters
+    # on the aggregate views; the lock routes them there so nothing is silently skipped
+    # (David 2026-09-23). Serial matches on BASE form (port-qualified vs base serial).
+    check("lock has serial/port routing helpers (split + apply + read + base serial match)",
+          "function PADB_lockSplitSP(" in src and "function PADB_lockApplySP(" in src
+          and "function PADB_lockReadSP(" in src and "function PADB_lockSetSerials(" in src)
+    check("serial matches on base form (strips a trailing port-like suffix)",
+          "_lockSerBase" in src and "replace(/_[A-Za-z]+\\d*$/,'')" in src)
+    for ser, port in (("box_ser_chk", "'box_port_chk'"), ("ser_chk", "'ss_port_chk'"),
+                      ("sum_ser_chk", "null"), ("dist_ser_chk", "'dist_port_chk'"),
+                      ("ec_ser_chk", "'ec_port_chk'")):
+        check(f"an aggregate view routes serial/port via PADB_lockApplySP({ser}/{port})",
+              f"PADB_lockApplySP(sp,'{ser}',{port}," in src)
+    check("histogram keeps Port as a dim (only serial is dedicated) + routes serial",
+          "sp.rest['Port']=sp.port" in src and "PADB_lockApplySP({serial:sp.serial,port:null},'hf_serial'" in src)
+    check("reference routes serial-like to its dedicated Serial column (base match)",
+          "PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col=\"Serial\"]')" in ref)
 
 
 def test_summary_group_by_serial() -> None:
