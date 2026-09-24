@@ -48,6 +48,7 @@ def main(argv=None) -> int:
         "--hidden-import", "padb_plots",
         "--hidden-import", "padb_run",
         "--hidden-import", "padb_config",
+        "--hidden-import", "padb_bands",
         "--collect-all", "scipy",
         "--noconfirm", "--clean",
         "--distpath", str(out),
