@@ -2809,6 +2809,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         # unrelated one. See "Global Filter scope" note.
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
+        f"var NAMED_BANDS_PATH={json.dumps((cfg or {}).get('_named_bands_path') or '')};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
     ])
 
@@ -3896,13 +3897,34 @@ function PADB_bandSegs(){
   out.sort(function(a,b){return a.lo-b.lo;});
   return out;
 }
+function PADB_bandTip(){
+  /* Hover help for the "Named bands" option -- notes the band file is user-editable and
+     shows WHERE it lives (NAMED_BANDS_PATH, injected per report) so users can find it. */
+  var loc=(typeof NAMED_BANDS_PATH!=='undefined'&&NAMED_BANDS_PATH)
+    ? ('\nFile: '+NAMED_BANDS_PATH)
+    : '\nFile: padb_viewer_bands.json / bands.json (place next to the results)';
+  return 'Named bands come from a customizable band file. Edit it to rename bands or change '
+    +'their ranges, or run padb_make_bands.py to create one. It just partitions the swept '
+    +'x-axis into named chunks (not limited to RF frequency).'+loc;
+}
 function PADB_ensureBandOption(){
   /* Add the "Named bands" option to the view's Segment-by dropdown once, if bands
-     are present. No-op when the control or bands are absent. */
+     are present. No-op when the control or bands are absent. The option (and the
+     select while it's selected) carries a hover tooltip noting the file is editable
+     and where it lives. */
   if(!PADB_hasNamedBands()) return;
   var sel=document.getElementById('segKeySel'); if(!sel) return;
-  for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value==='bands') return; }
-  var o=document.createElement('option'); o.value='bands'; o.textContent='Named bands'; sel.appendChild(o);
+  var tip=PADB_bandTip();
+  /* Reflect the tip on the select itself when "Named bands" is the active choice, since
+     browsers show option-title tooltips inconsistently on a closed <select>. Hook the
+     user 'change' event once, and also sync now (covers load-time default + programmatic
+     changes, which don't fire 'change'). */
+  if(!sel._padbBandTipHook){ sel._padbBandTipHook=true;
+    sel.addEventListener('change',function(){ sel.title=(sel.value==='bands')?PADB_bandTip():''; }); }
+  sel.title=(sel.value==='bands')?tip:'';
+  for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value==='bands'){ sel.options[i].title=tip; return; } }
+  var o=document.createElement('option'); o.value='bands'; o.textContent='Named bands';
+  o.title=tip; sel.appendChild(o);
 }
 """
 _COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS
@@ -5129,6 +5151,7 @@ def _build_env_distribution_html(df: pd.DataFrame, cfg: dict, title: str) -> str
         f"var TITLE={json.dumps(title)};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
+        f"var NAMED_BANDS_PATH={json.dumps((cfg or {}).get('_named_bands_path') or '')};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var RAW_ABS={json.dumps(raw_abs)};",
         f"var RAW_DELTA={json.dumps(raw_delta)};",
@@ -9674,6 +9697,7 @@ def _build_stat_summary_html(
         f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
+        f"var NAMED_BANDS_PATH={json.dumps((cfg or {}).get('_named_bands_path') or '')};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site if site_compare_enabled else None)};",
     ])
@@ -12272,6 +12296,7 @@ def _build_env_coverage_html(
         f"var STATE_KEY='padb_{results_dir}';",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
+        f"var NAMED_BANDS_PATH={json.dumps((cfg or {}).get('_named_bands_path') or '')};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var TITLE={json.dumps(title)};",
         f"var PRIMARY_SITE={json.dumps(primary_site)};",
@@ -17118,6 +17143,7 @@ def _build_box_interactive_html(
         f"var STATE_KEY='padb_{results_dir}';",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
+        f"var NAMED_BANDS_PATH={json.dumps((cfg or {}).get('_named_bands_path') or '')};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PADB_FIELD_PREFIX={json.dumps(padb_field_prefix)};",
         f"var PADB_FREQ_FIELD={json.dumps(padb_freq_field)};",
@@ -20005,6 +20031,7 @@ def _build_summary_html(
         f"var STATE_KEY={json.dumps('padb_' + cfg.get('results_dir', '') + '::' + cfg.get('title', ''))};",
         f"var GF_KEY={json.dumps('padb_v2_excluded_' + title.rsplit(' — ', 1)[0])};",
         f"var NAMED_BANDS={json.dumps((cfg or {}).get('_named_bands') or [])};",
+        f"var NAMED_BANDS_PATH={json.dumps((cfg or {}).get('_named_bands_path') or '')};",
         f"var GF_MODE_KEY={json.dumps('padb_v2_gf_mode_' + title.rsplit(' — ', 1)[0])};",
         f"var PRIMARY_SITE={json.dumps(primary_site)};",
     ])

@@ -1257,6 +1257,7 @@ def generate_report(
                 df["Frequency_MHz"].dropna().tolist(), cfg.get("x_unit", "MHz"),
                 [output_dir, csv_path.parent], allow_create=_allow_auto)
             cfg["_named_bands"] = _bands
+            cfg["_named_bands_path"] = str(_bpath) if _bpath else ""
             if _bcreated and _bpath:
                 print(f"  Auto-generated {len(_bands)} starter band(s) -> {Path(_bpath).name} "
                       f"(edit to rename/re-range; drives the 'Named bands' segment step)",

@@ -1493,6 +1493,17 @@ def test_named_band_segments_crossview() -> None:
           "return (typeof PADB_hasNamedBands==='function'&&PADB_hasNamedBands())?'bands':'spec';" in src)
     check("segment label shows the band name when present",
           "(seg.name?seg.name+': ':'')" in src)
+    # Hover help on the "Named bands" option noting the band file is user-customizable AND
+    # where it lives (David 2026-09-24). Set on the option + reflected on the select while
+    # selected; the location comes from NAMED_BANDS_PATH injected per report into all views.
+    check("Named-bands option has a customizable-file hover tooltip with the file location",
+          "function PADB_bandTip(" in src and "customizable band file" in src
+          and "'\\nFile: '+NAMED_BANDS_PATH" in src
+          and "o.title=tip;" in src
+          and "sel.title=(sel.value==='bands')?PADB_bandTip():'';" in src)
+    check("NAMED_BANDS_PATH injected into all 6 views + resolved in padb_v2",
+          src.count("var NAMED_BANDS_PATH={json.dumps((cfg or {}).get('_named_bands_path') or '')}") == 6
+          and 'cfg["_named_bands_path"] = str(_bpath) if _bpath else ""' in v2)
     # env_coverage/boxplot builders received a cfg param so they can inject NAMED_BANDS.
     check("env_coverage + boxplot builders take cfg (to inject NAMED_BANDS)",
           src.count("cfg: dict | None = None,") >= 2)
