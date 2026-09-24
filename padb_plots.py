@@ -723,18 +723,25 @@ function buildTraces(filtered){
       var byXs={};
       sorted.forEach(function(r){var x=r.Frequency_MHz;(byXs[x]=byXs[x]||[]).push(r.Value);});
       var xk=Object.keys(byXs).map(Number).sort(function(a,b){return a-b;});
-      var sx=[],sy=[];
+      var sx=[],sy=[],_lone=false;
       xk.forEach(function(x){var vs=byXs[x];var mn=Math.min.apply(null,vs),mx=Math.max.apply(null,vs);
+        if(mn===mx) _lone=true;   // a single measurement at this x = zero-length (invisible) stick
         sx.push(x,x,null);sy.push(mn,mx,null);});
-      return {type:'scattergl',x:sx,y:sy,mode:'lines',line:{width:1.5,shape:'linear'},name:key,
+      /* A zero-length stick (one measurement at an x) draws nothing -- add markers so those
+         lone points show, while the row is in the table (David 2026-09-24). */
+      return {type:'scattergl',x:sx,y:sy,mode:_lone?'lines+markers':'lines',marker:{size:5},
+        line:{width:1.5,shape:'linear'},name:key,
         hovertemplate:'<b>'+key+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f}<extra></extra>'};
     }
     if(drawMode==='lines'){
       var byXl={};
       sorted.forEach(function(r){var x=r.Frequency_MHz;(byXl[x]=byXl[x]||[]).push(r.Value);});
       var xkl=Object.keys(byXl).map(Number).sort(function(a,b){return a-b;});
+      /* A series with a single point draws NO line (a line needs >=2 points) and would
+         vanish -- while the row still shows in the table (e.g. a lone failing DUT in a
+         narrow band). Show its marker so it's never invisible (David 2026-09-24). */
       return {type:'scattergl',x:xkl,y:xkl.map(function(x){return meanOf(byXl[x]);}),
-        mode:'lines',line:{width:0.75,shape:_lineShape},name:key,
+        mode:xkl.length<2?'lines+markers':'lines',marker:{size:6},line:{width:0.75,shape:_lineShape},name:key,
         hovertemplate:'<b>'+key+'</b><br>'+X_SHORT_LABEL+': %{x:.4f} '+X_UNIT+'<br>'+Y_LABEL+': %{y:.4f} (mean of repeats)<extra></extra>'};
     }
     var customdata=sorted.map(function(r){

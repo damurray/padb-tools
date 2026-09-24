@@ -381,6 +381,13 @@ def test_scatter_worst_first_spec_relative():
               and "_groupWorstSpec(" in h and "_rowsMaxVal(" in h)
         check("scatter worst-first: no-spec groups sort last (null-guarded)",
               "if(wa===null) return 1;" in h and "if(wb===null) return -1;" in h)
+        # Lone points stay visible in lines/sticks modes (David 2026-09-24): a single-point
+        # series draws no line/stick and would vanish while its row is still in the table
+        # (e.g. a lone failing DUT in a narrow band). Force markers for those.
+        check("scatter lines mode: single-point series shows a marker (not invisible)",
+              "mode:xkl.length<2?'lines+markers':'lines'" in h)
+        check("scatter sticks mode: zero-length (single-measurement) stick shows a marker",
+              "if(mn===mx) _lone=true;" in h and "mode:_lone?'lines+markers':'lines'" in h)
 
 
 def test_scatter_room_temp_filterable():
