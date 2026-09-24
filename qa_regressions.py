@@ -1465,6 +1465,14 @@ def test_locked_filters_crossview() -> None:
           "class=\"padb_lock_drag\"" in src and "cursor:move" in src
           and "padb_v2_lock_pos" in src
           and "bar.addEventListener('mousedown'" in src)
+    # Clear drops the saved lock only (keeps the view's filters -- a lock had SET them, so
+    # re-reading changes nothing visible) and TELLS the user to Reset/Autoscale to restore
+    # full data, instead of silently appearing to do nothing (David 2026-09-24, seen on
+    # reference; "any change would need a reset").
+    check("PADB_lockClear drops the lock only + hints to Reset/Autoscale (no silent no-op)",
+          "PADB_lockRenderBar({cleared:true})" in src
+          and "resetFilters();" not in src.split("function PADB_lockClear(")[1].split("}")[0]
+          and "Lock cleared" in src and "Press <b>Reset</b>" in src)
     # Lock-apply freq: the plot AXIS must follow the locked range, not just the filter
     # (David 2026-09-24: "plot axis stayed full after a locked freq"). The 4 freq-x plot views
     # (scatter/stat_summary/summary/env_coverage) route the locked freq through their

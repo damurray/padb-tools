@@ -3753,7 +3753,14 @@ function PADB_lockSummary(o){ if(!o) return '';
 function PADB_lockSave(){ if(!_padbLockReg){return;} var o=_padbLockReg.read()||{}; o.v=1; o.ts=Date.now();
   o.title=(typeof TITLE!=='undefined'?TITLE:document.title); PADB_lockSet(o); PADB_lockRenderBar({saved:true}); }
 function PADB_lockApply(){ var o=PADB_lockGet(); if(!o||!_padbLockReg) return null; var rep=_padbLockReg.apply(o)||{}; rep.applied2=true; PADB_lockRenderBar(rep); return rep; }
-function PADB_lockClear(){ try{localStorage.removeItem(PADB_LOCK_KEY);}catch(e){} PADB_lockRenderBar({cleared:true}); }
+function PADB_lockClear(){
+  /* Drop the saved lock only; leave the view's current filter controls as they are (a lock
+     had SET them, so re-reading changes nothing visible). The view's data only updates on an
+     actual filter change -- so tell the user to press Reset (or Autoscale) to restore the
+     full data, instead of Clear silently appearing to do nothing (David 2026-09-24). */
+  try{localStorage.removeItem(PADB_LOCK_KEY);}catch(e){}
+  PADB_lockRenderBar({cleared:true});
+}
 function PADB_lockExport(){ var o=PADB_lockGet(); if(!o){alert('No locked filters to export.');return;}
   var blob=new Blob([JSON.stringify(o,null,2)],{type:'application/json'}); var url=URL.createObjectURL(blob);
   var a=document.createElement('a'); a.href=url; a.download='padb_locked_filters.json'; document.body.appendChild(a); a.click();
@@ -3802,11 +3809,15 @@ function PADB_lockRenderBar(rep){
       '<div style="margin-top:3px">'+
       '<span onclick="PADB_lockApply()" title="Re-apply the locked filters to this view" style="'+btn+'">Apply</span>'+
       '<span onclick="PADB_lockSave()" title="Overwrite the lock with THIS view\'s current filters" style="'+btn+'">Update from this view</span>'+
-      '<span onclick="PADB_lockClear()" title="Remove the lock (this + other views stop auto-applying it)" style="'+btn+';color:#b00">Clear</span>'+
+      '<span onclick="PADB_lockClear()" title="Remove the saved lock (this + other views stop auto-applying it). The view keeps its current filters -- press Reset or Autoscale afterwards to restore the full data." style="'+btn+';color:#b00">Clear</span>'+
       '<span onclick="PADB_lockExport()" title="Export the lock to a file (portable to a share-opened page)" style="'+btn+'">Export</span>'+
       '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>'+
       '</div>';
   } else {
+    if(rep&&rep.cleared){
+      html += '<div style="color:#b26a00;margin-bottom:3px">Lock cleared &mdash; the view kept its filters. '+
+        'Press <b>Reset</b> (or <b>Autoscale</b>) to restore the full data.</div>';
+    }
     html += '<span onclick="PADB_lockSave()" title="Save ALL of this view\'s data filters -- conditions, frequency range, temperature, serial/port, and Passing/Failing -- as a cross-view lock; other views auto-apply it. (Plot type, group-by, table mode and zoom stay per-view.)" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
       '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>';
   }
