@@ -169,12 +169,25 @@ class DataSet:
         if not self.x_col or not self.value_col:
             sys.exit(f"Could not detect x/value columns in {parquet_path.name} "
                      f"(cols: {names}). Use --x / --value to set them.")
+        # Per-point pass/fail limit columns (for the overview's All/Passing/Failing
+        # filter and the spec-segment stepper). Optional -- absent -> those controls
+        # gray out. Same keyword rule as the html loaders (Upper/Lower Limit, else Spec).
+        _low = {n.lower(): n for n in names}
+        def _find(*subs):
+            for k, orig in _low.items():
+                if all(s in k for s in subs):
+                    return orig
+            return None
+        self.hi_col = _find("upper", "limit") or _find("upper", "spec")
+        self.lo_col = _find("lower", "limit") or _find("lower", "spec")
         cols = [c for c in (self.x_col, self.value_col, self.serial_col,
-                            self.group_col, self.temp_col) if c]
+                            self.group_col, self.temp_col, self.hi_col, self.lo_col) if c]
         df = pq.read_table(parquet_path, columns=cols).to_pandas()
         df = df.rename(columns={self.x_col: "x", self.value_col: "y"})
         df["x"] = pd.to_numeric(df["x"], errors="coerce")
         df["y"] = pd.to_numeric(df["y"], errors="coerce")
+        df["yhi"] = pd.to_numeric(df[self.hi_col], errors="coerce") if self.hi_col else np.nan
+        df["ylo"] = pd.to_numeric(df[self.lo_col], errors="coerce") if self.lo_col else np.nan
         df = df.dropna(subset=["x", "y"])
         # Site is embedded in the Group text as "Site: <name>" (see
         # _build_compare_csv). Parse it out; absent -> single "(all)" site.
@@ -183,8 +196,18 @@ class DataSet:
             df["site"] = site.fillna("(all)").astype("category")
         else:
             df["site"] = pd.Categorical(["(all)"] * len(df))
+        # Serial: a dedicated column if present, else parse it out of the Group text
+        # ("Serial Number: <s>", else a bare serial-like token) -- the merged compare
+        # parquet has no Serial column (serial lives in Group), so without this the header
+        # showed "1 serials" (David 2026-09-24). Same source the html/reference views use.
         if self.serial_col and self.serial_col in df.columns:
             df["serial"] = df[self.serial_col].astype("category")
+        elif self.group_col and self.group_col in df.columns:
+            g = df[self.group_col].astype(str)
+            ser = g.str.extract(r"Serial\s*(?:Number|No|Num)?\s*:\s*([^\s|]+)", expand=False)
+            if ser.isna().all():
+                ser = g.str.extract(r"\b([A-Za-z]{2,3}\d{5,})\b", expand=False)
+            df["serial"] = ser.fillna("?").astype("category")
         else:
             df["serial"] = pd.Categorical(["?"] * len(df))
         # Temperature is read from its real column (Test Step / temp-named), NOT parsed
@@ -196,7 +219,14 @@ class DataSet:
             df["temp"] = df[self.temp_col].astype(str).str.strip().replace("", "Room").astype("category")
         else:
             df["temp"] = pd.Categorical(["Room"] * len(df))
-        self.df = df[["x", "y", "site", "serial", "temp"]].sort_values("x").reset_index(drop=True)
+        # Per-point pass/fail (fail = crosses a PRESENT limit; unscored = no limit).
+        _hi = df["yhi"] if "yhi" in df else pd.Series(np.nan, index=df.index)
+        _lo = df["ylo"] if "ylo" in df else pd.Series(np.nan, index=df.index)
+        df["scored"] = _hi.notna() | _lo.notna()
+        df["fail"] = ((_hi.notna() & (df["y"] > _hi)) | (_lo.notna() & (df["y"] < _lo)))
+        self.has_limits = bool(df["scored"].any())
+        self.df = df[["x", "y", "site", "serial", "temp", "yhi", "ylo", "scored", "fail"]] \
+            .sort_values("x").reset_index(drop=True)
         self.x_min = float(self.df["x"].min())
         self.x_max = float(self.df["x"].max())
         self.sites = list(map(str, self.df["site"].cat.categories))
@@ -207,6 +237,20 @@ class DataSet:
         m = re.search(r"\(([^)]+)\)", self.x_label)
         self.x_unit = m.group(1) if m else ""
         self.bands: list[dict] = []  # filled by _load_bands() in main()
+        self.band_counts: list[int] = []  # rows per band, filled by compute_band_counts()
+        self.max_band_rows: int = 0       # largest single band's row count
+
+    def compute_band_counts(self):
+        """Row count inside each named band, and the largest (drives the band-view load
+        cap: a single band must always be openable, so the cap floors at the biggest band).
+        Called from main() after bands are loaded."""
+        self.band_counts, self.max_band_rows = [], 0
+        x = self.df["x"]
+        for b in self.bands:
+            n = int(((x >= b["lo"]) & (x <= b["hi"])).sum())
+            self.band_counts.append(n)
+            b["count"] = n
+        self.max_band_rows = max(self.band_counts) if self.band_counts else 0
 
     def meta(self):
         return {
@@ -221,16 +265,62 @@ class DataSet:
             "n_serials": int(self.df["serial"].cat.categories.size),
             "x_unit": self.x_unit,
             "bands": self.bands,
+            "band_counts": self.band_counts,
+            "max_band_rows": self.max_band_rows,
+            "band_cap": _effective_band_cap(self),
+            "slow_band_rows": SLOW_BAND_ROWS,
+            "slow_band_warn": self.max_band_rows > SLOW_BAND_ROWS,
             "is_room_only": bool(self.is_room_only),
+            "has_limits": bool(self.has_limits),
         }
 
-    def scatter(self, flo, fhi, sites, maxpts, temps=None):
+    def spec_segments(self):
+        """Contiguous frequency bands over which the per-point spec/limit is constant --
+        for the overview's spec-segment stepper (jump to each spec 'stair'). Uses the
+        first limit at each x (a staircase spec is a function of x); returns [] when the
+        data carries no limit. Mirrors the html views' getSpecSegments intent."""
+        if not self.has_limits:
+            return []
+        per = (self.df.groupby("x", observed=True)
+               .agg(yhi=("yhi", "first"), ylo=("ylo", "first")).reset_index().sort_values("x"))
+        def _k(v):
+            return round(float(v), 4) if pd.notna(v) else None
+        def _v(v):
+            return float(v) if pd.notna(v) else None
+        segs, cur_lo, cur_key, cur_val, prev_x = [], None, None, None, None
+        for row in per.itertuples(index=False):
+            k = (_k(row.yhi), _k(row.ylo))
+            if cur_key is None:
+                cur_lo, cur_key, cur_val = row.x, k, (_v(row.yhi), _v(row.ylo))
+            elif k != cur_key:
+                segs.append({"lo": float(cur_lo), "hi": float(prev_x),
+                             "hi_val": cur_val[0], "lo_val": cur_val[1]})
+                cur_lo, cur_key, cur_val = row.x, k, (_v(row.yhi), _v(row.ylo))
+            prev_x = row.x
+        if cur_lo is not None:
+            segs.append({"lo": float(cur_lo), "hi": float(prev_x),
+                         "hi_val": cur_val[0], "lo_val": cur_val[1]})
+        # Make contiguous (each segment's hi = next segment's lo; last -> x_max) so a
+        # step covers the whole staircase with no gaps.
+        for i in range(len(segs) - 1):
+            segs[i]["hi"] = segs[i + 1]["lo"]
+        if segs:
+            segs[-1]["hi"] = self.x_max
+        return segs
+
+    def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all"):
         d = self.df
         m = (d["x"] >= flo) & (d["x"] <= fhi)
         if sites:
             m &= d["site"].isin(sites)
         if temps:
             m &= d["temp"].isin(temps)
+        # Pass/fail: failing = true fails; passing = everything that isn't a true fail
+        # (pass + no-limit), matching the html scatter's _scatRowFail convention.
+        if pf == "fail":
+            m &= d["fail"]
+        elif pf == "pass":
+            m &= ~d["fail"]
         sub = d[m]
         n_total = int(len(sub))
         traces = []
@@ -300,9 +390,25 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span>max points <input type="number" id="maxpts" value="4000" step="500"></span>
   <span class="sitebox" id="sites"></span>
   <span class="sitebox" id="temps"></span>
+  <span class="sitebox" id="pfbox" title="Filter the overview points by pass/fail against each point's own limit. Failing = crosses a present limit; Passing = everything else (pass + no-limit). Needs a limit column in the data.">
+    Show:
+    <label><input type="radio" name="pf" value="all" checked onchange="update()">All</label>
+    <label><input type="radio" name="pf" value="pass" onchange="update()">Passing</label>
+    <label><input type="radio" name="pf" value="fail" onchange="update()">Failing</label></span>
   <button onclick="update()">Update</button>
   <button onclick="resetView()">Reset</button>
   <span id="status"></span>
+</div>
+<div id="segbar" style="padding:6px 14px;background:#f6f6ff;border-bottom:1px solid #ddd;font-size:12px">
+  <b title="Step the frequency window through segments to minimize the data shown -- by named band, or by each spec/limit 'stair' (contiguous frequencies with a constant limit).">Segment step:</b>
+  <select id="segbasis" onchange="_segLoad(true)">
+    <option value="spec">Spec/limit stairs</option>
+    <option value="band">Named bands</option>
+  </select>
+  <button onclick="_segStep(-1)">&#9664;&nbsp;Prev</button>
+  <button onclick="_segStep(1)">Next&nbsp;&#9654;</button>
+  <button onclick="resetView()" title="Return to the full x-range">Full range</button>
+  <span id="seginfo" style="color:#888"></span>
 </div>
 <div id="viewbar" style="padding:6px 14px;background:#eef4ff;border-bottom:1px solid #ddd;font-size:12px">
   <b>Band view</b> <span style="color:#888">(the full interactive plot, with all filters, for the current x-range):</span>
@@ -338,6 +444,13 @@ async function boot(){
   document.getElementById('xlbl').textContent = META.x_label;
   document.getElementById('flo').value = META.x_min;
   document.getElementById('fhi').value = META.x_max;
+  // Pass/fail filter needs a limit column; gray it out (and default the segment stepper to
+  // named bands) when the data carries none.
+  if(!META.has_limits){
+    document.querySelectorAll('input[name="pf"]').forEach(function(r){ if(r.value!=='all'){ r.disabled=true; }});
+    var pfb=document.getElementById('pfbox'); if(pfb){ pfb.style.opacity='0.5'; pfb.title='No per-point limit in this data -- pass/fail filtering is unavailable.'; }
+    var sbsel=document.getElementById('segbasis'); if(sbsel){ sbsel.querySelector('option[value="spec"]').disabled=true; sbsel.value='band'; }
+  }
   const sb=document.getElementById('sites');
   META.sites.forEach(s=>{
     const id='site_'+s;
@@ -365,14 +478,24 @@ async function boot(){
     b.style.marginRight='6px'; b.onclick=function(){openView(v[0]);}; vb.appendChild(b); });
   if(META.bands && META.bands.length){
     const bb=document.getElementById('bands');
+    const slow=META.slow_band_rows||25000;
     META.bands.forEach((b,i)=>{
       const btn=document.createElement('button');
-      btn.textContent=b.name;
-      btn.title='Set range to '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'');
+      const n=(META.band_counts&&META.band_counts[i])||b.count||0;
+      const heavy=n>slow;
+      btn.textContent=b.name+(n?(' ('+n.toLocaleString()+(heavy?' ⚠':'')+')'):'');
+      btn.title='Set range to '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'')+
+        (n?('  ('+n.toLocaleString()+' points'+(heavy?' -- band views may load slowly':'')+')'):'');
+      if(heavy) btn.style.color='#b26a00';
       btn.style.marginRight='6px';
       btn.onclick=()=>setBand(b.lo,b.hi);
       bb.appendChild(btn);
     });
+    if(META.slow_band_warn){
+      bb.insertAdjacentHTML('beforeend',
+        '<span style="color:#b26a00;font-size:12px;margin-left:8px">⚠ largest band ~'+
+        (META.max_band_rows||0).toLocaleString()+' points; band views may load slowly</span>');
+    }
     document.getElementById('bandbar').style.display='block';
   }
   update();
@@ -380,6 +503,42 @@ async function boot(){
 function setBand(lo,hi){
   document.getElementById('flo').value=lo;
   document.getElementById('fhi').value=hi;
+  update();
+}
+// --- Segment stepper: jump the x-window to each segment (named band or spec/limit stair),
+//     minimizing the data shown per step. Spec segments come from /api/segments. ----------
+let _segs=[], _segIdx=-1;
+async function _segLoad(reset){
+  const basis=document.getElementById('segbasis').value;
+  if(basis==='band'){ _segs=(META.bands||[]).map(b=>({lo:b.lo,hi:b.hi,name:b.name})); }
+  else { try{ const r=await (await fetch('/api/segments')).json(); _segs=(r.spec||[]); }catch(e){ _segs=[]; } }
+  if(reset) _segIdx=-1;
+  const info=document.getElementById('seginfo');
+  info.textContent=_segs.length? (_segs.length+' '+(basis==='band'?'band':'spec')+' segment(s) -- Prev/Next to step')
+    : ('no '+(basis==='band'?'named bands (bands.json)':'per-point limit')+' to segment by');
+  return _segs.length;
+}
+function _segValUnit(){
+  // Pull a short unit out of the value label, e.g. "Power (dBc)" -> "dBc".
+  var m=/\(([^)]+)\)\s*$/.exec(META.value_label||''); return m?m[1]:'';
+}
+function _segSpecStr(s){
+  // Current spec/TLL limit(s) for this stair, so the user sees the value they're stepping to.
+  if(s.hi_val==null && s.lo_val==null) return '';
+  var u=_segValUnit(), parts=[];
+  if(s.hi_val!=null) parts.push('Upper '+(+s.hi_val).toPrecision(5));
+  if(s.lo_val!=null) parts.push('Lower '+(+s.lo_val).toPrecision(5));
+  return '  |  spec/TLL: '+parts.join(', ')+(u?(' '+u):'');
+}
+async function _segStep(d){
+  if(!_segs.length){ if(!(await _segLoad(true))) return; }
+  _segIdx=(_segIdx + d + _segs.length) % _segs.length;
+  const s=_segs[_segIdx];
+  document.getElementById('flo').value=s.lo;
+  document.getElementById('fhi').value=s.hi;
+  document.getElementById('seginfo').textContent='segment '+(_segIdx+1)+'/'+_segs.length+
+    (s.name?(' ('+s.name+')'):'')+': '+(+s.lo).toPrecision(5)+' .. '+(+s.hi).toPrecision(5)+' '+(META.x_unit||'')+
+    _segSpecStr(s);
   update();
 }
 function selectedSites(){return [...document.querySelectorAll('.sitechk:checked')].map(c=>c.value);}
@@ -435,9 +594,10 @@ async function update(){
   const maxpts=document.getElementById('maxpts').value;
   const sites=selectedSites().join(',');
   const temps=selectedTemps().join('|');
+  const pf=(document.querySelector('input[name="pf"]:checked')||{}).value||'all';
   document.getElementById('status').textContent='querying...';
   const t0=performance.now();
-  const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&sites=${encodeURIComponent(sites)}&temps=${encodeURIComponent(temps)}`)).json();
+  const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&sites=${encodeURIComponent(sites)}&temps=${encodeURIComponent(temps)}&pf=${pf}`)).json();
   const traces=r.traces.map(t=>({x:t.x,y:t.y,mode:'markers',type:'scattergl',
       name:t.site+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55}}));
   _syncing=true;
@@ -488,7 +648,15 @@ def api_scatter():
     maxpts = max(100, min(50000, int(float(request.args.get("maxpts", 4000)))))
     sites = [s for s in (request.args.get("sites", "") or "").split(",") if s]
     temps = [t for t in (request.args.get("temps", "") or "").split("|") if t]
-    return jsonify(DS.scatter(flo, fhi, sites, maxpts, temps))
+    pf = request.args.get("pf", "all")
+    if pf not in ("all", "pass", "fail"):
+        pf = "all"
+    return jsonify(DS.scatter(flo, fhi, sites, maxpts, temps, pf))
+
+
+@app.route("/api/segments")
+def api_segments():
+    return jsonify({"spec": DS.spec_segments(), "bands": DS.bands})
 
 
 # --- Band-windowed rendering of the EXISTING interactive views (option B) -----
@@ -506,6 +674,19 @@ _band_cache: dict = {}
 # row count, serve a short "narrow the band" page for ANY band view (David 2026-09-24). The
 # main overview plot stays available (server-side decimated) for picking a band.
 VIEW_BAND_MAX_ROWS = 60000
+# Above this many points in the largest single named band, band views are flagged as
+# "may load slowly" in the UI (David 2026-09-24) -- the band itself still opens.
+SLOW_BAND_ROWS = 25000
+
+
+def _effective_band_cap(ds=None) -> int:
+    """The band-view row cap. A single named band must ALWAYS be openable, so when bands
+    are defined the cap floors at the largest band's row count (David 2026-09-24: "limit
+    max load size to the max number of points in the largest band"); otherwise the fixed
+    default applies. Arbitrary zooms wider than the biggest band still hit the guard."""
+    ds = ds if ds is not None else DS
+    mx = getattr(ds, "max_band_rows", 0) if ds is not None else 0
+    return max(VIEW_BAND_MAX_ROWS, int(mx or 0))
 
 
 def _band_guard_html(view: str, n: int, flo: float, fhi: float) -> str:
@@ -523,8 +704,8 @@ def _band_guard_html(view: str, n: int, flo: float, fhi: float) -> str:
         "modebar Zoom on the main overview plot above (it re-queries as you zoom), or type a "
         "smaller min/max and click <b>Update</b> &mdash; then open this view again. The main "
         "overview plot itself stays fast at any size (it is server-side decimated).</p>"
-        f"<p style='color:#777;font-size:12px'>Threshold: {VIEW_BAND_MAX_ROWS:,} points "
-        "(configurable via VIEW_BAND_MAX_ROWS).</p></div></body></html>"
+        f"<p style='color:#777;font-size:12px'>Threshold: {_effective_band_cap():,} points "
+        "(a single named band always opens; wider ranges are capped here).</p></div></body></html>"
     )
 
 
@@ -560,7 +741,8 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
     n = t2.num_rows
 
     # Large-band guard: any band view over the row cap gets a "narrow the band" page.
-    if n > VIEW_BAND_MAX_ROWS:
+    # The cap floors at the largest named band so single-band views always render.
+    if n > _effective_band_cap():
         tmp = Path(tempfile.mkdtemp(prefix="padbview_"))
         out = str(tmp / f"guard_{view}.html")
         with open(out, "w", encoding="utf-8") as f:
@@ -655,6 +837,7 @@ def main(argv=None):
                 break
     if bands_path and bands_path.exists():
         DS.bands = _load_bands(bands_path, DS.x_unit)
+    DS.compute_band_counts()
     m = DS.meta()
     print(f"  {m['rows']:,} rows | x={m['x_label']} [{m['x_min']:.4g}..{m['x_max']:.4g}] "
           f"| value={m['value_label']} | sites={m['sites']}", flush=True)

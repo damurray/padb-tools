@@ -1,0 +1,10 @@
+{
+  "_comment": "Standard SG6311A frequency bands for the PADB Viewer segment stepper (Segment step -> Named bands). Values are in Hz and auto-convert to the data's x-axis unit. Copy into a results folder next to the .parquet, or rely on the viewer's bundled default. Bands: DAC 9 kHz-8 MHz, Low 8-375 MHz, Mid 375-3200 MHz, High 3200 MHz-20 GHz.",
+  "unit": "Hz",
+  "bands": [
+    {"name": "DAC Band (9kHz-8MHz)", "lo": 9e3, "hi": 8e6},
+    {"name": "LowBand (8-375MHz)", "lo": 8e6, "hi": 375e6},
+    {"name": "MidBand (375-3200MHz)", "lo": 375e6, "hi": 3200e6},
+    {"name": "HighBand (3.2-20GHz)", "lo": 3200e6, "hi": 20e9}
+  ]
+}
