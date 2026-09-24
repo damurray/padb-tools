@@ -1461,13 +1461,8 @@ function _avLockApply(o){
     var col=byLabel[label];
     if(!col){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),o.dims[label])?applied:skipped).push(label); });
-  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
-    var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-    if(s1&&s2){ var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
-      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
-      if(lo<=hi){ s1.value=lo;s2.value=hi;
-        document.getElementById('freq_lo_txt').value=lo.toFixed(3);
-        document.getElementById('freq_hi_txt').value=hi.toFixed(3); } }
+  if(o&&o.freq&&o.freq.lo!=null&&o.freq.hi!=null&&typeof setFreqBand==='function'){
+    setFreqBand(o.freq.lo,o.freq.hi);   // sets sliders+text AND relayouts the x-axis (coupled)
   }
   if(o&&o.passfail){ var r=document.querySelector('input[name="scat_flt"][value="'+o.passfail+'"]'); if(r)r.checked=true; }
   if(typeof update==='function') update();
@@ -3763,6 +3758,25 @@ function PADB_lockRenderBar(rep){
     var imp=document.createElement('input'); imp.type='file'; imp.accept='.json,application/json'; imp.id='padb_lock_import'; imp.style.display='none';
     imp.addEventListener('change',function(){ if(this.files&&this.files[0]) PADB_lockImport(this.files[0]); this.value=''; });
     bar.appendChild(imp);
+    /* Draggable (David 2026-09-24: the bar sometimes covers filter controls). Drag by the
+       grip handle; position persists in localStorage across views/reloads. The listener is
+       on the persistent bar element, so it survives innerHTML rewrites on every render. */
+    try{ var _pp=JSON.parse(localStorage.getItem('padb_v2_lock_pos')||'null');
+      if(_pp&&isFinite(_pp.left)&&isFinite(_pp.top)){
+        var _mx=Math.max(0,window.innerWidth-40),_my=Math.max(0,window.innerHeight-20);
+        bar.style.right='auto'; bar.style.left=Math.min(_pp.left,_mx)+'px'; bar.style.top=Math.min(_pp.top,_my)+'px'; } }catch(e){}
+    bar.addEventListener('mousedown',function(e){
+      var t=e.target; var h=(t&&t.closest)?t.closest('.padb_lock_drag'):null; if(!h) return;
+      e.preventDefault();
+      var r=bar.getBoundingClientRect(), ox=e.clientX-r.left, oy=e.clientY-r.top;
+      bar.style.right='auto'; bar.style.left=r.left+'px'; bar.style.top=r.top+'px';
+      function _mv(ev){ var x=ev.clientX-ox, y=ev.clientY-oy;
+        x=Math.max(0,Math.min(window.innerWidth-40,x)); y=Math.max(0,Math.min(window.innerHeight-20,y));
+        bar.style.left=x+'px'; bar.style.top=y+'px'; }
+      function _up(){ document.removeEventListener('mousemove',_mv); document.removeEventListener('mouseup',_up);
+        try{ localStorage.setItem('padb_v2_lock_pos',JSON.stringify({left:parseInt(bar.style.left,10),top:parseInt(bar.style.top,10)})); }catch(e){} }
+      document.addEventListener('mousemove',_mv); document.addEventListener('mouseup',_up);
+    });
   }
   var o=PADB_lockGet();
   var btn='display:inline-block;cursor:pointer;border:1px solid #bbb;border-radius:4px;background:#f6f8fa;padding:2px 7px;margin-left:5px;color:#0b60c0';
@@ -3788,7 +3802,10 @@ function PADB_lockRenderBar(rep){
   }
   // keep the hidden import input
   var imp=document.getElementById('padb_lock_import');
-  bar.innerHTML=html; if(imp) bar.appendChild(imp); else {
+  /* Grip handle to drag the panel out of the way of filter controls. */
+  var _grip='<span class="padb_lock_drag" title="Drag to move this panel" '+
+    'style="cursor:move;user-select:none;color:#94a3b8;margin-right:5px;font-size:13px">⠿</span>';
+  bar.innerHTML=_grip+html; if(imp) bar.appendChild(imp); else {
     var i2=document.createElement('input'); i2.type='file'; i2.accept='.json,application/json'; i2.id='padb_lock_import'; i2.style.display='none';
     i2.addEventListener('change',function(){ if(this.files&&this.files[0]) PADB_lockImport(this.files[0]); this.value=''; }); bar.appendChild(i2);
   }
@@ -9264,8 +9281,13 @@ function loadState(){
    data view"). Reuses the existing frequency-filter pipeline entirely --
    this only ever moves the slider, which was already correctly wired to
    both the plot and the table. */
+var _ssBandRelayouting=false;
 function _onPlotRelayout(ed){
   if(!ed) return;
+  /* Ignore our OWN programmatic relayout from setFreqBand (below) -- otherwise it would
+     re-enter setFreqBand and loop forever (David 2026-09-24). Only real user drag/zoom/
+     autoscale relayouts get here with the guard down. */
+  if(_ssBandRelayouting) return;
   if(ed['xaxis.autorange']){
     /* Double-click / "Reset axes" -- always wins even if some Plotly versions
        also include a computed 'xaxis.range' alongside autorange:true. */
@@ -9285,6 +9307,14 @@ function setFreqBand(lo,hi){
   s1.value=loV;s2.value=hiV;
   document.getElementById('freq_lo_txt').value=loV.toFixed(3);
   document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+  /* Relayout the x-axis to the band (log-aware) so a programmatic band set (locked
+     filters, band step) moves the axis, not just the filter -- update()'s _liveAxisRange
+     otherwise preserves the old pinned range and the axis stayed full (David 2026-09-24).
+     _ssBandRelayouting guards _onPlotRelayout so this doesn't re-enter and loop. */
+  var _lx=isLogX();
+  _ssBandRelayouting=true;
+  var _pr=Plotly.relayout('plot',{'xaxis.range':_lx?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  if(_pr&&_pr.then){ _pr.then(function(){_ssBandRelayouting=false;},function(){_ssBandRelayouting=false;}); } else { _ssBandRelayouting=false; }
   update();
 }
 _loadStatGlobalFilter();
@@ -9316,13 +9346,8 @@ function _ssLockApply(o){
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),sp.rest[label])?applied:skipped).push(label);});
   PADB_lockApplySP(sp,'ser_chk','ss_port_chk',applied,skipped,'env_chk');
-  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
-    var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
-      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
-      if(lo<=hi){s1.value=lo;s2.value=hi;
-        var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
-        if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
+  if(o&&o.freq&&o.freq.lo!=null&&o.freq.hi!=null&&typeof setFreqBand==='function'){
+    setFreqBand(o.freq.lo,o.freq.hi);   // sets sliders+text AND relayouts the x-axis (coupled)
   }
   if(o&&o.passfail){var r=document.querySelector('input[name="data_flt"][value="'+o.passfail+'"]');if(r)r.checked=true;}
   if(typeof update==='function') update();
@@ -10545,12 +10570,8 @@ function _ecLockApply(o){
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.'+cid),sp.rest[label])?applied:skipped).push(label);});
   PADB_lockApplySP(sp,'ec_ser_chk','ec_port_chk',applied,skipped,'ec_temp_chk');
-  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
-    var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
-    var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt');
-    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
-      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
-      if(lo<=hi){s1.value=lo;s2.value=hi; if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
+  if(o&&o.freq&&o.freq.lo!=null&&o.freq.hi!=null&&typeof setFreqBand==='function'){
+    setFreqBand(o.freq.lo,o.freq.hi);   // sets sliders+text AND relayouts the x-axis (coupled)
   }
   if(typeof update==='function') update();
   return {applied:applied,skipped:skipped};
@@ -11132,8 +11153,10 @@ function freqKeyDown(e,which){
    env_coverage page). update()'s own Plotly.react() call is in-place (no
    purge), so unlike stat_summary this listener only needs attaching once
    at page init, not re-attached after every update(). */
+var _ecBandRelayouting=false;
 function _onPlotRelayout(ed){
   if(!ed) return;
+  if(_ecBandRelayouting) return;   // ignore our own programmatic relayout (avoid loop, David 2026-09-24)
   if(ed['xaxis.autorange']){
     setFreqBand(EC_FREQ_MIN,EC_FREQ_MAX);
     return;
@@ -11151,6 +11174,13 @@ function setFreqBand(lo,hi){
   s1.value=loV;s2.value=hiV;
   document.getElementById('ec_freq_lo_txt').value=loV.toFixed(3);
   document.getElementById('ec_freq_hi_txt').value=hiV.toFixed(3);
+  /* Relayout the x-axis to the band (log-aware) so a programmatic band set (locked
+     filters, band step) moves the axis, not just the filter (David 2026-09-24).
+     _ecBandRelayouting guards _onPlotRelayout so this doesn't re-enter and loop. */
+  var _lx=isLogX();
+  _ecBandRelayouting=true;
+  var _pr=Plotly.relayout('plot',{'xaxis.range':_lx?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
+  if(_pr&&_pr.then){ _pr.then(function(){_ecBandRelayouting=false;},function(){_ecBandRelayouting=false;}); } else { _ecBandRelayouting=false; }
   update();
 }
 function fmt(v,d){return v===null||v===undefined?'—':v.toFixed(d!==undefined?d:4);}
@@ -19740,13 +19770,8 @@ function _sumLockApply(o){
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),sp.rest[label])?applied:skipped).push(label);});
   PADB_lockApplySP(sp,'sum_ser_chk',null,applied,skipped,'sum_temp_chk');
-  if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
-    var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
-      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
-      if(lo<=hi){s1.value=lo;s2.value=hi;
-        var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
-        if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
+  if(o&&o.freq&&o.freq.lo!=null&&o.freq.hi!=null&&typeof setFreqBand==='function'){
+    setFreqBand(o.freq.lo,o.freq.hi);   // sets sliders+text AND relayouts the x-axis (coupled)
   }
   if(o&&o.passfail){var r=document.querySelector('input[name="sum_flt"][value="'+o.passfail+'"]');if(r)r.checked=true;
     if(typeof updateSumFilterLabels==='function') updateSumFilterLabels();}

@@ -1445,17 +1445,29 @@ def test_locked_filters_crossview() -> None:
     check("the shared Help (i) panel documents locked filters",
           "Locked filters</b>" in src and "Lock these filters" in src
           and "separate from the Global Filter" in src)
-    # Lock-apply freq clamp must be NaN-safe (David 2026-09-24): boxplot (and any view whose
-    # freq inputs are plain number inputs with EMPTY min/max) had `Math.max(parseFloat(s1.min),
-    # lo)` -> Math.max(NaN,lo)=NaN, so the `lo<=hi` guard silently dropped the locked freq
-    # range (dims applied, freq didn't). Every apply now guards with isFinite before clamping.
-    check("lock-apply freq clamp is NaN-safe (isFinite guard, not bare parseFloat(min/max))",
-          "var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;" in src
-          and "var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;" in src)
-    check("the NaN-safe freq clamp is in all 6 view lock-apply adapters",
-          src.count("var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?") == 6
-          and "parseFloat(s1.min),o.freq.lo)" not in src,  # old bare-clamp form fully removed
-          f"count={src.count('var _mn=parseFloat(s1.min);')}")
+    # Draggable lock bar (David 2026-09-24: "sometimes blocks filter features"). Grip handle,
+    # drag listener on the persistent bar element (survives innerHTML rewrites), position
+    # persisted in localStorage across views. Lives in the shared _LOCK_JS -> every view + ref.
+    check("lock bar is draggable via a grip handle with a persisted position",
+          "class=\"padb_lock_drag\"" in src and "cursor:move" in src
+          and "padb_v2_lock_pos" in src
+          and "bar.addEventListener('mousedown'" in src)
+    # Lock-apply freq: the plot AXIS must follow the locked range, not just the filter
+    # (David 2026-09-24: "plot axis stayed full after a locked freq"). The 4 freq-x plot views
+    # (scatter/stat_summary/summary/env_coverage) route the locked freq through their
+    # setFreqBand, which sets sliders+text AND relayouts xaxis.range (log-aware). update()'s
+    # _liveAxisRange otherwise preserves the old pinned (full) range.
+    check("4 freq-x lock-applies route freq through setFreqBand (moves the axis, not just the filter)",
+          src.count("setFreqBand(o.freq.lo,o.freq.hi);   // sets sliders+text AND relayouts the x-axis (coupled)") == 4,
+          f"count={src.count('setFreqBand(o.freq.lo,o.freq.hi);')}")
+    check("stat_summary + env_coverage setFreqBand gained a log-aware x-axis relayout",
+          src.count("Plotly.relayout('plot',{'xaxis.range':_lx?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});") == 2)
+    # distribution (value-KDE x) + boxplot (categorical x) have no continuous freq x-axis to
+    # relayout, so they keep the direct NaN-safe freq set (empty-min/max safe: isFinite guard,
+    # never Math.max(NaN,lo)). This is the residual home of the NaN-safe clamp.
+    check("distribution + boxplot keep the direct NaN-safe freq clamp (no freq x-axis to relayout)",
+          src.count("var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;") == 2
+          and "parseFloat(s1.min),o.freq.lo)" not in src)  # old bare-clamp form fully removed
 
 
 def test_named_band_segments_crossview() -> None:
