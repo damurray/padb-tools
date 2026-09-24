@@ -40,6 +40,8 @@ import pyarrow.parquet as pq
 import pandas as pd
 from flask import Flask, Response, jsonify, request
 
+import padb_bands
+
 try:
     import plotly.offline as _plo
     _PLOTLY = _plo.get_plotlyjs()
@@ -70,33 +72,13 @@ _UNIT_HZ = {"hz": 1.0, "khz": 1e3, "mhz": 1e6, "ghz": 1e9}
 
 
 def _load_bands(path: Path, data_unit: str) -> list[dict]:
-    """Read a named-band JSON and convert each band's lo/hi from the config's
-    unit into the data's x-axis unit. Config shape:
-        {"unit": "Hz",
-         "bands": [{"name": "Low Band", "lo": 8e6, "hi": 1500e6}, ...]}
-    `unit` is optional (defaults to the data's own unit -> no conversion).
-    A bad/missing file yields no bands (the band bar just doesn't show)."""
-    try:
-        cfg = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"  [bands] ignoring {path}: {exc}", flush=True)
-        return []
-    conf_u = (cfg.get("unit") or data_unit or "").strip().lower()
-    cf, df = _UNIT_HZ.get(conf_u), _UNIT_HZ.get((data_unit or "").strip().lower())
-    scale = (cf / df) if (cf and df) else 1.0  # config-unit -> data-unit
-    out = []
-    for b in cfg.get("bands", []):
-        try:
-            lo, hi = float(b["lo"]) * scale, float(b["hi"]) * scale
-        except (KeyError, TypeError, ValueError):
-            continue
-        if hi < lo:
-            lo, hi = hi, lo
-        out.append({"name": str(b.get("name", "band")), "lo": lo, "hi": hi})
+    """Read a named-band JSON and convert each band's lo/hi into the data's x-axis
+    unit. Delegates to padb_bands.load_bands_file (single source of truth shared
+    with the HTML views); a bad/missing file yields no bands."""
+    out = padb_bands.load_bands_file(path, data_unit)
     if out:
         print(f"  [bands] loaded {len(out)} band(s) from {Path(path).name} "
-              f"(config unit {conf_u or '?'} -> data unit {data_unit or '?'}, x{scale:g})",
-              flush=True)
+              f"(data unit {data_unit or '?'})", flush=True)
     return out
 
 
@@ -828,15 +810,20 @@ def main(argv=None):
     print(f"Loading {pqpath} ...", flush=True)
     DS = DataSet(pqpath, x_override=args.x, value_override=args.value)
 
-    bands_path = Path(args.bands).resolve() if args.bands else None
-    if not bands_path:
-        for cand in ("bands.json", "padb_viewer_bands.json"):
-            p = pqpath.parent / cand
-            if p.exists():
-                bands_path = p
-                break
-    if bands_path and bands_path.exists():
-        DS.bands = _load_bands(bands_path, DS.x_unit)
+    if args.bands:
+        DS.bands = _load_bands(Path(args.bands).resolve(), DS.x_unit)
+    else:
+        # Shared discovery: existing sidecar wins; otherwise auto-generate an editable
+        # starter from the actual swept data (David 2026-09-24) and invite edits.
+        DS.bands, bpath, created = padb_bands.find_or_create_bands(
+            DS.df["x"].tolist(), DS.x_unit, [pqpath.parent], allow_create=True)
+        if created and bpath:
+            print(f"  [bands] no band file found -- auto-generated {len(DS.bands)} starter "
+                  f"band(s) -> {Path(bpath).name}. Edit it to rename/re-range, then reload.",
+                  flush=True)
+        elif DS.bands and bpath:
+            print(f"  [bands] loaded {len(DS.bands)} band(s) from {Path(bpath).name} "
+                  f"(data unit {DS.x_unit or '?'})", flush=True)
     DS.compute_band_counts()
     m = DS.meta()
     print(f"  {m['rows']:,} rows | x={m['x_label']} [{m['x_min']:.4g}..{m['x_max']:.4g}] "

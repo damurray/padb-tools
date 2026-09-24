@@ -240,6 +240,35 @@ def main() -> None:
     check("viewer: page formats the spec/TLL value while stepping (_segSpecStr)",
           "_segSpecStr" in page and "spec/TLL:" in page)
 
+    # --- padb_bands: shared loader + auto-generation (David 2026-09-24) -----------
+    import padb_bands as B
+    # Unit conversion: a file in Hz against MHz data.
+    hz_file = tmp / "hz_bands.json"
+    hz_file.write_text(json.dumps({"unit": "Hz", "bands": [
+        {"name": "A", "lo": 1e6, "hi": 8e6}]}), encoding="utf-8")
+    lb = B.load_bands_file(hz_file, "MHz")
+    check("padb_bands: load_bands_file converts Hz->MHz", lb and abs(lb[0]["hi"] - 8.0) < 1e-9, str(lb))
+    check("padb_bands: bad/missing file yields [] (never raises)",
+          B.load_bands_file(tmp / "nope.json", "MHz") == [])
+    # auto_bands derives from real swept data, ascending & non-empty.
+    ab = B.auto_bands([1, 2, 5, 10, 100, 1000, 5000, 20000], "MHz", target=4)
+    check("padb_bands: auto_bands produces multiple ascending bands",
+          len(ab) >= 2 and all(ab[i]["hi"] <= ab[i + 1]["hi"] for i in range(len(ab) - 1)), str(ab))
+    check("padb_bands: auto_bands spans the data min/max",
+          ab and ab[0]["lo"] == 1 and abs(ab[-1]["hi"] - 20000) < 1e-6, str((ab[0], ab[-1])))
+    # find_or_create: no file present -> auto-generate + write, and it round-trips.
+    fresh = Path(tempfile.mkdtemp(prefix="qa_bands_"))
+    bands, bp, created = B.find_or_create_bands([1, 10, 100, 1000, 20000], "MHz", [fresh], allow_create=True)
+    check("padb_bands: find_or_create auto-generates when no file exists",
+          created and bp and Path(bp).exists() and len(bands) >= 2, str((created, bp)))
+    check("padb_bands: auto-generated file invites editing (_comment/_auto_generated)",
+          bp and '"_auto_generated": true' in Path(bp).read_text(encoding="utf-8")
+          and "EDIT ME" in Path(bp).read_text(encoding="utf-8"))
+    # Second call finds the just-written file (does NOT regenerate -> respects edits).
+    b2, bp2, created2 = B.find_or_create_bands([1, 10, 100], "MHz", [fresh], allow_create=True)
+    check("padb_bands: existing file is reused, not regenerated (respects edits)",
+          created2 is False and Path(bp2) == Path(bp), str((created2, bp2)))
+
     print(f"\nqa_viewer: PASS={_PASS}  FAIL={_FAIL}")
     sys.exit(1 if _FAIL else 0)
 
