@@ -2186,7 +2186,18 @@ def _build_help_panel_html(
     bullets = [
         '<li><b>Filter dropdowns</b> (buttons above) &mdash; uncheck values to '
         'exclude matching rows from every chart, segment, and statistic on '
-        'this page.</li>'
+        'this page.</li>',
+        '<li><b>&#128274; Locked filters</b> (floating panel, top-right) &mdash; '
+        'saves the common filters (condition dropdowns, frequency range, Passing/'
+        'Failing, and serial/port) so you don&#39;t re-enter them on every view. '
+        'Set them on any view, click <i>Lock these filters</i>, and every other '
+        'view auto-applies the same set when it opens. Use <i>Apply</i> to re-apply '
+        'here, <i>Update from this view</i> to overwrite the lock, <i>Clear</i> to '
+        'remove it, and <i>Export/Import</i> to carry it to a page opened straight '
+        'off the network share. It is best-effort &mdash; a locked filter that '
+        'doesn&#39;t exist on a given view is simply ignored (never blanks a page). '
+        'Locked filters are separate from the Global Filter: the lock says '
+        '<i>show this slice</i>; the GF says <i>exclude these points</i>.</li>',
     ]
     if has_group_by:
         bullets.append(
@@ -14053,6 +14064,10 @@ function _boxFailCellDetail(detail,yFlt,condFallback){ var r=_boxFailCountDetail
 function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
   var fr=getBoxFreqRange();
   var allSers=getAllBoxSerials(), serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
+  /* Port filter, mirroring the plot builder -- was missing here, so narrowing Port
+     (directly or via a locked filter) left the per-point table showing ports the plot
+     had dropped (David 2026-09-23). */
+  var allPorts=getAllBoxPorts(), selPorts=getSelectedBoxPorts(), portActive=allPorts.length>1&&selPorts.length<allPorts.length;
   var gfActive=_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0, gfFocus=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
   var collapse=isCollapseDup(), grpCols=_boxGroupCols(), pts=[];
   /* Honour the same raw-sample trim + pass/fail (All/Passing/Failing) filter the plot
@@ -14070,6 +14085,7 @@ function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
       if(collapse) det=_collapseDupRuns(det,function(d){return d.s+'|'+cd.condition+'|'+(d.p||'')+'|'+cd.temp;});
       det.forEach(function(d){
         if(serActive&&selBoxSers.indexOf(d.s)<0) return;
+        if(portActive&&selPorts.indexOf(d.p||'')<0) return;
         if(d.v>_rhi||d.v<_rlo) return;
         var _lim=_boxPtLim(d,yFlt);
         var _vd=_boxVerdict(cd.condition,d,yFlt);
@@ -15468,6 +15484,16 @@ function _mergeGf(newKeys){
     localStorage.setItem(GF_KEY,JSON.stringify({v:1,excluded:Array.from(merged)}));
     _loadBoxGlobalFilter();_updateBoxGfStatus();update();
   }catch(e){alert('localStorage write failed: '+e.message);}
+}
+/* Apply the saved cross-view Locked filters to THIS boxplot, then push that exact slice
+   into the Global Filter (one-click Apply-lock + Set-filter-as-GF). The lock is a "show
+   this slice" selection; the GF is an "exclude this slice" list -- so this is for the
+   case where your locked view is the population you want to DROP everywhere. */
+function _boxAddLockToGf(){
+  var o=(typeof PADB_lockGet==='function')?PADB_lockGet():null;
+  if(!o){ alert('No locked filters saved. Use the floating lock panel (top-right) to lock a view first.'); return; }
+  if(typeof _bxLockApply==='function') _bxLockApply(o);   // set boxplot's controls to the locked slice
+  setFilterAsGf();                                        // capture that (now-applied) slice into the GF
 }
 /* Set currently selected filter (conditions × serials) directly as GF — no outlier threshold needed.
    Serial is in vals_detail[].s, NOT in the condition string (BOX_DATA groups without serial). */
@@ -17113,6 +17139,10 @@ def _build_box_interactive_html(
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
         ' title="Set currently selected conditions + serials as the global exclusion filter -- adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)"'
         ' onclick="setFilterAsGf()">Set filter as GF</button>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#eef7ee;border-color:#2a7a2a;color:#2a7a2a;font-weight:600"'
+        ' title="Apply your saved Locked filters here, then add that exact slice to the Global Filter (exclude it everywhere) -- one-click equivalent of Apply lock + Set filter as GF. Use when your locked view is the population you want to DROP."'
+        ' onclick="_boxAddLockToGf()">Add locked filters to GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_gf_btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
         ' title="Set IQR outlier points as the global exclusion filter -- checked independently at each currently-selected Temperature checkbox (not Room-only), so narrow the Temperature filter first if you only want outliers from specific temperature(s). Adds to the existing filter, doesn\'t replace it"'

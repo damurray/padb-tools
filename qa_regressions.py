@@ -1423,6 +1423,15 @@ def test_locked_filters_crossview() -> None:
           "sp.rest['Port']=sp.port" in src and "PADB_lockApplySP({serial:sp.serial,port:null},'hf_serial'" in src)
     check("reference routes serial-like to its dedicated Serial column (base match)",
           "PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col=\"Serial\"]')" in ref)
+    # Boxplot "Add locked filters to GF" -- applies the saved lock here then captures that
+    # slice into the Global Filter (David 2026-09-23).
+    check("boxplot has an 'Add locked filters to GF' button + handler",
+          "Add locked filters to GF</button>" in src and "onclick=\"_boxAddLockToGf()\"" in src
+          and "function _boxAddLockToGf(" in src
+          and "_bxLockApply(o)" in src and "setFilterAsGf();" in src)
+    check("the shared Help (i) panel documents locked filters",
+          "Locked filters</b>" in src and "Lock these filters" in src
+          and "separate from the Global Filter" in src)
 
 
 def test_summary_group_by_serial() -> None:
@@ -1615,6 +1624,12 @@ def test_box_table_perpoint_mode() -> None:
               "function _boxFailCountDetail(" in h and "function _boxFailCellDetail(" in h)
         check("box table: per-point mode short-circuits updateStatsTable",
               "if(_boxTableMode()==='perpoint'){ el.innerHTML=_boxPerPointTable(" in h)
+        # Per-point table must apply the SAME Port filter the plot does, or narrowing
+        # Port (directly or via a locked filter) leaves the table showing dropped ports
+        # (David 2026-09-23).
+        check("box per-point table filters by Port (matches the plot)",
+              "var allPorts=getAllBoxPorts(), selPorts=getSelectedBoxPorts(), portActive=" in h
+              and "if(portActive&&selPorts.indexOf(d.p||'')<0) return;" in h)
         # Grouped #fail/n column must be wired into EVERY row-push branch (grouped,
         # else-if filtered, default-Room, default-nonRoom) + the header, using the
         # per-point-limit form (see test_box_fail_per_point_limit). The old flat
