@@ -657,6 +657,9 @@ function _refLockRead(){
   var sb=document.querySelectorAll('.fchk[data-col="Serial"]');
   if(sb.length){var cs=Array.prototype.slice.call(sb).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
     if(cs.length&&cs.length<sb.length) dims['Serial Number']=cs;}
+  var tb=document.querySelectorAll('.fchk[data-col="Temperature"]');
+  if(tb.length){var cts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+    if(cts.length&&cts.length<tb.length) dims['Temperature']=cts;}
   var lo=document.getElementById('f_lo'),hi=document.getElementById('f_hi');
   return {dims:dims,
     freq:{lo:(lo&&lo.value!=='')?parseFloat(lo.value):null,hi:(hi&&hi.value!=='')?parseFloat(hi.value):null},passfail:'all'};
@@ -668,6 +671,7 @@ function _refLockApply(o){
     if(!col){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),sp.rest[label])?applied:skipped).push(label);});
   if(sp.serial!=null){ (PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col="Serial"]'),sp.serial)?applied:skipped).push('Serial Number'); }
+  if(sp.temp!=null){ (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="Temperature"]'),sp.temp)?applied:skipped).push('Temperature'); }
   if(o&&o.freq){var lo=document.getElementById('f_lo'),hi=document.getElementById('f_hi');
     if(lo&&o.freq.lo!=null)lo.value=o.freq.lo; if(hi&&o.freq.hi!=null)hi.value=o.freq.hi;}
   if(typeof update==='function') update();
@@ -676,6 +680,10 @@ function _refLockApply(o){
 window.addEventListener('DOMContentLoaded',function(){_loadRefGlobalFilter();update();
   if(typeof PADB_lockRegister==='function'){ PADB_lockRegister({read:_refLockRead,apply:_refLockApply}); PADB_lockInit(); }
   /* Remove the busy overlay once the tables have painted (this view has no #plot for
-     the shared PADB_busyHide poll). rAF so the first render is visible before removal. */
-  requestAnimationFrame(function(){var _b=document.getElementById('padb_busy'); if(_b&&_b.parentNode) _b.parentNode.removeChild(_b);});});
+     the shared PADB_busyHide poll). Keep it up at least ~450ms from page start so it
+     reliably shows on a fast/cached load (matches the other views' PADB_BUSY_MIN_MS). */
+  var _refBusyMin=450, _refT0=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+  var _refBusyGo=function(){var _b=document.getElementById('padb_busy'); if(_b&&_b.parentNode) _b.parentNode.removeChild(_b);};
+  requestAnimationFrame(function(){var _el=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+    var _w=_refBusyMin-(_el-_refT0); if(_w>0) setTimeout(_refBusyGo,_w); else _refBusyGo();});});
 """

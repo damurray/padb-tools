@@ -1414,15 +1414,28 @@ def test_locked_filters_crossview() -> None:
           and "function PADB_lockReadSP(" in src and "function PADB_lockSetSerials(" in src)
     check("serial matches on base form (strips a trailing port-like suffix)",
           "_lockSerBase" in src and "replace(/_[A-Za-z]+\\d*$/,'')" in src)
-    for ser, port in (("box_ser_chk", "'box_port_chk'"), ("ser_chk", "'ss_port_chk'"),
-                      ("sum_ser_chk", "null"), ("dist_ser_chk", "'dist_port_chk'"),
-                      ("ec_ser_chk", "'ec_port_chk'")):
-        check(f"an aggregate view routes serial/port via PADB_lockApplySP({ser}/{port})",
-              f"PADB_lockApplySP(sp,'{ser}',{port}," in src)
+    for ser, port, temp in (("box_ser_chk", "'box_port_chk'", "'box_env_chk'"),
+                            ("ser_chk", "'ss_port_chk'", "'env_chk'"),
+                            ("sum_ser_chk", "null", "'sum_temp_chk'"),
+                            ("dist_ser_chk", "'dist_port_chk'", "'env_chk'"),
+                            ("ec_ser_chk", "'ec_port_chk'", "'ec_temp_chk'")):
+        check(f"an aggregate view routes serial/port/temp via PADB_lockApplySP({ser}/{port}/{temp})",
+              f"PADB_lockApplySP(sp,'{ser}',{port},applied,skipped,{temp})" in src)
+    # Temperature lives in a dedicated env-checkbox bar (not GROUP_COLS/COND_DIMS), so the
+    # lock routes it like serial/port; scatter/reference handle it inline (David 2026-09-24:
+    # "set temperature to room only ... apply did not work" -- temp wasn't captured/applied).
+    check("lock split + read + apply cover Temperature",
+          "temp=o.dims[k]" in src and "dims['Temperature']=ct" in src
+          and "sp.temp!=null" in src)
+    check("scatter reads temp from env_chk and routes it on apply",
+          "PADB_lockReadSP(dims,null,null,'env_chk')" in src
+          and "document.querySelectorAll('.env_chk'),o.dims[label]" in src)
     check("histogram keeps Port as a dim (only serial is dedicated) + routes serial",
           "sp.rest['Port']=sp.port" in src and "PADB_lockApplySP({serial:sp.serial,port:null},'hf_serial'" in src)
     check("reference routes serial-like to its dedicated Serial column (base match)",
           "PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col=\"Serial\"]')" in ref)
+    check("reference routes temperature to its dedicated Temperature column",
+          "PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col=\"Temperature\"]'),sp.temp)" in ref)
     # Boxplot "Add locked filters to GF" -- applies the saved lock here then captures that
     # slice into the Global Filter (David 2026-09-23).
     check("boxplot has an 'Add locked filters to GF' button + handler",
@@ -1573,6 +1586,16 @@ def test_common_prelude_and_feature_registry() -> None:
           "_BUSY_OVERLAY_HTML = (" in src and 'id="padb_busy"' in src and "padbspin" in src)
     check("busy overlay: single PADB_busyHide in _COMMON_JS + poll covers #plot and #kde_plot",
           "function PADB_busyHide()" in src and "ids=['plot','kde_plot']" in src)
+    # Minimum on-screen time (2026-09-24): on a fast/cached load the plot renders in the
+    # same frame the poll fires, so the overlay was removed before it ever painted ("I
+    # don't see the busy icon"). PADB_busyHide now defers removal until >=PADB_BUSY_MIN_MS
+    # from page start; reference (no _COMMON_JS) applies the same floor to its own removal.
+    check("busy overlay: enforced minimum visible time so a fast load still shows it",
+          "var PADB_BUSY_MIN_MS=" in src and "var _padbBusyT0=" in src
+          and "PADB_BUSY_MIN_MS-(_padbNow()-_padbBusyT0)" in src)
+    _refsrc = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
+    check("reference busy overlay honors the same minimum visible time",
+          "_refBusyMin=450" in _refsrc and "setTimeout(_refBusyGo" in _refsrc)
     busy_inserts = src.count("+ _BUSY_OVERLAY_HTML")
     check(f"busy overlay: inserted into all 7 interactive views (>=7; found {busy_inserts})",
           busy_inserts >= 7)

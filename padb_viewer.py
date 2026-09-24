@@ -319,8 +319,17 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
     <b id="vtitle">Band view</b> <span id="vstatus" style="color:#666"></span>
     <button onclick="document.getElementById('viewwrap').style.display='none'" style="float:right">Close</button>
   </div>
-  <iframe id="vframe" style="width:100%;height:78vh;border:0"></iframe>
+  <div style="position:relative">
+    <div id="vbusy" style="display:none;position:absolute;inset:0;z-index:5;background:rgba(247,247,248,.92);
+      display:none;flex-direction:column;align-items:center;justify-content:center;
+      font:14px system-ui,Segoe UI,sans-serif;color:#333">
+      <div style="width:40px;height:40px;border:4px solid #cfe0f5;border-top-color:#0066cc;border-radius:50%;
+        animation:vspin .8s linear infinite;margin-bottom:12px"></div>
+      <div id="vbusytxt">Rendering band view&hellip;</div></div>
+    <iframe id="vframe" style="width:100%;height:78vh;border:0"></iframe>
+  </div>
 </div>
+<style>@keyframes vspin{to{transform:rotate(360deg)}}</style>
 <script>
 let META=null;
 async function boot(){
@@ -380,7 +389,7 @@ function resetView(){document.getElementById('flo').value=META.x_min;document.ge
 // drag-zoom / Autoscale / Reset-axes must drive the frequency filter (and re-query)
 // rather than just re-viewport the already-drawn points. Mirrors the html views'
 // _onPlotRelayout. _syncing swallows the react-induced relayout so it can't loop.
-let _relayoutHooked=false, _syncing=false;
+let _relayoutHooked=false, _syncing=false, _curView=null, _vRefreshTimer=null;
 function _onRelayout(ed){
   if(_syncing||!ed) return;
   // Modebar Autoscale / Reset axes -> return the frequency filter to the full range.
@@ -403,14 +412,19 @@ function _onRelayout(ed){
   }
 }
 function openView(v){
+  _curView=v;   // remember which band view is open so a band change (zoom/Update) can refresh it
   const flo=document.getElementById('flo').value, fhi=document.getElementById('fhi').value;
   const full=document.getElementById('fullrender').checked?1:0;
   const wrap=document.getElementById('viewwrap');
   wrap.style.display='block';
   document.getElementById('vtitle').textContent=v+'  ['+flo+' .. '+fhi+' '+META.x_label+']'+(full?'  (full)':'  (lite)');
   document.getElementById('vstatus').textContent=(full?'full':'lite')+' render for this band'+(full?' (embeds all points -- may take a while)...':'...');
+  var vb=document.getElementById('vbusy');
+  if(vb){ vb.style.display='flex'; var bt=document.getElementById('vbusytxt');
+    if(bt) bt.textContent='Rendering '+v+' for ['+flo+'..'+fhi+' '+META.x_label+']'+(full?' (full - all points)':'')+'…'; }
   const f=document.getElementById('vframe');
-  f.onload=()=>{document.getElementById('vstatus').textContent='rendered ('+(full?'full: all points, Site check':'lite: exact boxes/stats, no overlay')+').';};
+  f.onload=()=>{document.getElementById('vstatus').textContent='rendered ('+(full?'full: all points, Site check':'lite: exact boxes/stats, no overlay')+').';
+    var _vb=document.getElementById('vbusy'); if(_vb) _vb.style.display='none';};
   f.src='/view?view='+encodeURIComponent(v)+'&flo='+flo+'&fhi='+fhi+'&full='+full;
   wrap.scrollIntoView({behavior:'smooth'});
 }
@@ -438,6 +452,15 @@ async function update(){
   document.getElementById('status').textContent =
      r.n_total.toLocaleString()+' pts in view -> '+r.n_returned.toLocaleString()+
      ' drawn ('+Math.round(performance.now()-t0)+' ms)';
+  // If a band view is open, refresh it for the NEW band (debounced, so a drag-zoom that
+  // fires many updates only re-renders once it settles) -- otherwise the open view would
+  // stay stale/showing the old band's guard message after you zoom (David 2026-09-24).
+  var vw=document.getElementById('viewwrap');
+  if(_curView && vw && vw.style.display!=='none'){
+    document.getElementById('vstatus').textContent='band changed -> refreshing '+_curView+' for ['+flo+'..'+fhi+']...';
+    clearTimeout(_vRefreshTimer);
+    _vRefreshTimer=setTimeout(function(){ openView(_curView); }, 700);
+  }
 }
 boot();
 </script></body></html>"""
@@ -476,6 +499,34 @@ def api_scatter():
 # (all controls, Site compare, stats), just band-sized so it actually loads.
 _band_cache: dict = {}
 
+# A band view is a FULL padb_v2 render that embeds every point in the band (per-condition
+# stats/KDE for boxplot/distribution; all points for scatter). A full-range band is the
+# whole dataset -- exactly the giant the viewer exists to avoid: it renders slowly and the
+# resulting iframe can be tens of MB (looks blank/broken while it grinds). Guard: above this
+# row count, serve a short "narrow the band" page for ANY band view (David 2026-09-24). The
+# main overview plot stays available (server-side decimated) for picking a band.
+VIEW_BAND_MAX_ROWS = 60000
+
+
+def _band_guard_html(view: str, n: int, flo: float, fhi: float) -> str:
+    return (
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<style>body{font-family:Arial,sans-serif;margin:0;padding:28px;color:#333;"
+        "background:#fff}.card{max-width:640px;margin:6vh auto;border:1px solid #e0905a;"
+        "background:#fff7ef;border-radius:8px;padding:20px 24px}h2{margin:0 0 8px;color:#c04000}"
+        "code{background:#eee;padding:1px 5px;border-radius:3px}</style></head><body>"
+        f"<div class='card'><h2>Band too large for the {view} view</h2>"
+        f"<p>This frequency band (<b>{flo:g} - {fhi:g}</b>) has <b>{n:,} points</b>. "
+        f"A band view embeds every point in the band, so a band this large renders slowly "
+        f"and produces a very heavy page &mdash; the case this viewer exists to avoid.</p>"
+        "<p><b>What to do:</b> narrow the frequency band first &mdash; drag-select or use the "
+        "modebar Zoom on the main overview plot above (it re-queries as you zoom), or type a "
+        "smaller min/max and click <b>Update</b> &mdash; then open this view again. The main "
+        "overview plot itself stays fast at any size (it is server-side decimated).</p>"
+        f"<p style='color:#777;font-size:12px'>Threshold: {VIEW_BAND_MAX_ROWS:,} points "
+        "(configurable via VIEW_BAND_MAX_ROWS).</p></div></body></html>"
+    )
+
 
 def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> tuple[str, int]:
     """Render `view` (e.g. 'boxplot') for the frequency band [flo,fhi] via the
@@ -502,6 +553,15 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
                    pc.less_equal(col, pa.scalar(fhi)))
     t2 = t.filter(mask)
     n = t2.num_rows
+
+    # Large-band guard: any band view over the row cap gets a "narrow the band" page.
+    if n > VIEW_BAND_MAX_ROWS:
+        tmp = Path(tempfile.mkdtemp(prefix="padbview_"))
+        out = str(tmp / f"guard_{view}.html")
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(_band_guard_html(view, n, flo, fhi))
+        _band_cache[key] = (out, n)
+        return out, n
 
     tmp = Path(tempfile.mkdtemp(prefix="padbview_"))
     band_csv = tmp / "band.csv"

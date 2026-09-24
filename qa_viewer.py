@@ -163,6 +163,27 @@ def main() -> None:
     check("boxplot: lite keeps exact server box stats",
           '"q1"' in lite and '"outlier_detail"' in lite)
 
+    # --- large-band guard (David 2026-09-24) --------------------------------
+    # Over the row cap, ANY band view returns a "narrow the band" page instead of
+    # grinding out a huge render (the full-range case that looked blank/broken).
+    _orig_cap = V.VIEW_BAND_MAX_ROWS
+    try:
+        V.VIEW_BAND_MAX_ROWS = 1
+        V._band_cache.clear()
+        gb = _get(client, f"/view?view=boxplot&flo={xmin}&fhi={xmax}&full=0").get_data(as_text=True)
+        check("viewer: large-band guard serves a 'Band too large' page", "Band too large" in gb)
+        gs = _get(client, f"/view?view=scatter&flo={xmin}&fhi={xmax}&full=0").get_data(as_text=True)
+        check("viewer: guard applies to the scatter band too (not just boxplot)", "Band too large" in gs)
+    finally:
+        V.VIEW_BAND_MAX_ROWS = _orig_cap
+        V._band_cache.clear()
+    # UI wiring (auto-refresh on zoom + spinner) can't be driven by the test client, so pin it.
+    vsrc = Path(V.__file__).read_text(encoding="utf-8")
+    check("viewer: open band view auto-refreshes on band change (debounced)",
+          "_curView=v;" in vsrc and "openView(_curView)" in vsrc and "_vRefreshTimer" in vsrc)
+    check("viewer: band-view spinner overlay present",
+          'id="vbusy"' in vsrc and "vspin" in vsrc)
+
     print(f"\nqa_viewer: PASS={_PASS}  FAIL={_FAIL}")
     sys.exit(1 if _FAIL else 0)
 

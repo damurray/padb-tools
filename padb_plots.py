@@ -1444,15 +1444,20 @@ document.getElementById('n_points').textContent=_initData.length.toLocaleString(
 /* ---- Locked filters adapter (cross-view; see _COMMON_JS) ---- */
 function _avLockRead(){
   var groups=GROUP_COLS.map(function(p){ return {label:p[1], boxes:document.querySelectorAll('.fchk[data-col="'+p[0]+'"]')}; });
+  var dims=PADB_lockReadChecks(groups);
+  PADB_lockReadSP(dims,null,null,'env_chk');   // temperature lives in the env-checkbox bar, not GROUP_COLS
   var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
   var pf=document.querySelector('input[name="scat_flt"]:checked');
-  return {dims:PADB_lockReadChecks(groups),
+  return {dims:dims,
     freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},
     passfail:pf?pf.value:'all'};
 }
 function _avLockApply(o){
   var applied=[],skipped=[],byLabel={}; GROUP_COLS.forEach(function(p){byLabel[p[1]]=p[0];});
-  Object.keys((o&&o.dims)||{}).forEach(function(label){ var col=byLabel[label];
+  Object.keys((o&&o.dims)||{}).forEach(function(label){
+    if(/^(temperature|temperature step|test step|temp)$/i.test(label)){   // route to the env-checkbox bar
+      (PADB_lockSetChecks(document.querySelectorAll('.env_chk'),o.dims[label])?applied:skipped).push('Temperature'); return; }
+    var col=byLabel[label];
     if(!col){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),o.dims[label])?applied:skipped).push(label); });
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
@@ -2189,7 +2194,7 @@ def _build_help_panel_html(
         'this page.</li>',
         '<li><b>&#128274; Locked filters</b> (floating panel, top-right) &mdash; '
         'saves the common filters (condition dropdowns, frequency range, Passing/'
-        'Failing, and serial/port) so you don&#39;t re-enter them on every view. '
+        'Failing, serial/port, and temperature) so you don&#39;t re-enter them on every view. '
         'Set them on any view, click <i>Lock these filters</i>, and every other '
         'view auto-applies the same set when it opens. Use <i>Apply</i> to re-apply '
         'here, <i>Update from this view</i> to overwrite the lock, <i>Clear</i> to '
@@ -3666,8 +3671,21 @@ function PADB_fence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=
    painted before the big embedded-data <script>, so a large page doesn't look dead
    while the data parses and the first Plotly render runs. Hidden once ANY known plot
    div has actually rendered (SVG or WebGL layer present), with a ~60s safety timeout
-   so it can never get stuck on. Single definition here -> every view behaves the same. */
-function PADB_busyHide(){ var b=document.getElementById('padb_busy'); if(b&&b.parentNode) b.parentNode.removeChild(b); }
+   so it can never get stuck on. Single definition here -> every view behaves the same.
+   Minimum on-screen time (2026-09-24): on a FAST (local/cached) load the plot renders
+   almost as soon as the poll starts, so the overlay was removed ~in the same frame as
+   the first paint and never visibly appeared ("I don't see the busy icon"). Keep it up
+   for at least PADB_BUSY_MIN_MS from page start so it reliably shows; on a genuinely
+   slow load that floor has already passed, so nothing is delayed. */
+var PADB_BUSY_MIN_MS=450;
+var _padbBusyT0=(typeof performance!=='undefined'&&performance.now)?performance.now():Date.now();
+function _padbNow(){ return (typeof performance!=='undefined'&&performance.now)?performance.now():Date.now(); }
+function PADB_busyHide(){
+  var b=document.getElementById('padb_busy'); if(!b) return;
+  var wait=PADB_BUSY_MIN_MS-(_padbNow()-_padbBusyT0);
+  if(wait>0){ setTimeout(function(){ var x=document.getElementById('padb_busy'); if(x&&x.parentNode) x.parentNode.removeChild(x); }, wait); return; }
+  if(b.parentNode) b.parentNode.removeChild(b);
+}
 /* Small inline spinner for a slow table/panel render: paint this into the panel,
    then build on the next frame (double-rAF) so a heavy table shows progress instead
    of freezing. Reuses the @keyframes padbspin injected by _BUSY_OVERLAY_HTML (its
@@ -3803,12 +3821,13 @@ function PADB_lockReadChecks(groups){
    not apply all the locked filters"). PADB_lockSplitSP pulls serial-like + an exact
    "Port" entry out of a lock's dims, leaving `rest` for the condition-dim logic. */
 function PADB_lockSplitSP(o){
-  var serial=null,port=null,rest={};
+  var serial=null,port=null,temp=null,rest={};
   Object.keys((o&&o.dims)||{}).forEach(function(k){ var lo=k.toLowerCase();
     if(/serial|unit id|dut id|s\/n/.test(lo)) serial=o.dims[k];
     else if(lo==='port') port=o.dims[k];
+    else if(lo==='temperature'||lo==='temperature step'||lo==='test step'||lo==='temp') temp=o.dims[k];
     else rest[k]=o.dims[k]; });
-  return {serial:serial,port:port,rest:rest};
+  return {serial:serial,port:port,temp:temp,rest:rest};
 }
 /* Serial checkbox matcher: some views key serials port-qualified ("MY123_RF1") while
    scatter/reference key the base serial ("MY123"). Match on BASE form on both sides (strip
@@ -3828,19 +3847,23 @@ function PADB_lockSetSerials(boxes,vals){
    pass null to skip a control). Appends to applied/skipped arrays; reports under the
    canonical labels so the banner reads the same everywhere. Serial uses base-form
    matching (PADB_lockSetSerials); Port is an exact match. */
-function PADB_lockApplySP(sp,serialClass,portClass,applied,skipped){
+function PADB_lockApplySP(sp,serialClass,portClass,applied,skipped,tempClass){
   if(sp.serial!=null){ (serialClass&&PADB_lockSetSerials(document.querySelectorAll('.'+serialClass),sp.serial)?applied:skipped).push('Serial Number'); }
   if(sp.port!=null){ (portClass&&PADB_lockSetChecks(document.querySelectorAll('.'+portClass),sp.port)?applied:skipped).push('Port'); }
+  if(sp.temp!=null){ (tempClass&&PADB_lockSetChecks(document.querySelectorAll('.'+tempClass),sp.temp)?applied:skipped).push('Temperature'); }
 }
 /* Read a view's dedicated serial/port controls into a lock's dims (canonical labels),
    so a lock made ON an aggregate view also carries serial/port. */
-function PADB_lockReadSP(dims,serialClass,portClass){
+function PADB_lockReadSP(dims,serialClass,portClass,tempClass){
   if(serialClass){ var s=document.querySelectorAll('.'+serialClass);
     if(s.length){ var cs=Array.prototype.slice.call(s).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
       if(cs.length&&cs.length<s.length) dims['Serial Number']=cs; } }
   if(portClass){ var p=document.querySelectorAll('.'+portClass);
     if(p.length){ var cp=Array.prototype.slice.call(p).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
       if(cp.length&&cp.length<p.length) dims['Port']=cp; } }
+  if(tempClass){ var t=document.querySelectorAll('.'+tempClass);
+    if(t.length){ var ct=Array.prototype.slice.call(t).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
+      if(ct.length&&ct.length<t.length) dims['Temperature']=ct; } }
 }
 """
 _COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS
@@ -5430,7 +5453,7 @@ function _distLockRead(){
     var checked=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
     if(checked.length&&checked.length<boxes.length) dims[d.label]=checked;
   });
-  PADB_lockReadSP(dims,'dist_ser_chk','dist_port_chk');
+  PADB_lockReadSP(dims,'dist_ser_chk','dist_port_chk','env_chk');
   var lt=document.getElementById('dist_freq_lo_txt'),ht=document.getElementById('dist_freq_hi_txt');
   return {dims:dims,freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},passfail:'all'};
 }
@@ -5441,7 +5464,7 @@ function _distLockApply(o){
   Object.keys(sp.rest).forEach(function(label){
     if(!(label in byLabel)){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.dist_cond'+byLabel[label]+'_chk'),sp.rest[label])?applied:skipped).push(label);});
-  PADB_lockApplySP(sp,'dist_ser_chk','dist_port_chk',applied,skipped);
+  PADB_lockApplySP(sp,'dist_ser_chk','dist_port_chk',applied,skipped,'env_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('dist_freq_lo'),s2=document.getElementById('dist_freq_hi');
     var lt=document.getElementById('dist_freq_lo_txt'),ht=document.getElementById('dist_freq_hi_txt');
@@ -9214,7 +9237,7 @@ update();
 function _ssLockRead(){
   var groups=(COND_DIMS||[]).map(function(d){return {label:d.label,boxes:document.querySelectorAll('.fchk[data-col="cond_'+d.col_id+'"]')};});
   var dims=PADB_lockReadChecks(groups);
-  PADB_lockReadSP(dims,'ser_chk','ss_port_chk');
+  PADB_lockReadSP(dims,'ser_chk','ss_port_chk','env_chk');
   var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
   var pf=document.querySelector('input[name="data_flt"]:checked');
   return {dims:dims,
@@ -9227,7 +9250,7 @@ function _ssLockApply(o){
   Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),sp.rest[label])?applied:skipped).push(label);});
-  PADB_lockApplySP(sp,'ser_chk','ss_port_chk',applied,skipped);
+  PADB_lockApplySP(sp,'ser_chk','ss_port_chk',applied,skipped,'env_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
     if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
@@ -10444,7 +10467,7 @@ function _ecLockRead(){
     var checked=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).map(function(c){return String(c.value);});
     if(checked.length&&checked.length<boxes.length) dims[d.label]=checked;
   });
-  PADB_lockReadSP(dims,'ec_ser_chk','ec_port_chk');
+  PADB_lockReadSP(dims,'ec_ser_chk','ec_port_chk','ec_temp_chk');
   var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt');
   return {dims:dims,freq:{lo:(lt&&lt.value!=='')?parseFloat(lt.value):null,hi:(ht&&ht.value!=='')?parseFloat(ht.value):null},passfail:'all'};
 }
@@ -10454,7 +10477,7 @@ function _ecLockApply(o){
   Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.'+cid),sp.rest[label])?applied:skipped).push(label);});
-  PADB_lockApplySP(sp,'ec_ser_chk','ec_port_chk',applied,skipped);
+  PADB_lockApplySP(sp,'ec_ser_chk','ec_port_chk',applied,skipped,'ec_temp_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
     var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt');
@@ -13134,7 +13157,7 @@ function _bxLockRead(){
     COND_DIMS.forEach(function(d){ var a=Object.keys(all[d.label]),s=Object.keys(sel[d.label]);
       if(s.length&&s.length<a.length) dims[d.label]=s; });
   }
-  PADB_lockReadSP(dims,'box_ser_chk','box_port_chk');   // serial/port are dedicated filters here
+  PADB_lockReadSP(dims,'box_ser_chk','box_port_chk','box_env_chk');   // serial/port are dedicated filters here
   var fr=getBoxFreqRange();
   var pf=document.querySelector('input[name="box_flt"]:checked');
   var mode=(pf&&(pf.value==='all'||pf.value==='passing'||pf.value==='failing'))?pf.value:'all';
@@ -13163,7 +13186,7 @@ function _bxLockApply(o){
       if(typeof _syncDimsFromLf==='function') _syncDimsFromLf();
     }
   } else { lockedDims.forEach(function(l){skipped.push(l);}); }
-  PADB_lockApplySP(sp,'box_ser_chk','box_port_chk',applied,skipped);
+  PADB_lockApplySP(sp,'box_ser_chk','box_port_chk',applied,skipped,'box_env_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('box_freq_lo'),s2=document.getElementById('box_freq_hi');
     if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
@@ -19625,7 +19648,7 @@ _recomputeSpecSegments();
 function _sumLockRead(){
   var groups=(COND_DIMS||[]).map(function(d){return {label:d.label,boxes:document.querySelectorAll('.fchk[data-col="cond_'+d.col_id+'"]')};});
   var dims=PADB_lockReadChecks(groups);
-  PADB_lockReadSP(dims,'sum_ser_chk',null);   // summary has a serial filter but no port
+  PADB_lockReadSP(dims,'sum_ser_chk',null,'sum_temp_chk');   // summary has a serial filter but no port
   var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
   var pf=document.querySelector('input[name="sum_flt"]:checked');
   var mode=(pf&&(pf.value==='all'||pf.value==='passing'||pf.value==='failing'))?pf.value:'all';
@@ -19639,7 +19662,7 @@ function _sumLockApply(o){
   Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),sp.rest[label])?applied:skipped).push(label);});
-  PADB_lockApplySP(sp,'sum_ser_chk',null,applied,skipped);
+  PADB_lockApplySP(sp,'sum_ser_chk',null,applied,skipped,'sum_temp_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
     if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
@@ -20525,6 +20548,7 @@ function _hLockApply(o){
   var applied=[],skipped=[],byLabel={};(typeof DIMS!=='undefined'?DIMS:[]).forEach(function(d){byLabel[d.label]=d.col_id;});
   var sp=PADB_lockSplitSP(o);
   if(sp.port!=null) sp.rest['Port']=sp.port;   // histogram treats Port as a dim, not a dedicated control
+  if(sp.temp!=null) sp.rest['Temperature']=sp.temp;   // and temp is a dim here too (no env bar)
   Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.hf_'+cid),sp.rest[label])?applied:skipped).push(label);});
