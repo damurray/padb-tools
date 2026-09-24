@@ -268,6 +268,48 @@ def main() -> None:
     b2, bp2, created2 = B.find_or_create_bands([1, 10, 100], "MHz", [fresh], allow_create=True)
     check("padb_bands: existing file is reused, not regenerated (respects edits)",
           created2 is False and Path(bp2) == Path(bp), str((created2, bp2)))
+    # Auto-generation is OPT-IN (David 2026-09-24): allow_create=False with no file -> nothing
+    # created, [] returned (an existing sidecar would still load).
+    empty = Path(tempfile.mkdtemp(prefix="qa_bands_optin_"))
+    nb, np_, nc = B.find_or_create_bands([1, 10, 100, 1000], "MHz", [empty], allow_create=False)
+    check("padb_bands: opt-in -- allow_create=False never writes a file",
+          nb == [] and np_ is None and nc is False
+          and not (empty / "padb_viewer_bands.json").exists(), str((nb, np_, nc)))
+
+    # --- padb_make_bands helper: custom band-config setup (David 2026-09-24) --------
+    import padb_make_bands as MB
+    # preset
+    d1 = Path(tempfile.mkdtemp(prefix="qa_mb_"))
+    with redirect_stdout(io.StringIO()):
+        rc1 = MB.main([str(d1), "--sg6311a"])
+    f1 = d1 / "padb_viewer_bands.json"
+    check("padb_make_bands: --sg6311a writes the 4-band preset (Hz)",
+          rc1 == 0 and f1.exists()
+          and len(json.loads(f1.read_text(encoding="utf-8"))["bands"]) == 4
+          and json.loads(f1.read_text(encoding="utf-8"))["unit"] == "Hz")
+    # explicit, and it loads/converts through padb_bands
+    d2 = Path(tempfile.mkdtemp(prefix="qa_mb_"))
+    with redirect_stdout(io.StringIO()):
+        rc2 = MB.main([str(d2), "--unit", "Hz", "--band", "Low:8e6:375e6", "--band", "Mid:375e6:3200e6"])
+    f2 = d2 / "padb_viewer_bands.json"
+    lb2 = B.load_bands_file(f2, "MHz") if f2.exists() else []
+    check("padb_make_bands: --band writes custom bands that load+convert (Hz->MHz)",
+          rc2 == 0 and len(lb2) == 2 and abs(lb2[0]["hi"] - 375.0) < 1e-6, str(lb2))
+    # won't overwrite without --force
+    with redirect_stdout(io.StringIO()):
+        rc3 = MB.main([str(d2), "--sg6311a"])
+    check("padb_make_bands: refuses to overwrite an existing file without --force", rc3 == 1)
+    # auto from the compare parquet built earlier
+    d3 = Path(tempfile.mkdtemp(prefix="qa_mb_"))
+    import shutil as _sh
+    _sh.copy(str(pq), str(d3 / pq.name))
+    with redirect_stdout(io.StringIO()):
+        rc4 = MB.main([str(d3)])
+    f4 = d3 / "padb_viewer_bands.json"
+    check("padb_make_bands: auto mode derives a starter from a parquet",
+          rc4 == 0 and f4.exists()
+          and json.loads(f4.read_text(encoding="utf-8")).get("_auto_generated") is True
+          and len(json.loads(f4.read_text(encoding="utf-8"))["bands"]) >= 2)
 
     print(f"\nqa_viewer: PASS={_PASS}  FAIL={_FAIL}")
     sys.exit(1 if _FAIL else 0)

@@ -1463,8 +1463,8 @@ function _avLockApply(o){
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),o.dims[label])?applied:skipped).push(label); });
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-    if(s1&&s2){ var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
-      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+    if(s1&&s2){ var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
+      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
       if(lo<=hi){ s1.value=lo;s2.value=hi;
         document.getElementById('freq_lo_txt').value=lo.toFixed(3);
         document.getElementById('freq_hi_txt').value=hi.toFixed(3); } }
@@ -5508,8 +5508,8 @@ function _distLockApply(o){
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('dist_freq_lo'),s2=document.getElementById('dist_freq_hi');
     var lt=document.getElementById('dist_freq_lo_txt'),ht=document.getElementById('dist_freq_hi_txt');
-    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
-      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
+      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
       if(lo<=hi){s1.value=lo;s2.value=hi; if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
   }
   if(typeof update==='function') update();
@@ -9295,8 +9295,8 @@ function _ssLockApply(o){
   PADB_lockApplySP(sp,'ser_chk','ss_port_chk',applied,skipped,'env_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
-      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
+      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
       if(lo<=hi){s1.value=lo;s2.value=hi;
         var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
         if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
@@ -10524,8 +10524,8 @@ function _ecLockApply(o){
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
     var lt=document.getElementById('ec_freq_lo_txt'),ht=document.getElementById('ec_freq_hi_txt');
-    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
-      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
+      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
       if(lo<=hi){s1.value=lo;s2.value=hi; if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}
   }
   if(typeof update==='function') update();
@@ -13235,8 +13235,8 @@ function _bxLockApply(o){
   PADB_lockApplySP(sp,'box_ser_chk','box_port_chk',applied,skipped,'box_env_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('box_freq_lo'),s2=document.getElementById('box_freq_hi');
-    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
-      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
+      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
       if(lo<=hi){s1.value=lo;s2.value=hi;}}
   }
   if(o&&o.passfail){var r=document.querySelector('input[name="box_flt"][value="'+o.passfail+'"]');if(r)r.checked=true;}
@@ -19716,8 +19716,8 @@ function _sumLockApply(o){
   PADB_lockApplySP(sp,'sum_ser_chk',null,applied,skipped,'sum_temp_chk');
   if(o&&o.freq&&(o.freq.lo!=null||o.freq.hi!=null)){
     var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
-    if(s1&&s2){var lo=o.freq.lo!=null?Math.max(parseFloat(s1.min),o.freq.lo):parseFloat(s1.min);
-      var hi=o.freq.hi!=null?Math.min(parseFloat(s2.max),o.freq.hi):parseFloat(s2.max);
+    if(s1&&s2){var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;
+      var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;
       if(lo<=hi){s1.value=lo;s2.value=hi;
         var lt=document.getElementById('freq_lo_txt'),ht=document.getElementById('freq_hi_txt');
         if(lt)lt.value=lo.toFixed(3); if(ht)ht.value=hi.toFixed(3);}}

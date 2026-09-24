@@ -802,6 +802,9 @@ def main(argv=None):
     ap.add_argument("--no-open", action="store_true", help="Do not open a browser")
     ap.add_argument("--bands", help="JSON file of named frequency bands "
                     "(default: bands.json / padb_viewer_bands.json next to the parquet)")
+    ap.add_argument("--auto-bands", action="store_true",
+                    help="If no band file is found, auto-generate an editable starter "
+                         "from the swept data (off by default; an existing file always loads)")
     args = ap.parse_args(argv)
 
     global DS
@@ -816,7 +819,7 @@ def main(argv=None):
         # Shared discovery: existing sidecar wins; otherwise auto-generate an editable
         # starter from the actual swept data (David 2026-09-24) and invite edits.
         DS.bands, bpath, created = padb_bands.find_or_create_bands(
-            DS.df["x"].tolist(), DS.x_unit, [pqpath.parent], allow_create=True)
+            DS.df["x"].tolist(), DS.x_unit, [pqpath.parent], allow_create=args.auto_bands)
         if created and bpath:
             print(f"  [bands] no band file found -- auto-generated {len(DS.bands)} starter "
                   f"band(s) -> {Path(bpath).name}. Edit it to rename/re-range, then reload.",

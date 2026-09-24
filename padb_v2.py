@@ -1246,15 +1246,16 @@ def generate_report(
               flush=True)
 
     # Named bands for the "Segment by: Named bands" control (shared with the parquet
-    # viewer). An existing sidecar next to the results wins; otherwise auto-generate an
-    # editable starter from the actual swept x and invite the user to rename/re-range
-    # (David 2026-09-24). Stored on cfg so every view builder inherits it (see
-    # _cfg_for_view). Never fatal.
+    # viewer). An existing sidecar next to the results ALWAYS loads; auto-generation of an
+    # editable starter is OPT-IN via the `auto_bands` job key (David 2026-09-24 -- don't
+    # drop a file into every results folder by default). Stored on cfg so every view
+    # builder inherits it (see _cfg_for_view). Never fatal.
     if "_named_bands" not in cfg:
         try:
+            _allow_auto = bool(cfg.get("auto_bands", False))
             _bands, _bpath, _bcreated = padb_bands.find_or_create_bands(
                 df["Frequency_MHz"].dropna().tolist(), cfg.get("x_unit", "MHz"),
-                [output_dir, csv_path.parent], allow_create=True)
+                [output_dir, csv_path.parent], allow_create=_allow_auto)
             cfg["_named_bands"] = _bands
             if _bcreated and _bpath:
                 print(f"  Auto-generated {len(_bands)} starter band(s) -> {Path(_bpath).name} "
@@ -1886,6 +1887,14 @@ def main(argv: list[str] | None = None) -> None:
              "file itself untouched. --no-publish wins if both are given.",
     )
     parser.add_argument(
+        "--auto-bands",
+        action="store_true",
+        help="Auto-generate an editable starter named-band file next to the "
+             "results when none exists (drives the 'Segment by: Named bands' "
+             "step). Off by default -- an existing bands.json/padb_viewer_bands.json "
+             "is always used. Runtime override for the job's auto_bands key.",
+    )
+    parser.add_argument(
         "--pdf-report",
         action="store_true",
         help="Build a comprehensive multi-view PDF report (cover + every view "
@@ -1929,6 +1938,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.publish and not cfg.get("publish_to"):
         cfg.pop("publish_to", None)
 
+    if args.auto_bands:
+        cfg["auto_bands"] = True
     if args.pdf_report:
         cfg["build_pdf_report"] = True
     if args.pdf_apply_filter:

@@ -1,6 +1,18 @@
-# Changelog — 2026-08-17 to 2026-09-23
+# Changelog — 2026-08-17 to 2026-09-24
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
+
+---
+
+## 2026-09-24
+
+### Named-band segment step (all 6 swept-x views + the parquet viewer)
+- **"Segment by: Named bands."** A band file partitions the swept x-axis into named chunks (DAC/Low/Mid/High — or anything; not limited to RF frequency). Every swept-x view's "Segment by" dropdown gains a **Named bands** option that steps the frequency window through your bands; the band name shows in the label and stepping narrows the plot **and** the tables to that band (same coupling as the spec stepper). The parquet viewer's segment stepper gets the same, plus it now shows the current **spec/TLL value** while stepping spec stairs, and its band-view load cap **floors at the largest named band** (a single band always opens; heavy bands are flagged "may load slowly").
+- **`padb_make_bands.py`** helper to set one up: auto-generate an editable starter from the data (`py padb_make_bands.py <folder>`), type your own (`--band "Name:lo:hi" --unit MHz`), or the standard `--sg6311a` preset. Edit the file any time to rename/re-range.
+- **Auto-generation is opt-in** (`auto_bands` job key / `--auto-bands`) — an existing band file is always loaded, but we don't drop one into every results folder by default.
+
+### Fix — locked filters: frequency range now applies on views with plain number inputs
+- The locked **frequency range** silently failed to apply on the **boxplot** (its freq inputs have no min/max, so the old `Math.max(parseFloat(min), lo)` clamp produced `NaN` and the range was dropped — dims applied, freq didn't). Now NaN-guarded across all views. `qa_crossview` INV-LOCK now also locks a freq sub-range and asserts it propagates.
 
 ---
 

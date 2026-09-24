@@ -1445,6 +1445,17 @@ def test_locked_filters_crossview() -> None:
     check("the shared Help (i) panel documents locked filters",
           "Locked filters</b>" in src and "Lock these filters" in src
           and "separate from the Global Filter" in src)
+    # Lock-apply freq clamp must be NaN-safe (David 2026-09-24): boxplot (and any view whose
+    # freq inputs are plain number inputs with EMPTY min/max) had `Math.max(parseFloat(s1.min),
+    # lo)` -> Math.max(NaN,lo)=NaN, so the `lo<=hi` guard silently dropped the locked freq
+    # range (dims applied, freq didn't). Every apply now guards with isFinite before clamping.
+    check("lock-apply freq clamp is NaN-safe (isFinite guard, not bare parseFloat(min/max))",
+          "var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?(isFinite(_mn)?Math.max(_mn,o.freq.lo):o.freq.lo):_mn;" in src
+          and "var _mx=parseFloat(s2.max);var hi=o.freq.hi!=null?(isFinite(_mx)?Math.min(_mx,o.freq.hi):o.freq.hi):_mx;" in src)
+    check("the NaN-safe freq clamp is in all 6 view lock-apply adapters",
+          src.count("var _mn=parseFloat(s1.min);var lo=o.freq.lo!=null?") == 6
+          and "parseFloat(s1.min),o.freq.lo)" not in src,  # old bare-clamp form fully removed
+          f"count={src.count('var _mn=parseFloat(s1.min);')}")
 
 
 def test_named_band_segments_crossview() -> None:
@@ -1489,6 +1500,16 @@ def test_named_band_segments_crossview() -> None:
     check("padb_v2 resolves named bands via padb_bands.find_or_create_bands",
           "import padb_bands" in v2 and "padb_bands.find_or_create_bands(" in v2
           and 'cfg["_named_bands"] = _bands' in v2)
+    # Auto-generation is OPT-IN (David 2026-09-24: don't drop a file into every results
+    # folder). An existing sidecar always loads; creation is gated on the auto_bands key /
+    # --auto-bands flag. TEETH: allow_create must be the flag, never a hardcoded True.
+    check("padb_v2 gates auto-generation on the auto_bands opt-in (not hardcoded True)",
+          '_allow_auto = bool(cfg.get("auto_bands", False))' in v2
+          and "allow_create=_allow_auto)" in v2
+          and 'cfg["auto_bands"] = True' in v2)  # --auto-bands CLI override
+    vw = (HERE / "padb_viewer.py").read_text(encoding="utf-8")
+    check("viewer gates auto-generation on --auto-bands (existing sidecar still loads)",
+          "allow_create=args.auto_bands)" in vw and '"--auto-bands"' in vw)
     check("has_segments ORs named bands so the control shows even with no spec",
           'or bool(cfg.get("_named_bands"))' in src
           and 'or bool(cfg.get("_named_bands"))' in v2)

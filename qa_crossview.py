@@ -186,8 +186,16 @@ _LOCK_READ_SCATTER = r"""
     if(bx.length){ first=String(bx[0].value);
       bx.forEach(function(c){ c.checked=(String(c.value)===first); }); } }
   var fr=document.querySelector('input[name="scat_flt"][value="failing"]'); if(fr) fr.checked=true;
+  // Also narrow the FREQUENCY to a strict sub-range so INV-LOCK exercises freq propagation
+  // (the boxplot NaN-clamp bug applied dims but silently dropped freq -- David 2026-09-24).
+  var fLoT=null;
+  if(typeof FREQ_MIN!=='undefined'&&typeof FREQ_MAX!=='undefined'&&FREQ_MAX>FREQ_MIN){
+    var span=FREQ_MAX-FREQ_MIN, lo=FREQ_MIN+span*0.25, hi=FREQ_MAX-span*0.25;
+    var l=document.getElementById('freq_lo_txt'), h=document.getElementById('freq_hi_txt');
+    if(l&&h){ l.value=String(lo); h.value=String(hi); fLoT={lo:lo,hi:hi}; }
+  }
   if(typeof update==='function') update();
-  return { lock:_avLockRead(), site:first };
+  return { lock:_avLockRead(), site:first, wantFreq:fLoT };
 } catch(e){ return { error:String(e) }; } }
 """
 _LOCK_APPLY_SUM = r"""
@@ -211,7 +219,11 @@ _LOCK_APPLY_BOX = r"""
   var pf=document.querySelector('input[name="box_flt"]:checked');
   var sel=(typeof getSelectedConds==='function')?getSelectedConds():[]; var s={};
   sel.forEach(function(c){ var m=/Site:\s*([^\s|]+)/.exec(c||''); if(m) s[m[1]]=1; });
-  return { rep:rep, sites:Object.keys(s), passfail:pf?pf.value:null };
+  // boxplot freq inputs are plain number inputs with empty min/max -- the NaN-clamp bug
+  // silently dropped the locked freq here. Read them back so INV-LOCK proves freq applied.
+  var bl=document.getElementById('box_freq_lo'), bh=document.getElementById('box_freq_hi');
+  var freq=(bl&&bh)?{lo:parseFloat(bl.value),hi:parseFloat(bh.value)}:null;
+  return { rep:rep, sites:Object.keys(s), passfail:pf?pf.value:null, freq:freq };
 } catch(e){ return { error:String(e) }; } }
 """
 # reference/distribution/env_coverage have no pass/fail axis; verify Site propagated
@@ -402,6 +414,7 @@ def main() -> None:
                         _bad("INV-LOCK: could not read a lock on scatter", str(rd))
                     else:
                         want = rd["site"]
+                        want_freq = rd.get("wantFreq")
                         L = json.dumps(rd["lock"])
                         # (key, reader, strict?) -- strict views carry both sites here;
                         # env_coverage is delta-only (a Room-only site has no delta), so a
@@ -436,6 +449,19 @@ def main() -> None:
                                 else:
                                     _bad(f"INV-LOCK {key}: lock selected an unexpected site",
                                          f"want subset of {{{want}}}; got {sorted(sites)}")
+                            # INV-LOCK-FREQ (David 2026-09-24): the locked freq sub-range must
+                            # propagate too. boxplot's number inputs (empty min/max) were the
+                            # NaN-clamp casualty -- assert its freq narrowed to the locked band.
+                            if key == "boxplot" and want_freq and isinstance(st.get("freq"), dict):
+                                gf = st["freq"]; wl, wh = want_freq["lo"], want_freq["hi"]
+                                tol = max(1e-6, (wh - wl) * 0.02)
+                                if (gf.get("lo") is not None and gf.get("hi") is not None
+                                        and abs(gf["lo"] - wl) <= tol and abs(gf["hi"] - wh) <= tol):
+                                    _ok(f"INV-LOCK {key}: locked freq range propagated "
+                                        f"({gf['lo']:.4g}..{gf['hi']:.4g})")
+                                else:
+                                    _bad(f"INV-LOCK {key}: locked freq range did NOT propagate",
+                                         f"want {wl:.4g}..{wh:.4g}; got {gf.get('lo')}..{gf.get('hi')}")
                 except Exception as exc:
                     _bad("INV-LOCK: probe raised", str(exc))
             browser.close()

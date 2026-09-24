@@ -71,7 +71,7 @@ py C:\apps\padb\tools\padb_v2.py "C:\path\to\your_analysis_v2_job.json" --csv "C
 ```
 
 ## 5. Review
-Open the `results_dir\index.html` this step wrote. Filters, TI/NP-TI toggle, serial exclusion, GF (set/clear/export/import a global flag), **🔒 Locked filters** (dial condition/frequency/pass-fail filters in once on any view, then every view auto-applies them — Lock/Apply/Clear/Export/Import, top-right), Group by, Segment by (Spec/Limit/Uncertainty), Y-range filter, CSV export — per view, see `PADB_Tools_Guide.md`. Each view also has a collapsible ⓘ **Help** panel that explains these controls and flags any inverted Upper/Lower Limit or Spec rows it finds.
+Open the `results_dir\index.html` this step wrote. Filters, TI/NP-TI toggle, serial exclusion, GF (set/clear/export/import a global flag), **🔒 Locked filters** (dial condition/frequency/pass-fail filters in once on any view, then every view auto-applies them — Lock/Apply/Clear/Export/Import, top-right), Group by, Segment by (Spec/Limit/Uncertainty, plus **Named bands** when a `padb_viewer_bands.json` sits next to the results — set one up with `py padb_make_bands.py <folder>`), Y-range filter, CSV export — per view, see `PADB_Tools_Guide.md`. Each view also has a collapsible ⓘ **Help** panel that explains these controls and flags any inverted Upper/Lower Limit or Spec rows it finds.
 
 ## 6. Iterate without re-extracting
 CSV unchanged? Just re-run step 4 alone — no need to touch PADB-R.exe again.
