@@ -686,6 +686,10 @@ function _refLockApply(o){
     if(!col){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),sp.rest[label])?applied:skipped).push(label);});
   if(sp.serial!=null){ (PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col="Serial"]'),sp.serial)?applied:skipped).push('Serial Number'); }
+  // Port is a GROUP_COL here; PADB_lockSplitSP pulled it out, so apply the explicit/derived
+  // port back to its column (else a Port lock -- or one encoded in port-qualified serials -- is dropped).
+  var _pv=(typeof PADB_lockEffectivePort==='function')?PADB_lockEffectivePort(sp):sp.port;
+  if(_pv!=null){ var _pcol=byLabel['Port']; if(_pcol) (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+_pcol+'"]'),_pv)?applied:skipped).push('Port'); }
   if(sp.temp!=null){ (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="Temperature"]'),sp.temp)?applied:skipped).push('Temperature'); }
   if(o&&o.freq){var lo=document.getElementById('f_lo'),hi=document.getElementById('f_hi');
     if(lo&&o.freq.lo!=null)lo.value=o.freq.lo; if(hi&&o.freq.hi!=null)hi.value=o.freq.hi;}

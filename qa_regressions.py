@@ -1446,9 +1446,9 @@ def test_locked_filters_crossview() -> None:
           and "sp.temp!=null" in src)
     check("scatter reads temp from env_chk and routes it on apply",
           "PADB_lockReadSP(dims,null,null,'env_chk')" in src
-          and "document.querySelectorAll('.env_chk'),o.dims[label]" in src)
+          and "document.querySelectorAll('.env_chk'),dims[label]" in src)
     check("histogram keeps Port as a dim (only serial is dedicated) + routes serial",
-          "sp.rest['Port']=sp.port" in src and "PADB_lockApplySP({serial:sp.serial,port:null},'hf_serial'" in src)
+          "sp.rest['Port']=_pv" in src and "PADB_lockApplySP({serial:sp.serial,port:null},'hf_serial'" in src)
     check("reference routes serial-like to its dedicated Serial column (base match)",
           "PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col=\"Serial\"]')" in ref)
     check("reference routes temperature to its dedicated Temperature column",
@@ -2777,6 +2777,51 @@ def test_active_filters_chip_rollout() -> None:
           and "PADB_setFilterChip(_refActiveFilters(),'resetFilters'" in ref)
 
 
+def test_lock_port_from_qualified_serials() -> None:
+    """Locked-filters port routing (David 2026-09-25): a lock made on a view whose
+    serial control is PORT-QUALIFIED ("MY123_RF1") carries the port only in the serial
+    suffix (no separate "Port" dim). Applying it to a base-serial + separate-Port view
+    (scatter/summary/reference) must (1) still select the base serials -- scatter used an
+    EXACT GROUP_COL match and silently dropped a port-qualified serial lock -- and (2)
+    derive the Port constraint from the serial suffixes. A per-unit port split collapses
+    to the union (independent serial/port dims can't express per-unit pairing; the
+    Global Filter does). Teeth: fails if the derive helper or any view's routing regresses."""
+    src = Path(pp.__file__).read_text(encoding="utf-8")
+    ref = Path(rf.__file__).read_text(encoding="utf-8")
+    # helpers exist and are wired into the shared SP applier
+    check("PADB_lockDerivePorts + PADB_lockEffectivePort helpers exist",
+          "function PADB_lockDerivePorts(" in src and "function PADB_lockEffectivePort(" in src)
+    check("PADB_lockApplySP routes the EFFECTIVE port (explicit dim OR derived from serials)",
+          "var portVals=PADB_lockEffectivePort(sp)" in src)
+    # scatter: base-tolerant serial match (not exact) + derive port
+    check("scatter _avLockApply matches serials base-tolerantly (PADB_lockSetSerials, not exact)",
+          "PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col=\"'+col+'\"]')" in src)
+    check("scatter derives Port from port-qualified serials when no explicit Port dim",
+          "PADB_lockDerivePorts(serialVals)" in src)
+    # summary applies effective port to its cond_Port dim (no dedicated control)
+    check("summary applies effective Port to its cond_Port condition dim",
+          "_pv=PADB_lockEffectivePort(sp)" in src and 'cond_\'+_pcid+\'"' in src)
+    # histogram folds effective port into its Port dim
+    check("histogram uses the effective port for its Port dim",
+          "_pv=PADB_lockEffectivePort(sp)" in src and "sp.rest['Port']=_pv" in src)
+    # reference applies effective port to its Port GROUP_COL
+    check("reference applies the effective Port (was dropped entirely before)",
+          "PADB_lockEffectivePort(sp)" in ref and "byLabel['Port']" in ref)
+    # derive-logic oracle (mirror the JS regex): union of _<port> tokens; None if none carry a port
+    import re as _re
+    def _derive(sers):
+        s, any_ = {}, False
+        for v in sers:
+            m = _re.search(r"_([A-Za-z]+\d*)$", str(v))
+            if m:
+                s[m.group(1)] = 1; any_ = True
+        return sorted(s) if any_ else None
+    check("derive: mixed ports -> union", _derive(["MY_RF1", "MY_RF2", "US_RF1"]) == ["RF1", "RF2"])
+    check("derive: single port -> that port only", _derive(["MY123_RF1", "US456_RF1"]) == ["RF1"])
+    check("derive: base serials (no suffix) -> None (invent no constraint)",
+          _derive(["MY66250001", "US65080401"]) is None)
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -2877,6 +2922,7 @@ def main() -> None:
                test_summary_stat_perpoint_own_limit_only, test_locked_filters_crossview,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_scatter_spec_line_shape, test_active_filters_chip_rollout,
+               test_lock_port_from_qualified_serials,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
                test_box_data_filter_passfail_and_trim,

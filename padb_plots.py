@@ -1532,12 +1532,20 @@ function _avLockRead(){
 }
 function _avLockApply(o){
   var applied=[],skipped=[],byLabel={}; GROUP_COLS.forEach(function(p){byLabel[p[1]]=p[0];});
-  Object.keys((o&&o.dims)||{}).forEach(function(label){
+  var dims=(o&&o.dims)||{}, serialVals=null, hasPort=false;
+  Object.keys(dims).forEach(function(label){
     if(/^(temperature|temperature step|test step|temp)$/i.test(label)){   // route to the env-checkbox bar
-      (PADB_lockSetChecks(document.querySelectorAll('.env_chk'),o.dims[label])?applied:skipped).push('Temperature'); return; }
+      (PADB_lockSetChecks(document.querySelectorAll('.env_chk'),dims[label])?applied:skipped).push('Temperature'); return; }
     var col=byLabel[label];
     if(!col){skipped.push(label);return;}
-    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),o.dims[label])?applied:skipped).push(label); });
+    if(/^port$/i.test(label)) hasPort=true;
+    if(/serial|unit id|dut id|s\/n/i.test(label)){   // base-tolerant: a port-qualified lock ("MY123_RF1") must still select the base "MY123" checkbox
+      serialVals=dims[label];
+      (PADB_lockSetSerials(document.querySelectorAll('.fchk[data-col="'+col+'"]'),dims[label])?applied:skipped).push(label); return; }
+    (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+col+'"]'),dims[label])?applied:skipped).push(label); });
+  // Port encoded in port-qualified serials (no explicit Port dim) -> derive + apply to the Port dim.
+  if(!hasPort&&serialVals){ var _dp=PADB_lockDerivePorts(serialVals), _pcol=byLabel['Port'];
+    if(_dp&&_pcol) (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="'+_pcol+'"]'),_dp)?applied:skipped).push('Port'); }
   if(o&&o.freq&&o.freq.lo!=null&&o.freq.hi!=null&&typeof setFreqBand==='function'){
     setFreqBand(o.freq.lo,o.freq.hi);   // sets sliders+text AND relayouts the x-axis (coupled)
   }
@@ -4016,13 +4024,33 @@ function PADB_lockSetSerials(boxes,vals){
   boxes.forEach(function(c){ c.checked=match(c.value); });
   return true;
 }
+/* Port encoded in port-qualified serials: a lock made on a view whose serial control
+   is port-qualified ("MY123_RF1") carries the port only in the serial suffix, with no
+   separate "Port" dim. Derive the UNION of port tokens so a base-serial + separate-Port
+   view can still constrain Port (David 2026-09-25: "port not locked" when a boxplot lock
+   with port-qualified serials was applied on scatter/summary). Returns null when no serial
+   carries a port token. NOTE: a per-UNIT port split (unit A RF1-only, unit B both ports)
+   collapses to the union here -- independent serial/port dims cannot express per-unit
+   pairing; use the point-precise Global Filter for that. */
+function _lockSerPort(s){ var m=String(s).match(/_([A-Za-z]+\d*)$/); return m?m[1]:null; }
+function PADB_lockDerivePorts(serials){
+  if(!serials||!serials.length) return null;
+  var set={},any=false;
+  serials.forEach(function(s){ var p=_lockSerPort(s); if(p){set[p]=1;any=true;} });
+  return any?Object.keys(set):null;
+}
+/* Effective port list to apply for a lock: the explicit "Port" dim if present, else
+   derived from port-qualified serials. Used by every view's Port routing so an explicit
+   Port lock AND a serial-encoded one both constrain Port consistently. */
+function PADB_lockEffectivePort(sp){ return (sp&&sp.port!=null)?sp.port:(sp?PADB_lockDerivePorts(sp.serial):null); }
 /* Apply serial/port lock values to a view's dedicated checkbox classes (best-effort;
    pass null to skip a control). Appends to applied/skipped arrays; reports under the
    canonical labels so the banner reads the same everywhere. Serial uses base-form
    matching (PADB_lockSetSerials); Port is an exact match. */
 function PADB_lockApplySP(sp,serialClass,portClass,applied,skipped,tempClass){
   if(sp.serial!=null){ (serialClass&&PADB_lockSetSerials(document.querySelectorAll('.'+serialClass),sp.serial)?applied:skipped).push('Serial Number'); }
-  if(sp.port!=null){ (portClass&&PADB_lockSetChecks(document.querySelectorAll('.'+portClass),sp.port)?applied:skipped).push('Port'); }
+  var portVals=PADB_lockEffectivePort(sp);   // explicit Port dim, else derived from port-qualified serials
+  if(portVals!=null){ (portClass&&PADB_lockSetChecks(document.querySelectorAll('.'+portClass),portVals)?applied:skipped).push('Port'); }
   if(sp.temp!=null){ (tempClass&&PADB_lockSetChecks(document.querySelectorAll('.'+tempClass),sp.temp)?applied:skipped).push('Temperature'); }
 }
 /* Read a view's dedicated serial/port controls into a lock's dims (canonical labels),
@@ -20284,6 +20312,11 @@ function _sumLockApply(o){
     if(cid==null){skipped.push(label);return;}
     (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+cid+'"]'),sp.rest[label])?applied:skipped).push(label);});
   PADB_lockApplySP(sp,'sum_ser_chk',null,applied,skipped,'sum_temp_chk');
+  // Port here is a CONDITION dim (cond_Port), not a dedicated control (portClass above is
+  // null), so apply the explicit/derived port to it -- otherwise a Port lock (or one encoded
+  // in port-qualified serials) is silently dropped on summary.
+  var _pv=PADB_lockEffectivePort(sp), _pcid=byLabel['Port'];
+  if(_pv!=null&&_pcid!=null) (PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col="cond_'+_pcid+'"]'),_pv)?applied:skipped).push('Port');
   if(o&&o.freq&&o.freq.lo!=null&&o.freq.hi!=null&&typeof setFreqBand==='function'){
     setFreqBand(o.freq.lo,o.freq.hi);   // sets sliders+text AND relayouts the x-axis (coupled)
   }
@@ -21167,7 +21200,8 @@ function _hLockRead(){
 function _hLockApply(o){
   var applied=[],skipped=[],byLabel={};(typeof DIMS!=='undefined'?DIMS:[]).forEach(function(d){byLabel[d.label]=d.col_id;});
   var sp=PADB_lockSplitSP(o);
-  if(sp.port!=null) sp.rest['Port']=sp.port;   // histogram treats Port as a dim, not a dedicated control
+  var _pv=PADB_lockEffectivePort(sp);   // explicit Port dim, else derived from port-qualified serials
+  if(_pv!=null) sp.rest['Port']=_pv;   // histogram treats Port as a dim, not a dedicated control
   if(sp.temp!=null) sp.rest['Temperature']=sp.temp;   // and temp is a dim here too (no env bar)
   Object.keys(sp.rest).forEach(function(label){var cid=byLabel[label];
     if(cid==null){skipped.push(label);return;}
