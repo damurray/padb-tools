@@ -2775,6 +2775,21 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         c in df.columns and df[c].notna().any()
         for c in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo")
     )
+    # Which pass/fail BASIS this dataset actually uses, for the Data-filter hover (David
+    # 2026-09-24): spec/TLL is primary (so any Spec/Limit override stays authoritative);
+    # Test Event Status is only a fallback where a point has no numeric limit.
+    _df_basis_common = ("Pass/Fail basis, highest priority first: (1) a manual Spec/Limit "
+                        "override, where a view offers one; (2) the point's Upper/Lower Limit "
+                        "(TLL); (3) its Spec; (4) Test Event Status, as a fallback only where a "
+                        "point has no numeric limit. ")
+    if _scat_has_spec and scat_status_field:
+        _df_basis = _df_basis_common + ("This dataset: spec/limits present (used first), with "
+                                        "Test Event Status filling in limit-less points.")
+    elif _scat_has_spec:
+        _df_basis = _df_basis_common + "This dataset: judged by its Spec/Limit (TLL); no status field."
+    else:  # status-only (the bar is shown because a status field exists)
+        _df_basis = _df_basis_common + ("This dataset: no spec/limit, so pass/fail is judged "
+                                        "purely by Test Event Status.")
 
     constants = "\n".join([
         f"var DATA={json.dumps(records)};",
@@ -2965,18 +2980,17 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
             '<div class="flt-bar" style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;'
             'padding:5px 14px;background:#f5f5f5;border:1px solid #e0e0e0;border-radius:6px;'
             'margin-bottom:4px;font-size:13px">\n'
-            '  <b>Data&nbsp;filter:</b>\n'
+            f'  <b title="{_df_basis}" style="cursor:help;border-bottom:1px dotted #888">Data&nbsp;filter:</b>\n'
             '  <label title="Show every measurement (no pass/fail filter)">'
             '<input type="radio" name="scat_flt" value="all" checked onchange="update()">&nbsp;All&nbsp;data</label>\n'
-            '  <label title="Show only points that PASS their own effective limit (per-point Upper/Lower'
-            ' Limit, else Spec, else the page spec) -- same rule as the other views. Points with no limit'
-            ' count as passing.">'
+            '  <label title="Show only points that PASS -- judged by the point\'s Upper/Lower Limit (TLL)'
+            ' or Spec, falling back to Test Event Status where a point has no limit. Points with neither'
+            ' count as passing. (Hover \'Data filter:\' for this dataset\'s exact basis.)">'
             '<input type="radio" name="scat_flt" value="passing" onchange="update()">&nbsp;Passing&nbsp;only</label>\n'
-            '  <label title="Show only points that FAIL their own effective limit -- the exact complement'
-            ' of Passing only.">'
+            '  <label title="Show only points that FAIL -- the exact complement of Passing only.">'
             '<input type="radio" name="scat_flt" value="failing" onchange="update()">&nbsp;Failing&nbsp;only</label>\n'
             '</div>\n'
-            if _scat_has_spec else ''
+            if (_scat_has_spec or scat_status_field) else ''
         )
         + decimation_banner_html
         + spec_caveat_banner_html

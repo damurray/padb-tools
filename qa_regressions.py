@@ -2425,8 +2425,12 @@ def test_scatter_passfail_and_crossfilter() -> None:
     check("scatter: pass/fail applied in applyFilters (plot+table consistent)",
           "if(pfMode==='passing'&&_fl===true) return false;" in src
           and "if(pfMode==='failing'&&_fl!==true) return false;" in src)
-    check("scatter: pass/fail control gated on the dataset having a spec",
-          "_scat_has_spec" in src)
+    check("scatter: pass/fail control gated on spec OR a Test Event Status field (David 2026-09-24)",
+          "if (_scat_has_spec or scat_status_field) else ''" in src)
+    check("scatter: Data-filter hover explains the basis (spec/TLL primary, status fallback)",
+          "_df_basis" in src and "highest priority first" in src
+          and "override, where a view offers one" in src and "Test Event Status, as a fallback" in src
+          and 'title="{_df_basis}"' in src)
     check("scatter: cross-filter availability helpers present",
           "function _crossFilterAvail(" in src and "function _applyCrossFilterGrey(" in src)
     check("scatter: cross-filter greying invoked on panel open",
