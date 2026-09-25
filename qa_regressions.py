@@ -2822,6 +2822,33 @@ def test_lock_port_from_qualified_serials() -> None:
           _derive(["MY66250001", "US65080401"]) is None)
 
 
+def test_keep_population_as_gf() -> None:
+    """Keep-only-this-population (David 2026-09-25): the boxplot "Keep only this
+    population" button enforces an EXACT serial+port population cross-view by writing
+    every NON-selected (baseSerial, port) combo to the point-precise Global Filter
+    (whole-DUT sentinel ||manual||0, with Port=<port> in the cond key so the dims-
+    intersection matcher pins that exact port). This is the sanctioned way to lock a
+    per-unit serial+port population that the dimension-level Locked filters cannot
+    (independent Serial x Port dims can't express "MY123 RF1 but not RF2"). It rides
+    on the existing GF (no parallel layer): merges via _mergeGf, shows in the GF badge,
+    round-trips via GF CSV export/import, and is undone with Clear global filter."""
+    src = Path(pp.__file__).read_text(encoding="utf-8")
+    check("boxplot exposes a 'Keep only this population' button -> keepPopulationAsGf()",
+          "keepPopulationAsGf()" in src and "Keep only this population" in src)
+    check("keepPopulationAsGf is defined", "function keepPopulationAsGf()" in src)
+    check("it enforces the population through the existing Global Filter (_mergeGf), not a parallel layer",
+          "_mergeGf(keys)" in src.split("function keepPopulationAsGf()", 1)[1].split("function applyGlobalFilter", 1)[0])
+    kp = src.split("function keepPopulationAsGf()", 1)[1].split("function applyGlobalFilter", 1)[0]
+    check("keep-only keys use the whole-DUT sentinel (span temps/freqs) + Port-qualified cond key",
+          "||manual||0" in kp and "_boxFullCondKey(cd.condition,d.p||'')" in kp)
+    check("keep-only identity is (baseSerial, port) -- port-qualified per-unit selector",
+          "_boxBaseSerial(d.s)+'|'+(d.p||'')" in kp)
+    check("keep-only excludes only NON-kept combos (kept ones are skipped)",
+          "if(kept[id]) return;" in kp)
+    check("keep-only guards when nothing is narrowed to keep",
+          "Nothing narrowed to keep" in kp)
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -2922,7 +2949,7 @@ def main() -> None:
                test_summary_stat_perpoint_own_limit_only, test_locked_filters_crossview,
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_scatter_spec_line_shape, test_active_filters_chip_rollout,
-               test_lock_port_from_qualified_serials,
+               test_lock_port_from_qualified_serials, test_keep_population_as_gf,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
                test_box_data_filter_passfail_and_trim,

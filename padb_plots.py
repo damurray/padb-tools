@@ -16140,6 +16140,42 @@ function setFilterAsGf(){
   if(!keys.length){alert('No data matches the current condition and serial filter.');return;}
   _mergeGf(keys);
 }
+/* Keep ONLY the selected serial+port populations everywhere: exclude every OTHER
+   (baseSerial, port) combo via the Global Filter, spanning all conditions/temps/freqs
+   (whole-DUT sentinel ||manual||0). This is how an EXACT per-unit serial+port population
+   is enforced cross-view -- the dimension-level Locked filters use independent Serial and
+   Port dims and can't express "MY123 RF1 but not RF2"; the point-precise GF (dims-
+   intersection matcher keyed on Port=<port>) can. Identity is (_boxBaseSerial(d.s), d.p),
+   so a port-qualified box serial ("MY123_RF1") is the natural per-unit+port selector.
+   David 2026-09-25. */
+function keepPopulationAsGf(){
+  var allBoxSers=getAllBoxSerials(), selBoxSers=getSelectedBoxSerials();
+  var serFlt=allBoxSers.length>1&&selBoxSers.length<allBoxSers.length;
+  var allPorts=getAllBoxPorts(), selPorts=getSelectedBoxPorts();
+  var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
+  if(!serFlt&&!portFlt){ alert('Nothing narrowed to keep. Select the serial(s) and/or port(s) you want to KEEP in the Serial/Port filters first, then click this.'); return; }
+  /* Pass 1: classify every (baseSerial, port) in the data as kept (passes the current
+     serial+port selection) or not. Condition/temp/freq filters are intentionally ignored
+     -- this locks the serial+port POPULATION only; conditions stay a Locked-filter/other
+     concern. */
+  var kept={}, universe={};
+  BOX_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(f){ (f.vals_detail||[]).forEach(function(d){
+    if(!d.s) return; var id=_boxBaseSerial(d.s)+'|'+(d.p||''); universe[id]=1;
+    var serOk=!serFlt||selBoxSers.indexOf(d.s)>=0, portOk=!portFlt||selPorts.indexOf(d.p||'')>=0;
+    if(serOk&&portOk) kept[id]=1; }); }); });
+  /* Pass 2: emit a whole-DUT exclusion key for every non-kept (baseSerial, port) across
+     every condition it appears in (Port=<port> in the cond key -> dims-intersection matches
+     that exact port on every view). */
+  var keys=[], seen={};
+  BOX_DATA.forEach(function(cd){ if(cd.temp==='manual') return; (cd.freq_stats||[]).forEach(function(f){ (f.vals_detail||[]).forEach(function(d){
+    if(!d.s) return; var id=_boxBaseSerial(d.s)+'|'+(d.p||''); if(kept[id]) return;
+    var k=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||manual||0';
+    if(!seen[k]){seen[k]=1;keys.push(k);} }); }); });
+  var nKept=Object.keys(kept).length, nUni=Object.keys(universe).length;
+  if(!keys.length){ alert('Nothing to exclude -- your current selection already covers every serial+port in the data.'); return; }
+  _mergeGf(keys);   // merges into the GF + reloads + update() (cross-view)
+  alert('Keep-only applied: '+nKept+' of '+nUni+' serial+port populations kept.\n\nThe other '+(nUni-nKept)+' were added to the Global Filter (exact per-unit port), so every view now shows only your population.\n\nUndo any time with "Clear global filter".');
+}
 function applyGlobalFilter(){
   var selConds=getSelectedConds(),selTemps=getSelectedTemps();
   var yFlt=getYFilter(),selBoxSers=getSelectedBoxSerials();
@@ -17789,6 +17825,10 @@ def _build_box_interactive_html(
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
         ' title="Set currently selected conditions + serials as the global exclusion filter -- adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)"'
         ' onclick="setFilterAsGf()">Set filter as GF</button>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#fff3e0;border-color:#c07000;color:#8a5000;font-weight:600"'
+        ' title="Keep ONLY the serial+port populations you have selected here -- every OTHER serial/port combination is added to the Global Filter (exact per-unit port, so MY123 RF1-only stays RF1-only) and every view then shows just your population. This is the way to lock an exact serial+port population that the dimension-level Locked filters cannot (independent Serial and Port dims can\'t express per-unit pairing). Adds to the existing Global Filter; undo with Clear global filter."'
+        ' onclick="keepPopulationAsGf()">Keep only this population</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#eef7ee;border-color:#2a7a2a;color:#2a7a2a;font-weight:600"'
         ' title="Apply your saved Locked filters here, then add that exact slice to the Global Filter (exclude it everywhere) -- one-click equivalent of Apply lock + Set filter as GF. Use when your locked view is the population you want to DROP."'
