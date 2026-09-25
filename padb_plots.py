@@ -14489,7 +14489,10 @@ function _boxSyncDistBtn(){
 function toggleBoxDistPanel(){
   var el=document.getElementById('box_dist_panel'), btn=document.getElementById('box_dist_toggle_btn');
   if(!el) return;
-  if(el.style.display==='none'||!el.style.display){ el.style.display='';
+  /* Pure open/close. An OPEN panel has display='' (empty) -- only 'none' means closed, so
+     don't treat '' as closed (that made a press re-render instead of disabling). Auto-refresh
+     while open is handled by _boxRefreshDistIfOpen in update(). */
+  if(el.style.display==='none'){ el.style.display='';
     if(btn)btn.innerHTML='&#9660;&nbsp;Distribution of table data';
     PADB_deferRender(el,function(){_boxRenderDist();},'Building distribution&hellip;');
   } else { el.style.display='none'; if(btn)btn.innerHTML='&#9658;&nbsp;Distribution of table data'; }
@@ -16855,8 +16858,17 @@ function update(){
   updateOutlierPanel(selConds,selTemps,yFlt,selBoxSers);
   updateDeltaOutlierPanel(selConds,selTemps,selBoxSers);
   updateSitePanel();
+  _boxRefreshDistIfOpen();   // keep the Distribution-of-table-data panel in sync with filters
   _recomputeSpecSegments();
   saveState();
+}
+/* Auto-refresh the Distribution panel whenever the plot/filters change, IF it's open -- so it
+   stays coupled to the table like the stats panel. The button (toggleBoxDistPanel) is then a
+   pure open/close (enable/disable), not the refresh mechanism (David 2026-09-25). */
+function _boxRefreshDistIfOpen(){
+  var el=document.getElementById('box_dist_panel');
+  if(el && el.style.display!=='none' && _boxTableMode()==='perpoint') _boxRenderDist();
+  else if(el && el.style.display!=='none') { el.style.display='none'; var b=document.getElementById('box_dist_toggle_btn'); if(b)b.innerHTML='&#9658;&nbsp;Distribution of table data'; }
 }
 window.addEventListener('storage',function(e){
   if(e.key===GF_KEY||e.key===GF_MODE_KEY){_loadBoxGlobalFilter();_updateBoxGfStatus();update();}

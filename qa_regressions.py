@@ -1845,6 +1845,12 @@ def test_box_table_perpoint_mode() -> None:
               "var freqSingle=(nFreq<=1);" in h and "mcell=freqSingle" in h
               and "not meaningful pooled across frequencies" in h
               and "modality'+(freqSingle?'':' (1 freq)')" in h)
+        # The Distribution panel auto-refreshes on every plot/filter update while open (coupled
+        # like the stats table); the button is a pure open/close (David 2026-09-25).
+        check("box dist: panel auto-refreshes on update() while open (not via the toggle button)",
+              "function _boxRefreshDistIfOpen(" in h
+              and "_boxRefreshDistIfOpen();" in h
+              and "el.style.display!=='none' && _boxTableMode()==='perpoint') _boxRenderDist();" in h)
         check("box table: #fail/n header column present",
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 
