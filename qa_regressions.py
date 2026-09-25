@@ -1115,6 +1115,12 @@ def test_distribution_compare_room_only_site() -> None:
               '"AMC"' in _re.search(r"var DIST_SITE_VALS=(\[[^;]*\]);", hc).group(1)
               and "function _distSplitSite()" in hc
               and "raw.c['Site']" in hc)
+        # Cross-frequency pooling caveat (David 2026-09-25): the KDE pools across the freq
+        # range, so a dynamic note warns when >1 frequency is in view (apparent multi-modality
+        # may be the level changing with frequency) -- analog of the boxplot dist caveat.
+        check("distribution: cross-frequency pooling caveat (dynamic, in update)",
+              "function _distNFreqInRange(" in hc and "function _distUpdateFreqNote(" in hc
+              and "_distUpdateFreqNote(fr);" in hc and "apparent multi-modality may just be" in hc)
 
         # Single-site: multi-temp + one Room-only DUT -> still thinned (no Site dim).
         ps = Path(td) / "single.csv"

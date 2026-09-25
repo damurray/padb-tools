@@ -5624,6 +5624,26 @@ function _distCondKeep(raw,i,condFilts){
 }
 
 /* ---- freq range helpers ---- */
+/* Distinct frequencies within [fr.lo,fr.hi] across the embedded raw data -- for the
+   cross-frequency pooling caveat (a KDE pooled over many frequencies mixes populations, so
+   apparent multi-modality may just be the level changing with frequency; David 2026-09-25). */
+function _distNFreqInRange(fr){
+  var s={};
+  if(typeof RAW_ABS!=='undefined'&&RAW_ABS){ RAW_ABS.forEach(function(bySpur){ if(bySpur) bySpur.forEach(function(byTemp){
+    if(byTemp&&byTemp.f){ var f=byTemp.f; for(var i=0;i<f.length;i++){ if(f[i]>=fr.lo&&f[i]<=fr.hi) s[f[i]]=1; } } }); }); }
+  return Object.keys(s).length;
+}
+function _distUpdateFreqNote(fr){
+  var note=document.getElementById('dist_freq_note');
+  if(!note){ var pl=document.getElementById('kde_plot'); if(pl&&pl.parentNode){
+    note=document.createElement('div'); note.id='dist_freq_note';
+    note.style.cssText='font-size:12px;color:#b26a00;margin:2px 0'; pl.parentNode.insertBefore(note,pl); } }
+  if(!note) return;
+  var xl=(typeof X_SHORT_LABEL!=='undefined'&&X_SHORT_LABEL)?X_SHORT_LABEL:'frequency';
+  var nf=_distNFreqInRange(fr);
+  note.innerHTML=(nf>1)?('&#9888; This KDE pools '+nf.toLocaleString()+' '+xl+' points in view &mdash; apparent multi-modality may just be the level changing with '+xl+'. Narrow the '+xl+' range (or step a band) for a single-population read.'):'';
+  note.style.display=(nf>1)?'':'none';
+}
 function getFreqRange(){
   /* Prefer the text box (exact typed/arrow value) over the range slider, whose
      .value the browser snaps to its coarse `step`. Reading the snapped slider was
@@ -5919,6 +5939,7 @@ function update(){
   var condFilts=_distCondFilters();
   var condFlt=condFilts.length>0;
   var gfFlt=_distGfActive();
+  _distUpdateFreqNote(fr);
 
   if(isAbs){
     var tempIdxs=getSelTempIdxs();
