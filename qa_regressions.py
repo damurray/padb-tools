@@ -1797,6 +1797,19 @@ def test_box_table_perpoint_mode() -> None:
               h.count("+_boxFailCellDetail(") >= 4)
         check("box table: old flat _boxFailCell/_boxPfLimits form removed",
               "function _boxFailCell(" not in h and "_boxPfLimits(" not in h)
+        # "Distribution of table data" button (David 2026-09-25): histogram (per-Group overlay)
+        # + summary stats of the SAME filtered per-point set the table uses (_boxPerPointPoints,
+        # refactored out so plot==table), spinner-wrapped, using ALL points (not the 5000 cap).
+        check("box: per-point gathering split into reusable _boxPerPointPoints (table calls it)",
+              "function _boxPerPointPoints(" in h
+              and "var pts=_boxPerPointPoints(selConds,yFlt,selBoxSers,selTemps);" in h)
+        check("box: 'Distribution of table data' button + panel + toggle",
+              'id="box_dist_toggle_btn"' in h and 'onclick="toggleBoxDistPanel()"' in h
+              and 'id="box_dist_panel"' in h and "function toggleBoxDistPanel(" in h)
+        check("box: distribution renders a per-group overlaid histogram + summary stats",
+              "function _boxRenderDist(" in h and "barmode:'overlay'" in h
+              and "function _boxDistStats(" in h and "Freedman" in h
+              and "var overlay=order.length>1&&order.length<=12;" in h)
         check("box table: #fail/n header column present",
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 

@@ -14239,7 +14239,7 @@ function _boxFailCountDetail(detail,yFlt,condFallback){ var scored=0,fail=0;
 function _boxFailCellDetail(detail,yFlt,condFallback){ var r=_boxFailCountDetail(detail,yFlt,condFallback);
   if(r.scored===0) return '<td style="color:#aaa">&mdash;</td>';
   return '<td>'+(r.fail>0?'<b style="color:#c00">'+r.fail+'</b>':'0')+' / '+r.scored+'</td>'; }
-function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
+function _boxPerPointPoints(selConds,yFlt,selBoxSers,selTemps){
   var fr=getBoxFreqRange();
   var allSers=getAllBoxSerials(), serActive=selBoxSers&&allSers.length>1&&selBoxSers.length<allSers.length;
   /* Port filter, mirroring the plot builder -- was missing here, so narrowing Port
@@ -14274,6 +14274,10 @@ function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
       });
     });
   });
+  return pts;
+}
+function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
+  var pts=_boxPerPointPoints(selConds,yFlt,selBoxSers,selTemps);
   if(!pts.length) return '<p style="color:#888;padding:8px">No points match the current filters.</p>';
   pts.sort(function(a,b){ if(a.gk!==b.gk)return a.gk<b.gk?-1:1; if(a.temp!==b.temp)return a.temp<b.temp?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
   var hasLim=pts.some(function(pt){return pt.lim.hi!=null||pt.lim.lo!=null;});
@@ -14294,6 +14298,81 @@ function _boxPerPointTable(selConds,yFlt,selBoxSers,selTemps){
       (hasStatus?('<td style="color:'+stc+';font-weight:bold">'+stt+'</td>'):'')+'</tr>'); });
   out+=body.join('')+'</tbody></table>';
   return out;
+}
+/* ---- Distribution of the per-point table data (David 2026-09-25) ----
+   Histogram (per-Group overlay) + summary stats of the SAME filter-respecting per-point set
+   the table shows (_boxPerPointPoints), so plot == table. Uses ALL filtered points (not the
+   table's 5000-row display cap). */
+function _boxDistStats(vals){
+  var n=vals.length; if(!n) return {n:0};
+  var s=vals.slice().sort(function(a,b){return a-b;});
+  var sum=0,i; for(i=0;i<n;i++)sum+=s[i]; var mean=sum/n;
+  var v=0; for(i=0;i<n;i++){var d=s[i]-mean; v+=d*d;} var std=n>1?Math.sqrt(v/(n-1)):0;
+  return {n:n,mean:mean,median:PADB_pct(s,50),std:std,min:s[0],max:s[n-1],
+          p5:PADB_pct(s,5),p95:PADB_pct(s,95)};
+}
+var _BOX_DIST_PAL=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf','#393b79','#637939'];
+function _boxRenderDist(){
+  var el=document.getElementById('box_dist_panel'); if(!el) return;
+  var pts=_boxPerPointPoints(getSelectedConds(),getYFilter(),getSelectedBoxSerials(),getSelectedTemps());
+  if(!pts.length){ el.innerHTML='<p style="color:#888;padding:8px">No points match the current filters.</p>'; return; }
+  var groups={}, order=[]; pts.forEach(function(p){ var k=(p.gk==null||p.gk==='')?'(all)':String(p.gk);
+    if(!(k in groups)){groups[k]=[];order.push(k);} groups[k].push(p); });
+  var allV=pts.map(function(p){return p.v;});
+  var ss=allV.slice().sort(function(a,b){return a-b;}), n=ss.length;
+  var q1=PADB_pct(ss,25),q3=PADB_pct(ss,75),iqr=q3-q1, mn=ss[0],mx=ss[n-1], span=mx-mn;
+  var bw=(iqr>0)?2*iqr/Math.pow(n,1/3):(span>0?span/Math.min(40,Math.max(1,n)):1);
+  if(!(bw>0)) bw=span>0?span/20:1;
+  var nb=span>0?Math.max(1,Math.min(200,Math.ceil(span/bw))):1; bw=span>0?span/nb:bw;
+  var xb={start:mn-bw*1e-4,end:mx+bw,size:bw};
+  /* Overlay per group only when there are few groups; too many (e.g. per-condition or
+     per-serial defaults) would be unreadable -> pool into one, with a note to set Group by. */
+  var overlay=order.length>1&&order.length<=12;
+  var traces;
+  if(overlay){
+    traces=order.map(function(k,i){ return {type:'histogram',x:groups[k].map(function(p){return p.v;}),name:k,
+      opacity:0.55,marker:{color:_BOX_DIST_PAL[i%_BOX_DIST_PAL.length]},xbins:xb,autobinx:false,
+      hovertemplate:'<b>'+k+'</b><br>'+Y_LABEL+': %{x}<br>count: %{y}<extra></extra>'}; });
+  } else {
+    traces=[{type:'histogram',x:allV,name:'All',opacity:0.8,marker:{color:_BOX_DIST_PAL[0]},xbins:xb,autobinx:false,
+      hovertemplate:Y_LABEL+': %{x}<br>count: %{y}<extra></extra>'}];
+  }
+  var shapes=[]; var limHi=null,limLo=null,uniform=true;
+  pts.forEach(function(p){ var h=(p.lim&&p.lim.hi!=null)?p.lim.hi:null, l=(p.lim&&p.lim.lo!=null)?p.lim.lo:null;
+    if(h!=null){ if(limHi===null)limHi=h; else if(h!==limHi)uniform=false; }
+    if(l!=null){ if(limLo===null)limLo=l; else if(l!==limLo)uniform=false; } });
+  function vline(x,color,dash){ return {type:'line',x0:x,x1:x,yref:'paper',y0:0,y1:1,line:{color:color,width:1.5,dash:dash}}; }
+  if(uniform){ if(limHi!=null)shapes.push(vline(limHi,'#c00','dash')); if(limLo!=null)shapes.push(vline(limLo,'#c00','dash')); }
+  var overall=_boxDistStats(allV);
+  shapes.push(vline(overall.mean,'#333','solid')); shapes.push(vline(overall.median,'#0a0','dot'));
+  el.innerHTML='<div id="box_dist_plot" style="height:340px"></div><div id="box_dist_stats"></div>';
+  Plotly.newPlot('box_dist_plot',traces,{barmode:'overlay',bargap:0.02,margin:{t:26,r:12,b:44,l:60},
+    shapes:shapes,showlegend:overlay,legend:{orientation:'h'},
+    xaxis:{title:{text:Y_LABEL}},yaxis:{title:{text:'Count'}},
+    title:{text:'Distribution of per-point table data ('+overall.n.toLocaleString()+' pts'+(overlay?', '+order.length+' groups':'')+')',font:{size:13}}},
+    {responsive:true,displaylogo:false});
+  var hasStatus=pts.some(function(p){return p.vd!==null;});
+  function nfail(arr){ var f=0; arr.forEach(function(p){if(p.vd===true)f++;}); return f; }
+  function fmt(x){ return (x==null||isNaN(x))?'&mdash;':(+x).toFixed(4); }
+  var rows='';
+  function row(label,arr,color){ var st=_boxDistStats(arr.map(function(p){return p.v;}));
+    rows+='<tr><td style="text-align:left'+(color?';border-left:3px solid '+color:'')+'">'+label+'</td><td>'+st.n+'</td><td>'+fmt(st.mean)+'</td><td>'+fmt(st.median)+'</td><td>'+fmt(st.std)+'</td><td>'+fmt(st.min)+'</td><td>'+fmt(st.max)+'</td><td>'+fmt(st.p5)+'</td><td>'+fmt(st.p95)+'</td>'+(hasStatus?('<td>'+nfail(arr)+' / '+st.n+'</td>'):'')+'</tr>'; }
+  row('<b>All</b>',pts,null);
+  order.slice(0,30).forEach(function(k,i){ row(k,groups[k],overlay?_BOX_DIST_PAL[i%_BOX_DIST_PAL.length]:null); });
+  document.getElementById('box_dist_stats').innerHTML=
+    '<table class="stbl" style="margin-top:6px;font-size:12px"><thead><tr>'+
+    '<th style="text-align:left">Group</th><th>n</th><th>mean</th><th>median</th><th>std</th><th>min</th><th>max</th><th>p5</th><th>p95</th>'+(hasStatus?'<th># fail / n</th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>'+
+    '<div style="font-size:11px;color:#777;margin-top:3px">'+
+    (overlay?'Overlaid by the current Group by. ':(order.length>12?('Too many groups ('+order.length+') to overlay &mdash; pooled into one; set <b>Group by</b> to overlay by a chosen parameter. '):''))+
+    'Bins: Freedman&ndash;Diaconis on the pooled values (shared across groups). Dashed red = spec/limit (only when uniform across the shown points); solid = mean, dotted = median. Uses ALL filtered points (not the table\'s 5000-row display cap).</div>';
+}
+function toggleBoxDistPanel(){
+  var el=document.getElementById('box_dist_panel'), btn=document.getElementById('box_dist_toggle_btn');
+  if(!el) return;
+  if(el.style.display==='none'||!el.style.display){ el.style.display='';
+    if(btn)btn.innerHTML='&#9660;&nbsp;Distribution of table data';
+    PADB_deferRender(el,function(){_boxRenderDist();},'Building distribution&hellip;');
+  } else { el.style.display='none'; if(btn)btn.innerHTML='&#9658;&nbsp;Distribution of table data'; }
 }
 function updateStatsTable(selConds,yFlt,selBoxSers,selTemps,force){
   var el=document.getElementById('box_stat_panel');
@@ -17299,6 +17378,10 @@ def _build_box_interactive_html(
         'getYFilter(),getSelectedBoxSerials(),getSelectedTemps(),true)">'
         '<option value="grouped">Grouped stats</option>'
         '<option value="perpoint">Per-point</option></select></label>\n'
+        + '  <button class="toggle-btn" id="box_dist_toggle_btn"'
+        ' title="Histogram of the per-point table data (per-Group overlay) + summary stats,'
+        ' honoring all current filters. Uses every filtered point, not just the table\'s'
+        ' first 5000 rows." onclick="toggleBoxDistPanel()">&#9658;&nbsp;Distribution of table data</button>\n'
         + '  <button id="box_refresh_table_btn" class="reset-btn"'
         + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
@@ -17423,6 +17506,7 @@ def _build_box_interactive_html(
         ' onclick="clearEverything()">Clear everything</button>\n'
         + '</div>\n'
         + '<div id="box_stat_panel" style="display:none;overflow-x:auto;padding:4px"></div>\n'
+        + '<div id="box_dist_panel" style="display:none;overflow-x:auto;padding:4px"></div>\n'
         + '<div id="box_outlier_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_delta_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_site_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
