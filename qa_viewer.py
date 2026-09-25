@@ -256,14 +256,26 @@ def main() -> None:
           len(ab) >= 2 and all(ab[i]["hi"] <= ab[i + 1]["hi"] for i in range(len(ab) - 1)), str(ab))
     check("padb_bands: auto_bands spans the data min/max",
           ab and ab[0]["lo"] == 1 and abs(ab[-1]["hi"] - 20000) < 1e-6, str((ab[0], ab[-1])))
-    # find_or_create: no file present -> auto-generate + write, and it round-trips.
+    # is_rf_carrier discriminates a swept RF carrier from a phase-noise offset axis.
+    check("padb_bands: is_rf_carrier True for wide carrier, False for offset",
+          B.is_rf_carrier([1, 20000], "MHz", "Frequency (MHz)") is True
+          and B.is_rf_carrier([1, 160e6], "Hz", "Offset Frequency (Hz)") is False)
+    # find_or_create: swept RF CARRIER x -> SG6311A carrier bands are the DEFAULT (David 2026-09-24).
     fresh = Path(tempfile.mkdtemp(prefix="qa_bands_"))
-    bands, bp, created = B.find_or_create_bands([1, 10, 100, 1000, 20000], "MHz", [fresh], allow_create=True)
-    check("padb_bands: find_or_create auto-generates when no file exists",
-          created and bp and Path(bp).exists() and len(bands) >= 2, str((created, bp)))
-    check("padb_bands: auto-generated file invites editing (_comment/_auto_generated)",
-          bp and '"_auto_generated": true' in Path(bp).read_text(encoding="utf-8")
-          and "EDIT ME" in Path(bp).read_text(encoding="utf-8"))
+    bands, bp, created = B.find_or_create_bands([1, 10, 100, 1000, 20000], "MHz", [fresh],
+                                               allow_create=True, x_label="Frequency (MHz)")
+    _txt = Path(bp).read_text(encoding="utf-8") if bp else ""
+    check("padb_bands: carrier x -> SG6311A preset written by default",
+          created and bp and '"_preset": "sg6311a"' in _txt and len(bands) == 4
+          and any("DAC" in b["name"] for b in bands), str((created, bp, bands[:1])))
+    # find_or_create: OFFSET / non-carrier x -> data-derived auto log-split (editable, not preset).
+    off = Path(tempfile.mkdtemp(prefix="qa_bands_off_"))
+    ob, obp, oc = B.find_or_create_bands([1, 10, 100, 1000, 1e6, 1e8], "Hz", [off],
+                                         allow_create=True, x_label="Offset Frequency (Hz)")
+    _otxt = Path(obp).read_text(encoding="utf-8") if obp else ""
+    check("padb_bands: offset x -> auto log-split (not carrier preset)",
+          oc and obp and '"_auto_generated": true' in _otxt and '"_preset"' not in _otxt
+          and "EDIT ME" in _otxt, str((oc, obp)))
     # Second call finds the just-written file (does NOT regenerate -> respects edits).
     b2, bp2, created2 = B.find_or_create_bands([1, 10, 100], "MHz", [fresh], allow_create=True)
     check("padb_bands: existing file is reused, not regenerated (respects edits)",

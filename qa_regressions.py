@@ -1549,12 +1549,24 @@ def test_named_band_segments_crossview() -> None:
     # TEETH: default must be True, and the opt-out must exist.
     check("padb_v2 auto-generation defaults ON (auto_bands key, default True) + --no-auto-bands opt-out",
           '_allow_auto = bool(cfg.get("auto_bands", True))' in v2
-          and "allow_create=_allow_auto)" in v2
+          and "allow_create=_allow_auto," in v2
           and 'cfg["auto_bands"] = False' in v2)  # --no-auto-bands CLI override
     vw = (HERE / "padb_viewer.py").read_text(encoding="utf-8")
     check("viewer auto-generation defaults ON with a --no-auto-bands opt-out",
-          "allow_create=args.auto_bands)" in vw and 'action="store_true", default=True' in vw
+          "allow_create=args.auto_bands," in vw and 'action="store_true", default=True' in vw
           and '"--no-auto-bands"' in vw)
+    # Swept-RF-CARRIER x-axis -> the SG6311A carrier bands are the DEFAULT auto choice
+    # (David 2026-09-24); phase-noise offset / other sweeps stay a data-derived log split.
+    # Gated by padb_bands.is_rf_carrier; callers thread x_label through so 'offset' axes opt out.
+    pb = (HERE / "padb_bands.py").read_text(encoding="utf-8")
+    check("padb_bands: carrier default = SG6311A preset via is_rf_carrier",
+          "def is_rf_carrier(" in pb and "SG6311A_BANDS_HZ" in pb
+          and "def write_preset_bands(" in pb
+          and "if is_rf_carrier(freqs, x_unit, x_label):" in pb
+          and '"offset" in (x_label or "").lower()' in pb)
+    check("padb_v2 + viewer thread x_label into find_or_create_bands (carrier detection)",
+          'x_label=cfg.get("x_label", "Frequency (MHz)")' in v2
+          and "x_label=DS.x_label" in vw)
     check("has_segments ORs named bands so the control shows even with no spec",
           'or bool(cfg.get("_named_bands"))' in src
           and 'or bool(cfg.get("_named_bands"))' in v2)

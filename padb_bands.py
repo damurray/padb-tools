@@ -30,6 +30,38 @@ _UNIT_HZ = {"hz": 1.0, "khz": 1e3, "mhz": 1e6, "ghz": 1e9}
 # Standard filenames looked up next to the data (parquet / results dir).
 BAND_FILENAMES = ("bands.json", "padb_viewer_bands.json")
 
+# Canonical SG6311A carrier-frequency bands (Hz). The DEFAULT for any test whose x-axis is a
+# swept RF *carrier* frequency (David 2026-09-24). Kept here as the single source of truth
+# (padb_make_bands + auto-generation both use it).
+SG6311A_BANDS_HZ = [
+    {"name": "DAC Band (9kHz-8MHz)", "lo": 9e3, "hi": 8e6},
+    {"name": "LowBand (8-375MHz)", "lo": 8e6, "hi": 375e6},
+    {"name": "MidBand (375-3200MHz)", "lo": 375e6, "hi": 3200e6},
+    {"name": "HighBand (3.2-20GHz)", "lo": 3200e6, "hi": 20e9},
+]
+
+
+def _xmax_mhz(freqs, x_unit: str):
+    s = {"hz": 1e-6, "khz": 1e-3, "mhz": 1.0, "ghz": 1e3}.get((x_unit or "").lower())
+    if s is None:
+        return None
+    xs = [float(f) for f in freqs
+          if f is not None and isinstance(f, (int, float)) and math.isfinite(float(f))]
+    return (max(xs) * s) if xs else None
+
+
+def is_rf_carrier(freqs, x_unit: str, x_label: str = "") -> bool:
+    """True when the swept x-axis is a true RF *carrier* frequency (not an offset axis) that
+    spans beyond the SG6311A LowBand edge -- i.e. the canonical carrier bands are the right
+    default. Frequency unit + not an 'offset' axis (phase-noise offset stays a log split) +
+    reaches past 375 MHz (multi-band). David 2026-09-24."""
+    if (x_unit or "").strip().lower() not in _UNIT_HZ:
+        return False
+    if "offset" in (x_label or "").lower():
+        return False
+    xm = _xmax_mhz(freqs, x_unit)
+    return xm is not None and xm > 375.0
+
 
 def unit_scale(cfg_unit: str, data_unit: str) -> float:
     """Multiplier converting a value in `cfg_unit` into `data_unit`. Falls back to
@@ -143,15 +175,31 @@ def write_auto_bands(path: Path, bands: list[dict], x_unit: str) -> None:
     Path(path).write_text(json.dumps(doc, indent=2), encoding="utf-8")
 
 
-def find_or_create_bands(freqs, x_unit, search_dirs, allow_create=True, target=4):
+def write_preset_bands(path: Path, preset: str = "sg6311a") -> None:
+    """Write the canonical SG6311A carrier-band preset (values in Hz) with a comment inviting
+    edits. Marked `_preset` (not `_auto_generated`) so it loads as the user's choice and is
+    never re-generated. Used as the default for swept-RF-carrier x-axes."""
+    doc = {
+        "_comment": ("SG6311A carrier-frequency bands (DAC/Low/Mid/High) -- the default for a "
+                     "swept RF carrier x-axis. EDIT to rename/re-range if your test differs. "
+                     "'unit' is Hz. Delete to let auto-generation take over."),
+        "_preset": preset,
+        "unit": "Hz",
+        "bands": [{"name": b["name"], "lo": b["lo"], "hi": b["hi"]} for b in SG6311A_BANDS_HZ],
+    }
+    Path(path).write_text(json.dumps(doc, indent=2), encoding="utf-8")
+
+
+def find_or_create_bands(freqs, x_unit, search_dirs, allow_create=True, target=4, x_label=""):
     """Resolve the named bands for a dataset.
 
     1. Look for an existing band file (BAND_FILENAMES) in each of `search_dirs`.
-    2. If none and `allow_create`, auto-generate a starter from `freqs` and write
-       it into the first search dir (padb_viewer_bands.json).
+    2. If none and `allow_create`: for a swept-RF-*carrier* x-axis (`is_rf_carrier`) write the
+       canonical SG6311A carrier preset (the DEFAULT for carrier sweeps, David 2026-09-24);
+       otherwise auto-generate a data-derived log/linear starter (e.g. phase-noise offset).
 
-    Returns (bands_in_data_units, path_or_None, created_bool). `bands` is [] when
-    the data has no usable swept x and nothing could be created.
+    Returns (bands_in_data_units, path_or_None, created_bool). `bands` is [] when the data has
+    no usable swept x and nothing could be created.
     """
     dirs = [Path(d) for d in search_dirs if d]
     for d in dirs:
@@ -161,10 +209,17 @@ def find_or_create_bands(freqs, x_unit, search_dirs, allow_create=True, target=4
                 return load_bands_file(p, x_unit), p, False
     if not allow_create or not dirs:
         return [], None, False
+    out = dirs[0] / "padb_viewer_bands.json"
+    if is_rf_carrier(freqs, x_unit, x_label):
+        # Swept RF carrier -> canonical SG6311A bands are the default.
+        try:
+            write_preset_bands(out, "sg6311a")
+        except OSError:
+            return _clean_bands(SG6311A_BANDS_HZ, unit_scale("hz", x_unit)), None, True
+        return load_bands_file(out, x_unit), out, True
     bands = auto_bands(freqs, x_unit, target=target)
     if not bands:
         return [], None, False
-    out = dirs[0] / "padb_viewer_bands.json"
     try:
         write_auto_bands(out, bands, x_unit)
     except OSError:

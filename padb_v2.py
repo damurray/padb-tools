@@ -1256,7 +1256,8 @@ def generate_report(
             _allow_auto = bool(cfg.get("auto_bands", True))
             _bands, _bpath, _bcreated = padb_bands.find_or_create_bands(
                 df["Frequency_MHz"].dropna().tolist(), cfg.get("x_unit", "MHz"),
-                [output_dir, csv_path.parent], allow_create=_allow_auto)
+                [output_dir, csv_path.parent], allow_create=_allow_auto,
+                x_label=cfg.get("x_label", "Frequency (MHz)"))
             cfg["_named_bands"] = _bands
             cfg["_named_bands_path"] = str(_bpath) if _bpath else ""
             if _bcreated and _bpath:

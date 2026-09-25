@@ -35,13 +35,8 @@ from pathlib import Path
 
 import padb_bands
 
-# Standard SG6311A carrier bands (Hz). Mirrors the shipped padb_viewer_bands.json template.
-_SG6311A_HZ = [
-    {"name": "DAC Band (9kHz-8MHz)", "lo": 9e3, "hi": 8e6},
-    {"name": "LowBand (8-375MHz)", "lo": 8e6, "hi": 375e6},
-    {"name": "MidBand (375-3200MHz)", "lo": 375e6, "hi": 3200e6},
-    {"name": "HighBand (3.2-20GHz)", "lo": 3200e6, "hi": 20e9},
-]
+# Standard SG6311A carrier bands (Hz) -- single source of truth in padb_bands.
+_SG6311A_HZ = padb_bands.SG6311A_BANDS_HZ
 
 _EDIT_HINT = ("Edit this file any time: rename bands, adjust 'lo'/'hi', add/remove rows. "
               "'unit' is the unit for lo/hi (Hz/kHz/MHz/GHz); loaders convert to the data's "
