@@ -2431,6 +2431,13 @@ def test_scatter_passfail_and_crossfilter() -> None:
           "_df_basis" in src and "highest priority first" in src
           and "override, where a view offers one" in src and "Test Event Status, as a fallback" in src
           and 'title="{_df_basis}"' in src)
+    # The same basis-aware hover is shared to the other pass/fail views (David 2026-09-24):
+    # boxplot (status fallback), stat_summary + summary (aggregate, no status). One helper.
+    check("pass/fail BASIS hover shared to boxplot/stat_summary/summary via _passfail_basis_title",
+          "def _passfail_basis_title(" in src
+          and src.count("_passfail_basis_title(") >= 4  # def + boxplot + stat_summary + summary
+          and "has_status_fallback=bool(status_field)" in src   # boxplot uses real status presence
+          and src.count("_passfail_basis_title(aggregate=True, has_status_fallback=False)") == 2)  # stat_summary + summary
     check("scatter: cross-filter availability helpers present",
           "function _crossFilterAvail(" in src and "function _applyCrossFilterGrey(" in src)
     check("scatter: cross-filter greying invoked on panel open",

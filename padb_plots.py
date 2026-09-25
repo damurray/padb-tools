@@ -1934,6 +1934,24 @@ def _has_segmentable_spec(df: pd.DataFrame) -> bool:
     return False
 
 
+def _passfail_basis_title(aggregate: bool = False, has_status_fallback: bool = False) -> str:
+    """Tooltip describing the pass/fail BASIS precedence for a Data-filter control, so users
+    know what Passing/Failing is judged against (David 2026-09-24). spec/TLL (including a
+    manual Spec/Limit override) is PRIMARY -- so the override features stay authoritative; Test
+    Event Status is only a fallback on raw-point views where a point has no numeric limit
+    (aggregate/per-DUT views can't attribute a single status to a mean, so they don't use it)."""
+    t = ("Pass/Fail basis, highest priority first: (1) a manual Spec/Limit override if you set "
+         "one; (2) the point's Upper/Lower Limit (TLL); (3) its Spec")
+    if has_status_fallback and not aggregate:
+        t += "; (4) Test Event Status, only where a point has no numeric limit."
+    else:
+        t += "."
+    if aggregate:
+        t += (" This is an aggregate (per-DUT) view, so a single Test Event Status can't be "
+              "attributed to a per-DUT mean and is not used here.")
+    return t
+
+
 def _segment_by_html(has_segments: bool) -> str:
     """The 'Segment by: Spec/Limit/Uncertainty' control plus its Prev/Next
     tab bar, identical across all 6 V2 views. Omitted entirely (not merely
@@ -9996,7 +10014,8 @@ def _build_stat_summary_html(
 
     filter_bar = (
         '<div class="flt-bar" onclick="event.stopPropagation()">\n'
-        '  <b>Data&nbsp;filter:</b>\n'
+        f'  <b title="{_passfail_basis_title(aggregate=True, has_status_fallback=False)}" '
+        'style="cursor:help;border-bottom:1px dotted #888">Data&nbsp;filter:</b>\n'
         '  <label><input type="radio" name="data_flt" value="all" checked'
         ' onchange="update()"> All&nbsp;data</label>\n'
         '  <label><input type="radio" name="data_flt" value="passing"'
@@ -17093,7 +17112,7 @@ def _build_box_interactive_html(
 
     filter_bar = (
         '<div class="flt-bar">\n'
-        + _fgl("Data filter", "Filter which measurements are shown by pass/fail vs the effective spec", first=True)
+        + _fgl("Data filter", _passfail_basis_title(aggregate=False, has_status_fallback=bool(status_field)), first=True)
         + '  <label title="Show every measurement (no pass/fail filter)">'
         '<input type="radio" name="box_flt" value="all" checked'
         ' onchange="update()">&nbsp;All&nbsp;data</label>\n'
@@ -20266,7 +20285,8 @@ def _build_summary_html(
         )
         + temp_stat_bar_html
         + '<div class="flt-bar" onclick="event.stopPropagation()">\n'
-        + '  <b>Data&nbsp;filter:</b>\n'
+        + f'  <b title="{_passfail_basis_title(aggregate=True, has_status_fallback=False)}" '
+          'style="cursor:help;border-bottom:1px dotted #888">Data&nbsp;filter:</b>\n'
         + '  <label><input type="radio" name="sum_flt" value="all" checked'
         + ' onchange="update()"> All&nbsp;data</label>\n'
         + '  <label><input type="radio" name="sum_flt" value="passing"'
