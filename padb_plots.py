@@ -16148,12 +16148,11 @@ function setFilterAsGf(){
    intersection matcher keyed on Port=<port>) can. Identity is (_boxBaseSerial(d.s), d.p),
    so a port-qualified box serial ("MY123_RF1") is the natural per-unit+port selector.
    David 2026-09-25. */
-function keepPopulationAsGf(){
+function _keepPopulationCore(){
   var allBoxSers=getAllBoxSerials(), selBoxSers=getSelectedBoxSerials();
   var serFlt=allBoxSers.length>1&&selBoxSers.length<allBoxSers.length;
   var allPorts=getAllBoxPorts(), selPorts=getSelectedBoxPorts();
   var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
-  if(!serFlt&&!portFlt){ alert('Nothing narrowed to keep. Select the serial(s) and/or port(s) you want to KEEP in the Serial/Port filters first, then click this.'); return; }
   /* Pass 1: classify every (baseSerial, port) in the data as kept (passes the current
      serial+port selection) or not. Condition/temp/freq filters are intentionally ignored
      -- this locks the serial+port POPULATION only; conditions stay a Locked-filter/other
@@ -16171,10 +16170,49 @@ function keepPopulationAsGf(){
     if(!d.s) return; var id=_boxBaseSerial(d.s)+'|'+(d.p||''); if(kept[id]) return;
     var k=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||manual||0';
     if(!seen[k]){seen[k]=1;keys.push(k);} }); }); });
-  var nKept=Object.keys(kept).length, nUni=Object.keys(universe).length;
-  if(!keys.length){ alert('Nothing to exclude -- your current selection already covers every serial+port in the data.'); return; }
-  _mergeGf(keys);   // merges into the GF + reloads + update() (cross-view)
-  alert('Keep-only applied: '+nKept+' of '+nUni+' serial+port populations kept.\n\nThe other '+(nUni-nKept)+' were added to the Global Filter (exact per-unit port), so every view now shows only your population.\n\nUndo any time with "Clear global filter".');
+  return {keys:keys, nKept:Object.keys(kept).length, nUni:Object.keys(universe).length, narrowed:(serFlt||portFlt)};
+}
+/* Keep ONLY the selected serial+port populations everywhere: exclude every OTHER
+   (baseSerial, port) combo via the Global Filter, spanning all conditions/temps/freqs
+   (whole-DUT sentinel ||manual||0). This is how an EXACT per-unit serial+port population
+   is enforced cross-view -- the dimension-level Locked filters use independent Serial and
+   Port dims and can't express "MY123 RF1 but not RF2"; the point-precise GF (dims-
+   intersection matcher keyed on Port=<port>) can. David 2026-09-25. */
+function keepPopulationAsGf(){
+  var c=_keepPopulationCore();
+  if(!c.narrowed){ alert('Nothing narrowed to keep. Select the serial(s) and/or port(s) you want to KEEP in the Serial/Port filters first, then click this.'); return; }
+  if(!c.keys.length){ alert('Nothing to exclude -- your current selection already covers every serial+port in the data.'); return; }
+  _mergeGf(c.keys);   // merges into the GF + reloads + update() (cross-view)
+  alert('Keep-only applied: '+c.nKept+' of '+c.nUni+' serial+port populations kept.\n\nThe other '+(c.nUni-c.nKept)+' were added to the Global Filter (exact per-unit port), so every view now shows only your population.\n\nUndo any time with "Clear global filter".');
+}
+/* One-click convenience (David 2026-09-25): the new-user shortcut for "make every view
+   show exactly what I'm looking at here". Combines the two granular steps -- Lock the
+   DIMENSION filters (conditions/freq/pass-fail/temperature, which set the visible
+   checkboxes on other views) + Keep-only the exact serial+port POPULATION via the GF.
+   Serial/Port are deliberately stripped from the lock so the GF is the SOLE population
+   indicator (no half-checked serial boxes AND a GF badge). Undo in one click with
+   clearSyncAllViews(). The granular buttons remain for finer control. */
+function syncSelectionToAllViews(){
+  var o=(typeof _bxLockRead==='function')?(_bxLockRead()||{}):{dims:{}};
+  o.dims=o.dims||{}; delete o.dims['Serial Number']; delete o.dims['Port'];   // GF owns the population
+  o.v=1; o.ts=Date.now(); o.title=(typeof TITLE!=='undefined'?TITLE:document.title);
+  PADB_lockSet(o); if(typeof PADB_lockRenderBar==='function') PADB_lockRenderBar({saved:true});
+  var c=_keepPopulationCore();
+  if(c.narrowed&&c.keys.length) _mergeGf(c.keys);   // also reloads + update()
+  else if(typeof update==='function') update();
+  var lockMsg='Filters locked to all views: '+((typeof PADB_lockSummary==='function')?PADB_lockSummary(o):'(dimension filters)')+'.';
+  var popMsg=(c.narrowed&&c.keys.length)
+    ? ('\n\nExact serial+port population kept: '+c.nKept+' of '+c.nUni+' (the other '+(c.nUni-c.nKept)+' added to the Global Filter, exact per-unit port).')
+    : '\n\n(No serial/port narrowed -- the full population is shown. Narrow the Serial/Port filter first if you want to pin specific units.)';
+  alert('Synced. Every other view will now match this selection.'+'\n\n'+lockMsg+popMsg+'\n\nUndo everything with "Clear sync".');
+}
+/* Undo syncSelectionToAllViews in one click: drop the cross-view lock AND the kept-
+   population Global Filter together. */
+function clearSyncAllViews(){
+  if(typeof PADB_lockClear==='function') PADB_lockClear();   // drops the saved lock (+ bar hint)
+  try{localStorage.removeItem(GF_KEY);}catch(e){}            // drops the kept-population GF
+  _loadBoxGlobalFilter();_updateBoxGfStatus();update();
+  alert('Sync cleared: the cross-view lock and the kept-population Global Filter were both removed.\n\nOn other views, press Reset (or Autoscale) to restore their full data if a lock had set their filters.');
 }
 function applyGlobalFilter(){
   var selConds=getSelectedConds(),selTemps=getSelectedTemps();
@@ -17821,6 +17859,15 @@ def _build_box_interactive_html(
           'border:1px solid #e4e4e4;border-radius:5px;margin:4px 0;background:#fafafa">\n'
         + '  <span style="font-weight:700;color:#666;font-size:10px;text-transform:uppercase;'
           'letter-spacing:.05em;margin-right:4px;white-space:nowrap">Global Filter</span>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#0066cc;border-color:#0066cc;color:#fff;font-weight:700"'
+        ' title="ONE-CLICK: make every other view show exactly what you have selected here. Locks the dimension filters (conditions, frequency range, pass/fail, temperature -- these set the visible checkboxes on the other views) AND keeps your exact serial+port population (via the Global Filter, exact per-unit port). This is the easy way -- it does the &quot;Lock these filters&quot; + &quot;Keep only this population&quot; steps together. Undo it all with &quot;Clear sync&quot;."'
+        ' onclick="syncSelectionToAllViews()">&#128279;&nbsp;Sync this selection to all views</button>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#fff;border-color:#0066cc;color:#0066cc"'
+        ' title="Undo Sync: remove BOTH the cross-view lock and the kept-population Global Filter in one click. On other views press Reset (or Autoscale) afterwards to restore their full data."'
+        ' onclick="clearSyncAllViews()">Clear sync</button>\n'
+        + '  <span style="color:#bbb;margin:0 2px">|</span>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
         ' title="Set currently selected conditions + serials as the global exclusion filter -- adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)"'

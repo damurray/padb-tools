@@ -2835,10 +2835,11 @@ def test_keep_population_as_gf() -> None:
     src = Path(pp.__file__).read_text(encoding="utf-8")
     check("boxplot exposes a 'Keep only this population' button -> keepPopulationAsGf()",
           "keepPopulationAsGf()" in src and "Keep only this population" in src)
-    check("keepPopulationAsGf is defined", "function keepPopulationAsGf()" in src)
+    check("keepPopulationAsGf + shared _keepPopulationCore are defined",
+          "function keepPopulationAsGf()" in src and "function _keepPopulationCore()" in src)
     check("it enforces the population through the existing Global Filter (_mergeGf), not a parallel layer",
-          "_mergeGf(keys)" in src.split("function keepPopulationAsGf()", 1)[1].split("function applyGlobalFilter", 1)[0])
-    kp = src.split("function keepPopulationAsGf()", 1)[1].split("function applyGlobalFilter", 1)[0]
+          "_mergeGf(c.keys)" in src.split("function keepPopulationAsGf()", 1)[1].split("function applyGlobalFilter", 1)[0])
+    kp = src.split("function _keepPopulationCore()", 1)[1].split("function applyGlobalFilter", 1)[0]
     check("keep-only keys use the whole-DUT sentinel (span temps/freqs) + Port-qualified cond key",
           "||manual||0" in kp and "_boxFullCondKey(cd.condition,d.p||'')" in kp)
     check("keep-only identity is (baseSerial, port) -- port-qualified per-unit selector",
@@ -2846,7 +2847,17 @@ def test_keep_population_as_gf() -> None:
     check("keep-only excludes only NON-kept combos (kept ones are skipped)",
           "if(kept[id]) return;" in kp)
     check("keep-only guards when nothing is narrowed to keep",
-          "Nothing narrowed to keep" in kp)
+          "Nothing narrowed to keep" in src)
+    # One-click combined convenience: Sync (lock dims + keep-only) + Clear sync (undo both).
+    check("boxplot exposes one-click 'Sync this selection to all views' -> syncSelectionToAllViews()",
+          "syncSelectionToAllViews()" in src and "Sync this selection to all views" in src)
+    check("sync locks DIMENSIONS but strips serial/port (GF is the sole population layer)",
+          "delete o.dims['Serial Number']" in src and "delete o.dims['Port']" in src
+          and "_keepPopulationCore()" in src.split("function syncSelectionToAllViews()", 1)[1])
+    check("Clear sync undoes BOTH the lock and the kept-population GF in one click",
+          "function clearSyncAllViews()" in src and "clearSyncAllViews()" in src
+          and "PADB_lockClear()" in src.split("function clearSyncAllViews()", 1)[1].split("}", 1)[0]
+          and "removeItem(GF_KEY)" in src.split("function clearSyncAllViews()", 1)[1].split("_updateBoxGfStatus", 1)[0])
 
 
 def test_axis_titles_object_form() -> None:
