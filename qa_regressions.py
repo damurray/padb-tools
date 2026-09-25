@@ -1389,8 +1389,11 @@ def test_locked_filters_crossview() -> None:
                "function PADB_lockExport(", "function PADB_lockImport(",
                "function PADB_lockSetChecks(", "function PADB_lockReadChecks("):
         check(f"lock core present: {fn}", fn in src)
-    check("lock stored in localStorage under a stable key",
-          "PADB_LOCK_KEY='padb_v2_locked_filters'" in src)
+    # Lock is scoped PER TEST (analytic) via GF_KEY's prefix -- persists across a test's views
+    # but never auto-carries to a different plot job (David 2026-09-25). Old global key cleaned.
+    check("lock key scoped per-test (derived from GF_KEY prefix, not a browser-global key)",
+          "'padb_v2_locked_filters_'+GF_KEY.slice(17)" in src
+          and "localStorage.removeItem('padb_v2_locked_filters')" in src)
     check("lock apply is BEST-EFFORT (no matching value here -> leave as-is, don't empty)",
           "if(!anyHere) return false;" in src)
     check("lock read locks only NARROWED dims (strict subset), not fully-open ones",

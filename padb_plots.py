@@ -3772,7 +3772,15 @@ _LOCK_JS = r"""
    absent from this view/dataset is ignored, never emptying the view -- same rule as the
    blank-dim guard). Only dims the source NARROWED (subset selected) are locked, so a
    fully-open dim never constrains another view. */
-var PADB_LOCK_KEY='padb_v2_locked_filters';
+/* Scope the lock PER TEST (analytic), not browser-global, so it persists across a test's
+   VIEWS but never auto-carries into a different test/plot job (David 2026-09-25 -- a global
+   lock bleeding onto unrelated tests was confusing). Reuses GF_KEY's per-test prefix
+   ('padb_v2_excluded_<prefix>', identical across all views incl. reference) so lock scoping
+   matches the Global Filter's. Cross-test sharing stays possible, but only deliberately via
+   Export/Import. Old global key is cleaned up. */
+var PADB_LOCK_KEY=(typeof GF_KEY!=='undefined'&&GF_KEY&&GF_KEY.indexOf('padb_v2_excluded_')===0)
+  ? ('padb_v2_locked_filters_'+GF_KEY.slice(17)) : 'padb_v2_locked_filters';
+try{ if(PADB_LOCK_KEY!=='padb_v2_locked_filters') localStorage.removeItem('padb_v2_locked_filters'); }catch(e){}
 var _padbLockReg=null;   /* {read:fn->obj, apply:fn(obj)->{applied:[],skipped:[]}} */
 function PADB_lockRegister(a){ _padbLockReg=a; }
 function PADB_lockGet(){ try{var s=localStorage.getItem(PADB_LOCK_KEY); return s?JSON.parse(s):null;}catch(e){return null;} }
