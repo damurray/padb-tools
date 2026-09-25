@@ -1826,6 +1826,9 @@ def test_box_table_perpoint_mode() -> None:
               and "var overlay=order.length>1&&order.length<=12;" in h)
         # KDE overlay + modality hint (David 2026-09-25): per-group Gaussian KDE (Silverman)
         # scaled to counts, toggleable; modality = KDE peak count + bimodality coefficient BC.
+        check("box dist: no plot legend (avoids x-axis-title overlap; table is the legend)",
+              "shapes:shapes,showlegend:false," in h
+              and "colours match the table rows below" in h)
         check("box dist: KDE overlay (Silverman) + toggle",
               "function _boxKde(" in h and "function _boxBandwidth(" in h
               and 'id="box_dist_kde_chk"' in h and "_boxDistShowKde=this.checked;_boxRenderDist()" in h

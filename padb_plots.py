@@ -14445,8 +14445,11 @@ function _boxRenderDist(){
   var ctrl='<div style="font-size:12px;margin:2px 0 2px"><label style="cursor:pointer" title="Overlay a smoothed density (KDE) per group and show a per-group modality hint (KDE peak count + bimodality coefficient BC).">'+
     '<input type="checkbox" id="box_dist_kde_chk"'+(_boxDistShowKde?' checked':'')+' onchange="_boxDistShowKde=this.checked;_boxRenderDist()"> KDE overlay + modality hint</label></div>';
   el.innerHTML=ctrl+head+'<div id="box_dist_plot" style="height:340px"></div><div id="box_dist_stats"></div>';
-  Plotly.newPlot('box_dist_plot',traces,{barmode:'overlay',bargap:0.02,margin:{t:26,r:12,b:44,l:60},
-    shapes:shapes,showlegend:overlay,legend:{orientation:'h'},
+  Plotly.newPlot('box_dist_plot',traces,{barmode:'overlay',bargap:0.02,margin:{t:26,r:12,b:48,l:60},
+    /* No plot legend: with long group names a horizontal legend collided with the x-axis title
+       (David 2026-09-25). Groups are identified by the colour-coded stats table below (each row's
+       left border) + the bar/curve hover, so the legend is redundant. */
+    shapes:shapes,showlegend:false,
     xaxis:{title:{text:Y_LABEL}},yaxis:{title:{text:'Count'}},
     title:{text:'Distribution of per-point table data ('+overall.n.toLocaleString()+' pts'+(overlay?', '+order.length+' groups':'')+')',font:{size:13}}},
     {responsive:true,displaylogo:false});
@@ -14473,7 +14476,7 @@ function _boxRenderDist(){
     '<table class="stbl" style="margin-top:6px;font-size:12px"><thead><tr>'+
     '<th style="text-align:left">Group</th><th>n</th><th>mean</th><th>median</th><th>std</th><th>min</th><th>max</th><th>p5</th><th>p95</th>'+(hasStatus?'<th># fail / n</th>':'')+modTh+'</tr></thead><tbody>'+rows+'</tbody></table>'+
     '<div style="font-size:11px;color:#777;margin-top:3px">'+
-    (overlay?'Overlaid by the current Group by. ':(order.length>12?('Too many groups ('+order.length+') to overlay &mdash; pooled into one; set <b>Group by</b> to overlay by a chosen parameter. '):''))+
+    (overlay?'Overlaid by the current Group by (colours match the table rows below). ':(order.length>12?('Too many groups ('+order.length+') to overlay &mdash; pooled into one; set <b>Group by</b> to overlay by a chosen parameter. '):''))+
     'Bins: Freedman&ndash;Diaconis; solid line = KDE (Silverman bandwidth). Dashed red = spec/limit (only when uniform); vertical solid = mean, dotted = median. '+
     '<b>Modality</b> = KDE peak count + bimodality coefficient BC (>0.555 leans bimodal) &mdash; a screen, not proof; confirm with the Subpopulation advisory. Uses ALL filtered points.</div>';
 }
