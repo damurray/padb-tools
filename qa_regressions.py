@@ -1806,6 +1806,14 @@ def test_box_table_perpoint_mode() -> None:
         check("box: 'Distribution of table data' button + panel + toggle",
               'id="box_dist_toggle_btn"' in h and 'onclick="toggleBoxDistPanel()"' in h
               and 'id="box_dist_panel"' in h and "function toggleBoxDistPanel(" in h)
+        check("box: Distribution button shown only in Per-point mode (hidden default + synced)",
+              'id="box_dist_toggle_btn" style="display:none"' in h
+              and "function _boxSyncDistBtn(" in h
+              and "var pp=(_boxTableMode()==='perpoint');" in h
+              and "true);_boxSyncDistBtn()" in h                 # synced on table-mode change
+              and "if(typeof _boxSyncDistBtn==='function') _boxSyncDistBtn();" in h)  # + at load
+        check("box: Distribution button has descriptive hover help",
+              "Open a panel that plots the DISTRIBUTION of the values in the per-point table" in h)
         check("box: distribution renders a per-group overlaid histogram + summary stats",
               "function _boxRenderDist(" in h and "barmode:'overlay'" in h
               and "function _boxDistStats(" in h and "Freedman" in h

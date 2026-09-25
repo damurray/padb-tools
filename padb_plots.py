@@ -14366,6 +14366,15 @@ function _boxRenderDist(){
     (overlay?'Overlaid by the current Group by. ':(order.length>12?('Too many groups ('+order.length+') to overlay &mdash; pooled into one; set <b>Group by</b> to overlay by a chosen parameter. '):''))+
     'Bins: Freedman&ndash;Diaconis on the pooled values (shared across groups). Dashed red = spec/limit (only when uniform across the shown points); solid = mean, dotted = median. Uses ALL filtered points (not the table\'s 5000-row display cap).</div>';
 }
+/* The distribution is per-POINT data, so its button only appears in Per-point table mode
+   (David 2026-09-25). Sync on table-mode change + at load; hide the panel when leaving. */
+function _boxSyncDistBtn(){
+  var b=document.getElementById('box_dist_toggle_btn'); if(!b) return;
+  var pp=(_boxTableMode()==='perpoint');
+  b.style.display=pp?'':'none';
+  if(!pp){ var el=document.getElementById('box_dist_panel'); if(el) el.style.display='none';
+    b.innerHTML='&#9658;&nbsp;Distribution of table data'; }
+}
 function toggleBoxDistPanel(){
   var el=document.getElementById('box_dist_panel'), btn=document.getElementById('box_dist_toggle_btn');
   if(!el) return;
@@ -16806,6 +16815,7 @@ function loadState(){
   var tllLo=_stGet('box_tll_lo');var tllLoEl=document.getElementById('box_tll_lo');if(tllLo!==null&&tllLoEl)tllLoEl.value=tllLo;
   var iqr=_stGet('box_iqr_k');if(iqr!==null){var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value=iqr;}
   var hs=_stGet('box_hide_spec');if(hs!==null){var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)hsEl.checked=(hs==='1');}
+  if(typeof _boxSyncDistBtn==='function') _boxSyncDistBtn();   // show the Distribution button only in per-point mode
 }
 (function init(){
   _reconstituteBoxBinaryData();
@@ -17375,13 +17385,17 @@ def _build_box_interactive_html(
         ' population (Group by pools; a #fail column counts points past the limit). Per-point = one'
         ' row per raw measurement with PASS/FAIL vs the limit; Group by then just sorts/sections the'
         ' rows.">Table:<select id="box_table_mode" onchange="updateStatsTable(getSelectedConds(),'
-        'getYFilter(),getSelectedBoxSerials(),getSelectedTemps(),true)">'
+        'getYFilter(),getSelectedBoxSerials(),getSelectedTemps(),true);_boxSyncDistBtn()">'
         '<option value="grouped">Grouped stats</option>'
         '<option value="perpoint">Per-point</option></select></label>\n'
-        + '  <button class="toggle-btn" id="box_dist_toggle_btn"'
-        ' title="Histogram of the per-point table data (per-Group overlay) + summary stats,'
-        ' honoring all current filters. Uses every filtered point, not just the table\'s'
-        ' first 5000 rows." onclick="toggleBoxDistPanel()">&#9658;&nbsp;Distribution of table data</button>\n'
+        + '  <button class="toggle-btn" id="box_dist_toggle_btn" style="display:none"'
+        ' title="Open a panel that plots the DISTRIBUTION of the values in the per-point table:'
+        ' a histogram overlaid per Group by group (mean = solid line, median = dotted; spec/limit'
+        ' lines when uniform), plus a summary-stats table (n, mean, median, std, min/max, p5/p95,'
+        ' and # fail / n). It respects every current filter (frequency, serial/port, Global Filter,'
+        ' pass/fail, collapse-dup, Group by) and uses ALL filtered points, not just the table\'s'
+        ' first 5000 displayed rows. Shown only in Per-point table mode."'
+        ' onclick="toggleBoxDistPanel()">&#9658;&nbsp;Distribution of table data</button>\n'
         + '  <button id="box_refresh_table_btn" class="reset-btn"'
         + ' title="Auto-refreshes when 150 or fewer conditions are active; above that the table stops'
         + ' auto-rebuilding on every filter change (which gets slow with many conditions) and needs'
