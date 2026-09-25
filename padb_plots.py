@@ -869,6 +869,9 @@ function resetFilters(){
      puts Mode back to Exclude; the GF exclusion list itself is untouched. */
   try{localStorage.setItem(GF_MODE_KEY,'exclude');}catch(e){}
   _updateGfIndicator();
+  /* Return the All/Passing/Failing data filter to All too, so Reset / "Show all data" truly
+     shows the full data (David 2026-09-25 -- this radio was previously left as-is). */
+  var _pfAll=document.querySelector('input[name="scat_flt"][value="all"]'); if(_pfAll)_pfAll.checked=true;
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
@@ -1063,12 +1066,40 @@ window.addEventListener('storage',function(e){
   else if(e.key===GF_MODE_KEY){_updateGfIndicator();update();}
 });
 
+/* Short list of what's currently narrowing the data, for the active-filters chip. Excludes the
+   Global Filter (it has its own badge + Clear, and "Show all data"=Reset doesn't touch it). */
+function _avActiveFilters(){
+  var a=[];
+  var loT=document.getElementById('freq_lo_txt'), hiT=document.getElementById('freq_hi_txt');
+  var lo=loT&&loT.value!==''?parseFloat(loT.value):FREQ_MIN, hi=hiT&&hiT.value!==''?parseFloat(hiT.value):FREQ_MAX;
+  var eps=(FREQ_MAX-FREQ_MIN)*1e-4+1e-9;
+  if(isFinite(lo)&&isFinite(hi)&&(lo>FREQ_MIN+eps||hi<FREQ_MAX-eps))
+    a.push(X_SHORT_LABEL+' '+(+lo).toPrecision(5)+'–'+(+hi).toPrecision(5)+' '+X_UNIT);
+  (GROUP_COLS||[]).forEach(function(p){ var boxes=document.querySelectorAll('.fchk[data-col="'+p[0]+'"]');
+    if(!boxes.length) return; var n=boxes.length, s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length;
+    if(s<n) a.push(p[1]+': '+s+'/'+n); });
+  var tb=document.querySelectorAll('.env_chk');
+  if(tb.length){ var tn=tb.length, ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length;
+    if(ts<tn) a.push('Temps: '+ts+'/'+tn); }
+  var pf=document.querySelector('input[name="scat_flt"]:checked');
+  if(pf&&pf.value!=='all') a.push(pf.value==='passing'?'Passing only':'Failing only');
+  return a;
+}
 function update(){
   var filtered=applyFilters(DATA);
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
   _recomputeSpecSegments();
   updateScatterTable(filtered);
+  /* Caveat: in a Lines draw mode with a Passing/Failing filter, the connecting lines span the
+     gaps between the kept points and can look like the other class is shown -- especially with
+     sparse points (David 2026-09-25). Markers/Vertical show only the actual points. */
+  var _dm=(document.getElementById('drawmode')||{}).value;
+  var _pf=document.querySelector('input[name="scat_flt"]:checked');
+  var _note=(_pf&&_pf.value!=='all'&&_dm&&_dm.indexOf('lines')>=0)
+    ? ('&#9888; <b>Lines</b> connect only the '+_pf.value+' points, so a segment can bridge a gap and look like '+(_pf.value==='failing'?'passing':'failing')+' data. Switch <b>Draw</b> to Markers or Vertical to see just the actual points.')
+    : '';
+  PADB_setFilterChip(_avActiveFilters(),'resetFilters',_note);
   saveState();
 }
 
@@ -3014,6 +3045,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + spec_caveat_banner_html
         + env_bar_html + "\n"
         + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML
         + '<div id="plot"></div>\n'
         + '<div id="scatter_table_panel" style="display:none"></div>\n'
         + f"<script>{_get_plotlyjs()}</script>\n"
@@ -3708,6 +3740,25 @@ function PADB_isFail(v,hi,lo){ var c=PADB_specClass(v,hi,lo); return c.verdict==
    they can't drift. Returns {lo,hi,n}. */
 function PADB_pct(sorted,p){ if(!sorted.length) return NaN; var i=(p/100)*(sorted.length-1),lo=Math.floor(i); return lo+1<sorted.length?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo]; }
 function PADB_fence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.5; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=PADB_pct(s,25),q3=PADB_pct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
+/* Active-filters chip (David 2026-09-25): a per-view status line that makes the current
+   data-narrowing state visible with a one-click way back to the full data. "Show all data"
+   is deliberately the SAME action as the view's Reset (just clearer wording + always visible)
+   -- it clears the view's local filters (not display controls like group-by/draw, and not the
+   cross-view Global Filter, which has its own Clear). Each view calls PADB_setFilterChip() at
+   the end of update() with a short list of what's active + the name of its reset fn. */
+function PADB_setFilterChip(active, resetFn, note){
+  var bar=document.getElementById('padb_filter_chip'); if(!bar) return;
+  var hasA=active&&active.length, hasN=note&&note.length;
+  if(hasA||hasN){
+    bar.style.display='';
+    var html='';
+    if(hasA){ html='<span style="font-weight:600">Showing a filtered subset:</span> '+active.join(' &middot; ')+
+      ' <button onclick="'+resetFn+'()" title="Clear this view\'s filters and show the full data (same as Reset). Does not touch the Global Filter." '+
+      'style="margin-left:6px;font-size:11px;border:1px solid #c08a00;border-radius:3px;background:#fff;color:#8a5a00;cursor:pointer;padding:1px 8px">Show all data</button>'; }
+    if(hasN){ html+=(hasA?'<div style="margin-top:3px">':'')+note+(hasA?'</div>':''); }
+    bar.innerHTML=html;
+  } else { bar.style.display='none'; bar.innerHTML=''; }
+}
 /* Busy overlay (2026-09-18): a static #padb_busy div (see _BUSY_OVERLAY_HTML) is
    painted before the big embedded-data <script>, so a large page doesn't look dead
    while the data parses and the first Plotly render runs. Hidden once ANY known plot
@@ -4018,6 +4069,14 @@ _BUSY_OVERLAY_HTML = (
     "#padb_busy .sp{width:40px;height:40px;border:4px solid #cfe0f5;border-top-color:#0066cc;"
     "border-radius:50%;animation:padbspin .8s linear infinite;margin-bottom:12px}</style>"
     '<div id="padb_busy"><div class="sp"></div><div>Loading plot data&hellip;</div></div>\n'
+)
+
+# Active-filters chip markup (David 2026-09-25): a per-view "Showing a filtered subset ... [Show
+# all data]" status line, hidden until update() populates it via PADB_setFilterChip (_COMMON_JS).
+# Drop into a view's body before its plot.
+_FILTER_CHIP_HTML = (
+    '<div id="padb_filter_chip" style="display:none;font-size:12px;background:#fff8e1;'
+    'border:1px solid #e0c05a;border-radius:5px;padding:4px 10px;margin:2px 0;color:#8a5a00"></div>\n'
 )
 
 _SITE_PANEL_SHARED_JS = r"""

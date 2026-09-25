@@ -2502,6 +2502,20 @@ def test_scatter_passfail_and_crossfilter() -> None:
           "function _crossFilterAvail(" in src and "function _applyCrossFilterGrey(" in src)
     check("scatter: cross-filter greying invoked on panel open",
           "panel.classList.add('open'); _applyCrossFilterGrey();" in src)
+    # Active-filters chip + "Show all data" (David 2026-09-25): a per-view status line makes the
+    # narrowing visible with a one-click return to full data (== Reset). Shared helper +
+    # per-view detector; scatter wired first. Reset now also clears the pass/fail radio so
+    # "Show all data" truly shows all.
+    check("shared active-filters chip helper + markup present",
+          "function PADB_setFilterChip(" in src and "_FILTER_CHIP_HTML" in src
+          and 'id="padb_filter_chip"' in src and "Show all data" in src)
+    check("scatter: builds its active-filter list + calls the chip in update()",
+          "function _avActiveFilters(" in src
+          and "PADB_setFilterChip(_avActiveFilters(),'resetFilters',_note);" in src)
+    check("scatter: Reset/'Show all data' also clears the pass/fail radio (truly full data)",
+          "var _pfAll=document.querySelector('input[name=\"scat_flt\"][value=\"all\"]'); if(_pfAll)_pfAll.checked=true;" in src)
+    check("scatter: misleading-lines caveat when a pass/fail filter is on in a Lines draw mode",
+          "_dm.indexOf('lines')>=0)" in src and "can bridge a gap and look like" in src)
 
 
 def test_gf_clear_in_apply_views() -> None:
