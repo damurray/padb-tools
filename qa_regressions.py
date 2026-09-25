@@ -1818,6 +1818,16 @@ def test_box_table_perpoint_mode() -> None:
               "function _boxRenderDist(" in h and "barmode:'overlay'" in h
               and "function _boxDistStats(" in h and "Freedman" in h
               and "var overlay=order.length>1&&order.length<=12;" in h)
+        # KDE overlay + modality hint (David 2026-09-25): per-group Gaussian KDE (Silverman)
+        # scaled to counts, toggleable; modality = KDE peak count + bimodality coefficient BC.
+        check("box dist: KDE overlay (Silverman) + toggle",
+              "function _boxKde(" in h and "function _boxBandwidth(" in h
+              and 'id="box_dist_kde_chk"' in h and "_boxDistShowKde=this.checked;_boxRenderDist()" in h
+              and "vals.length*bw" in h)  # KDE scaled to the count axis
+        check("box dist: modality hint = peak count + bimodality coefficient (advisory)",
+              "function _boxCountPeaks(" in h and "function _boxBimodalCoef(" in h
+              and "function _boxModality(" in h and "bc>0.555" in h
+              and "Subpopulation advisory" in h)
         check("box table: #fail/n header column present",
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 

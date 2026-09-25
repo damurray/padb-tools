@@ -14312,6 +14312,52 @@ function _boxDistStats(vals){
           p5:PADB_pct(s,5),p95:PADB_pct(s,95)};
 }
 var _BOX_DIST_PAL=['#1f77b4','#ff7f0e','#2ca02c','#d62728','#9467bd','#8c564b','#e377c2','#7f7f7f','#bcbd22','#17becf','#393b79','#637939'];
+var _boxDistShowKde=true;
+/* Gaussian KDE (Silverman bandwidth) + a modality hint: count prominent KDE peaks and the
+   bimodality coefficient BC=(skew^2+1)/(kurt_excess+3) (>~0.555 leans bimodal). Advisory only
+   -- confirm with the Subpopulation advisory (David 2026-09-25). */
+function _boxBandwidth(vals){
+  var n=vals.length; if(n<2) return 0;
+  var s=vals.slice().sort(function(a,b){return a-b;}),i,mean=0; for(i=0;i<n;i++)mean+=s[i]; mean/=n;
+  var v=0; for(i=0;i<n;i++){var d=s[i]-mean;v+=d*d;} var std=Math.sqrt(v/Math.max(1,n-1));
+  var iqr=PADB_pct(s,75)-PADB_pct(s,25);
+  var sigma=Math.min(std>0?std:Infinity, iqr>0?iqr/1.349:Infinity);
+  if(!isFinite(sigma)||sigma<=0) sigma=(std>0?std:(iqr>0?iqr/1.349:1));
+  return 0.9*sigma*Math.pow(n,-0.2);
+}
+function _boxKde(vals,grid,h){
+  var n=vals.length; if(!n||!(h>0)) return grid.map(function(){return 0;});
+  var c=1/(n*h*Math.sqrt(2*Math.PI));
+  return grid.map(function(x){ var s=0; for(var j=0;j<n;j++){ var z=(x-vals[j])/h; s+=Math.exp(-0.5*z*z); } return c*s; });
+}
+function _boxBimodalCoef(vals){
+  var n=vals.length; if(n<4) return null;
+  var m=0,i; for(i=0;i<n;i++)m+=vals[i]; m/=n;
+  var m2=0,m3=0,m4=0; for(i=0;i<n;i++){var d=vals[i]-m,d2=d*d; m2+=d2;m3+=d2*d;m4+=d2*d2;}
+  m2/=n;m3/=n;m4/=n; if(m2<=0) return null;
+  var skew=m3/Math.pow(m2,1.5), kurtEx=m4/(m2*m2)-3;
+  return (skew*skew+1)/(kurtEx+3);
+}
+function _boxCountPeaks(d){
+  var mx=0,i; for(i=0;i<d.length;i++) if(d[i]>mx)mx=d[i]; if(mx<=0) return 0;
+  var thr=0.05*mx, peaks=[];
+  for(i=1;i<d.length-1;i++){ if(d[i]>=d[i-1]&&d[i]>d[i+1]&&d[i]>=thr) peaks.push(i); }
+  if(peaks.length<=1) return peaks.length;
+  var kept=[peaks[0]];
+  for(var k=1;k<peaks.length;k++){ var a=kept[kept.length-1], b=peaks[k], valley=Infinity,j;
+    for(j=a;j<=b;j++) valley=Math.min(valley,d[j]);
+    if(valley<0.85*Math.min(d[a],d[b])) kept.push(b); else if(d[b]>d[a]) kept[kept.length-1]=b; }
+  return kept.length;
+}
+function _boxModality(vals,dens){
+  var n=vals.length;
+  if(n<8) return {n:n,bimodal:false,txt:'n&lt;8'};
+  var bc=_boxBimodalCoef(vals), pk=dens?_boxCountPeaks(dens):null;
+  var bimodal=(pk!=null&&pk>=2)&&(bc!=null&&bc>0.555);
+  var lab=(pk!=null)?((pk>=2)?(bimodal?'bimodal':'multi?'):'unimodal'):(bc!=null&&bc>0.555?'BC-bimodal?':'unimodal');
+  var parts=[]; if(pk!=null)parts.push(pk+'pk'); if(bc!=null)parts.push('BC '+bc.toFixed(2));
+  return {n:n,bimodal:bimodal,pk:pk,bc:bc,txt:lab+(parts.length?(' ('+parts.join(', ')+')'):'')};
+}
 function _boxRenderDist(){
   var el=document.getElementById('box_dist_panel'); if(!el) return;
   var pts=_boxPerPointPoints(getSelectedConds(),getYFilter(),getSelectedBoxSerials(),getSelectedTemps());
@@ -14325,8 +14371,6 @@ function _boxRenderDist(){
   if(!(bw>0)) bw=span>0?span/20:1;
   var nb=span>0?Math.max(1,Math.min(200,Math.ceil(span/bw))):1; bw=span>0?span/nb:bw;
   var xb={start:mn-bw*1e-4,end:mx+bw,size:bw};
-  /* Overlay per group only when there are few groups; too many (e.g. per-condition or
-     per-serial defaults) would be unreadable -> pool into one, with a note to set Group by. */
   var overlay=order.length>1&&order.length<=12;
   var traces;
   if(overlay){
@@ -14337,6 +14381,22 @@ function _boxRenderDist(){
     traces=[{type:'histogram',x:allV,name:'All',opacity:0.8,marker:{color:_BOX_DIST_PAL[0]},xbins:xb,autobinx:false,
       hovertemplate:Y_LABEL+': %{x}<br>count: %{y}<extra></extra>'}];
   }
+  /* KDE overlay + per-group modality. KDE density is scaled by (groupN * binWidth) so the
+     curve sits on the histogram's count axis. */
+  var GN=128, pad=bw*0.5, g0=mn-pad, g1=mx+pad, grid=[],gi;
+  for(gi=0;gi<GN;gi++) grid.push(g0+(g1-g0)*gi/(GN-1));
+  var modality={};
+  function kdeFor(key,vals,color){
+    var h=_boxBandwidth(vals); var dens=(_boxDistShowKde&&h>0&&vals.length>=2)?_boxKde(vals,grid,h):null;
+    modality[key]=_boxModality(vals,dens);
+    if(dens){ var yn=vals.length*bw; traces.push({type:'scatter',mode:'lines',x:grid,
+      y:dens.map(function(d){return d*yn;}), name:key+' KDE', line:{color:color,width:2},
+      hoverinfo:'skip', showlegend:false}); }
+  }
+  if(overlay){ order.forEach(function(k,i){ kdeFor(k,groups[k].map(function(p){return p.v;}),_BOX_DIST_PAL[i%_BOX_DIST_PAL.length]); }); }
+  else { kdeFor('All',allV,_BOX_DIST_PAL[0]); }
+  var _hAll=_boxBandwidth(allV), _densAll=(_boxDistShowKde&&_hAll>0)?_boxKde(allV,grid,_hAll):null;
+  modality['__all__']=_boxModality(allV,_densAll);
   var shapes=[]; var limHi=null,limLo=null,uniform=true;
   pts.forEach(function(p){ var h=(p.lim&&p.lim.hi!=null)?p.lim.hi:null, l=(p.lim&&p.lim.lo!=null)?p.lim.lo:null;
     if(h!=null){ if(limHi===null)limHi=h; else if(h!==limHi)uniform=false; }
@@ -14345,26 +14405,33 @@ function _boxRenderDist(){
   if(uniform){ if(limHi!=null)shapes.push(vline(limHi,'#c00','dash')); if(limLo!=null)shapes.push(vline(limLo,'#c00','dash')); }
   var overall=_boxDistStats(allV);
   shapes.push(vline(overall.mean,'#333','solid')); shapes.push(vline(overall.median,'#0a0','dot'));
-  el.innerHTML='<div id="box_dist_plot" style="height:340px"></div><div id="box_dist_stats"></div>';
+  var om=modality['__all__'];
+  var head=(om&&om.bimodal)?('<div style="color:#b26a00;font-weight:600;font-size:12px;margin:2px 0">&#9888; Overall looks BIMODAL ('+om.txt+') &mdash; check the per-group overlay and confirm with the Subpopulation advisory (Workflow &amp; Recommendations).</div>'):'';
+  var ctrl='<div style="font-size:12px;margin:2px 0 2px"><label style="cursor:pointer" title="Overlay a smoothed density (KDE) per group and show a per-group modality hint (KDE peak count + bimodality coefficient BC).">'+
+    '<input type="checkbox" id="box_dist_kde_chk"'+(_boxDistShowKde?' checked':'')+' onchange="_boxDistShowKde=this.checked;_boxRenderDist()"> KDE overlay + modality hint</label></div>';
+  el.innerHTML=ctrl+head+'<div id="box_dist_plot" style="height:340px"></div><div id="box_dist_stats"></div>';
   Plotly.newPlot('box_dist_plot',traces,{barmode:'overlay',bargap:0.02,margin:{t:26,r:12,b:44,l:60},
     shapes:shapes,showlegend:overlay,legend:{orientation:'h'},
     xaxis:{title:{text:Y_LABEL}},yaxis:{title:{text:'Count'}},
     title:{text:'Distribution of per-point table data ('+overall.n.toLocaleString()+' pts'+(overlay?', '+order.length+' groups':'')+')',font:{size:13}}},
     {responsive:true,displaylogo:false});
   var hasStatus=pts.some(function(p){return p.vd!==null;});
+  var showMod=_boxDistShowKde;
   function nfail(arr){ var f=0; arr.forEach(function(p){if(p.vd===true)f++;}); return f; }
   function fmt(x){ return (x==null||isNaN(x))?'&mdash;':(+x).toFixed(4); }
   var rows='';
-  function row(label,arr,color){ var st=_boxDistStats(arr.map(function(p){return p.v;}));
-    rows+='<tr><td style="text-align:left'+(color?';border-left:3px solid '+color:'')+'">'+label+'</td><td>'+st.n+'</td><td>'+fmt(st.mean)+'</td><td>'+fmt(st.median)+'</td><td>'+fmt(st.std)+'</td><td>'+fmt(st.min)+'</td><td>'+fmt(st.max)+'</td><td>'+fmt(st.p5)+'</td><td>'+fmt(st.p95)+'</td>'+(hasStatus?('<td>'+nfail(arr)+' / '+st.n+'</td>'):'')+'</tr>'; }
-  row('<b>All</b>',pts,null);
-  order.slice(0,30).forEach(function(k,i){ row(k,groups[k],overlay?_BOX_DIST_PAL[i%_BOX_DIST_PAL.length]:null); });
+  function row(label,arr,color,key){ var st=_boxDistStats(arr.map(function(p){return p.v;})); var md=modality[key];
+    var mcell=showMod?('<td'+((md&&md.bimodal)?' style="color:#b26a00;font-weight:600"':'')+'>'+(md?md.txt:'&mdash;')+'</td>'):'';
+    rows+='<tr><td style="text-align:left'+(color?';border-left:3px solid '+color:'')+'">'+label+'</td><td>'+st.n+'</td><td>'+fmt(st.mean)+'</td><td>'+fmt(st.median)+'</td><td>'+fmt(st.std)+'</td><td>'+fmt(st.min)+'</td><td>'+fmt(st.max)+'</td><td>'+fmt(st.p5)+'</td><td>'+fmt(st.p95)+'</td>'+(hasStatus?('<td>'+nfail(arr)+' / '+st.n+'</td>'):'')+mcell+'</tr>'; }
+  row('<b>All</b>',pts,null,'__all__');
+  order.slice(0,30).forEach(function(k,i){ row(k,groups[k],overlay?_BOX_DIST_PAL[i%_BOX_DIST_PAL.length]:null,k); });
   document.getElementById('box_dist_stats').innerHTML=
     '<table class="stbl" style="margin-top:6px;font-size:12px"><thead><tr>'+
-    '<th style="text-align:left">Group</th><th>n</th><th>mean</th><th>median</th><th>std</th><th>min</th><th>max</th><th>p5</th><th>p95</th>'+(hasStatus?'<th># fail / n</th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>'+
+    '<th style="text-align:left">Group</th><th>n</th><th>mean</th><th>median</th><th>std</th><th>min</th><th>max</th><th>p5</th><th>p95</th>'+(hasStatus?'<th># fail / n</th>':'')+(showMod?'<th title="KDE peak count + bimodality coefficient BC (>0.555 leans bimodal). Advisory.">modality</th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>'+
     '<div style="font-size:11px;color:#777;margin-top:3px">'+
     (overlay?'Overlaid by the current Group by. ':(order.length>12?('Too many groups ('+order.length+') to overlay &mdash; pooled into one; set <b>Group by</b> to overlay by a chosen parameter. '):''))+
-    'Bins: Freedman&ndash;Diaconis on the pooled values (shared across groups). Dashed red = spec/limit (only when uniform across the shown points); solid = mean, dotted = median. Uses ALL filtered points (not the table\'s 5000-row display cap).</div>';
+    'Bins: Freedman&ndash;Diaconis; solid line = KDE (Silverman bandwidth). Dashed red = spec/limit (only when uniform); vertical solid = mean, dotted = median. '+
+    '<b>Modality</b> = KDE peak count + bimodality coefficient BC (>0.555 leans bimodal) &mdash; a screen, not proof; confirm with the Subpopulation advisory. Uses ALL filtered points.</div>';
 }
 /* The distribution is per-POINT data, so its button only appears in Per-point table mode
    (David 2026-09-25). Sync on table-mode change + at load; hide the panel when leaving. */
