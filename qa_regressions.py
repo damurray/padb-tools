@@ -1835,6 +1835,10 @@ def test_box_table_perpoint_mode() -> None:
               "var nFreq=Object.keys(_fset).length;" in h and "if(nFreq>1){" in h
               and "mixes populations at different levels" in h
               and "at this frequency" in h)
+        check("box dist: modality column greyed/withheld until a single frequency is selected",
+              "var freqSingle=(nFreq<=1);" in h and "mcell=freqSingle" in h
+              and "not meaningful pooled across frequencies" in h
+              and "modality'+(freqSingle?'':' (1 freq)')" in h)
         check("box table: #fail/n header column present",
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 

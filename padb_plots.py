@@ -14431,17 +14431,26 @@ function _boxRenderDist(){
     {responsive:true,displaylogo:false});
   var hasStatus=pts.some(function(p){return p.vd!==null;});
   var showMod=_boxDistShowKde;
+  /* Modality is only meaningful at ONE frequency; grey the column (values withheld) while the
+     pool spans multiple frequencies (David 2026-09-25). */
+  var freqSingle=(nFreq<=1);
   function nfail(arr){ var f=0; arr.forEach(function(p){if(p.vd===true)f++;}); return f; }
   function fmt(x){ return (x==null||isNaN(x))?'&mdash;':(+x).toFixed(4); }
   var rows='';
   function row(label,arr,color,key){ var st=_boxDistStats(arr.map(function(p){return p.v;})); var md=modality[key];
-    var mcell=showMod?('<td'+((md&&md.bimodal)?' style="color:#b26a00;font-weight:600"':'')+'>'+(md?md.txt:'&mdash;')+'</td>'):'';
+    var mcell='';
+    if(showMod){ mcell=freqSingle
+      ? ('<td'+((md&&md.bimodal)?' style="color:#b26a00;font-weight:600"':'')+'>'+(md?md.txt:'&mdash;')+'</td>')
+      : ('<td style="color:#bbb" title="Narrow to a single frequency (freq range or a Segment step) to assess modality -- it is not meaningful pooled across frequencies.">&mdash;</td>'); }
     rows+='<tr><td style="text-align:left'+(color?';border-left:3px solid '+color:'')+'">'+label+'</td><td>'+st.n+'</td><td>'+fmt(st.mean)+'</td><td>'+fmt(st.median)+'</td><td>'+fmt(st.std)+'</td><td>'+fmt(st.min)+'</td><td>'+fmt(st.max)+'</td><td>'+fmt(st.p5)+'</td><td>'+fmt(st.p95)+'</td>'+(hasStatus?('<td>'+nfail(arr)+' / '+st.n+'</td>'):'')+mcell+'</tr>'; }
   row('<b>All</b>',pts,null,'__all__');
   order.slice(0,30).forEach(function(k,i){ row(k,groups[k],overlay?_BOX_DIST_PAL[i%_BOX_DIST_PAL.length]:null,k); });
+  var modTh=showMod?('<th'+(freqSingle?'':' style="color:#bbb"')+' title="'+(freqSingle
+      ? 'KDE peak count + bimodality coefficient BC (>0.555 leans bimodal). Advisory.'
+      : 'Greyed: pooled across '+nFreq.toLocaleString()+' frequencies. Narrow to a single frequency (freq range or a Segment step) to assess modality.')+'">modality'+(freqSingle?'':' (1 freq)')+'</th>'):'';
   document.getElementById('box_dist_stats').innerHTML=
     '<table class="stbl" style="margin-top:6px;font-size:12px"><thead><tr>'+
-    '<th style="text-align:left">Group</th><th>n</th><th>mean</th><th>median</th><th>std</th><th>min</th><th>max</th><th>p5</th><th>p95</th>'+(hasStatus?'<th># fail / n</th>':'')+(showMod?'<th title="KDE peak count + bimodality coefficient BC (>0.555 leans bimodal). Advisory.">modality</th>':'')+'</tr></thead><tbody>'+rows+'</tbody></table>'+
+    '<th style="text-align:left">Group</th><th>n</th><th>mean</th><th>median</th><th>std</th><th>min</th><th>max</th><th>p5</th><th>p95</th>'+(hasStatus?'<th># fail / n</th>':'')+modTh+'</tr></thead><tbody>'+rows+'</tbody></table>'+
     '<div style="font-size:11px;color:#777;margin-top:3px">'+
     (overlay?'Overlaid by the current Group by. ':(order.length>12?('Too many groups ('+order.length+') to overlay &mdash; pooled into one; set <b>Group by</b> to overlay by a chosen parameter. '):''))+
     'Bins: Freedman&ndash;Diaconis; solid line = KDE (Silverman bandwidth). Dashed red = spec/limit (only when uniform); vertical solid = mean, dotted = median. '+
