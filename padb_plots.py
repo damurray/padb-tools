@@ -14406,7 +14406,21 @@ function _boxRenderDist(){
   var overall=_boxDistStats(allV);
   shapes.push(vline(overall.mean,'#333','solid')); shapes.push(vline(overall.median,'#0a0','dot'));
   var om=modality['__all__'];
-  var head=(om&&om.bimodal)?('<div style="color:#b26a00;font-weight:600;font-size:12px;margin:2px 0">&#9888; Overall looks BIMODAL ('+om.txt+') &mdash; check the per-group overlay and confirm with the Subpopulation advisory (Workflow &amp; Recommendations).</div>'):'';
+  /* Modality across a swept x (many frequencies pooled) mainly reflects the frequency spread,
+     not real sub-populations -- so caveat it and suppress the bimodal headline unless the pool
+     is a single frequency (David 2026-09-25, seen on phase-noise pooled over 2045 offsets). */
+  var _fset={}; pts.forEach(function(p){_fset[p.freq]=1;}); var nFreq=Object.keys(_fset).length;
+  var head='';
+  if(nFreq>1){
+    head='<div style="color:#b26a00;font-size:12px;margin:2px 0">&#9888; Pooled across '+nFreq.toLocaleString()+
+      ' frequencies &mdash; this mixes populations at different levels, so the shape and the modality hint mainly '+
+      'reflect the frequency spread, not sub-populations. Narrow to one frequency (the freq range or a Segment step) '+
+      'for a true single-population / bimodality read.</div>';
+  } else if(om&&om.bimodal){
+    head='<div style="color:#b26a00;font-weight:600;font-size:12px;margin:2px 0">&#9888; Distribution looks BIMODAL ('+
+      om.txt+') at this frequency &mdash; check the per-group overlay and confirm with the Subpopulation advisory '+
+      '(Workflow &amp; Recommendations).</div>';
+  }
   var ctrl='<div style="font-size:12px;margin:2px 0 2px"><label style="cursor:pointer" title="Overlay a smoothed density (KDE) per group and show a per-group modality hint (KDE peak count + bimodality coefficient BC).">'+
     '<input type="checkbox" id="box_dist_kde_chk"'+(_boxDistShowKde?' checked':'')+' onchange="_boxDistShowKde=this.checked;_boxRenderDist()"> KDE overlay + modality hint</label></div>';
   el.innerHTML=ctrl+head+'<div id="box_dist_plot" style="height:340px"></div><div id="box_dist_stats"></div>';

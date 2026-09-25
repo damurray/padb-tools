@@ -1828,6 +1828,13 @@ def test_box_table_perpoint_mode() -> None:
               "function _boxCountPeaks(" in h and "function _boxBimodalCoef(" in h
               and "function _boxModality(" in h and "bc>0.555" in h
               and "Subpopulation advisory" in h)
+        # Pooling across a swept x (many frequencies) makes the modality a frequency-spread
+        # artifact, so caveat it + suppress the bimodal headline unless it's one frequency
+        # (David 2026-09-25, phase-noise pooled over 2045 offsets flagged a false bimodal).
+        check("box dist: cross-frequency pooling caveat + bimodal headline gated on a single freq",
+              "var nFreq=Object.keys(_fset).length;" in h and "if(nFreq>1){" in h
+              and "mixes populations at different levels" in h
+              and "at this frequency" in h)
         check("box table: #fail/n header column present",
               "#&nbsp;fail&nbsp;/&nbsp;n</th>" in h)
 
