@@ -3796,25 +3796,9 @@ function PADB_isFail(v,hi,lo){ var c=PADB_specClass(v,hi,lo); return c.verdict==
    they can't drift. Returns {lo,hi,n}. */
 function PADB_pct(sorted,p){ if(!sorted.length) return NaN; var i=(p/100)*(sorted.length-1),lo=Math.floor(i); return lo+1<sorted.length?sorted[lo]+(sorted[lo+1]-sorted[lo])*(i-lo):sorted[lo]; }
 function PADB_fence(vals,k){ if(!vals||vals.length<4) return null; if(k==null)k=1.5; var s=vals.slice().sort(function(a,b){return a-b;}); var q1=PADB_pct(s,25),q3=PADB_pct(s,75),iqr=q3-q1; return {lo:q1-k*iqr,hi:q3+k*iqr,n:vals.length}; }
-/* Active-filters chip (David 2026-09-25): a per-view status line that makes the current
-   data-narrowing state visible with a one-click way back to the full data. "Show all data"
-   is deliberately the SAME action as the view's Reset (just clearer wording + always visible)
-   -- it clears the view's local filters (not display controls like group-by/draw, and not the
-   cross-view Global Filter, which has its own Clear). Each view calls PADB_setFilterChip() at
-   the end of update() with a short list of what's active + the name of its reset fn. */
-function PADB_setFilterChip(active, resetFn, note){
-  var bar=document.getElementById('padb_filter_chip'); if(!bar) return;
-  var hasA=active&&active.length, hasN=note&&note.length;
-  if(hasA||hasN){
-    bar.style.display='';
-    var html='';
-    if(hasA){ html='<span style="font-weight:600">Showing a filtered subset:</span> '+active.join(' &middot; ')+
-      ' <button onclick="'+resetFn+'()" title="Clear this view\'s filters and show the full data (same as Reset). Does not touch the Global Filter." '+
-      'style="margin-left:6px;font-size:11px;border:1px solid #c08a00;border-radius:3px;background:#fff;color:#8a5a00;cursor:pointer;padding:1px 8px">Show all data</button>'; }
-    if(hasN){ html+=(hasA?'<div style="margin-top:3px">':'')+note+(hasA?'</div>':''); }
-    bar.innerHTML=html;
-  } else { bar.style.display='none'; bar.innerHTML=''; }
-}
+/* PADB_setFilterChip -- the active-filters chip helper -- is defined in the
+   standalone _FILTER_CHIP_JS constant (appended to _COMMON_JS below), so
+   padb_refstats.py (no _COMMON_JS) can embed the same one drift-free. */
 /* Busy overlay (2026-09-18): a static #padb_busy div (see _BUSY_OVERLAY_HTML) is
    painted before the big embedded-data <script>, so a large page doesn't look dead
    while the data parses and the first Plotly render runs. Hidden once ANY known plot
@@ -4112,7 +4096,30 @@ function PADB_ensureBandOption(){
   o.title=tip; sel.appendChild(o);
 }
 """
-_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS
+# Active-filters chip helper (David 2026-09-25): a per-view status line that makes the
+# current data-narrowing state visible with a one-click way back to the full data. "Show
+# all data" is deliberately the SAME action as the view's Reset (just clearer wording +
+# always visible) -- it clears the view's local filters (not display controls like
+# group-by/draw, and not the cross-view Global Filter, which has its own Clear). Each view
+# calls PADB_setFilterChip() at the end of update() with a short list of what's active + the
+# name of its reset fn. Standalone (like _LOCK_JS) so padb_refstats.py (no _COMMON_JS)
+# embeds the same one drift-free; appended to _COMMON_JS below for the other views.
+_FILTER_CHIP_JS = r"""
+function PADB_setFilterChip(active, resetFn, note){
+  var bar=document.getElementById('padb_filter_chip'); if(!bar) return;
+  var hasA=active&&active.length, hasN=note&&note.length;
+  if(hasA||hasN){
+    bar.style.display='';
+    var html='';
+    if(hasA){ html='<span style="font-weight:600">Showing a filtered subset:</span> '+active.join(' &middot; ')+
+      ' <button onclick="'+resetFn+'()" title="Clear this view\'s filters and show the full data (same as Reset). Does not touch the Global Filter." '+
+      'style="margin-left:6px;font-size:11px;border:1px solid #c08a00;border-radius:3px;background:#fff;color:#8a5a00;cursor:pointer;padding:1px 8px">Show all data</button>'; }
+    if(hasN){ html+=(hasA?'<div style="margin-top:3px">':'')+note+(hasA?'</div>':''); }
+    bar.innerHTML=html;
+  } else { bar.style.display='none'; bar.innerHTML=''; }
+}
+"""
+_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS + "\n" + _FILTER_CHIP_JS
 
 # Static loading overlay, painted before the giant data <script> parses (so the page
 # never just looks dead). Hidden by PADB_busyHide (_COMMON_JS) after the first render.
@@ -6043,6 +6050,24 @@ function _distSplitSite(){
 }
 
 /* ---- main KDE plot update ---- */
+/* What's currently narrowing the data, for the active-filters chip. Excludes the
+   Global Filter (own toggle + Clear; "Show all data"=resetView doesn't touch it).
+   This KDE view has no pass/fail data filter (view_mode abs/delta is a display axis). */
+function _distActiveFilters(){
+  var a=[];
+  var xl=(typeof X_SHORT_LABEL!=='undefined'&&X_SHORT_LABEL)?X_SHORT_LABEL:'Freq';
+  var xu=(typeof X_UNIT!=='undefined'&&X_UNIT)?X_UNIT:'';
+  if(typeof DIST_FREQ_MIN!=='undefined'){
+    var fr=getFreqRange();
+    if(fr.lo>DIST_FREQ_MIN+0.09||fr.hi<DIST_FREQ_MAX-0.09) a.push(xl+' '+(+fr.lo).toPrecision(5)+'–'+(+fr.hi).toPrecision(5)+' '+xu);
+  }
+  var sp=document.querySelectorAll('.dist_spur_chk'); if(sp.length){var spn=sp.length,sps=Array.prototype.slice.call(sp).filter(function(c){return c.checked;}).length; if(sps<spn)a.push('Spur: '+sps+'/'+spn);}
+  (typeof DIST_COND_DIMS!=='undefined'?DIST_COND_DIMS:[]).forEach(function(d,i){ var boxes=document.querySelectorAll('.dist_cond'+i+'_chk'); if(!boxes.length)return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length; if(s<n)a.push((d.label||('Cond'+i))+': '+s+'/'+n); });
+  var sc=document.querySelectorAll('.dist_ser_chk'); if(sc.length){var sn=sc.length,ss=Array.prototype.slice.call(sc).filter(function(c){return c.checked;}).length; if(ss<sn)a.push('Serial: '+ss+'/'+sn);}
+  var pc=document.querySelectorAll('.dist_port_chk'); if(pc.length){var pn=pc.length,ps=Array.prototype.slice.call(pc).filter(function(c){return c.checked;}).length; if(ps<pn)a.push('Port: '+ps+'/'+pn);}
+  var tb=document.querySelectorAll('.env_chk'); if(tb.length){var tn=tb.length,ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length; if(ts<tn)a.push('Temps: '+ts+'/'+tn);}
+  return a;
+}
 function update(){
   _distUpdateBadge('spur');
   var modeEl=document.querySelector('input[name="view_mode"]:checked');
@@ -6230,6 +6255,7 @@ function update(){
   updateTiTable();
   _recomputeSpecSegments();
   if(typeof updateDistSitePanel==='function'){ try{updateDistSitePanel();}catch(e){} }  // no-op unless the Site panel is open (compare pages)
+  PADB_setFilterChip(_distActiveFilters(),'resetView','');
   saveState();
 }
 
@@ -6548,7 +6574,8 @@ window.addEventListener('DOMContentLoaded',function(){loadState();_loadDistGloba
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
-        + _BUSY_OVERLAY_HTML +
+        + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML +
         '<div class="env-bar">\n'
         '<span style="font-size:12px;font-weight:600;color:#2e7d32;margin-right:8px">'
         "Temperatures:</span>\n"
@@ -9305,6 +9332,31 @@ function getFilteredCondsAndParams(){
   conds=applyDataFilter(conds,params,flt);
   return {conds:conds,condsAll:condsAll,params:params,fLo:fLo,fHi:fHi};
 }
+/* What's currently narrowing the data, for the active-filters chip. Excludes the
+   Global Filter (own badge + Clear; "Show all data"=Reset doesn't touch it). */
+function _ssActiveFilters(){
+  var a=[];
+  var loT=document.getElementById('freq_lo_txt'),hiT=document.getElementById('freq_hi_txt');
+  var lo=loT&&loT.value!==''?parseFloat(loT.value):FREQ_MIN,hi=hiT&&hiT.value!==''?parseFloat(hiT.value):FREQ_MAX;
+  var eps=(FREQ_MAX-FREQ_MIN)*1e-4+1e-9;
+  if(isFinite(lo)&&isFinite(hi)&&(lo>FREQ_MIN+eps||hi<FREQ_MAX-eps))
+    a.push(X_SHORT_LABEL+' '+(+lo).toPrecision(5)+'–'+(+hi).toPrecision(5)+' '+X_UNIT);
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
+    var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
+    if(!boxes.length) return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length;
+    if(s<n) a.push(dim.label+': '+s+'/'+n); });
+  var sc=document.querySelectorAll('.ser_chk');
+  if(sc.length){var sn=sc.length,ss=Array.prototype.slice.call(sc).filter(function(c){return c.checked;}).length; if(ss<sn)a.push('Serial: '+ss+'/'+sn);}
+  var pc=document.querySelectorAll('.ss_port_chk');
+  if(pc.length){var pn=pc.length,ps=Array.prototype.slice.call(pc).filter(function(c){return c.checked;}).length; if(ps<pn)a.push('Port: '+ps+'/'+pn);}
+  var tb=document.querySelectorAll('.env_chk');
+  if(tb.length){var tn=tb.length,ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length; if(ts<tn)a.push('Temps: '+ts+'/'+tn);}
+  var yh=document.getElementById('flt_yhi'),yl=document.getElementById('flt_ylo');
+  if((yh&&yh.value!==''&&(!Y_LIM||parseFloat(yh.value)<Y_LIM[1]))||(yl&&yl.value!==''&&(!Y_LIM||parseFloat(yl.value)>Y_LIM[0]))) a.push('Y-range');
+  var pf=document.querySelector('input[name="data_flt"]:checked');
+  if(pf&&pf.value!=='all') a.push(pf.value==='passing'?'Passing only':'Failing only');
+  return a;
+}
 function update(){
   /* Capture the live axis state BEFORE Plotly.purge() below destroys it --
      see this file's top-of-module note on why update() (not buildLayout())
@@ -9348,6 +9400,7 @@ function update(){
     }
   }
   _recomputeSpecSegments();
+  PADB_setFilterChip(_ssActiveFilters(),'resetFilters','');
   saveState();
 }
 
@@ -10279,6 +10332,7 @@ def _build_stat_summary_html(
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
         + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML
         + '<div style="padding:6px 8px 3px;font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px">'
         + '<b>Statistical Summary</b> &middot; <b>Room temperature only</b> &mdash; '
         + 'population mean, tolerance interval (TI) and pass/fail vs. limit, per frequency. '
@@ -11696,6 +11750,23 @@ function _recomputeSpecSegments(){
   document.getElementById('segTabPrev').disabled=(_segIdx===0);
   document.getElementById('segTabNext').disabled=(_segIdx===_specSegments.length-1);
 }
+/* What's currently narrowing the data, for the active-filters chip. Excludes the
+   Global Filter (own badge + Clear; "Show all data"=Reset doesn't touch it).
+   env_coverage has no pass/fail data filter (it draws no spec line). */
+function _ecActiveFilters(){
+  var a=[];
+  var xl=(typeof X_SHORT_LABEL!=='undefined'&&X_SHORT_LABEL)?X_SHORT_LABEL:'Freq';
+  var xu=(typeof X_UNIT!=='undefined'&&X_UNIT)?X_UNIT:'';
+  var loT=document.getElementById('ec_freq_lo_txt'),hiT=document.getElementById('ec_freq_hi_txt');
+  var lo=loT&&loT.value!==''?parseFloat(loT.value):EC_FREQ_MIN,hi=hiT&&hiT.value!==''?parseFloat(hiT.value):EC_FREQ_MAX;
+  var eps=(EC_FREQ_MAX-EC_FREQ_MIN)*1e-4+1e-9;
+  if(isFinite(lo)&&isFinite(hi)&&(lo>EC_FREQ_MIN+eps||hi<EC_FREQ_MAX-eps)) a.push(xl+' '+(+lo).toPrecision(5)+'–'+(+hi).toPrecision(5)+' '+xu);
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){ var boxes=document.querySelectorAll('.'+dim.col_id); if(!boxes.length)return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length; if(s<n)a.push(dim.label+': '+s+'/'+n); });
+  var sc=document.querySelectorAll('.ec_ser_chk'); if(sc.length){var sn=sc.length,ss=Array.prototype.slice.call(sc).filter(function(c){return c.checked;}).length; if(ss<sn)a.push('Serial: '+ss+'/'+sn);}
+  var pc=document.querySelectorAll('.ec_port_chk'); if(pc.length){var pn=pc.length,ps=Array.prototype.slice.call(pc).filter(function(c){return c.checked;}).length; if(ps<pn)a.push('Port: '+ps+'/'+pn);}
+  var tb=document.querySelectorAll('.ec_temp_chk'); if(tb.length){var tn=tb.length,ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length; if(ts<tn)a.push('Temps: '+ts+'/'+tn);}
+  return a;
+}
 function update(){
   var selConds=getGroupedConditions();
   var showExcl=document.getElementById('ec_show_excl');
@@ -11713,6 +11784,7 @@ function update(){
   updateSummaryBar(selConds);
   _recomputeSpecSegments();
   if(typeof updateEcSitePanel==='function'){ try{updateEcSitePanel();}catch(e){} }  // no-op unless the Site panel is open (compare pages)
+  PADB_setFilterChip(_ecActiveFilters(),'resetFilters','');
   saveState();
 }
 
@@ -12536,7 +12608,8 @@ def _build_env_coverage_html(
         f"<style>{css}</style>\n"
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
-        + _BUSY_OVERLAY_HTML +
+        + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML +
         '<div id="filter-backdrop" onclick="closeAllFilterPanels()"></div>\n'
         + ctrl_bar
         + noise_disclaimer_html
@@ -16969,6 +17042,25 @@ function toggleBoxHideSpec(){
   gd.data.forEach(function(t,i){var nm=t.name||'';if(nm.indexOf('Spec Lo')===0||nm.indexOf('Spec Hi')===0) idxs.push(i);});
   if(idxs.length) Plotly.restyle('plot',{visible:!hideSpec},idxs);
 }
+/* What's currently narrowing the data, for the active-filters chip. Excludes the
+   Global Filter (own status + Clear; "Show all data"=clearEverything doesn't touch it). */
+function _boxActiveFilters(){
+  var a=[];
+  var xl=(typeof X_SHORT_LABEL!=='undefined'&&X_SHORT_LABEL)?X_SHORT_LABEL:'Freq';
+  var xu=(typeof X_UNIT!=='undefined'&&X_UNIT)?X_UNIT:'';
+  var flo=document.getElementById('box_freq_lo'),fhi=document.getElementById('box_freq_hi');
+  var lo=flo&&flo.value!==''?parseFloat(flo.value):BOX_FREQ_MIN,hi=fhi&&fhi.value!==''?parseFloat(fhi.value):BOX_FREQ_MAX;
+  var eps=(BOX_FREQ_MAX-BOX_FREQ_MIN)*1e-4+1e-9;
+  if(isFinite(lo)&&isFinite(hi)&&(lo>BOX_FREQ_MIN+eps||hi<BOX_FREQ_MAX-eps)) a.push(xl+' '+(+lo).toPrecision(5)+'–'+(+hi).toPrecision(5)+' '+xu);
+  if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){ var boxes=document.querySelectorAll('.box_cond_'+dim.col_id); if(!boxes.length)return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length; if(s<n)a.push(dim.label+': '+s+'/'+n); });
+  var sc=document.querySelectorAll('.box_ser_chk'); if(sc.length){var sn=sc.length,ss=Array.prototype.slice.call(sc).filter(function(c){return c.checked;}).length; if(ss<sn)a.push('Serial: '+ss+'/'+sn);}
+  var pc=document.querySelectorAll('.box_port_chk'); if(pc.length){var pn=pc.length,ps=Array.prototype.slice.call(pc).filter(function(c){return c.checked;}).length; if(ps<pn)a.push('Port: '+ps+'/'+pn);}
+  var tb=document.querySelectorAll('.box_env_chk'); if(tb.length){var tn=tb.length,ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length; if(ts<tn)a.push('Temps: '+ts+'/'+tn);}
+  var yh=document.getElementById('box_flt_yhi'),yl=document.getElementById('box_flt_ylo');
+  if((yh&&yh.value!=='')||(yl&&yl.value!=='')) a.push('Y-range');
+  var pf=document.querySelector('input[name="box_flt"]:checked'); if(pf&&(pf.value==='passing'||pf.value==='failing')) a.push(pf.value==='passing'?'Passing only':'Failing only');
+  return a;
+}
 function update(){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
@@ -16986,6 +17078,7 @@ function update(){
   updateSitePanel();
   _boxRefreshDistIfOpen();   // keep the Distribution-of-table-data panel in sync with filters
   _recomputeSpecSegments();
+  PADB_setFilterChip(_boxActiveFilters(),'clearEverything','');
   saveState();
 }
 /* Auto-refresh the Distribution panel whenever the plot/filters change, IF it's open -- so it
@@ -17593,6 +17686,7 @@ def _build_box_interactive_html(
         f"<script>{_get_plotlyjs()}</script>\n"
         "</head>\n<body>\n"
         + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML
         + (
             (
                 (
@@ -20060,6 +20154,24 @@ function toggleSumHideSpec(){
   gd.data.forEach(function(t,i){if(t.name&&(t.name.indexOf('Spec Hi ')===0||t.name.indexOf('Spec Lo ')===0)) idxs.push(i);});
   if(idxs.length) Plotly.restyle('plot',{visible:!hideSpec},idxs);
 }
+/* What's currently narrowing the data, for the active-filters chip. Excludes the
+   Global Filter (own badge + Clear; "Show all data"=Reset doesn't touch it). */
+function _sumActiveFilters(){
+  var a=[];
+  var xl=(typeof X_SHORT_LABEL!=='undefined'&&X_SHORT_LABEL)?X_SHORT_LABEL:'Freq';
+  var xu=(typeof X_UNIT!=='undefined'&&X_UNIT)?X_UNIT:'';
+  var loT=document.getElementById('freq_lo_txt'),hiT=document.getElementById('freq_hi_txt');
+  var lo=loT&&loT.value!==''?parseFloat(loT.value):FREQ_MIN,hi=hiT&&hiT.value!==''?parseFloat(hiT.value):FREQ_MAX;
+  var eps=(FREQ_MAX-FREQ_MIN)*1e-4+1e-9;
+  if(isFinite(lo)&&isFinite(hi)&&(lo>FREQ_MIN+eps||hi<FREQ_MAX-eps)) a.push(xl+' '+(+lo).toPrecision(5)+'–'+(+hi).toPrecision(5)+' '+xu);
+  COND_DIMS.forEach(function(dim){ var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]'); if(!boxes.length)return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length; if(s<n)a.push(dim.label+': '+s+'/'+n); });
+  var sc=document.querySelectorAll('.sum_ser_chk'); if(sc.length){var sn=sc.length,ss=Array.prototype.slice.call(sc).filter(function(c){return c.checked;}).length; if(ss<sn)a.push('Serial: '+ss+'/'+sn);}
+  var tb=document.querySelectorAll('.sum_temp_chk'); if(tb.length){var tn=tb.length,ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length; if(ts<tn)a.push('Temps: '+ts+'/'+tn);}
+  var yh=document.getElementById('sum_yhi'),yl=document.getElementById('sum_ylo');
+  if((yh&&yh.value!=='')||(yl&&yl.value!=='')) a.push('Y-range');
+  var pf=document.querySelector('input[name="sum_flt"]:checked'); if(pf&&(pf.value==='passing'||pf.value==='failing')) a.push(pf.value==='passing'?'Passing only':'Failing only');
+  return a;
+}
 /* ---- main update ---- */
 function update(){
   var active=_getFilteredActive();
@@ -20079,6 +20191,7 @@ function update(){
   }
   _recomputeSpecSegments();
   updateSitePanel();
+  PADB_setFilterChip(_sumActiveFilters(),'resetFilters','');
   saveState();
 }
 
@@ -20573,7 +20686,8 @@ def _build_summary_html(
         f'<meta charset="utf-8"><title>{title}</title>\n'
         f"<style>{css}</style>\n"
         "</head>\n<body>\n"
-        + _BUSY_OVERLAY_HTML +
+        + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML +
         '<div style="padding:6px 8px 3px;font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px">'
         '<b>Summary</b> &middot; <b>All temperatures combined</b> &mdash; '
         'worst-case min/max/mean and TTL (Total Tolerance Limit) band per condition, across every temperature. '
@@ -21070,6 +21184,16 @@ var _HCOLORS=['#4a78c0','#c0504a','#4aa564','#9a6fb0','#d08a34','#3aa0a0','#b050
 function hSetAuto(){ document.getElementById('h_binmode').value='auto'; update(); }
 function hSetManual(){ document.getElementById('h_binmode').value='manual'; update(); }
 function _hFail(vals){ var f=0; for(var i=0;i<vals.length;i++){ if(_hIsFail(vals[i])) f++; } return f; }
+/* What's currently narrowing the data, for the active-filters chip. Non-swept view
+   (no freq); its "GF equivalent" auto-exclusion (_hAutoExcl) is cleared separately,
+   so "Show all data"=hResetFilters deliberately leaves it (matches other views' GF). */
+function _hActiveFilters(){
+  var a=[];
+  DIMS.forEach(function(d){ var boxes=document.querySelectorAll('.hf_'+d.col_id); if(!boxes.length)return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length; if(s<n)a.push(d.label+': '+s+'/'+n); });
+  var sc=document.querySelectorAll('.hf_serial'); if(sc.length){var sn=sc.length,ss=Array.prototype.slice.call(sc).filter(function(c){return c.checked;}).length; if(ss<sn)a.push('Serial: '+ss+'/'+sn);}
+  var pf=_hPfMode(); if(pf==='pass')a.push('Passing only'); else if(pf==='fail')a.push('Failing only');
+  return a;
+}
 function update(){
   var idx=_hFilteredIdx(), vals=idx.map(function(i){return VALUES[i];});
   var mode=document.getElementById('h_binmode').value, nb;
@@ -21102,6 +21226,7 @@ function update(){
   var nEl=document.getElementById('h_n'); if(nEl) nEl.textContent=vals.length.toLocaleString()+' measurements'+(multi?' in '+keys.length+' conditions':'');
   buildStats(groups,keys,multi);
   updateSitePanel();   // no-op unless the Site Population Check panel is open (compare pages only)
+  PADB_setFilterChip(_hActiveFilters(),'hResetFilters','');
 }
 function buildStats(groups,keys,multi){
   var el=document.getElementById('h_stats'); if(!el||el.style.display==='none') return;
@@ -21574,7 +21699,8 @@ def histogram(csv_path: Path, cfg: dict, output_html: Path) -> None:
 
     body = (
         "</head>\n<body>\n"
-        + _BUSY_OVERLAY_HTML +
+        + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML +
         f"<div style='font-size:12px;color:#555;border-bottom:1px solid #eee;margin-bottom:4px;padding:4px 2px'>"
         f"<b>{html.escape(title)}</b> &mdash; value distribution (histogram). Overlaid per condition; "
         f"auto bins (Freedman&ndash;Diaconis){spec_note}. This test has no swept axis, so it's shown "

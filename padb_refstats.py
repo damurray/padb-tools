@@ -33,7 +33,7 @@ import pandas as pd
 from padb_plots import (
     _get_plotlyjs, _checkbox_panel, _detect_group_cols, _short_x_label,
     _floor_dec, _ceil_dec, _freq_label_map, _AUTO_FILTER_SHARED_JS,
-    _BUSY_OVERLAY_HTML, _LOCK_JS,
+    _BUSY_OVERLAY_HTML, _LOCK_JS, _FILTER_CHIP_JS, _FILTER_CHIP_HTML,
 )
 
 # Keyword match for the pod's pass/fail status field among the group dims (the JS
@@ -260,8 +260,9 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         # explicitly after the first update() below (this view has no #plot for the
         # shared PADB_busyHide poll to watch).
         + _BUSY_OVERLAY_HTML
+        + _FILTER_CHIP_HTML
         + body
-        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_LOCK_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
+        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_LOCK_JS}\n{_FILTER_CHIP_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
     )
 
 
@@ -530,6 +531,19 @@ function _refImpactRefresh(){
   imp.innerHTML=h;
 }
 
+/* What's currently narrowing the data, for the active-filters chip. Aggregate table
+   with no pass/fail axis; excludes the Global Filter (own toggle + Clear). */
+function _refActiveFilters(){
+  var a=[];
+  var xl=(typeof X_SHORT!=='undefined'&&X_SHORT)?X_SHORT:'Freq';
+  var xu=(typeof X_UNIT!=='undefined'&&X_UNIT)?X_UNIT:'';
+  var lo=document.getElementById('f_lo'),hi=document.getElementById('f_hi');
+  var l=lo&&lo.value!==''?parseFloat(lo.value):FREQ_MIN,h=hi&&hi.value!==''?parseFloat(hi.value):FREQ_MAX;
+  var eps=(FREQ_MAX-FREQ_MIN)*1e-4+1e-9;
+  if(isFinite(l)&&isFinite(h)&&(l>FREQ_MIN+eps||h<FREQ_MAX-eps)) a.push(xl+' '+(+l).toPrecision(5)+'–'+(+h).toPrecision(5)+' '+xu);
+  (typeof GROUP_COLS!=='undefined'?GROUP_COLS:[]).forEach(function(p){ var boxes=document.querySelectorAll('.fchk[data-col="'+p[0]+'"]'); if(!boxes.length)return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length; if(s<n)a.push(p[1]+': '+s+'/'+n); });
+  return a;
+}
 function update(){
   _updateRefGfBadge();
   var rows=applyFilters(DATA);
@@ -634,6 +648,7 @@ function update(){
     ot+='</tbody></table>';
     document.getElementById('outliers').innerHTML=oh+ot;
   }
+  PADB_setFilterChip(_refActiveFilters(),'resetFilters','');
   _refImpactRefresh();
 }
 

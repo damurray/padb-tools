@@ -30,6 +30,7 @@ if str(HERE) not in sys.path:
 import padb_plots as pp
 import padb_run as pr
 import padb_make_v2_job as mv
+import padb_refstats as rf
 
 _PASS: list[str] = []
 _FAIL: list[str] = []
@@ -2738,6 +2739,44 @@ def test_scatter_spec_line_shape() -> None:
           "var SPEC_INTERP=" in src)
 
 
+def test_active_filters_chip_rollout() -> None:
+    """Active-filters chip (David 2026-09-25): EVERY interactive view shows a
+    "Showing a filtered subset ... [Show all data]" chip whenever a local filter
+    narrows the data, and hides it at the full-data default. Wired through ONE
+    shared helper (PADB_setFilterChip, in the standalone _FILTER_CHIP_JS appended
+    to _COMMON_JS + embedded by padb_refstats, which has no _COMMON_JS). Each view
+    has its own active-filter detector and calls the helper in update() naming its
+    reset fn -- "Show all data" == the view's reset (clears local filters, never
+    the cross-view Global Filter). Teeth: fails if any view loses its detector,
+    its update() call, or its body chip div."""
+    src = Path(pp.__file__).read_text(encoding="utf-8")
+    ref = Path(rf.__file__).read_text(encoding="utf-8")
+    # single shared helper: defined exactly once, extracted standalone, appended to _COMMON_JS
+    check("PADB_setFilterChip defined exactly once (standalone _FILTER_CHIP_JS, no per-view copies)",
+          src.count("function PADB_setFilterChip") == 1)
+    check("_FILTER_CHIP_JS is a standalone constant appended to _COMMON_JS",
+          "_FILTER_CHIP_JS = r" in src and "+ _FILTER_CHIP_JS" in src)
+    # per-view detector + update() call naming the right reset fn
+    views = [("_avActiveFilters", "resetFilters"), ("_ssActiveFilters", "resetFilters"),
+             ("_sumActiveFilters", "resetFilters"), ("_ecActiveFilters", "resetFilters"),
+             ("_boxActiveFilters", "clearEverything"), ("_distActiveFilters", "resetView"),
+             ("_hActiveFilters", "hResetFilters")]
+    for det, rst in views:
+        check(f"{det} detector defined", f"function {det}(" in src)
+        check(f"{det} -> PADB_setFilterChip(..., '{rst}')",
+              f"PADB_setFilterChip({det}(),'{rst}'" in src)
+    # each of the 7 padb_plots view bodies embeds the chip div
+    check("7 padb_plots view bodies embed _FILTER_CHIP_HTML",
+          src.count("+ _FILTER_CHIP_HTML") >= 7)
+    # reference (padb_refstats, no _COMMON_JS) embeds the SAME shared helper + div + its own wiring
+    check("reference embeds the shared _FILTER_CHIP_JS + _FILTER_CHIP_HTML (not a private copy)",
+          "_FILTER_CHIP_JS" in ref and "_FILTER_CHIP_HTML" in ref
+          and "function PADB_setFilterChip" not in ref)
+    check("reference has _refActiveFilters -> PADB_setFilterChip('resetFilters')",
+          "function _refActiveFilters(" in ref
+          and "PADB_setFilterChip(_refActiveFilters(),'resetFilters'" in ref)
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -2837,7 +2876,7 @@ def main() -> None:
                test_stat_perpoint_passfail_pointwise, test_summary_group_by_serial,
                test_summary_stat_perpoint_own_limit_only, test_locked_filters_crossview,
                test_control_context_clarity, test_scatter_spec_line_caveat,
-               test_scatter_spec_line_shape,
+               test_scatter_spec_line_shape, test_active_filters_chip_rollout,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
                test_box_data_filter_passfail_and_trim,
