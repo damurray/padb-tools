@@ -130,6 +130,35 @@ function _liveAxisRange(axis){
    lines" noticeably slower than "Log X" on a large dataset (Log X was
    already special-cased this way; this checkbox wasn't). */
 var _lastMaskTraces=[],_lastSpecShapes=[],_lastSpecAnnotations=[];
+/* Spec/limit guide-line shape between per-x spec points. Default from the job's
+   spec_interp key (SPEC_INTERP: 'step'->'hv' stair, 'linear'->straight interp).
+   DISPLAY ONLY -- pass/fail is per-point from each measurement's CSV limit, so
+   flipping this never changes a verdict, only what the connecting line implies
+   between measured points (phase-noise/offset masks read better as 'linear'). */
+var _SPEC_SHAPES={hv:1,linear:1,spline:1};
+var _specLineShape=(typeof SPEC_INTERP!=='undefined'&&_SPEC_SHAPES[SPEC_INTERP])?SPEC_INTERP:'hv';
+/* Spline is SVG-only -- WebGL scattergl silently ignores line.shape:'spline'.
+   So the mask trace type depends on the shape: 'scatter' (SVG) for spline,
+   'scattergl' otherwise (kept on the same layer as the WebGL data so the line
+   stays on top). buildTraces() reads this. */
+function _specMaskType(){return _specLineShape==='spline'?'scatter':'scattergl';}
+function setSpecShape(){
+  var sel=document.getElementById('spec_shape_sel');
+  if(!sel) return;
+  var prev=_specLineShape;
+  _specLineShape=_SPEC_SHAPES[sel.value]?sel.value:'hv';
+  _stSet('spec_shape',_specLineShape);
+  var gd=document.getElementById('plot');
+  // Crossing the spline boundary changes the trace TYPE (restyle can't do that)
+  // -- rebuild. Otherwise (hv<->linear) restyle line.shape in place (fast path).
+  var typeChange=(prev==='spline')!==(_specLineShape==='spline');
+  if(typeChange){ update(); return; }
+  if(gd&&_lastMaskTraces.length){
+    var n=gd.data.length,m=_lastMaskTraces.length,idxs=[];
+    for(var i=n-m;i<n;i++) idxs.push(i);
+    Plotly.restyle('plot',{'line.shape':_specLineShape},idxs);
+  }
+}
 function toggleHideSpec(){
   var hideSpec=document.getElementById('hide_spec_chk').checked;
   _stSet('hide_spec',hideSpec?'1':'0');
@@ -771,20 +800,22 @@ function buildTraces(filtered){
   var _mask=getSpecMask(filtered);
   var _maskTraces=[];
   if(_isMaskDataset()){
+    // scattergl (NOT scatter) for hv/linear: the F/P data are scattergl (WebGL),
+    // which renders ABOVE the SVG scatter layer, so an SVG mask line is hidden
+    // behind the data band; a scattergl mask sits in the same layer, drawn last
+    // -> on top. Plotly 3.6 scattergl supports 'hv'/'linear' but NOT 'spline'
+    // (SVG-only), so spline masks fall back to type:'scatter' (_specMaskType()).
+    var _mt=_specMaskType();
     if(_mask.hi.length) _maskTraces.push({
-      // scattergl (NOT scatter): the F/P data are scattergl (WebGL), which renders
-      // ABOVE the SVG scatter layer, so an SVG mask line is hidden behind the data
-      // band. A scattergl mask sits in the same layer, drawn last -> on top.
-      // Plotly 3.6 scattergl supports line.shape 'hv', so step masks stay stepped.
-      type:'scattergl',mode:(_mask.hi.length<2?'markers':'lines'),
+      type:_mt,mode:(_mask.hi.length<2?'markers':'lines'),
       x:_mask.hi.map(function(p){return p.x;}),y:_mask.hi.map(function(p){return p.y;}),
-      line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Hi)',
+      line:{shape:_specLineShape,color:'red',dash:'dash',width:1.5},name:'Spec (Hi)',
       visible:!_hideSpec,
       hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
     if(_mask.lo.length) _maskTraces.push({
-      type:'scattergl',mode:(_mask.lo.length<2?'markers':'lines'),
+      type:_mt,mode:(_mask.lo.length<2?'markers':'lines'),
       x:_mask.lo.map(function(p){return p.x;}),y:_mask.lo.map(function(p){return p.y;}),
-      line:{shape:'hv',color:'red',dash:'dash',width:1.5},name:'Spec (Lo)',
+      line:{shape:_specLineShape,color:'red',dash:'dash',width:1.5},name:'Spec (Lo)',
       visible:!_hideSpec,
       hovertemplate:'Spec: %{y:.2f}<extra></extra>'});
   }
@@ -1194,6 +1225,7 @@ function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
   _stSet('hide_spec',document.getElementById('hide_spec_chk').checked?'1':'0');
+  _stSet('spec_shape',_specLineShape);
   var _sap=document.getElementById('show_all_pts_chk'); if(_sap) _stSet('show_all_pts',_sap.checked?'1':'0');
   var _dm=document.getElementById('drawmode'); if(_dm) _stSet('drawmode',_dm.value);
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
@@ -1207,6 +1239,13 @@ function loadState(){
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
   var hs=_stGet('hide_spec');if(hs!==null)document.getElementById('hide_spec_chk').checked=(hs==='1');
+  var sshp=_stGet('spec_shape');if(sshp&&_SPEC_SHAPES[sshp])_specLineShape=sshp;
+  /* Reveal the Spec-line shape control only when the spec is a frequency-varying
+     mask (the flat per-value case draws horizontal lines where step vs linear is
+     meaningless). Sync the dropdown to the effective default/saved shape. */
+  var _ssw=document.getElementById('spec_shape_wrap');
+  if(_ssw){ try{ if(_isMaskDataset()){_ssw.style.display='';} }catch(e){} }
+  var _sss=document.getElementById('spec_shape_sel');if(_sss)_sss.value=_specLineShape;
   var sap=_stGet('show_all_pts');var sapEl=document.getElementById('show_all_pts_chk');if(sap!==null&&sapEl)sapEl.checked=(sap==='1');
   var dm=_stGet('drawmode');var dmEl=document.getElementById('drawmode');if(dm!==null&&dmEl)dmEl.value=dm;
   if(typeof _showAllWarnText==='function')_showAllWarnText();
@@ -2867,6 +2906,13 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var DEC_TARGET={_tog_target};",
         f"var DEC_PARTITION_COLS={json.dumps(_tog_partition_cols)};",
         f"var DEC_LOG_X_DEFAULT={json.dumps(_tog_log_x_default)};",
+        # Spec/limit guide-line shape between per-x spec points, as a Plotly
+        # line.shape token: 'hv' (stair-step, the conservative "spec holds until
+        # it changes" default), 'linear' (straight interpolation, better for
+        # phase-noise/offset masks), or 'spline' (smooth curve, for masks defined
+        # as a smooth response). DISPLAY ONLY -- pass/fail stays per-point from
+        # each measurement's CSV limit, so this never changes a verdict.
+        f"var SPEC_INTERP={json.dumps({'lin': 'linear', 'spl': 'spline'}.get(str((cfg or {}).get('spec_interp', 'step')).lower()[:3], 'hv'))};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
@@ -2992,6 +3038,16 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + ' onchange="toggleLogX()"> Log&nbsp;X</label>\n'
         '  <label><input type="checkbox" id="hide_spec_chk" onchange="toggleHideSpec()">'
         ' Hide&nbsp;spec&nbsp;lines</label>\n'
+        '  <label id="spec_shape_wrap" style="display:none" title="How the spec/limit guide line'
+        ' is drawn BETWEEN measured x-points. Stair-step assumes the spec holds flat until it changes'
+        ' (conservative datasheet reading); Linear interpolates a straight line (better for'
+        ' phase-noise / offset masks); Spline draws a smooth curve. Display only -- pass/fail is judged per point from each'
+        ' measurement\\u2019s own limit, so this never changes a verdict.">Spec&nbsp;line:'
+        '<select id="spec_shape_sel" onchange="setSpecShape()">'
+        '<option value="hv">Stair-step</option>'
+        '<option value="linear">Linear (interp)</option>'
+        '<option value="spline">Spline (smooth)</option>'
+        '</select></label>\n'
         + (
             '  <label id="show_all_pts_label" title="This dataset embeds every raw point. '
             'Unchecked draws a fast min/max envelope (spikes preserved); check to draw every point '

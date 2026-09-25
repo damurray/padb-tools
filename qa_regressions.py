@@ -2701,6 +2701,43 @@ def test_scatter_spec_line_caveat() -> None:
           "Spec-line caveat" not in pp._build_av_freq_html(df3, {}, "T"))
 
 
+def test_scatter_spec_line_shape() -> None:
+    """Scatter spec-line shape control (2026-09-25): the guide line BETWEEN
+    per-x spec points is user-selectable -- stair-step ('hv', conservative
+    default), linear (straight interp, for phase-noise/offset masks) or spline
+    (smooth). DISPLAY ONLY -- classification stays per-point, so the shape never
+    changes a verdict. spec_interp job key sets the page default; live dropdown
+    flips it. Spline is SVG-only (scattergl silently ignores it) so the mask
+    trace type must fall back to 'scatter' for spline, 'scattergl' otherwise."""
+    src = Path(pp.__file__).read_text(encoding="utf-8")
+    # (a) the live control + all three options + handler exist.
+    check("scatter has a Spec-line shape dropdown wired to setSpecShape",
+          "id=\"spec_shape_sel\"" in src and "setSpecShape()" in src)
+    check("scatter spec-shape dropdown offers stair-step / linear / spline",
+          "value=\"hv\"" in src and "value=\"linear\"" in src and "value=\"spline\"" in src)
+    check("scatter mask trace type is spline-aware (SVG scatter for spline, scattergl otherwise)",
+          "_specMaskType" in src and "'scatter':'scattergl'" in src
+          and "type:_mt" in src)
+    check("scatter mask line.shape is driven by _specLineShape (not a hardcoded 'hv')",
+          "shape:_specLineShape" in src and "shape:'hv'" not in src)
+    check("setSpecShape rebuilds on a spline<->non-spline type change (restyle can't change type)",
+          "typeChange" in src and "update()" in src)
+    # (b) the SPEC_INTERP default maps step/linear/spline job keys to Plotly tokens
+    #     and defaults to stair-step for anything else.
+    def _interp(v):
+        cfg = {} if v is None else {"spec_interp": v}
+        # mirror the exact injection expression in padb_plots.py
+        return {'lin': 'linear', 'spl': 'spline'}.get(str((cfg or {}).get('spec_interp', 'step')).lower()[:3], 'hv')
+    check("spec_interp default (unset) -> stair-step 'hv'", _interp(None) == "hv")
+    check("spec_interp 'step' -> 'hv'", _interp("step") == "hv")
+    check("spec_interp 'linear' -> 'linear'", _interp("linear") == "linear")
+    check("spec_interp 'spline' -> 'spline'", _interp("spline") == "spline")
+    check("spec_interp garbage -> conservative 'hv'", _interp("banana") == "hv")
+    # (c) it is actually injected as SPEC_INTERP for the JS to read.
+    check("SPEC_INTERP is injected into the scatter page",
+          "var SPEC_INTERP=" in src)
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -2800,6 +2837,7 @@ def main() -> None:
                test_stat_perpoint_passfail_pointwise, test_summary_group_by_serial,
                test_summary_stat_perpoint_own_limit_only, test_locked_filters_crossview,
                test_control_context_clarity, test_scatter_spec_line_caveat,
+               test_scatter_spec_line_shape,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
                test_box_data_filter_passfail_and_trim,
