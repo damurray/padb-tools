@@ -2768,6 +2768,16 @@ def test_active_filters_chip_rollout() -> None:
     # each of the 7 padb_plots view bodies embeds the chip div
     check("7 padb_plots view bodies embed _FILTER_CHIP_HTML",
           src.count("+ _FILTER_CHIP_HTML") >= 7)
+    # A chip detector must NOT reference an un-injected global unguarded -- stat_summary
+    # doesn't inject X_SHORT_LABEL, so its detector referencing a bare X_SHORT_LABEL threw
+    # (ReferenceError) whenever a locked freq range triggered the freq branch, breaking
+    # update()/lock-apply (caught by qa_crossview INV-LOCK on real data, 2026-09-25). Every
+    # aggregate freq-x detector must typeof-guard X_SHORT_LABEL (scatter injects it, exempt).
+    for det in ("_ssActiveFilters", "_sumActiveFilters", "_ecActiveFilters", "_distActiveFilters"):
+        body = src.split(f"function {det}()", 1)[1].split("\nfunction ", 1)[0]
+        if "X_SHORT_LABEL" in body:
+            check(f"{det} typeof-guards X_SHORT_LABEL (view may not inject it)",
+                  "typeof X_SHORT_LABEL!==" in body)
     # reference (padb_refstats, no _COMMON_JS) embeds the SAME shared helper + div + its own wiring
     check("reference embeds the shared _FILTER_CHIP_JS + _FILTER_CHIP_HTML (not a private copy)",
           "_FILTER_CHIP_JS" in ref and "_FILTER_CHIP_HTML" in ref

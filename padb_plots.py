@@ -9364,11 +9364,13 @@ function getFilteredCondsAndParams(){
    Global Filter (own badge + Clear; "Show all data"=Reset doesn't touch it). */
 function _ssActiveFilters(){
   var a=[];
+  var xl=(typeof X_SHORT_LABEL!=='undefined'&&X_SHORT_LABEL)?X_SHORT_LABEL:'Freq';
+  var xu=(typeof X_UNIT!=='undefined'&&X_UNIT)?X_UNIT:'';
   var loT=document.getElementById('freq_lo_txt'),hiT=document.getElementById('freq_hi_txt');
   var lo=loT&&loT.value!==''?parseFloat(loT.value):FREQ_MIN,hi=hiT&&hiT.value!==''?parseFloat(hiT.value):FREQ_MAX;
   var eps=(FREQ_MAX-FREQ_MIN)*1e-4+1e-9;
   if(isFinite(lo)&&isFinite(hi)&&(lo>FREQ_MIN+eps||hi<FREQ_MAX-eps))
-    a.push(X_SHORT_LABEL+' '+(+lo).toPrecision(5)+'–'+(+hi).toPrecision(5)+' '+X_UNIT);
+    a.push(xl+' '+(+lo).toPrecision(5)+'–'+(+hi).toPrecision(5)+' '+xu);
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
     if(!boxes.length) return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length;
