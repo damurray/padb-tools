@@ -796,6 +796,30 @@ def render_summary(
                     for v in row_s
                 ])
 
+        # Per-DUT mean per (temperature, freq) -- lets the per-point table honor the
+        # temperature filter. dut_vals above is the cross-temperature POOLED mean; the
+        # per-point table used it unconditionally, so it ignored the temp selection (a
+        # Room-only lock still showed cross-temp DUT-mean fails -> count mismatch vs the
+        # per-temperature views, David 2026-09-27). Same [temp][freq_idx][dut_idx] shape.
+        # Only emitted when the condition spans >1 temperature, so single-temperature
+        # datasets (many compares) pay nothing.
+        dut_vals_by_temp: dict[str, list] = {}
+        if _ser_col and len(temps_in_cond) > 1:
+            for temp in temps_in_cond:
+                tdf2 = cdf[cdf["Temperature"] == temp]
+                _sfm_t = (
+                    tdf2[["Frequency_MHz", _ser_col, "Value"]]
+                    .dropna(subset=["Value"])
+                    .groupby(["Frequency_MHz", _ser_col], sort=False)["Value"]
+                    .mean()
+                    .unstack(level=_ser_col)
+                    .reindex(index=all_freqs, columns=dut_serials)
+                )
+                dut_vals_by_temp[temp] = [
+                    [round(float(v), 4) if pd.notna(v) else None for v in _sfm_t.loc[freq]]
+                    for freq in all_freqs
+                ]
+
         # Per-DUT Limit/Spec/Uncertainty per frequency, same [freq_idx][dut_idx]
         # shape as dut_vals, so client-side segment detection can respect GF's
         # per-DUT exclusion -- excluding a DUT must also drop its own
@@ -824,6 +848,36 @@ def render_summary(
                     for freq in all_freqs
                 ]
 
+        # Per-temperature per-DUT limits, so the per-point table scores each DUT's
+        # temp-scoped VALUE against the SAME temp's LIMIT. Some pods carry a
+        # temperature-DEPENDENT spec (e.g. MaxPower: a looser lower limit at Room than
+        # at 20/30 C); scoring the Room value against the cross-temp tightest limit then
+        # invented false fails (David 2026-09-27: summary showed 80 fails vs 65 -- the 15
+        # extra were Room points that pass Room's own looser limit but fail the tightest).
+        # Same [temp][col][freq_idx][dut_idx] shape; only when >1 temperature.
+        dut_spec_vals_by_temp: dict[str, dict] = {}
+        if _ser_col and len(temps_in_cond) > 1:
+            for temp in temps_in_cond:
+                tdf3 = cdf[cdf["Temperature"] == temp]
+                _tsv: dict[str, list] = {}
+                for _col in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"):
+                    if _col not in tdf3.columns:
+                        continue
+                    _agg = "min" if _col in ("Upper_Limit", "Spec_Hi", "Unc_Hi") else "max"
+                    _sfm_s = (
+                        tdf3[["Frequency_MHz", _ser_col, _col]]
+                        .dropna(subset=[_col])
+                        .groupby(["Frequency_MHz", _ser_col], sort=False)[_col]
+                        .agg(_agg)
+                        .unstack(level=_ser_col)
+                        .reindex(index=all_freqs, columns=dut_serials)
+                    )
+                    _tsv[_col.lower()] = [
+                        [round(float(v), 6) if pd.notna(v) else None for v in _sfm_s.loc[freq]]
+                        for freq in all_freqs
+                    ]
+                dut_spec_vals_by_temp[temp] = _tsv
+
         # cond_keys: label -> value for each condition dimension
         cond_keys_dict = {}
         for col in cond_cols:
@@ -850,7 +904,9 @@ def render_summary(
             "temps":            temps_in_cond,
             "dut_info":         dut_info,
             "dut_vals":         dut_vals,
+            "dut_vals_by_temp": dut_vals_by_temp,
             "dut_spec_vals":    dut_spec_vals,
+            "dut_spec_vals_by_temp": dut_spec_vals_by_temp,
         })
 
         if np.isnan(hi_spec_global) and g_hi is not None:

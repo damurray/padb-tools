@@ -19759,9 +19759,24 @@ function _sumInclAtFi(cd,fi){
    raw Upper_Limit/Lower_Limit only. A point with no real limit -> {hi:null,lo:null}
    -> PADB_isFail null -> unscored ('-'), never FAIL. */
 function _sumDutLimit(cd,fi,di,ovHi,ovLo){
-  function pick(field){ var a=cd.dut_spec_vals&&cd.dut_spec_vals[field]; var row=a&&a[fi]; return (row&&row[di]!=null)?row[di]:null; }
-  var hi=pick('upper_limit'); if(hi==null)hi=pick('spec_hi'); if(hi==null&&ovHi!=null)hi=ovHi;
-  var lo=pick('lower_limit'); if(lo==null)lo=pick('spec_lo'); if(lo==null&&ovLo!=null)lo=ovLo;
+  /* Temp-scoped to match _sumDutValAt: when a strict temp subset is selected and per-temp
+     limits exist, take the TIGHTEST limit over the selected temps (min for upper/spec_hi,
+     max for lower/spec_lo) -- so a temperature-dependent spec (e.g. MaxPower's looser Room
+     lower limit) is scored against the SAME temp the value came from, not the cross-temp
+     tightest. Falls back to the cross-temp dut_spec_vals (all-temps default). */
+  var useT=null, bt=cd.dut_spec_vals_by_temp;
+  if(bt){ var condTemps=cd.temps||[]; var sel=getSelTemps();
+    var u=(sel&&sel.length)?condTemps.filter(function(t){return sel.indexOf(t)>=0;}):condTemps;
+    if(u.length&&u.length<condTemps.length) useT=u; }
+  function pickX(field,tight){
+    if(useT){ var best=null;
+      useT.forEach(function(t){ var a=bt[t]&&bt[t][field]; var row=a&&a[fi]; var v=(row&&row[di]!=null)?row[di]:null;
+        if(v==null) return; best=(best==null)?v:(tight==='min'?Math.min(best,v):Math.max(best,v)); });
+      return best; }
+    var a2=cd.dut_spec_vals&&cd.dut_spec_vals[field]; var r2=a2&&a2[fi]; return (r2&&r2[di]!=null)?r2[di]:null;
+  }
+  var hi=pickX('upper_limit','min'); if(hi==null)hi=pickX('spec_hi','min'); if(hi==null&&ovHi!=null)hi=ovHi;
+  var lo=pickX('lower_limit','max'); if(lo==null)lo=pickX('spec_lo','max'); if(lo==null&&ovLo!=null)lo=ovLo;
   return {hi:PADB_num(hi),lo:PADB_num(lo)};
 }
 /* Manual Spec-override values (or null) from the params -- the only legitimate
@@ -19770,10 +19785,25 @@ function _sumOv(params){
   return {hi:(params&&params.tll_hi_override!=null)?params.tll_hi_override:null,
           lo:(params&&params.tll_lo_override!=null)?params.tll_lo_override:null};
 }
+/* The per-DUT value to score at (cd,fi,di), honoring the temperature filter: the DUT's
+   mean over the SELECTED temps when a strict subset is chosen AND per-temp data exists,
+   else the cross-temperature pooled mean (dut_vals -- the unchanged all-temps default).
+   SINGLE source for the plot fail-filter, the "# fail / n" column and the per-point table,
+   so all three agree under a temperature filter instead of the per-point/#fail/plot silently
+   staying cross-temp while the grouped n respected temp (David 2026-09-27). */
+function _sumDutValAt(cd,fi,di){
+  var row=(cd.dut_vals&&cd.dut_vals[fi])?cd.dut_vals[fi]:[];
+  var bt=cd.dut_vals_by_temp; if(!bt) return row[di];
+  var condTemps=cd.temps||[]; var sel=getSelTemps();
+  var useT=(sel&&sel.length)?condTemps.filter(function(t){return sel.indexOf(t)>=0;}):condTemps;
+  if(!useT.length||useT.length>=condTemps.length) return row[di];   // all temps -> cross-temp pooled mean
+  var acc=[]; useT.forEach(function(t){var r=bt[t]; var x=(r&&r[fi])?r[fi][di]:null; if(x!=null)acc.push(x);});
+  return acc.length?(acc.reduce(function(a,b){return a+b;},0)/acc.length):null;
+}
 /* Per-point pass/fail (true=fail, false=pass, null=unscored) using the real
    per-point limit. */
 function _sumPtFail(cd,fi,di,params){
-  var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[]; var v=row[di];
+  var v=_sumDutValAt(cd,fi,di);
   if(v==null) return null;
   var ov=_sumOv(params),lim=_sumDutLimit(cd,fi,di,ov.hi,ov.lo);
   return PADB_isFail(v,lim.hi,lim.lo);
@@ -19783,20 +19813,19 @@ function _sumPtFail(cd,fi,di,params){
    old _sumFreqPasses used -- so plot, table and count all agree on real points. */
 function _sumFreqMatch(cd,fi,mode,params){
   var idxs=_sumInclAtFi(cd,fi),hit=false;
-  var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[];
   /* Same convention as scatter/boxplot/stat_summary: Failing keeps only TRUE fails;
      Passing keeps everything else that is a real measurement (pass OR no-limit) --
      so Passing + Failing == All (exact complement). */
   idxs.forEach(function(di){ if(hit) return;
-    if(row[di]==null) return;
+    if(_sumDutValAt(cd,fi,di)==null) return;   // temp-aware value (honors the temp filter)
     var f=_sumPtFail(cd,fi,di,params);
     if(mode==='failing'){ if(f===true) hit=true; }
     else { if(f!==true) hit=true; } });
   return hit;
 }
 function _sumFailAt(cd,fi,params){
-  var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[]; var n=0,scored=0;
-  _sumInclAtFi(cd,fi).forEach(function(di){ var v=row[di]; if(v==null) return;
+  var n=0,scored=0;
+  _sumInclAtFi(cd,fi).forEach(function(di){ if(_sumDutValAt(cd,fi,di)==null) return;   // temp-aware
     var f=_sumPtFail(cd,fi,di,params);
     if(f===null) return; scored++; if(f===true)n++; });
   return {fail:n,scored:scored};
@@ -19809,12 +19838,18 @@ function _sumFailTd(pf){
 function _sumPerPointTable(active,selTemps,params){
   var _fr=_sumFreqRange(),fLo=_fr.lo,fHi=_fr.hi,pts=[];
   var ov=_sumOv(params);
+  var _selT=(selTemps&&selTemps.length)?selTemps:null;   // null == all temps
+  /* Did the temperature filter actually scope anything? (a strict subset of the dataset's
+     temps, with per-temp data available) -- drives the header note only. The per-DUT value
+     itself comes from the shared _sumDutValAt (same accessor the plot + #fail column use, so
+     all three agree under a temp filter). */
+  var _tempScoped=!!(_selT && (typeof TEMPS_ALL!=='undefined') && TEMPS_ALL && _selT.length<TEMPS_ALL.length
+    && (active||[]).some(function(cd){return cd.dut_vals_by_temp;}));
   (active||[]).forEach(function(cd){
     (cd.freqs||[]).forEach(function(f,fi){
       if(f<fLo||f>fHi) return;
-      var row=cd.dut_vals&&cd.dut_vals[fi]?cd.dut_vals[fi]:[];
       _sumInclAtFi(cd,fi).forEach(function(di){
-        var v=row[di]; if(v==null) return;
+        var v=_sumDutValAt(cd,fi,di); if(v==null) return;
         /* Real per-point limit only (no per-frequency fabrication) -- a limit-less
            point scores '-' (unscored), never FAIL. Matches scatter + PADB status. */
         var lim=_sumDutLimit(cd,fi,di,ov.hi,ov.lo), fail=PADB_isFail(v,lim.hi,lim.lo);
@@ -19835,10 +19870,13 @@ function _sumPerPointTable(active,selTemps,params){
   pts.sort(function(a,b){ if(a.cond!==b.cond)return a.cond<b.cond?-1:1; if(a.freq!==b.freq)return a.freq-b.freq; return a.s<b.s?-1:(a.s>b.s?1:0); });
   var nFail=pts.filter(function(pt){return pt.st.t==='FAIL';}).length, cap=5000, shown=pts.slice(0,cap);
   function td(v){return '<td style="border:1px solid #eee;padding:2px 8px;text-align:right;white-space:nowrap">'+(v==null?'—':Number(v).toFixed(4))+'</td>';}
+  var _scopeNote=_tempScoped
+    ? ('per-DUT mean over selected temperature'+((_selT&&_selT.length>1)?'s':'')+': '+((_selT||[]).join(', ')))
+    : 'per-DUT cross-temperature mean (all temperatures) &mdash; use the Temperature filter to scope';
   var head='<div style="font-size:12px;color:#555;margin:2px 8px 4px">'+pts.length.toLocaleString()+' DUT&#8209;point'+(pts.length===1?'':'s')+
     ' &mdash; <b style="color:#c00">'+nFail.toLocaleString()+'</b> fail limit'+
     (pts.length>cap?(' &mdash; showing first '+cap.toLocaleString()+'; use Export CSV for all'):'')+
-    ' &mdash; <i>per-point mode (per-DUT cross-temperature mean)</i></div>';
+    ' &mdash; <i>per-point mode ('+_scopeNote+')</i></div>';
   var cols=['Condition','Freq ('+X_UNIT+')','Serial','Value','Limit lo','Limit hi','Status'];
   var th=cols.map(function(c){return '<th style="border:1px solid #ccc;padding:3px 8px;background:#f0f2f5;white-space:nowrap">'+c+'</th>';}).join('');
   var trs=shown.map(function(pt){

@@ -1335,7 +1335,7 @@ def test_summary_stat_perpoint_own_limit_only() -> None:
     check("summary _sumDutLimit does not fabricate from HI_SPEC/LO_SPEC or spec_hi_list",
           bool(sdl) and "HI_SPEC" not in sdl and "LO_SPEC" not in sdl and "spec_hi_list" not in sdl)
     check("summary _sumDutLimit uses own upper_limit/spec_hi + manual override only",
-          "pick('upper_limit')" in sdl and "pick('spec_hi')" in sdl and "ovHi" in sdl)
+          "pickX('upper_limit'" in sdl and "pickX('spec_hi'" in sdl and "ovHi" in sdl)
     check("stat_summary _statDutLimits does not fabricate from HI_SPEC/LO_SPEC",
           bool(stl) and "HI_SPEC" not in stl and "LO_SPEC" not in stl)
     check("stat_summary _statDutLimits keeps own limit/spec + manual entry",
@@ -2870,6 +2870,64 @@ def test_keep_population_as_gf() -> None:
           and "removeItem(GF_KEY)" in src.split("function clearSyncAllViews()", 1)[1].split("_updateBoxGfStatus", 1)[0])
 
 
+def test_reference_autofilter_site_scope() -> None:
+    """Reference auto-filter impact must scope to the reference site like the plot views
+    (David 2026-09-27). It had REF_AF.primarySite=null and set site='' on every bad point,
+    so the shared _afCompute's site-scope gate (active only when primarySite is set) was a
+    no-op -- reference auto-filtered BOTH sites while the plot views clean only the reference
+    site by default, so reference removed an extra onboarding-site DUT (2 vs boxplot's 1).
+    Fix: inject PRIMARY_SITE, set REF_AF.primarySite from it, and stamp each bad point's real
+    site. Also add the >=4-points-per-bucket robustness floor the plot views use."""
+    import padb_refstats as _rf
+    ref = Path(_rf.__file__).read_text(encoding="utf-8")
+    check("reference injects PRIMARY_SITE", "var PRIMARY_SITE=" in ref)
+    check("REF_AF.primarySite comes from PRIMARY_SITE (not hardcoded null)",
+          "primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null)" in ref)
+    check("_refBadPoints stamps each point's real site (not '')",
+          "site:_refRowSite(r)" in ref and "function _refRowSite(" in ref)
+    check("reference applies the >=4-points robustness floor before scoring",
+          "if(fv.length<4) return;" in ref.split("function _refBadPoints(", 1)[1].split("\n}", 1)[0])
+
+
+def test_summary_perpoint_respects_temp() -> None:
+    """Summary per-point / #fail / plot fail-only must honor the temperature filter
+    (David 2026-09-27). They scored each DUT from the cross-temperature pooled mean
+    (cd.dut_vals) and ignored the temp selection, so a Room-only lock still showed
+    cross-temp DUT-mean fails (117) instead of Room fails (65) -- a Filter->Plot->Table
+    coupling break vs scatter/box/stat_summary AND vs summary's own grouped n (which did
+    respect temp). Fix: render_summary embeds per-temp per-DUT means (dut_vals_by_temp,
+    only when >1 temp), and a single shared _sumDutValAt accessor -- used by the per-point
+    table, the '# fail / n' column and the plot fail-filter -- returns the DUT's mean over
+    the SELECTED temps (cross-temp pooled mean when all temps, unchanged default)."""
+    import padb_v2 as _pv2
+    pysrc = Path(_pv2.__file__).read_text(encoding="utf-8")
+    src = Path(pp.__file__).read_text(encoding="utf-8")
+    # Python: per-temp per-DUT means embedded, gated on >1 temperature
+    check("render_summary embeds dut_vals_by_temp",
+          '"dut_vals_by_temp"' in pysrc and "dut_vals_by_temp: dict" in pysrc)
+    check("dut_vals_by_temp only built when the condition spans >1 temperature",
+          "len(temps_in_cond) > 1" in pysrc.split("dut_vals_by_temp", 1)[1][:400])
+    # JS: single shared accessor, used by all three fail consumers
+    check("_sumDutValAt accessor defined (temp-aware per-DUT value)",
+          "function _sumDutValAt(cd,fi,di)" in src)
+    check("_sumPtFail uses the temp-aware accessor (not a bare cross-temp dut_vals read)",
+          "var v=_sumDutValAt(cd,fi,di);" in src.split("function _sumPtFail(", 1)[1].split("}", 1)[0])
+    check("plot fail-only (_sumFreqMatch) is temp-aware",
+          "_sumDutValAt(cd,fi,di)==null" in src.split("function _sumFreqMatch(", 1)[1].split("\nfunction ", 1)[0])
+    check("'# fail / n' column (_sumFailAt) is temp-aware",
+          "_sumDutValAt(cd,fi,di)==null" in src.split("function _sumFailAt(", 1)[1].split("\nfunction ", 1)[0])
+    check("per-point table (_sumPerPointTable) uses the shared accessor",
+          "_sumDutValAt(cd,fi,di)" in src.split("function _sumPerPointTable(", 1)[1].split("\nfunction ", 1)[0])
+    # The LIMIT must be temp-scoped too (temperature-dependent specs, e.g. MaxPower's looser
+    # Room lower limit) -- else the temp-scoped value is scored vs the cross-temp tightest
+    # limit and invents false fails (summary showed 80 vs the true 65).
+    check("render_summary embeds per-temp per-DUT limits (dut_spec_vals_by_temp)",
+          '"dut_spec_vals_by_temp"' in pysrc and "dut_spec_vals_by_temp: dict" in pysrc)
+    check("_sumDutLimit is temp-aware (tightest limit over selected temps, not cross-temp)",
+          "dut_spec_vals_by_temp" in src.split("function _sumDutLimit(", 1)[1].split("\nfunction ", 1)[0]
+          and "getSelTemps()" in src.split("function _sumDutLimit(", 1)[1].split("\nfunction ", 1)[0])
+
+
 def test_axis_titles_object_form() -> None:
     """Plotly 3.x silently DROPS a bare-string axis title (xaxis:{title:'x'} or
     xaxis:{title:VAR}) -- only title:{text:...} renders. The bundled Plotly bump
@@ -2971,6 +3029,7 @@ def main() -> None:
                test_control_context_clarity, test_scatter_spec_line_caveat,
                test_scatter_spec_line_shape, test_active_filters_chip_rollout,
                test_lock_port_from_qualified_serials, test_keep_population_as_gf,
+               test_summary_perpoint_respects_temp, test_reference_autofilter_site_scope,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
                test_box_data_filter_passfail_and_trim,

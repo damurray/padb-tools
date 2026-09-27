@@ -158,6 +158,12 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var GF_DIMS={json.dumps([[c, l] for c, l in grp_dims])};",
         f"var GF_KEY={json.dumps(gf_key)};",
         f"var STATUS_COL={json.dumps(status_col)};",
+        # Reference/primary site for a cross-site compare -- gates the auto-filter impact
+        # preview to the reference site by default (matching the plot views), so a compare
+        # doesn't silently auto-filter onboarding-site DUTs the plot views leave for manual
+        # review (David 2026-09-27: reference removed 2 DUTs vs boxplot's 1 -- the extra one
+        # was an onboarding-site DUT the plot views never auto-filter).
+        f"var PRIMARY_SITE={json.dumps(cfg.get('primary_site'))};",
         f"var HAS_LIMITS={json.dumps(bool(has_lim))};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_LABEL={json.dumps(x_label)};",
@@ -454,18 +460,27 @@ function _refBucketMap(rows){ // group by (condition dims, temp, freq-box) -- sa
     (b[k]||(b[k]={ck:ck,tp:tp,fl:fl,rows:[]})).rows.push(r);});
   return b;
 }
+/* The Site column for a cross-site compare (label 'Site' in GF_DIMS), so each bad
+   point can carry its real site and the shared auto-filter's site-scope gate works
+   (empty site made every DUT read as onboarding -> the gate was a no-op). */
+var _REF_SITE_COL=(typeof GF_DIMS!=='undefined'?(GF_DIMS.filter(function(d){return d[1]==='Site';})[0]||[]):[])[0]||null;
+function _refRowSite(r){ return _REF_SITE_COL?String(r[_REF_SITE_COL]==null?'':r[_REF_SITE_COL]):''; }
 function _refBadPoints(basis){
   var bm=_refBucketMap(applyFilters(DATA)),out=[];
   Object.keys(bm).forEach(function(k){var b=bm[k],fv=b.rows.map(function(r){return r.Value;});
+    if(fv.length<4) return;   // a robust MAD/IQR scale needs >=4 points -- same floor the plot views use (_autoBadPoints), else tiny buckets flag spurious "outliers"
     var score=_afScorer(basis,fv,null,null);
     b.rows.forEach(function(r){var sc=score(r.Value);if(!sc)return;
       var ser=(r.Serial!=null?String(r.Serial):'unknown');
       out.push({serial:ser,key:ser+'||'+b.ck+'||'+b.tp+'||'+b.fl,dir:sc.dir,mag:sc.mag,
-                temp:b.tp,freqLabel:b.fl,site:''});});});
+                temp:b.tp,freqLabel:b.fl,site:_refRowSite(r)});});});
   return out;
 }
 var REF_AF={
-  levelSel:'ref_af_level', basisSel:'ref_af_basis', baseSerial:function(s){return s;}, primarySite:null,
+  levelSel:'ref_af_level', basisSel:'ref_af_basis', baseSerial:function(s){return s;},
+  /* Cross-site compare -> scope the auto-filter to the reference site by default, exactly
+     like the plot views (their default 'primary' scope); null on a single-site page. */
+  primarySite:(typeof PRIMARY_SITE!=='undefined'?PRIMARY_SITE:null),
   badPoints:_refBadPoints,
   buckets:function(){var bm=_refBucketMap(applyFilters(DATA));return Object.keys(bm).map(function(k){
     return {vals:bm[k].rows.map(function(r){return r.Value;})};});},
