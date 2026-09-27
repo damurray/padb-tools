@@ -2888,6 +2888,35 @@ def test_view_state_persistence() -> None:
         check(f"table-open persisted: _stSet('{k}')", f"_stSet('{k}'" in src and f"_stGet('{k}')" in src)
 
 
+def test_gf_no_match_warning() -> None:
+    """GF-matches-nothing warning (David 2026-09-27): a Global Filter with entries that
+    matches NO row in the current dataset (stale GF from another test, or condition keys
+    that don't fit these columns) used to still show "N DUTs in GF" while silently
+    filtering/inspecting nothing -- so Inspect looked empty for no visible reason. Every
+    GF-applying view now computes _gfAnyMatch when the GF loads and shows an amber
+    "N DUTs but none match this dataset" warning in its GF badge. scatter/stat_summary/
+    summary/boxplot + reference do a full match scan; the delta views (distribution/
+    env_coverage) use a serial-existence check."""
+    src = Path(pp.__file__).read_text(encoding="utf-8")
+    import padb_refstats as _rf
+    ref = Path(_rf.__file__).read_text(encoding="utf-8")
+    # every GF view declares the flag and shows the warning
+    check("padb_plots: >=6 GF views declare _gfAnyMatch",
+          src.count("var _gfAnyMatch=") >= 6)
+    check("padb_plots: warning text present across views",
+          src.count("none match this dataset") >= 6)
+    check("reference (padb_refstats) computes _gfAnyMatch + shows the warning",
+          "var _gfAnyMatch=" in ref and "none match this dataset" in ref)
+    # full-match views scan actual matchers (not just serials)
+    check("scatter full-match scan uses _isInGfFull",
+          "if(_isInGfFull(DATA[_gi])){_gfAnyMatch=true;break;}" in src)
+    check("boxplot full-match scan uses _boxIsInGf",
+          "_boxIsInGf(_boxBaseSerial(_d.s)" in src and "_gfAnyMatch=_any;" in src)
+    # the warning only fires when the GF is non-empty (guarded by hasGf/n>0)
+    check("scatter warning guarded by hasGf && !_gfAnyMatch",
+          "if(hasGf&&!_gfAnyMatch){" in src)
+
+
 def test_reference_autofilter_site_scope() -> None:
     """Reference auto-filter impact must scope to the reference site like the plot views
     (David 2026-09-27). It had REF_AF.primarySite=null and set site='' on every bad point,
@@ -3048,7 +3077,7 @@ def main() -> None:
                test_scatter_spec_line_shape, test_active_filters_chip_rollout,
                test_lock_port_from_qualified_serials, test_keep_population_as_gf,
                test_summary_perpoint_respects_temp, test_reference_autofilter_site_scope,
-               test_view_state_persistence,
+               test_view_state_persistence, test_gf_no_match_warning,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
                test_box_data_filter_passfail_and_trim,

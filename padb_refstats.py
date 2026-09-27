@@ -299,6 +299,10 @@ document.addEventListener('click',function(e){ // close open panels on outside c
    match on serial + condition dims + temperature + frequency-box label) ---------- */
 var _gfExcluded=null, _gfCoarse=null;
 var _SER_KWS=['serial','unit id','dut id','s/n'];
+/* Does ANY row in this dataset match the GF? Computed once per GF load; a GF that
+   matches nothing is stale/from-another-test or has keys that don't fit these columns
+   (badge would still count DUTs while filtering nothing -- David 2026-09-27). */
+var _gfAnyMatch=true;
 function _loadRefGlobalFilter(){
   try{
     var raw=(typeof GF_KEY!=='undefined')?localStorage.getItem(GF_KEY):null;
@@ -316,6 +320,8 @@ function _loadRefGlobalFilter(){
       });
     }
   }catch(e){_gfExcluded=null;_gfCoarse=null;}
+  _gfAnyMatch=true;
+  if(_gfCoarse&&_gfCoarse.size>0){ _gfAnyMatch=false; for(var _gi=0;_gi<DATA.length;_gi++){ if(_refGfExcl(DATA[_gi])){_gfAnyMatch=true;break;} } }
   _updateRefGfBadge();
 }
 function _gfIsIn(checkKey){ // dims-intersection (mirrors _statGfIsIn/_boxIsInGf)
@@ -352,10 +358,15 @@ function _updateRefGfBadge(){
   var duts=new Set(); if(_gfExcluded)_gfExcluded.forEach(function(k){duts.add(k.split('||')[0]);});
   var n=duts.size, pts=_gfExcluded?_gfExcluded.size:0;
   var clrBtn=document.getElementById('ref_gf_clear_btn'); if(clrBtn) clrBtn.style.display=n>0?'':'none';
-  if(n>0){el.textContent=(on?'GF ON':'GF OFF')+': '+pts+' pt'+(pts!==1?'s':'')+' ('+n+' DUT'+(n!==1?'s':'')+')';
+  if(n>0&&!_gfAnyMatch){
+    el.textContent='⚠ GF: '+n+' DUT'+(n!==1?'s':'')+' but none match this dataset';
+    el.style.background='#fff3cd'; el.style.color='#8a5000'; el.style.borderColor='#e0c05a';
+    el.title='The Global Filter has entries but NONE match any row in this dataset -- likely a stale GF from another test, or condition keys that don’t fit these columns. It is filtering nothing. Use "Clear global filter", or re-import a GF exported from this dataset.';
+  }
+  else if(n>0){el.title='';el.textContent=(on?'GF ON':'GF OFF')+': '+pts+' pt'+(pts!==1?'s':'')+' ('+n+' DUT'+(n!==1?'s':'')+')';
     el.style.background=on?'#ffeaea':'#f0f0f0'; el.style.color=on?'#900':'#888';
     el.style.borderColor=on?'#c88':'#ccc';}
-  else{el.textContent='';el.style.background='';el.style.borderColor='transparent';}
+  else{el.title='';el.textContent='';el.style.background='';el.style.borderColor='transparent';}
 }
 /* Clear the shared Global Filter from the reference view too (F3 consistency 2026-09-22). */
 function clearRefGlobalFilter(){

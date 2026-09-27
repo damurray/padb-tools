@@ -917,6 +917,11 @@ function resetFilters(){
 var _gfExcluded=null;
 var _gfCoarseExcluded=null;
 var _gfParsed=null; /* Map<baseSer,[{condKvs,isManual,temp,freq}]> pre-indexed for O(1) serial lookup */
+/* Does ANY row in THIS dataset match the GF? Computed once when the GF loads (not per
+   filter change). A GF with entries that matches nothing is stale/from-another-test or has
+   condition keys that don't fit these columns -- it silently excludes/inspects nothing while
+   the badge still counts DUTs, which reads as "the GF is broken" (David 2026-09-27). */
+var _gfAnyMatch=true;
 /* freq -> categorical box label, keyed on String(freq) to match a row's own
    number stringification. Boxplot GF keys are now keyed on this label (not a
    rounded number), so a row's freq must be looked up the same way to match. */
@@ -1064,6 +1069,9 @@ function _loadGlobalFilter(){
       });
     }
   }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;_gfParsed=null;}
+  /* One-time (per GF load) check: does any row in this dataset actually match the GF? */
+  _gfAnyMatch=true;
+  if(_gfParsed&&_gfParsed.size>0){ _gfAnyMatch=false; for(var _gi=0;_gi<DATA.length;_gi++){ if(_isInGfFull(DATA[_gi])){_gfAnyMatch=true;break;} } }
   _updateGfIndicator();
 }
 /* Clear the shared Global Filter from this view too (F3 consistency 2026-09-22): the
@@ -1091,6 +1099,15 @@ function _updateGfIndicator(){
   var focusChk=document.getElementById('gf_focus_chk');
   if(focusChk) focusChk.checked=mode==='focus';
   var n=dutSers.size,pts=_gfExcluded?_gfExcluded.size:0;
+  /* GF has entries but matches NOTHING in this dataset -> amber warning instead of the
+     normal count, so a stale/non-matching GF is obvious (it's filtering/inspecting nothing). */
+  if(hasGf&&!_gfAnyMatch){
+    badge.textContent='⚠ GF: '+n+' DUT'+(n!==1?'s':'')+' but none match this dataset';
+    badge.style.background='#fff3cd'; badge.style.color='#8a5000'; badge.style.borderColor='#e0c05a';
+    badge.title='The Global Filter has entries but NONE match any row in this dataset -- likely a stale GF from another test, or condition keys that don’t fit these columns. It is excluding/inspecting nothing (Inspect will look empty). Use "Clear global filter", or re-import a GF exported from this dataset.';
+    return;
+  }
+  badge.title='';
   badge.textContent=n>0?(isFocus?'Inspect: ':'')+pts+' pts in GF ('+n+' DUT'+(n!==1?'s':')')+(isFocus?' — INSPECT':''):'';
   badge.style.background=active?(isFocus?'#e8f0ff':'#ffeaea'):'#f0f0f0';
   badge.style.color=active?(isFocus?'#0044aa':'#900'):'#666';
@@ -5626,6 +5643,7 @@ function getSelPorts(){
    key = serial + condition-minus-serial, so an exclusion made in any view drops
    the same DUT/condition points from these density curves too. */
 var _distGfExcluded=null,_distGfCoarse=null,_distGfFocusMode=false;
+var _gfAnyMatch=true;   // do any of the GF's serials exist in this dataset? (stale-GF warning)
 function _loadDistGlobalFilter(){
   try{
     var raw=(typeof GF_KEY!=='undefined')?localStorage.getItem(GF_KEY):null;
@@ -5653,6 +5671,15 @@ function _loadDistGlobalFilter(){
     }
   }catch(e){_distGfExcluded=null;_distGfCoarse=null;}
   _distGfFocusMode=((typeof GF_MODE_KEY!=='undefined'&&localStorage.getItem(GF_MODE_KEY))||'exclude')==='focus';
+  /* Serial-level match check (delta view): warn if NONE of the GF's serials exist in this
+     dataset -- catches the common stale-GF-from-another-test case (David 2026-09-27). */
+  _gfAnyMatch=true;
+  if(_distGfExcluded&&_distGfExcluded.size>0){
+    var _base=function(s){return String(s).replace(/_[A-Za-z]+\d*$/,'');};
+    var _have={}; (typeof SERIALS!=='undefined'?SERIALS:[]).forEach(function(s){_have[String(s)]=1;_have[_base(s)]=1;});
+    _gfAnyMatch=false;
+    _distGfExcluded.forEach(function(k){var s=k.split('||')[0]; if(_have[s]||_have[_base(s)])_gfAnyMatch=true;});
+  }
   _updateDistGfBadge();
 }
 function _updateDistGfBadge(){
@@ -5666,9 +5693,15 @@ function _updateDistGfBadge(){
   var chk=document.getElementById('dist_gf_chk');
   var active=chk?chk.checked:true;
   var clrBtn=document.getElementById('dist_gf_clear_btn');
-  if(n>0){
+  if(n>0&&!_gfAnyMatch){
+    if(lbl) lbl.style.display=''; if(clrBtn) clrBtn.style.display='';
+    el.textContent='⚠ GF: '+n+' DUT'+(n!==1?'s':'')+' but none match this dataset';
+    el.style.background='#fff3cd'; el.style.color='#8a5000'; el.style.borderColor='#e0c05a';
+    el.title='The Global Filter has entries but none of its DUTs exist in this dataset -- likely a stale GF from another test. It is filtering nothing. Use "Clear global filter", or re-import a GF exported from this dataset.';
+  } else if(n>0){
     if(lbl) lbl.style.display='';
     if(clrBtn) clrBtn.style.display='';
+    el.title='';
     el.textContent=(active?(isFocus?'GF Inspect ON':'GF ON'):'GF OFF')+': '+pts+' pts ('+n+' DUT'+(n!==1?'s':')')+''+(isFocus&&active?' [inspect]':'');
     el.style.background=!active?'#f0f0f0':isFocus?'#e8f0ff':'#ffeaea';
     el.style.color=!active?'#888':isFocus?'#0044aa':'#900';
@@ -5676,7 +5709,7 @@ function _updateDistGfBadge(){
   } else {
     if(lbl) lbl.style.display='none';
     if(clrBtn) clrBtn.style.display='none';
-    el.textContent='';
+    el.title=''; el.textContent='';
   }
 }
 /* Clear the shared Global Filter from distribution too (F3 consistency 2026-09-22). */
@@ -8133,6 +8166,7 @@ var _gfExcluded=null;
 var _gfCoarseExcluded=null;
 var _statGfFocusMode=false;
 var _plotRev=0;
+var _gfAnyMatch=true;   // does any embedded point match the GF? (stale/non-matching GF warning)
 function _loadStatGlobalFilter(){
   try{
     var raw=localStorage.getItem(GF_KEY);
@@ -8161,6 +8195,13 @@ function _loadStatGlobalFilter(){
     }
   }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;}
   _statGfFocusMode=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
+  /* One-time per-load: does any embedded per-DUT point actually match the GF? */
+  _gfAnyMatch=true;
+  if(_gfCoarseExcluded&&_gfCoarseExcluded.size>0){ var _any=false;
+    for(var _ci=0;_ci<STAT_DATA.length&&!_any;_ci++){ var _cd=STAT_DATA[_ci],_fss=_cd.freq_stats||[];
+      for(var _fi=0;_fi<_fss.length&&!_any;_fi++){ var _fs=_fss[_fi],_dvs=_fs.dut_vals||[];
+        for(var _di=0;_di<_dvs.length&&!_any;_di++){ var _d=_dvs[_di]; if(_isStatGfExcl(_d.s,_cd.condition,'Room',_fs.freq_label,_d.p))_any=true; } } }
+    _gfAnyMatch=_any; }
   _updateStatGfBadge();
 }
 function _updateStatGfBadge(){
@@ -8173,15 +8214,21 @@ function _updateStatGfBadge(){
   var isFocus=_statGfFocusMode;
   var chk=document.getElementById('stat_gf_chk');
   var active=chk?chk.checked:true;
-  if(n>0){
+  if(n>0&&!_gfAnyMatch){
     if(lbl) lbl.style.display='';
+    el.textContent='⚠ GF: '+n+' DUT'+(n!==1?'s':'')+' but none match this dataset';
+    el.style.background='#fff3cd'; el.style.color='#8a5000'; el.style.borderColor='#e0c05a';
+    el.title='The Global Filter has entries but NONE match any point in this dataset -- likely a stale GF from another test, or condition keys that don’t fit these columns. It is excluding/inspecting nothing. Use "Clear global filter", or re-import a GF exported from this dataset.';
+  } else if(n>0){
+    if(lbl) lbl.style.display='';
+    el.title='';
     el.textContent=(active?(isFocus?'GF Inspect ON':'GF ON'):'GF OFF')+': '+pts+' pts ('+n+' DUT'+(n!==1?'s':')')+''+(isFocus&&active?' [inspect]':'');
     el.style.background=!active?'#f0f0f0':isFocus?'#e8f0ff':'#ffeaea';
     el.style.color=!active?'#888':isFocus?'#0044aa':'#900';
     el.style.borderColor=!active?'#ccc':isFocus?'#6688cc':'#c88';
   } else {
     if(lbl) lbl.style.display='none';
-    el.textContent='';
+    el.title=''; el.textContent='';
   }
 }
 window.addEventListener('storage',function(e){
@@ -11061,6 +11108,7 @@ var _gfExcluded=null;
 var _gfCoarseExcluded=null;
 var _gfFocusMode=false;
 var _ecGfEnabled=true;
+var _gfAnyMatch=true;   // do any of the GF's serials exist in this dataset? (stale-GF warning)
 function toggleEcGf(){_ecGfEnabled=!_ecGfEnabled;_updateEcGfBadge();update();}
 function _loadEcGlobalFilter(){
   try{
@@ -11084,6 +11132,14 @@ function _loadEcGlobalFilter(){
     }
   }catch(e){_gfExcluded=null;_gfCoarseExcluded=null;}
   _gfFocusMode=(localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus';
+  /* Serial-level match check (delta view): warn if NONE of the GF's serials exist here. */
+  _gfAnyMatch=true;
+  if(_gfExcluded&&_gfExcluded.size>0){
+    var _base=function(s){return String(s).replace(/_[A-Za-z]+\d*$/,'');};
+    var _have={}; document.querySelectorAll('.ec_ser_chk').forEach(function(c){_have[String(c.value)]=1;_have[_base(c.value)]=1;});
+    _gfAnyMatch=false;
+    _gfExcluded.forEach(function(k){var s=k.split('||')[0]; if(_have[s]||_have[_base(s)])_gfAnyMatch=true;});
+  }
   _updateEcGfBadge();
 }
 function _updateEcGfBadge(){
@@ -11093,14 +11149,19 @@ function _updateEcGfBadge(){
   var dutSers=new Set();
   if(_gfExcluded) _gfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
   var n=dutSers.size,pts=_gfExcluded?_gfExcluded.size:0;
-  if(n>0){
+  if(n>0&&!_gfAnyMatch){
+    el.textContent='⚠ GF: '+n+' DUT'+(n!==1?'s':'')+' but none match this dataset';
+    el.style.background='#fff3cd'; el.style.color='#8a5000'; el.style.borderColor='#e0c05a'; el.style.display='';
+    el.title='The Global Filter has entries but none of its DUTs exist in this dataset -- likely a stale GF from another test. It is filtering nothing. Use "Clear global filter", or re-import a GF exported from this dataset.';
+  }else if(n>0){
     var suffix=_ecGfEnabled?'':' [OFF]';
+    el.title='';
     el.textContent=(_gfFocusMode?'Inspect: ':'')+pts+' pts in GF ('+n+' DUT'+(n!==1?'s':')')+(_gfFocusMode?' — INSPECT':'')+suffix;
     el.style.background=_ecGfEnabled?(_gfFocusMode?'#e8f0ff':'#ffeaea'):'#f5f5f5';
     el.style.color=_ecGfEnabled?(_gfFocusMode?'#0044aa':'#900'):'#888';
     el.style.borderColor=_ecGfEnabled?(_gfFocusMode?'#6688cc':'#c88'):'#ccc';
     el.style.display='';
-  }else{el.textContent='';el.style.display='none';}
+  }else{el.title='';el.textContent='';el.style.display='none';}
   if(btn){
     btn.textContent='GF: '+(_ecGfEnabled?'ON':'OFF');
     btn.style.background=_ecGfEnabled?'#ffe8e8':'#f5f5f5';
@@ -16053,10 +16114,11 @@ function _boxBaseSerial(s){
   for(var i=0;i<ALL_BOX_PORTS.length;i++){var sfx='_'+ALL_BOX_PORTS[i];if(s&&s.length>sfx.length&&s.slice(-sfx.length)===sfx)return s.slice(0,-sfx.length);}
   return s||'unknown';
 }
+var _gfAnyMatch=true;   // does any embedded point match the GF? (stale/non-matching GF warning)
 function _loadBoxGlobalFilter(){
   try{
     var raw=localStorage.getItem(GF_KEY);
-    if(!raw){_boxGfCoarseExcluded=null;return;}
+    if(!raw){_boxGfCoarseExcluded=null;_gfAnyMatch=true;return;}
     var obj=JSON.parse(raw);
     var serKws=['serial','unit id','dut id','s/n'];
     _boxGfCoarseExcluded=new Set();
@@ -16083,6 +16145,14 @@ function _loadBoxGlobalFilter(){
     });
     if(!_boxGfCoarseExcluded.size) _boxGfCoarseExcluded=null;
   }catch(e){_boxGfCoarseExcluded=null;}
+  /* One-time per-load: does any embedded per-DUT point match the GF? (vals_detail is already
+     reconstituted before this runs -- see init order). */
+  _gfAnyMatch=true;
+  if(_boxGfCoarseExcluded&&_boxGfCoarseExcluded.size>0){ var _any=false;
+    for(var _ci=0;_ci<BOX_DATA.length&&!_any;_ci++){ var _cd=BOX_DATA[_ci]; if(_cd.temp==='manual')continue; var _fss=_cd.freq_stats||[];
+      for(var _fi=0;_fi<_fss.length&&!_any;_fi++){ var _f=_fss[_fi],_vd=_f.vals_detail||[];
+        for(var _vi=0;_vi<_vd.length&&!_any;_vi++){ var _d=_vd[_vi]; if(_boxIsInGf(_boxBaseSerial(_d.s)+'||'+_boxFullCondKey(_cd.condition,_d.p)+'|Temp='+_cd.temp+'|Freq='+_gfFreqKey(_f)))_any=true; } } }
+    _gfAnyMatch=_any; }
 }
 function _updateBoxGfStatus(){
   var s=document.getElementById('box_gf_status');
@@ -16103,6 +16173,13 @@ function _updateBoxGfStatus(){
     if(!keys.length){s.textContent='';return;}
     var dutSers=new Set();
     keys.forEach(function(k){dutSers.add(k.split('||')[0]);});
+    if(!_gfAnyMatch){
+      s.textContent='⚠ GF: '+dutSers.size+' DUT'+(dutSers.size!==1?'s':'')+' but none match this dataset';
+      s.style.color='#8a5000';
+      s.title='The Global Filter has entries but NONE match any point in this dataset -- likely a stale GF from another test, or condition keys that don’t fit these columns. It is excluding/inspecting nothing. Use "Clear global filter", or re-import a GF exported from this dataset.';
+      return;
+    }
+    s.title='';
     s.textContent=keys.length+' pts in GF ('+dutSers.size+' DUTs)'+(mode==='focus'?' — INSPECT MODE':'');
     s.style.color=mode==='focus'?'#0044aa':'#900';
   }catch(e){s.textContent='';}
@@ -19188,6 +19265,7 @@ function _isSumGfExcl(serial,cond,freqLabel){
   });
   return found;
 }
+var _gfAnyMatch=true;   // does any embedded point match the GF? (stale/non-matching GF warning)
 function _loadSumGlobalFilter(){
   try{
     var raw=localStorage.getItem(GF_KEY);
@@ -19215,22 +19293,35 @@ function _loadSumGlobalFilter(){
       });
     }
   }catch(e){_sumGfExcluded=null;_sumGfCoarseExcluded=null;}
+  /* One-time per-load: does any embedded per-DUT point match the GF? */
+  _gfAnyMatch=true;
+  if(_sumGfCoarseExcluded&&_sumGfCoarseExcluded.size>0){ var _any=false;
+    for(var _ci=0;_ci<DATA.length&&!_any;_ci++){ var _cd=DATA[_ci],_di=_cd.dut_info||[],_fl=_cd.freq_labels||[],_frq=_cd.freqs||[];
+      for(var _fi=0;_fi<_frq.length&&!_any;_fi++){ for(var _dj=0;_dj<_di.length&&!_any;_dj++){ if(_isSumGfExcl(_di[_dj].s,_cd.condition,_fl[_fi]))_any=true; } } }
+    _gfAnyMatch=_any; }
   _updateSumGfBadge();
 }
 function _updateSumGfBadge(){
   var el=document.getElementById('sum_gf_badge');
   if(!el) return;
-  if(!_sumGfExcluded||!_sumGfExcluded.size){el.textContent='';el.style.display='none';return;}
+  if(!_sumGfExcluded||!_sumGfExcluded.size){el.textContent='';el.title='';el.style.display='none';return;}
   var dutSers=new Set();
   _sumGfExcluded.forEach(function(k){dutSers.add(k.split('||')[0]);});
   var n=dutSers.size,pts=_sumGfExcluded.size;
   var mode=(localStorage.getItem(GF_MODE_KEY)||'exclude');
   var isFocus=mode==='focus';
+  el.style.display=n>0?'':'none';
+  if(n>0&&!_gfAnyMatch){
+    el.textContent='⚠ GF: '+n+' DUT'+(n!==1?'s':'')+' but none match this dataset';
+    el.style.background='#fff3cd'; el.style.color='#8a5000'; el.style.borderColor='#e0c05a';
+    el.title='The Global Filter has entries but NONE match any point in this dataset -- likely a stale GF from another test, or condition keys that don’t fit these columns. It is excluding/inspecting nothing. Use "Clear global filter", or re-import a GF exported from this dataset.';
+    return;
+  }
+  el.title='';
   el.textContent=n>0?(isFocus?'Inspect: ':'')+pts+' pts in GF ('+n+' DUT'+(n!==1?'s':')')+(isFocus?' — INSPECT':''):'';
   el.style.background=isFocus?'#e8f0ff':'#ffeaea';
   el.style.borderColor=isFocus?'#6688cc':'#c88';
   el.style.color=isFocus?'#0044aa':'#900';
-  el.style.display=n>0?'':'none';
 }
 window.addEventListener('storage',function(e){
   if(e.key===GF_KEY||e.key===GF_MODE_KEY){_loadSumGlobalFilter();update();}
