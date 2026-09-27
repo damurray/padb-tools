@@ -2870,6 +2870,24 @@ def test_keep_population_as_gf() -> None:
           and "removeItem(GF_KEY)" in src.split("function clearSyncAllViews()", 1)[1].split("_updateBoxGfStatus", 1)[0])
 
 
+def test_view_state_persistence() -> None:
+    """Each view must remember its DISPLAY/analysis controls (pass/fail + table
+    view / per-point + table-open), not just filters, so flipping between views and
+    back keeps the same state (David 2026-09-27: set scatter fail-only + per-point,
+    go to boxplot, come back -> table view was lost). Persisted via saveState/loadState
+    (localStorage, per-view STATE_KEY); cleared only by Reset/Show-all/Clear-lock."""
+    src = Path(pp.__file__).read_text(encoding="utf-8")
+    # pass/fail persisted (scatter was the gap; the aggregate views already had theirs)
+    for k in ("scat_flt", "stat_filter_mode", "box_filter_mode", "sum_filter_mode"):
+        check(f"pass/fail persisted: _stSet('{k}')", f"_stSet('{k}'" in src and f"_stGet('{k}')" in src)
+    # table mode (grouped/per-point) persisted on the aggregate views
+    for k in ("stat_table_mode", "box_table_mode", "sum_table_mode"):
+        check(f"table mode persisted: _stSet('{k}')", f"_stSet('{k}'" in src and f"_stGet('{k}')" in src)
+    # table/panel open state persisted (scatter data table, stat_summary + boxplot stats panel)
+    for k in ("tbl_open", "stat_panel_open", "box_stat_open"):
+        check(f"table-open persisted: _stSet('{k}')", f"_stSet('{k}'" in src and f"_stGet('{k}')" in src)
+
+
 def test_reference_autofilter_site_scope() -> None:
     """Reference auto-filter impact must scope to the reference site like the plot views
     (David 2026-09-27). It had REF_AF.primarySite=null and set site='' on every bad point,
@@ -3030,6 +3048,7 @@ def main() -> None:
                test_scatter_spec_line_shape, test_active_filters_chip_rollout,
                test_lock_port_from_qualified_serials, test_keep_population_as_gf,
                test_summary_perpoint_respects_temp, test_reference_autofilter_site_scope,
+               test_view_state_persistence,
                test_compare_create_only, test_webapp_optional_toolbars,
                test_box_table_perpoint_mode, test_compare_boxplot_absent_dim_and_caret,
                test_box_data_filter_passfail_and_trim,

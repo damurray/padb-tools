@@ -903,6 +903,10 @@ function resetFilters(){
   /* Return the All/Passing/Failing data filter to All too, so Reset / "Show all data" truly
      shows the full data (David 2026-09-25 -- this radio was previously left as-is). */
   var _pfAll=document.querySelector('input[name="scat_flt"][value="all"]'); if(_pfAll)_pfAll.checked=true;
+  /* Display state: close the data table so Reset is a clean slate (the persisted table-open
+     is cleared with it -- David 2026-09-27). */
+  var _tpR=document.getElementById('scatter_table_panel');if(_tpR)_tpR.style.display='none';
+  var _tbR=document.getElementById('scatter_table_btn');if(_tbR)_tbR.textContent='Table ▾';
   /* Clear any manual zoom/pan -- otherwise buildLayout()'s _liveAxisRange()
      would keep re-applying the stale zoomed range even after Reset. */
   Plotly.relayout('plot',{'xaxis.autorange':true,'yaxis.autorange':true});
@@ -1142,6 +1146,7 @@ function toggleScatterTable(){
   p.style.display=open?'none':'block';
   var b=document.getElementById('scatter_table_btn');if(b) b.textContent=open?'Table ▾':'Table ▴';
   if(!open) updateScatterTable();
+  if(typeof saveState==='function') saveState();   // persist table-open across view switches
 }
 /* Spec/Limit + per-point Pass/Fail for the data-rows table & CSV (2026-09-15).
    Each scatter row carries Spec_Hi/Spec_Lo (datasheet nominal) and
@@ -1226,6 +1231,10 @@ function saveState(){
   _stSet('freq_hi',document.getElementById('freq_hi').value);
   _stSet('hide_spec',document.getElementById('hide_spec_chk').checked?'1':'0');
   _stSet('spec_shape',_specLineShape);
+  /* Persist the display/analysis controls too (not just filters), so flipping between
+     views and back keeps the same table view + pass/fail (David 2026-09-27). */
+  var _pf=document.querySelector('input[name="scat_flt"]:checked'); if(_pf) _stSet('scat_flt',_pf.value);
+  var _tp=document.getElementById('scatter_table_panel'); if(_tp) _stSet('tbl_open',(_tp.style.display!=='none'&&_tp.style.display!=='')?'1':'0');
   var _sap=document.getElementById('show_all_pts_chk'); if(_sap) _stSet('show_all_pts',_sap.checked?'1':'0');
   var _dm=document.getElementById('drawmode'); if(_dm) _stSet('drawmode',_dm.value);
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
@@ -1247,6 +1256,10 @@ function loadState(){
   if(_ssw){ try{ if(_isMaskDataset()){_ssw.style.display='';} }catch(e){} }
   var _sss=document.getElementById('spec_shape_sel');if(_sss)_sss.value=_specLineShape;
   var sap=_stGet('show_all_pts');var sapEl=document.getElementById('show_all_pts_chk');if(sap!==null&&sapEl)sapEl.checked=(sap==='1');
+  /* Restore display/analysis controls (pass/fail + table-open). update() runs after this
+     and populates the table, so we just set the panel's visibility, never call the toggle. */
+  var pfv=_stGet('scat_flt'); if(pfv!==null){var _pr=document.querySelector('input[name="scat_flt"][value="'+pfv+'"]'); if(_pr)_pr.checked=true;}
+  var tbo=_stGet('tbl_open'); if(tbo!==null){var _tpl=document.getElementById('scatter_table_panel'); if(_tpl){_tpl.style.display=(tbo==='1')?'block':'none'; var _tbb=document.getElementById('scatter_table_btn'); if(_tbb)_tbb.textContent=(tbo==='1')?'Table ▴':'Table ▾';}}
   var dm=_stGet('drawmode');var dmEl=document.getElementById('drawmode');if(dm!==null&&dmEl)dmEl.value=dm;
   if(typeof _showAllWarnText==='function')_showAllWarnText();
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
@@ -8359,6 +8372,7 @@ function toggleStatPanel(){
   } else {
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
+  if(typeof saveState==='function') saveState();   // persist panel-open across view switches
 }
 /* Largest positive/negative outlier, split by sign, relative to the row's
    own median -- same fix and same rationale as boxplot's identical helper:
@@ -9483,6 +9497,9 @@ function resetFilters(){
   var ptEl2=document.getElementById('show_pts_chk');if(ptEl2)ptEl2.checked=false;
   var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)hsEl.checked=false;
   var gfChk=document.getElementById('stat_gf_chk');if(gfChk)gfChk.checked=true;
+  /* Display state: grouped table + closed Statistics panel (clean-slate Reset). */
+  var _tmR=document.getElementById('stat_table_mode');if(_tmR)_tmR.value='grouped';
+  var _spR=document.getElementById('stat_panel');var _sbR=document.getElementById('stat_toggle_btn');if(_spR){_spR.style.display='none';if(_sbR)_sbR.innerHTML='&#9658; Statistics Table';}
   /* GF *Mode* (Inspect vs Exclude) is a global, non-scoped localStorage key
      shared across every results page from this browser origin -- leaving it
      in Inspect from a different, unrelated dataset silently hides almost
@@ -9521,6 +9538,10 @@ function saveState(){
   var gbEl=document.getElementById('stat_gb');if(gbEl)_stSet('stat_gb',gbEl.value);
   var drEl=document.getElementById('stat_drift');if(drEl)_stSet('stat_drift',drEl.value);
   var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)_stSet('stat_hide_spec',hsEl.checked?'1':'0');
+  /* Display/analysis controls: table mode (grouped/per-point) + Statistics-Table open state,
+     so flipping views and back keeps the same table view (David 2026-09-27). */
+  var tmEl=document.getElementById('stat_table_mode');if(tmEl)_stSet('stat_table_mode',tmEl.value);
+  var spnl=document.getElementById('stat_panel');if(spnl)_stSet('stat_panel_open',(spnl.style.display!=='none')?'1':'0');
 }
 function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
@@ -9549,6 +9570,9 @@ function loadState(){
   var sgb=_stGet('stat_gb');if(sgb!==null){var gbEl=document.getElementById('stat_gb');if(gbEl)gbEl.value=sgb;}
   var sdr=_stGet('stat_drift');if(sdr!==null){var drEl=document.getElementById('stat_drift');if(drEl)drEl.value=sdr;}
   var shs=_stGet('stat_hide_spec');if(shs!==null){var hsEl=document.getElementById('stat_hide_spec_chk');if(hsEl)hsEl.checked=(shs==='1');}
+  /* Restore table mode + Statistics-Table open (the init update() builds the panel when open). */
+  var stm=_stGet('stat_table_mode');if(stm!==null){var tmEl2=document.getElementById('stat_table_mode');if(tmEl2)tmEl2.value=stm;}
+  var spo=_stGet('stat_panel_open');if(spo==='1'){var spnl2=document.getElementById('stat_panel');var sbtn=document.getElementById('stat_toggle_btn');if(spnl2){spnl2.style.display='';if(sbtn)sbtn.innerHTML='&#9660; Statistics Table';}}
 }
 
 /* Sync the freq_lo/freq_hi slider (and therefore the Statistics Table, which
@@ -10386,7 +10410,7 @@ def _build_stat_summary_html(
         ' population (Group by pools; a #fail column counts DUTs past the go/no-go limit). Per-point ='
         ' one row per DUT (per-DUT mean) with PASS/FAIL vs the limit; Group by then just sorts/sections'
         ' the rows.">Table:<select id="stat_table_mode"'
-        ' onchange="var _r=getFilteredCondsAndParams();updateStatPanel(_r.conds,_r.params,true,_r.condsAll)">'
+        ' onchange="var _r=getFilteredCondsAndParams();updateStatPanel(_r.conds,_r.params,true,_r.condsAll);if(typeof saveState===\'function\')saveState()">'
         '<option value="grouped">Grouped stats</option>'
         '<option value="perpoint">Per-point</option></select></label>'
         + '<button id="stat_refresh_table_btn" class="reset-btn"'
@@ -15108,6 +15132,7 @@ function toggleStatPanel(){
   } else {
     el.style.display='none';btn.textContent='&#9658; Statistics Table';
   }
+  if(typeof saveState==='function') saveState();   // persist panel-open across view switches
 }
 function saveBoxCSV(withExcluded){
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();
@@ -15981,6 +16006,11 @@ function clearEverything(){
   var exEl2=document.getElementById('box_excl_denv_chk');if(exEl2)exEl2.checked=false;
   var dupEl=document.getElementById('box_collapse_dup_chk');if(dupEl)dupEl.checked=false;
   var ptEl=document.getElementById('box_show_pts_chk');if(ptEl)ptEl.checked=false;
+  /* Display state: back to grouped table + closed Statistics panel, so Reset is a clean
+     slate (the persisted table view is cleared with it -- David 2026-09-27). */
+  var _tmR=document.getElementById('box_table_mode');if(_tmR)_tmR.value='grouped';
+  var _spR=document.getElementById('box_stat_panel');var _sbR=document.getElementById('box_stat_toggle_btn');if(_spR){_spR.style.display='none';if(_sbR)_sbR.innerHTML='&#9658; Statistics Table';}
+  if(typeof _boxSyncDistBtn==='function')_boxSyncDistBtn();
   /* Freq filter */
   var flo=document.getElementById('box_freq_lo');if(flo)flo.value=BOX_FREQ_MIN;
   var fhi=document.getElementById('box_freq_hi');if(fhi)fhi.value=BOX_FREQ_MAX;
@@ -17225,6 +17255,10 @@ function saveState(){
   var tllLoEl=document.getElementById('box_tll_lo');if(tllLoEl)_stSet('box_tll_lo',tllLoEl.value);
   var kEl=document.getElementById('box_iqr_k');if(kEl)_stSet('box_iqr_k',kEl.value);
   var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)_stSet('box_hide_spec',hsEl.checked?'1':'0');
+  /* Display/analysis controls: table mode (grouped/per-point) + Statistics-Table open, so
+     flipping views and back keeps the same table view (David 2026-09-27). */
+  var tmEl=document.getElementById('box_table_mode');if(tmEl)_stSet('box_table_mode',tmEl.value);
+  var bspnl=document.getElementById('box_stat_panel');if(bspnl)_stSet('box_stat_open',(bspnl.style.display!=='none')?'1':'0');
 }
 function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
@@ -17261,6 +17295,10 @@ function loadState(){
   var tllLo=_stGet('box_tll_lo');var tllLoEl=document.getElementById('box_tll_lo');if(tllLo!==null&&tllLoEl)tllLoEl.value=tllLo;
   var iqr=_stGet('box_iqr_k');if(iqr!==null){var kEl=document.getElementById('box_iqr_k');if(kEl)kEl.value=iqr;}
   var hs=_stGet('box_hide_spec');if(hs!==null){var hsEl=document.getElementById('box_hide_spec_chk');if(hsEl)hsEl.checked=(hs==='1');}
+  /* Restore table mode + Statistics-Table open BEFORE _boxSyncDistBtn (which keys off the
+     mode). The init update() builds the panel when open. */
+  var btm=_stGet('box_table_mode');if(btm!==null){var tmEl3=document.getElementById('box_table_mode');if(tmEl3)tmEl3.value=btm;}
+  var bso=_stGet('box_stat_open');if(bso==='1'){var bspnl2=document.getElementById('box_stat_panel');var bsbtn=document.getElementById('box_stat_toggle_btn');if(bspnl2){bspnl2.style.display='';if(bsbtn)bsbtn.innerHTML='&#9660; Statistics Table';}}
   if(typeof _boxSyncDistBtn==='function') _boxSyncDistBtn();   // show the Distribution button only in per-point mode
 }
 (function init(){
@@ -17831,7 +17869,7 @@ def _build_box_interactive_html(
         + '  <label style="font-size:12px" title="Grouped stats = one row per condition/frequency'
         ' population (Group by pools; a #fail column counts points past the limit). Per-point = one'
         ' row per raw measurement with PASS/FAIL vs the limit; Group by then just sorts/sections the'
-        ' rows.">Table:<select id="box_table_mode" onchange="updateStatsTable(getSelectedConds(),'
+        ' rows.">Table:<select id="box_table_mode" onchange="saveState();updateStatsTable(getSelectedConds(),'
         'getYFilter(),getSelectedBoxSerials(),getSelectedTemps(),true);_boxSyncDistBtn()">'
         '<option value="grouped">Grouped stats</option>'
         '<option value="perpoint">Per-point</option></select></label>\n'
@@ -18946,6 +18984,7 @@ function resetFilters(){
   var tllHiRst=document.getElementById('sum_tll_hi');if(tllHiRst)tllHiRst.value='';
   var tllLoRst=document.getElementById('sum_tll_lo');if(tllLoRst)tllLoRst.value='';
   var ec=document.getElementById('sum_show_excl_chk');if(ec)ec.checked=false;
+  var _tmR=document.getElementById('sum_table_mode');if(_tmR)_tmR.value='grouped';   /* display state: grouped table (clean-slate Reset) */
   document.querySelectorAll('.sum_ser_chk').forEach(function(c){c.checked=true;});
   var aSer=document.getElementById('all_sum_ser');if(aSer){aSer.checked=true;aSer.indeterminate=false;}
   var bSer=document.getElementById('badge_sum_ser');if(bSer)bSer.classList.remove('active');
@@ -20375,6 +20414,8 @@ function saveState(){
   var muEl=document.getElementById('sum_mu');if(muEl)_stSet('sum_mu',muEl.value);
   var dvEl=document.getElementById('sum_denv');if(dvEl)_stSet('sum_denv',dvEl.value);
   var hsEl=document.getElementById('sum_hide_spec_chk');if(hsEl)_stSet('sum_hide_spec',hsEl.checked?'1':'0');
+  /* Table mode (grouped/per-point) persists too, so flipping views keeps the same table view. */
+  var tmEl=document.getElementById('sum_table_mode');if(tmEl)_stSet('sum_table_mode',tmEl.value);
 }
 function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
@@ -20404,6 +20445,7 @@ function loadState(){
   var smu=_stGet('sum_mu');if(smu!==null){var muEl=document.getElementById('sum_mu');if(muEl)muEl.value=smu;}
   var sdv=_stGet('sum_denv');if(sdv!==null){var dvEl=document.getElementById('sum_denv');if(dvEl)dvEl.value=sdv;}
   var shs=_stGet('sum_hide_spec');if(shs!==null){var hsEl=document.getElementById('sum_hide_spec_chk');if(hsEl)hsEl.checked=(shs==='1');}
+  var stm=_stGet('sum_table_mode');if(stm!==null){var tmEl2=document.getElementById('sum_table_mode');if(tmEl2)tmEl2.value=stm;}
 }
 
 _loadSumGlobalFilter();
@@ -20962,7 +21004,7 @@ def _build_summary_html(
         + '  <b style="font-size:13px">Results Table</b>\n'
         + '  <label style="font-size:12px" title="Grouped stats = one row per condition/frequency'
         ' (a #fail column counts DUTs past the go/no-go limit). Per-point = one row per DUT (cross-temperature'
-        ' mean) with PASS/FAIL vs the limit.">Table:<select id="sum_table_mode" onchange="buildTable()">'
+        ' mean) with PASS/FAIL vs the limit.">Table:<select id="sum_table_mode" onchange="buildTable();if(typeof saveState===\'function\')saveState()">'
         '<option value="grouped">Grouped stats</option>'
         '<option value="perpoint">Per-point</option></select></label>\n'
         + '  <button id="sum_refresh_table_btn" class="reset-btn"'
