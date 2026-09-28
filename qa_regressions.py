@@ -1883,14 +1883,36 @@ def test_lock_applied_badge_not_stale() -> None:
     check("PADB_lockApply brackets apply() with the _padbLockApplying guard",
           "var _padbLockApplying=false;" in src
           and "_padbLockApplying=true; var rep; try{ rep=_padbLockReg.apply(o)||{}; }finally{ _padbLockApplying=false; }" in src)
-    check("PADB_lockMarkUnapplied is guarded (not during apply, no-op with no lock)",
-          "function PADB_lockMarkUnapplied(){ if(!_padbLockApplying && PADB_lockGet()) PADB_lockRenderBar({unapplied:true}); }" in src)
+    check("PADB_lockMarkUnapplied guarded during apply + refreshes the bar (lock badge AND GF section)",
+          "function PADB_lockMarkUnapplied(){" in src
+          and "if(_padbLockApplying) return;" in src.split("function PADB_lockMarkUnapplied(){",1)[1].split("}\n",1)[0]
+          and "PADB_lockRenderBar(PADB_lockGet()?{unapplied:true}:{});" in src)
     check("bar renders a 'not applied' state",
           "rep&&rep.unapplied?' <span style=\"color:#999\"" in src
           and ">not applied</span>" in src)
     check("every update() flips the badge (all padb_plots views + reference)",
           src.count("function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();") == 9
           and "function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();" in ref)
+
+
+def test_set_filter_as_gf_respects_passfail() -> None:
+    """boxplot "Set filter as GF" must capture only the SHOWN slice -- respecting the active
+    pass/fail (and Y-range) filter, same as the plot/per-point table -- not every measurement
+    of the selected conditions (David 2026-09-28). Reported: stepping named bands in
+    "Failing only", Set-as-GF swept in Test Event Status=P (passing) points too, because
+    setFilterAsGf ignored yFlt. Reproduced: 525 failing (all F) shown, but Set-as-GF captured
+    266 keys mixing P and F. Fix: apply _boxVerdict(cd.condition,d,yFlt) per measurement +
+    the Y-range trim, mirroring _boxPerPointPoints. TEETH: the verdict/mode guard is present
+    in setFilterAsGf."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    seg = src.split("function setFilterAsGf(")[1].split("\nfunction ")[0]
+    check("setFilterAsGf reads the active pass/fail filter",
+          "var yFlt=getYFilter();" in seg
+          and "var _pass=yFlt&&yFlt.mode==='passing', _fail=yFlt&&yFlt.mode==='failing';" in seg)
+    check("setFilterAsGf skips measurements that don't match the pass/fail verdict",
+          "var _vd=_boxVerdict(cd.condition,d,yFlt); if(_pass&&_vd===true) return; if(_fail&&_vd!==true) return;" in seg)
+    check("setFilterAsGf also honors the Y-range trim (same as the shown slice)",
+          "if(d.v>_rhi||d.v<_rlo) return;" in seg)
 
 
 def test_summary_group_by_serial() -> None:
@@ -3134,41 +3156,45 @@ def test_lock_port_from_qualified_serials() -> None:
 
 
 def test_keep_population_as_gf() -> None:
-    """Keep-only-this-population (David 2026-09-25): the boxplot "Keep only this
-    population" button enforces an EXACT serial+port population cross-view by writing
-    every NON-selected (baseSerial, port) combo to the point-precise Global Filter
-    (whole-DUT sentinel ||manual||0, with Port=<port> in the cond key so the dims-
-    intersection matcher pins that exact port). This is the sanctioned way to lock a
-    per-unit serial+port population that the dimension-level Locked filters cannot
-    (independent Serial x Port dims can't express "MY123 RF1 but not RF2"). It rides
-    on the existing GF (no parallel layer): merges via _mergeGf, shows in the GF badge,
-    round-trips via GF CSV export/import, and is undone with Clear global filter."""
+    """Keep-only via the Global Filter, redesigned (David 2026-09-28). The boxplot button is
+    now "Keep only what's shown": it stores the TRUE INVERSE of the current visible slice --
+    excluding every measurement NOT in view (conditions + freq + serial/port + temp + pass/fail
+    + Y-range) -- so every view then shows exactly this slice (keepPopulationAsGf ->
+    _keepPopulationCore('view')). Hybrid keys: compact whole-DUT (||manual||0) when a unit has
+    no in-view measurement, point-precise per measurement for a partially-in-view unit. The
+    Path B Lock hook keeps a SEPARATE 'population' scope (serial+port units only -- the lock's
+    dims already carry conditions/freq/pass-fail; the GF just pins the per-unit population the
+    dims can't express: "MY123 RF1 but not RF2"). Buttons are grouped by INTENT (Keep only vs
+    Exclude). Verified live on AM1: Failing-only keep-only kept exactly the failing slice."""
     src = Path(pp.__file__).read_text(encoding="utf-8")
-    check("boxplot exposes a 'Keep only this population' button -> keepPopulationAsGf()",
-          "keepPopulationAsGf()" in src and "Keep only this population" in src)
-    check("keepPopulationAsGf + shared _keepPopulationCore are defined",
-          "function keepPopulationAsGf()" in src and "function _keepPopulationCore()" in src)
-    check("it enforces the population through the existing Global Filter (_mergeGf), not a parallel layer",
-          "_mergeGf(c.keys)" in src.split("function keepPopulationAsGf()", 1)[1].split("function applyGlobalFilter", 1)[0])
-    kp = src.split("function _keepPopulationCore()", 1)[1].split("function applyGlobalFilter", 1)[0]
-    check("keep-only keys use the whole-DUT sentinel (span temps/freqs) + Port-qualified cond key",
-          "||manual||0" in kp and "_boxFullCondKey(cd.condition,d.p||'')" in kp)
-    check("keep-only identity is (baseSerial, port) -- port-qualified per-unit selector",
-          "_boxBaseSerial(d.s)+'|'+(d.p||'')" in kp)
-    check("keep-only excludes only NON-kept combos (kept ones are skipped)",
-          "if(kept[id]) return;" in kp)
-    check("keep-only guards when nothing is narrowed to keep",
-          "Nothing narrowed to keep" in src)
-    # One-click combined convenience: Sync (lock dims + keep-only) + Clear sync (undo both).
-    check("boxplot exposes one-click 'Sync this selection to all views' -> syncSelectionToAllViews()",
-          "syncSelectionToAllViews()" in src and "Sync this selection to all views" in src)
-    check("sync locks DIMENSIONS but strips serial/port (GF is the sole population layer)",
-          "delete o.dims['Serial Number']" in src and "delete o.dims['Port']" in src
-          and "_keepPopulationCore()" in src.split("function syncSelectionToAllViews()", 1)[1])
-    check("Clear sync undoes BOTH the lock and the kept-population GF in one click",
-          "function clearSyncAllViews()" in src and "clearSyncAllViews()" in src
-          and "PADB_lockClear()" in src.split("function clearSyncAllViews()", 1)[1].split("}", 1)[0]
-          and "removeItem(GF_KEY)" in src.split("function clearSyncAllViews()", 1)[1].split("_updateBoxGfStatus", 1)[0])
+    check("boxplot exposes a 'Keep only what's shown' button -> keepPopulationAsGf()",
+          "keepPopulationAsGf()" in src and "Keep only what’s shown</button>" in src)
+    check("keepPopulationAsGf + scoped _keepPopulationCore are defined",
+          "function keepPopulationAsGf()" in src and "function _keepPopulationCore(scope)" in src)
+    check("keepPopulationAsGf uses the 'view' scope (true inverse of the shown slice)",
+          "_keepPopulationCore('view')" in src.split("function keepPopulationAsGf()", 1)[1].split("\nfunction ", 1)[0])
+    check("it enforces the slice through the existing Global Filter (_mergeGf), not a parallel layer",
+          "_mergeGf(c.keys)" in src.split("function keepPopulationAsGf()", 1)[1].split("\nfunction ", 1)[0])
+    kp = src.split("function _keepPopulationCore(scope)", 1)[1].split("\nfunction ", 1)[0]
+    check("'population' scope: whole-DUT sentinel + Port-qualified cond key, non-kept only",
+          "||manual||0" in kp and "_boxFullCondKey(cd.condition,d.p||'')" in kp and "if(kept[id]) return;" in kp
+          and "_boxBaseSerial(d.s)+'|'+(d.p||'')" in kp)
+    check("'view' scope: true inverse via an inView() predicate incl. pass/fail verdict + Y-range",
+          "function inView(cd,f,d){" in kp
+          and "var _vd=_boxVerdict(cd.condition,d,yFlt); if(_pass&&_vd===true) return false; if(_fail&&_vd!==true) return false;" in kp
+          and "if(d.v>_rhi||d.v<_rlo) return false;" in kp
+          and "if(inView(cd,f,d)) return;" in kp)
+    check("'view' scope hybrid keys: whole-DUT when the unit is fully hidden, else point-precise",
+          "if(!visUnit[u]) k=" in kp and "_gfFreqKey(f);" in kp)
+    # Path B Lock hook stays on the 'population' scope (serial+port only).
+    check("Lock onLock hook uses the 'population' scope (serial/port only)",
+          "_keepPopulationCore('population')" in src)
+    # Buttons grouped by intent; Sync/Clear-sync buttons removed (folded into Lock).
+    check("GF buttons grouped by intent (Keep only / Exclude labels)",
+          "Keep only ▸</span>" in src and "Exclude ▸</span>" in src)
+    check("old Sync / Clear-sync buttons are gone",
+          "Sync this selection to all views</button>" not in src
+          and 'onclick="clearSyncAllViews()"' not in src)
 
 
 def test_view_state_persistence() -> None:
@@ -3399,6 +3425,7 @@ def main() -> None:
                test_gf_in_lock_bar,
                test_stat_summary_failing_marker_outline,
                test_lock_applied_badge_not_stale,
+               test_set_filter_as_gf_respects_passfail,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()

@@ -4022,7 +4022,15 @@ function PADB_lockApply(){ var o=PADB_lockGet(); if(!o||!_padbLockReg) return nu
    at its end so the badge flips to "not applied" on any filter change; it's suppressed while
    PADB_lockApply is running (that path renders "applied N" itself), and it never touches the
    bar's transient "saved" state (that render happens outside update()). No-op with no lock. */
-function PADB_lockMarkUnapplied(){ if(!_padbLockApplying && PADB_lockGet()) PADB_lockRenderBar({unapplied:true}); }
+function PADB_lockMarkUnapplied(){
+  if(_padbLockApplying) return;
+  /* Re-render the shared bar on any filter change so BOTH the lock badge AND the Global
+     Filter section stay current -- Clear global filter / Set-as-GF / Keep-only must refresh
+     the bar's GF summary even when no lock is saved, else the GF section looked stale and
+     "Clear global filter" seemed to do nothing (David 2026-09-28). Skipped during
+     PADB_lockApply (that path renders "applied N" itself). */
+  PADB_lockRenderBar(PADB_lockGet()?{unapplied:true}:{});
+}
 function PADB_lockClear(){
   /* Drop the saved lock only; leave the view's current filter controls as they are (a lock
      had SET them, so re-reading changes nothing visible). The view's data only updates on an
@@ -16455,6 +16463,14 @@ function setFilterAsGf(){
   var selTemps=getSelectedTemps();
   var tempFlt=allTemps.length>1&&selTemps.length<allTemps.length;
   var freqFlt=fr.lo>BOX_FREQ_MIN+0.001||fr.hi<BOX_FREQ_MAX-0.001;
+  /* Respect the ACTIVE pass/fail (and Y-range) filter, same as the plot/per-point table
+     (_boxPerPointPoints) -- "Set filter as GF" must capture exactly the SHOWN slice. Before
+     this it ignored pass/fail and grabbed every measurement of the selected conditions, so
+     under "Failing only" it still swept in passing points (reported: stepping bands in
+     Failing-only, Set-as-GF captured Test Event Status=P too -- David 2026-09-28). */
+  var yFlt=getYFilter();
+  var _pass=yFlt&&yFlt.mode==='passing', _fail=yFlt&&yFlt.mode==='failing';
+  var _rhi=(yFlt&&isFinite(yFlt.yhi))?yFlt.yhi:Infinity, _rlo=(yFlt&&isFinite(yFlt.ylo))?yFlt.ylo:-Infinity;
   var keys=[],seen=new Set();
   BOX_DATA.forEach(function(cd){
     if(selConds.indexOf(cd.condition)<0) return;
@@ -16462,11 +16478,13 @@ function setFilterAsGf(){
     if(cd.temp==='manual') return; /* safety guard */
     (cd.freq_stats||[]).forEach(function(f){
       if(f.freq<fr.lo||f.freq>fr.hi) return;
-      /* Collect distinct (baseSer, port) for this freq that pass serial/port filters */
+      /* Collect distinct (baseSer, port) for this freq that pass serial/port + pass/fail filters */
       (f.vals_detail||[]).forEach(function(d){
         if(!d.s) return;
         if(serFlt&&selBoxSers.indexOf(d.s)<0) return;
         if(portFlt&&selPorts.indexOf(d.p||'')<0) return;
+        if(d.v>_rhi||d.v<_rlo) return;
+        if(_pass||_fail){var _vd=_boxVerdict(cd.condition,d,yFlt); if(_pass&&_vd===true) return; if(_fail&&_vd!==true) return;}
         var baseSer=_boxBaseSerial(d.s);
         var fck=_boxFullCondKey(cd.condition,d.p||'');
         var useTemp=(tempFlt||freqFlt)?cd.temp:'manual';
@@ -16487,29 +16505,65 @@ function setFilterAsGf(){
    intersection matcher keyed on Port=<port>) can. Identity is (_boxBaseSerial(d.s), d.p),
    so a port-qualified box serial ("MY123_RF1") is the natural per-unit+port selector.
    David 2026-09-25. */
-function _keepPopulationCore(){
+/* Two scopes (David 2026-09-28):
+   - scope='population' (Path B Lock hook): invert ONLY the serial+port selection -- keep those
+     UNITS across all conditions/freq/pass-fail. Conditions/freq/pass-fail live in the lock's
+     own dims, so the GF just carries the per-unit population the dims can't express. Compact
+     whole-DUT keys.
+   - scope='view' (the "Keep only what's shown" button): store the TRUE INVERSE of the current
+     VISIBLE slice -- exclude every measurement NOT in view (respecting conditions + freq +
+     serial/port + temp + pass/fail + Y-range, the same predicate the plot/per-point table use),
+     so applying the GF everywhere shows exactly what you see. Hybrid keys: compact whole-DUT
+     when a unit has NO in-view measurement (the common serial/port-narrowed case), point-precise
+     per measurement when a unit is only partially in view (a condition/freq/fail subset). */
+function _keepPopulationCore(scope){
+  scope=scope||'population';
   var allBoxSers=getAllBoxSerials(), selBoxSers=getSelectedBoxSerials();
   var serFlt=allBoxSers.length>1&&selBoxSers.length<allBoxSers.length;
   var allPorts=getAllBoxPorts(), selPorts=getSelectedBoxPorts();
   var portFlt=allPorts.length>1&&selPorts.length<allPorts.length;
-  /* Pass 1: classify every (baseSerial, port) in the data as kept (passes the current
-     serial+port selection) or not. Condition/temp/freq filters are intentionally ignored
-     -- this locks the serial+port POPULATION only; conditions stay a Locked-filter/other
-     concern. */
-  var kept={}, universe={};
-  BOX_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(f){ (f.vals_detail||[]).forEach(function(d){
-    if(!d.s) return; var id=_boxBaseSerial(d.s)+'|'+(d.p||''); universe[id]=1;
-    var serOk=!serFlt||selBoxSers.indexOf(d.s)>=0, portOk=!portFlt||selPorts.indexOf(d.p||'')>=0;
-    if(serOk&&portOk) kept[id]=1; }); }); });
-  /* Pass 2: emit a whole-DUT exclusion key for every non-kept (baseSerial, port) across
-     every condition it appears in (Port=<port> in the cond key -> dims-intersection matches
-     that exact port on every view). */
+  if(scope==='population'){
+    var kept={}, universe={};
+    BOX_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(f){ (f.vals_detail||[]).forEach(function(d){
+      if(!d.s) return; var id=_boxBaseSerial(d.s)+'|'+(d.p||''); universe[id]=1;
+      var serOk=!serFlt||selBoxSers.indexOf(d.s)>=0, portOk=!portFlt||selPorts.indexOf(d.p||'')>=0;
+      if(serOk&&portOk) kept[id]=1; }); }); });
+    var pkeys=[], pseen={};
+    BOX_DATA.forEach(function(cd){ if(cd.temp==='manual') return; (cd.freq_stats||[]).forEach(function(f){ (f.vals_detail||[]).forEach(function(d){
+      if(!d.s) return; var id=_boxBaseSerial(d.s)+'|'+(d.p||''); if(kept[id]) return;
+      var k=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||manual||0';
+      if(!pseen[k]){pseen[k]=1;pkeys.push(k);} }); }); });
+    return {keys:pkeys, nKept:Object.keys(kept).length, nUni:Object.keys(universe).length, narrowed:(serFlt||portFlt)};
+  }
+  /* scope==='view': true inverse of the visible slice. */
+  var selConds=getSelectedConds();
+  var fr=getBoxFreqRange();
+  var allTemps=BOX_DATA.map(function(cd){return cd.temp;}).filter(function(t,i,a){return a.indexOf(t)===i;});
+  var selTemps=getSelectedTemps(), tempFlt=allTemps.length>1&&selTemps.length<allTemps.length;
+  var yFlt=getYFilter();
+  var _rhi=(yFlt&&isFinite(yFlt.yhi))?yFlt.yhi:Infinity, _rlo=(yFlt&&isFinite(yFlt.ylo))?yFlt.ylo:-Infinity;
+  var _pass=yFlt&&yFlt.mode==='passing', _fail=yFlt&&yFlt.mode==='failing';
+  function inView(cd,f,d){
+    if(selConds.indexOf(cd.condition)<0) return false;
+    if(tempFlt&&selTemps.indexOf(cd.temp)<0) return false;
+    if(f.freq<fr.lo||f.freq>fr.hi) return false;
+    if(serFlt&&selBoxSers.indexOf(d.s)<0) return false;
+    if(portFlt&&selPorts.indexOf(d.p||'')<0) return false;
+    if(d.v>_rhi||d.v<_rlo) return false;
+    if(_pass||_fail){var _vd=_boxVerdict(cd.condition,d,yFlt); if(_pass&&_vd===true) return false; if(_fail&&_vd!==true) return false;}
+    return true;
+  }
+  var visUnit={}, uni={};
+  BOX_DATA.forEach(function(cd){ if(cd.temp==='manual') return; (cd.freq_stats||[]).forEach(function(f){ (f.vals_detail||[]).forEach(function(d){
+    if(!d.s) return; var u=_boxBaseSerial(d.s)+'|'+(d.p||''); uni[u]=1; if(inView(cd,f,d)) visUnit[u]=1; }); }); });
   var keys=[], seen={};
   BOX_DATA.forEach(function(cd){ if(cd.temp==='manual') return; (cd.freq_stats||[]).forEach(function(f){ (f.vals_detail||[]).forEach(function(d){
-    if(!d.s) return; var id=_boxBaseSerial(d.s)+'|'+(d.p||''); if(kept[id]) return;
-    var k=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||manual||0';
+    if(!d.s) return; if(inView(cd,f,d)) return;   // in view -> keep
+    var u=_boxBaseSerial(d.s)+'|'+(d.p||''), k;
+    if(!visUnit[u]) k=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||manual||0';               // whole unit hidden -> compact
+    else k=_boxBaseSerial(d.s)+'||'+_boxFullCondKey(cd.condition,d.p||'')+'||'+cd.temp+'||'+_gfFreqKey(f);        // partial -> point-precise
     if(!seen[k]){seen[k]=1;keys.push(k);} }); }); });
-  return {keys:keys, nKept:Object.keys(kept).length, nUni:Object.keys(universe).length, narrowed:(serFlt||portFlt)};
+  return {keys:keys, nKept:Object.keys(visUnit).length, nUni:Object.keys(uni).length, narrowed:(keys.length>0)};
 }
 /* Keep ONLY the selected serial+port populations everywhere: exclude every OTHER
    (baseSerial, port) combo via the Global Filter, spanning all conditions/temps/freqs
@@ -16517,12 +16571,14 @@ function _keepPopulationCore(){
    is enforced cross-view -- the dimension-level Locked filters use independent Serial and
    Port dims and can't express "MY123 RF1 but not RF2"; the point-precise GF (dims-
    intersection matcher keyed on Port=<port>) can. David 2026-09-25. */
+/* "Keep only what's shown" (David 2026-09-28): store the TRUE INVERSE of the current visible
+   slice in the GF, so every view then shows exactly what you have on screen -- units AND their
+   conditions/freq/pass-fail, not just the serial+port population. See _keepPopulationCore('view'). */
 function keepPopulationAsGf(){
-  var c=_keepPopulationCore();
-  if(!c.narrowed){ alert('Nothing narrowed to keep. Select the serial(s) and/or port(s) you want to KEEP in the Serial/Port filters first, then click this.'); return; }
-  if(!c.keys.length){ alert('Nothing to exclude -- your current selection already covers every serial+port in the data.'); return; }
+  var c=_keepPopulationCore('view');
+  if(!c.narrowed){ alert('Nothing is filtered, so there is nothing to exclude -- the current view already shows all the data. Narrow the conditions / frequency / serial-port / pass-fail first, then click this to keep only what remains on screen.'); return; }
   _mergeGf(c.keys);   // merges into the GF + reloads + update() (cross-view)
-  alert('Keep-only applied: '+c.nKept+' of '+c.nUni+' serial+port populations kept.\n\nThe other '+(c.nUni-c.nKept)+' were added to the Global Filter (exact per-unit port), so every view now shows only your population.\n\nUndo any time with "Clear global filter".');
+  alert('Keep only what’s shown: added '+c.keys.length+' exclusion entr'+(c.keys.length===1?'y':'ies')+' to the Global Filter (everything NOT currently in view), so every view now shows exactly this slice.\n\nUndo any time with "Clear global filter".');
 }
 /* One-click convenience (David 2026-09-25): the new-user shortcut for "make every view
    show exactly what I'm looking at here". Combines the two granular steps -- Lock the
@@ -16560,7 +16616,7 @@ function clearSyncAllViews(){
    complexity is hidden; the lock bar shows what happened. onClear re-reads the GF + rerenders
    so the (already-done, view-agnostic) key subtraction shows immediately here. */
 function _bxLockOnLock(o){
-  var c=_keepPopulationCore();
+  var c=_keepPopulationCore('population');   // Path B: the lock's dims already carry cond/freq/pass-fail; GF only pins the serial+port population
   if(c.narrowed&&c.keys.length){
     o=o||(typeof PADB_lockGet==='function'?PADB_lockGet():null)||{}; o.dims=o.dims||{};
     delete o.dims['Serial Number']; delete o.dims['Port'];   // GF owns the exact population
@@ -18243,29 +18299,34 @@ def _build_box_interactive_html(
           'border:1px solid #e4e4e4;border-radius:5px;margin:4px 0;background:#fafafa">\n'
         + '  <span style="font-weight:700;color:#666;font-size:10px;text-transform:uppercase;'
           'letter-spacing:.05em;margin-right:4px;white-space:nowrap">Global Filter</span>\n'
-        # "Sync this selection to all views" / "Clear sync" were folded into the single
-        # "Lock these filters" button (David 2026-09-28, Path B): Lock now also pins the exact
-        # serial+port population via the GF (onLock hook) and Clear removes only those keys
-        # (PADB_lockSubtractGf), so the two-button dance is gone and the GF plumbing is hidden.
+        # The GF write-actions are grouped by INTENT so it's obvious which direction each goes
+        # (David 2026-09-28): KEEP ONLY (green -- saves the INVERSE of what's shown, so those
+        # stay) vs EXCLUDE (amber -- adds the shown/selected slice to the exclusion list, so
+        # those disappear). Both write the same shared list; they differ only in include vs
+        # exclude. ("Sync this selection to all views"/"Clear sync" were folded into the single
+        # Lock button -- Path B.)
+        + '  <span style="font-size:10px;font-weight:700;color:#2a7a2a;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap" title="These KEEP a population -- they save the inverse (everything NOT shown) to the Global Filter, so every view shows only your slice.">Keep only ▸</span>\n'
         + '  <button class="toggle-btn"'
-        ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
-        ' title="Set currently selected conditions + serials as the global exclusion filter -- adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)"'
+        ' style="background:#eef7ee;border-color:#2a7a2a;color:#2a7a2a;font-weight:600"'
+        ' title="KEEP ONLY what is currently on screen: saves the TRUE INVERSE (every measurement NOT in the current view -- respecting conditions, frequency, serial/port, temperature and pass/fail) to the Global Filter, so every view then shows exactly this slice. This also captures an exact per-unit serial+port population the dimension-level Locked filters cannot (independent Serial and Port dims can\'t express MY123 RF1-only). Adds to the existing Global Filter; undo with Clear global filter."'
+        ' onclick="keepPopulationAsGf()">Keep only what’s shown</button>\n'
+        + '  <span class="sep"></span>\n'
+        + '  <span style="font-size:10px;font-weight:700;color:#8a5000;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap" title="These EXCLUDE a slice -- they add the shown/selected points to the Global Filter, so those points disappear from every view.">Exclude ▸</span>\n'
+        + '  <button class="toggle-btn"'
+        ' style="background:#fff3e0;border-color:#c07000;color:#8a5000;font-weight:600"'
+        ' title="EXCLUDE the currently-shown slice: adds the selected conditions + serials (respecting the active pass/fail and Y-range filter) to the Global exclusion filter, so those points disappear from every view. Adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)."'
         ' onclick="setFilterAsGf()">Set filter as GF</button>\n'
         + '  <button class="toggle-btn"'
         ' style="background:#fff3e0;border-color:#c07000;color:#8a5000;font-weight:600"'
-        ' title="Keep ONLY the serial+port populations you have selected here -- every OTHER serial/port combination is added to the Global Filter (exact per-unit port, so MY123 RF1-only stays RF1-only) and every view then shows just your population. This is the way to lock an exact serial+port population that the dimension-level Locked filters cannot (independent Serial and Port dims can\'t express per-unit pairing). Adds to the existing Global Filter; undo with Clear global filter."'
-        ' onclick="keepPopulationAsGf()">Keep only this population</button>\n'
-        + '  <button class="toggle-btn"'
-        ' style="background:#eef7ee;border-color:#2a7a2a;color:#2a7a2a;font-weight:600"'
-        ' title="Apply your saved Locked filters here, then add that exact slice to the Global Filter (exclude it everywhere) -- one-click equivalent of Apply lock + Set filter as GF. Use when your locked view is the population you want to DROP."'
+        ' title="EXCLUDE your saved Locked-filter slice: apply the lock here then add that exact slice to the Global Filter (drop it everywhere) -- one-click Apply lock + Set filter as GF. Use when the locked view is the population you want to DROP."'
         ' onclick="_boxAddLockToGf()">Add locked filters to GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_gf_btn"'
-        ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
-        ' title="Set IQR outlier points as the global exclusion filter -- checked independently at each currently-selected Temperature checkbox (not Room-only), so narrow the Temperature filter first if you only want outliers from specific temperature(s). Adds to the existing filter, doesn\'t replace it"'
+        ' style="background:#fff3e0;border-color:#c07000;color:#8a5000"'
+        ' title="EXCLUDE IQR outlier points -- checked independently at each currently-selected Temperature checkbox (not Room-only), so narrow the Temperature filter first if you only want outliers from specific temperature(s). Adds to the existing filter, doesn\'t replace it"'
         ' onclick="applyGlobalFilter()">Set outliers as GF</button>\n'
         + '  <button class="toggle-btn" id="box_apply_delta_gf_btn"'
-        ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc"'
-        ' title="Set delta-outlier points as the global exclusion filter -- adds to the existing filter, doesn\'t replace it"'
+        ' style="background:#fff3e0;border-color:#c07000;color:#8a5000"'
+        ' title="EXCLUDE delta-outlier points -- adds to the existing filter, doesn\'t replace it"'
         ' onclick="applyDeltaGlobalFilter()">Set delta outliers as GF</button>\n'
         + '  <span class="sep"></span>\n'
         + '  <label class="toggle-btn" style="background:#fff7e8;border-color:#e0905a;color:#a05000"'
