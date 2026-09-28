@@ -2745,11 +2745,23 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     binary_encode = bool(cfg.get("binary_encode", False))
     freq_b64 = value_b64 = ""
     if binary_encode:
-        freq_b64 = _encode_f32_b64(df["Frequency_MHz"])
+        # Value is float32-packed (boxplot packs its per-point values the same way, so
+        # both views round Y identically -- no cross-view drift). But Frequency_MHz
+        # stays FULL-PRECISION JSON: it is the binning / named-band SEGMENT axis, and
+        # float32 rounding of an edge frequency silently moves an edge point to a
+        # different band than boxplot's float64 freq does -- e.g. 0.009 -> 0.00899999
+        # (falls below a band lower edge of 0.009) or 375.000001 -> 375 (collapses onto
+        # a band boundary). That was the scatter-vs-boxplot per-band fail-count mismatch
+        # David reported (2026-09-28): boxplot keeps freq float64, so scatter must too
+        # for both views to bin every edge point identically. (freq_b64 stays "" -> the
+        # JS reconstitutor leaves DATA[i].Frequency_MHz as its full-precision JSON value.)
         value_b64 = _encode_f32_b64(df["Value"]) if "Value" in df.columns else ""
-        json_cols = [c for c in json_cols if c not in ("Frequency_MHz", "Value")]
+        json_cols = [c for c in json_cols if c not in ("Value",)]
 
-    records = json.loads(df[json_cols].to_json(orient="records"))
+    # Full float precision for the records JSON so the (unpacked) Frequency_MHz binning
+    # axis matches boxplot's float64 freq exactly at band edges (to_json defaults to 10
+    # digits, which can round an edge freq differently than boxplot -> a re-divergence).
+    records = json.loads(df[json_cols].to_json(orient="records", double_precision=15))
 
     freq_min  = float(df["Frequency_MHz"].min())
     freq_max  = float(df["Frequency_MHz"].max())

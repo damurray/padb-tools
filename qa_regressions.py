@@ -1719,6 +1719,28 @@ def test_segment_hint_when_no_bands_on_key() -> None:
           f" recomputes={src.count('function _recomputeSpecSegments(){')}")
 
 
+def test_binary_encode_freq_full_precision() -> None:
+    """binary_encode must NOT float32-pack the FREQUENCY axis -- only the Y Value
+    (David 2026-09-28). Root cause of a scatter-vs-boxplot per-band fail-count mismatch:
+    scatter float32-packed Frequency_MHz while boxplot keeps freq float64, so at a named-
+    band edge the float32 rounding of an edge frequency (0.009 -> 0.00899999 falls below a
+    band lower edge; 375.000001 -> 375 collapses onto a boundary) put edge points in a
+    DIFFERENT band than boxplot -> counts diverged in opposite directions. Fix: freq stays
+    full-precision JSON (records use double_precision=15 so it isn't re-rounded), so both
+    views bin every edge point identically; Value stays float32 (boxplot packs its values
+    the same way -> no cross-view drift). Verified live: after the fix all four SG6311A
+    bands had IDENTICAL scatter/boxplot failing sets under a locked filter. TEETH: freq
+    must NOT be encoded; only Value; records at full precision."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("binary_encode float32-packs Value only (Frequency_MHz stays JSON)",
+          'value_b64 = _encode_f32_b64(df["Value"]) if "Value" in df.columns else ""' in src
+          and 'json_cols = [c for c in json_cols if c not in ("Value",)]' in src)
+    check("binary_encode does NOT float32-pack the frequency (regression teeth)",
+          'freq_b64 = _encode_f32_b64(df["Frequency_MHz"])' not in src)
+    check("scatter records JSON keeps full float precision for the binning axis",
+          'to_json(orient="records", double_precision=15)' in src)
+
+
 def test_coverage_gap_excludes_identifier_dims() -> None:
     """The cross-site "Coverage gap" banner must EXCLUDE unique-per-instance identifier
     dims -- Test Run Datetime (unique per run, can never match between sites) and Run NN
@@ -3247,6 +3269,7 @@ def main() -> None:
                test_passfail_note_when_no_spec_basis,
                test_segment_hint_when_no_bands_on_key,
                test_coverage_gap_excludes_identifier_dims,
+               test_binary_encode_freq_full_precision,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()
