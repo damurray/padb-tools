@@ -1870,6 +1870,29 @@ def test_stat_summary_failing_marker_outline() -> None:
           "fails spec (TI)" in src and "border:2px solid #c00" in src)
 
 
+def test_lock_applied_badge_not_stale() -> None:
+    """The lock bar's "applied N" badge must not go stale after Reset / "Show all data"
+    (David 2026-09-28: it kept saying "applied 2" after Show-all, when the filters were
+    discarded). Every view's update() calls PADB_lockMarkUnapplied, which flips the badge
+    to "not applied" -- suppressed while PADB_lockApply is running (that path renders
+    "applied N" itself, via the _padbLockApplying flag) and a no-op when no lock is saved.
+    TEETH: flag guards the mark, update() calls it (all views + reference), render has the
+    'not applied' state."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    ref = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
+    check("PADB_lockApply brackets apply() with the _padbLockApplying guard",
+          "var _padbLockApplying=false;" in src
+          and "_padbLockApplying=true; var rep; try{ rep=_padbLockReg.apply(o)||{}; }finally{ _padbLockApplying=false; }" in src)
+    check("PADB_lockMarkUnapplied is guarded (not during apply, no-op with no lock)",
+          "function PADB_lockMarkUnapplied(){ if(!_padbLockApplying && PADB_lockGet()) PADB_lockRenderBar({unapplied:true}); }" in src)
+    check("bar renders a 'not applied' state",
+          "rep&&rep.unapplied?' <span style=\"color:#999\"" in src
+          and ">not applied</span>" in src)
+    check("every update() flips the badge (all padb_plots views + reference)",
+          src.count("function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();") == 9
+          and "function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();" in ref)
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -3375,6 +3398,7 @@ def main() -> None:
                test_lock_folds_sync_population,
                test_gf_in_lock_bar,
                test_stat_summary_failing_marker_outline,
+               test_lock_applied_badge_not_stale,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()

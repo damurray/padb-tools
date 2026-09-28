@@ -1137,7 +1137,7 @@ function _avActiveFilters(){
   if(pf&&pf.value!=='all') a.push(pf.value==='passing'?'Passing only':'Failing only');
   return a;
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   var filtered=applyFilters(DATA);
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
@@ -3658,7 +3658,7 @@ function applyPassOnly(data){
     return true;
   });
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   var freqLo=parseFloat(document.getElementById('freq_lo').value);
   var groupFiltered=applyFilters(DATA);
   var filtered=applyPassOnly(groupFiltered);
@@ -4012,7 +4012,17 @@ function PADB_lockSave(){ if(!_padbLockReg){return;} var o=_padbLockReg.read()||
      (and strip Serial/Port from the just-saved lock) -- the folded-in Sync. No-op elsewhere. */
   if(_padbLockReg.onLock){ try{_padbLockReg.onLock(o);}catch(e){} }
   PADB_lockRenderBar({saved:true}); }
-function PADB_lockApply(){ var o=PADB_lockGet(); if(!o||!_padbLockReg) return null; var rep=_padbLockReg.apply(o)||{}; rep.applied2=true; PADB_lockRenderBar(rep); return rep; }
+var _padbLockApplying=false;
+function PADB_lockApply(){ var o=PADB_lockGet(); if(!o||!_padbLockReg) return null;
+  _padbLockApplying=true; var rep; try{ rep=_padbLockReg.apply(o)||{}; }finally{ _padbLockApplying=false; }
+  rep.applied2=true; PADB_lockRenderBar(rep); return rep; }
+/* The "applied N" badge is stale once the view's filters change away from the lock -- most
+   visibly after Reset / "Show all data", which discards the filters but leaves the lock
+   SAVED (David 2026-09-28: bar kept saying "applied 2" after Show-all). update() calls this
+   at its end so the badge flips to "not applied" on any filter change; it's suppressed while
+   PADB_lockApply is running (that path renders "applied N" itself), and it never touches the
+   bar's transient "saved" state (that render happens outside update()). No-op with no lock. */
+function PADB_lockMarkUnapplied(){ if(!_padbLockApplying && PADB_lockGet()) PADB_lockRenderBar({unapplied:true}); }
 function PADB_lockClear(){
   /* Drop the saved lock only; leave the view's current filter controls as they are (a lock
      had SET them, so re-reading changes nothing visible). The view's data only updates on an
@@ -4071,6 +4081,7 @@ function PADB_lockRenderBar(rep){
     html += '<span style="font-weight:700;color:#0b60c0">🔒 Locked filters</span>'+
       (rep&&rep.saved?' <span style="color:#2a7a2a">saved</span>':'')+
       (rep&&rep.applied2&&applied!=null?' <span style="color:#2a7a2a">applied '+applied+'</span>':'')+
+      (rep&&rep.unapplied?' <span style="color:#999" title="The lock is still saved but the view was reset, so it is not currently the active filter -- press Apply to re-apply.">not applied</span>':'')+
       '<div style="margin:3px 0;color:#444">'+PADB_lockSummary(o)+'</div>'+
       (skipped&&skipped.length?'<div style="color:#b26a00;font-size:11px">not in this view: '+skipped.join(', ')+'</div>':'')+
       '<div style="margin-top:3px">'+
@@ -6311,7 +6322,7 @@ function _distActiveFilters(){
   var tb=document.querySelectorAll('.env_chk'); if(tb.length){var tn=tb.length,ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length; if(ts<tn)a.push('Temps: '+ts+'/'+tn);}
   return a;
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   _distUpdateBadge('spur');
   var modeEl=document.querySelector('input[name="view_mode"]:checked');
   var isAbs=modeEl?modeEl.value==='abs':false;
@@ -9630,7 +9641,7 @@ function _ssActiveFilters(){
   if(pf&&pf.value!=='all') a.push(pf.value==='passing'?'Passing only':'Failing only');
   return a;
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   /* Disable Passing/Failing + note when there's no pass/fail basis (no CSV
      spec/limit AND no manual Spec override typed) -- see PADB_setPassFailBasis. */
   (function(){var hb=(typeof HAS_SPEC_BASIS==='undefined')?true:HAS_SPEC_BASIS;
@@ -11027,7 +11038,7 @@ function updateEnvStatsTable(selConds){
     el.innerHTML='<div style="color:red;padding:8px">Error building table: '+e.message+'</div>';
   }
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   var selConds=getSelectedConds();
   var showExcl=document.getElementById('show_excl_chk');
   showExcl=showExcl?showExcl.checked:false;
@@ -12101,7 +12112,7 @@ function _ecActiveFilters(){
   var tb=document.querySelectorAll('.ec_temp_chk'); if(tb.length){var tn=tb.length,ts=Array.prototype.slice.call(tb).filter(function(c){return c.checked;}).length; if(ts<tn)a.push('Temps: '+ts+'/'+tn);}
   return a;
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   var selConds=getGroupedConditions();
   var showExcl=document.getElementById('ec_show_excl');
   showExcl=showExcl?showExcl.checked:false;
@@ -17516,7 +17527,7 @@ function _boxActiveFilters(){
   var pf=document.querySelector('input[name="box_flt"]:checked'); if(pf&&(pf.value==='passing'||pf.value==='failing')) a.push(pf.value==='passing'?'Passing only':'Failing only');
   return a;
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   /* Disable Passing/Failing + note when there's no pass/fail basis (no CSV
      spec/limit AND no manual Spec override typed) -- see PADB_setPassFailBasis.
      Runs before getYFilter() reads the mode so forcing "All" takes effect. */
@@ -20717,7 +20728,7 @@ function _sumActiveFilters(){
   return a;
 }
 /* ---- main update ---- */
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   /* Disable Passing/Failing + note when there's no pass/fail basis (no CSV
      spec/limit AND no manual Spec override typed) -- see PADB_setPassFailBasis.
      Runs first so forcing "All" changes what _getFilteredActive() then reads. */
@@ -21763,7 +21774,7 @@ function _hActiveFilters(){
   var pf=_hPfMode(); if(pf==='pass')a.push('Passing only'); else if(pf==='fail')a.push('Failing only');
   return a;
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   var idx=_hFilteredIdx(), vals=idx.map(function(i){return VALUES[i];});
   var mode=document.getElementById('h_binmode').value, nb;
   if(mode==='auto'){ nb=_hAutoBins(vals); var sl=document.getElementById('h_bincount'); if(sl) sl.value=Math.min(200,Math.max(5,nb)); }

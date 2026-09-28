@@ -570,7 +570,7 @@ function _refActiveFilters(){
   (typeof GROUP_COLS!=='undefined'?GROUP_COLS:[]).forEach(function(p){ var boxes=document.querySelectorAll('.fchk[data-col="'+p[0]+'"]'); if(!boxes.length)return; var n=boxes.length,s=Array.prototype.slice.call(boxes).filter(function(c){return c.checked;}).length; if(s<n)a.push(p[1]+': '+s+'/'+n); });
   return a;
 }
-function update(){
+function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkUnapplied();
   _updateRefGfBadge();
   var rows=applyFilters(DATA);
   var mode=_pfMode(rows);
