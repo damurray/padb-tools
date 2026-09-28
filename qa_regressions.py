@@ -1456,8 +1456,8 @@ def test_locked_filters_crossview() -> None:
           "PADB_lockSetChecks(document.querySelectorAll('.fchk[data-col=\"Temperature\"]'),sp.temp)" in ref)
     # Boxplot "Add locked filters to GF" -- applies the saved lock here then captures that
     # slice into the Global Filter (David 2026-09-23).
-    check("boxplot has an 'Add locked filters to GF' button + handler",
-          "Add locked filters to GF</button>" in src and "onclick=\"_boxAddLockToGf()\"" in src
+    check("boxplot has an 'Exclude the locked slice' button + handler",
+          "Exclude the locked slice</button>" in src and "onclick=\"_boxAddLockToGf()\"" in src
           and "function _boxAddLockToGf(" in src
           and "_bxLockApply(o)" in src and "setFilterAsGf();" in src)
     check("the shared Help (i) panel documents locked filters",

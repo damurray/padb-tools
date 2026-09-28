@@ -18319,7 +18319,7 @@ def _build_box_interactive_html(
         + '  <button class="toggle-btn"'
         ' style="background:#fff3e0;border-color:#c07000;color:#8a5000;font-weight:600"'
         ' title="EXCLUDE your saved Locked-filter slice: apply the lock here then add that exact slice to the Global Filter (drop it everywhere) -- one-click Apply lock + Set filter as GF. Use when the locked view is the population you want to DROP."'
-        ' onclick="_boxAddLockToGf()">Add locked filters to GF</button>\n'
+        ' onclick="_boxAddLockToGf()">Exclude the locked slice</button>\n'
         + '  <button class="toggle-btn" id="box_apply_gf_btn"'
         ' style="background:#fff3e0;border-color:#c07000;color:#8a5000"'
         ' title="EXCLUDE IQR outlier points -- checked independently at each currently-selected Temperature checkbox (not Room-only), so narrow the Temperature filter first if you only want outliers from specific temperature(s). Adds to the existing filter, doesn\'t replace it"'
