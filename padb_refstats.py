@@ -723,7 +723,7 @@ function _refLockApply(o){
   return {applied:applied,skipped:skipped};
 }
 window.addEventListener('DOMContentLoaded',function(){_loadRefGlobalFilter();update();
-  if(typeof PADB_lockRegister==='function'){ PADB_lockRegister({read:_refLockRead,apply:_refLockApply}); PADB_lockInit(); }
+  if(typeof PADB_lockRegister==='function'){ PADB_lockRegister({read:_refLockRead,apply:_refLockApply,onGf:function(){_loadRefGlobalFilter();update();}}); PADB_lockInit(); }
   /* Remove the busy overlay once the tables have painted (this view has no #plot for
      the shared PADB_busyHide poll). Keep it up at least ~450ms from page start so it
      reliably shows on a fast/cached load (matches the other views' PADB_BUSY_MIN_MS). */

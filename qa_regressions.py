@@ -1423,7 +1423,7 @@ def test_locked_filters_crossview() -> None:
     ref = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
     check("reference embeds _LOCK_JS + registers its adapter",
           "_LOCK_JS" in ref and "function _refLockRead(" in ref and "function _refLockApply(" in ref
-          and "PADB_lockRegister({read:_refLockRead,apply:_refLockApply})" in ref)
+          and "PADB_lockRegister({read:_refLockRead,apply:_refLockApply" in ref)
     # Serial Number / Port are condition dims on scatter/reference but DEDICATED filters
     # on the aggregate views; the lock routes them there so nothing is silently skipped
     # (David 2026-09-23). Serial matches on BASE form (port-qualified vs base serial).
@@ -1796,7 +1796,7 @@ def test_lock_folds_sync_population() -> None:
           "var kept=cur.excluded.filter(function(k){return !drop[k];});" in src)
     # Boxplot wires the hooks; onLock strips Serial/Port + merges + records, gated on narrowed.
     check("boxplot registers onLock/onClear hooks",
-          "PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply,onLock:_bxLockOnLock,onClear:_bxLockOnClear});" in src)
+          "PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply,onLock:_bxLockOnLock,onClear:_bxLockOnClear" in src)
     check("boxplot onLock pins the exact population (strip Serial/Port + mergeGf + record), gated on narrowed",
           "function _bxLockOnLock(" in src
           and "if(c.narrowed&&c.keys.length){" in src
@@ -1811,6 +1811,44 @@ def test_lock_folds_sync_population() -> None:
     check("Lock button tooltip explains it pins the population + Clear removes only its own GF",
           "it ALSO pins that exact per-unit population everywhere" in src
           and "Clear removes only what this lock added" in src)
+
+
+def test_gf_in_lock_bar() -> None:
+    """The Global Filter is surfaced + managed on the shared cross-view bar (David 2026-09-28):
+    its state (count + readable grouped contents), an Inspect toggle, and Clear-all are shown
+    on EVERY view's floating bar, not just the boxplot -- the GF is already applied everywhere,
+    this makes it visible/manageable everywhere. View/manage only; SETTING exclusions stays on
+    the boxplot. Grouped by base serial (+ Port= from the point-precise key) so raw keys aren't
+    dumped. Actions call a per-view onGf hook (reload GF + update). TEETH: helpers defined, the
+    bar renders the GF section, and every GF view (6 in padb_plots + reference) registers onGf."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    ref = (HERE / "padb_refstats.py").read_text(encoding="utf-8")
+    check("GF bar helpers defined (summary/inspect/clear)",
+          "function PADB_gfSummary(" in src
+          and "function PADB_gfToggleInspect(" in src
+          and "function PADB_gfClearAll(" in src)
+    check("GF summary groups by serial + Port (readable, not raw keys)",
+          "/Port=([^|]+?)(?:\\s{2,}|\\||$)/.exec(s)" in src
+          and "s.split('||')[0]" in src)
+    check("cross-view bar renders the Global Filter section (count + Inspect + Clear)",
+          "var _gf=PADB_gfSummary();" in src
+          and "Global Filter: '+_gf.pts" in src
+          and 'onclick="PADB_gfToggleInspect()"' in src
+          and 'onclick="PADB_gfClearAll()"' in src)
+    check("GF actions route through a per-view onGf reload hook",
+          "if(_padbLockReg&&_padbLockReg.onGf){ try{_padbLockReg.onGf();}catch(e){} }" in src)
+    check("PADB_gfClearAll drops the GF (+ any recorded lock-GF) and re-renders",
+          "localStorage.removeItem(GF_KEY);" in src
+          and "if(typeof PADB_LOCK_GF_KEY!=='undefined') localStorage.removeItem(PADB_LOCK_GF_KEY);" in src)
+    check("PADB_gfToggleInspect flips GF_MODE_KEY focus<->exclude",
+          "((localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus')?'exclude':'focus'" in src)
+    # Every GF-applying view registers onGf: 6 in padb_plots (scatter/stat_summary/summary/
+    # boxplot/distribution/env_coverage) + reference. Histogram has no GF -> no onGf.
+    check("all 6 padb_plots GF views register an onGf reload hook",
+          src.count("onGf:function(){") == 6,
+          f"count={src.count('onGf:function(){')}")
+    check("reference registers an onGf reload hook",
+          "onGf:function(){_loadRefGlobalFilter();update();}" in ref)
 
 
 def test_summary_group_by_serial() -> None:
@@ -3316,6 +3354,7 @@ def main() -> None:
                test_coverage_gap_excludes_identifier_dims,
                test_binary_encode_freq_full_precision,
                test_lock_folds_sync_population,
+               test_gf_in_lock_bar,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()

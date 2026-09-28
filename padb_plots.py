@@ -1596,7 +1596,7 @@ function _avLockApply(o){
   if(typeof _applyCrossFilterGrey==='function') _applyCrossFilterGrey();
   return {applied:applied,skipped:skipped};
 }
-PADB_lockRegister({read:_avLockRead,apply:_avLockApply});
+PADB_lockRegister({read:_avLockRead,apply:_avLockApply,onGf:function(){_loadGlobalFilter();update();}});
 PADB_lockInit();
 """
 
@@ -3958,7 +3958,46 @@ function PADB_lockSubtractGf(){
   }
   return true;
 }
-var _padbLockReg=null;   /* {read:fn->obj, apply:fn(obj)->{applied:[],skipped:[]}, onLock?:fn(obj), onClear?:fn(bool)} */
+/* ---- Global Filter section of the cross-view bar (David 2026-09-28) ----
+   The GF is already applied in every view; this surfaces its STATE + management on the
+   shared bar so you can see/Inspect/Clear it from any view, not just the boxplot. Read-only
+   summary + Inspect toggle + Clear-all; SETTING exclusions stays where per-point selection
+   lives (boxplot). Keys are point-precise (serial||condKey||temp||freqLabel, or a whole-DUT
+   ||manual||0 sentinel) -- unreadable raw, so group by base serial (+ Port= from the cond
+   key) with point counts. */
+function PADB_gfSummary(){
+  var gfk=(typeof GF_KEY!=='undefined')?GF_KEY:null; if(!gfk) return null;
+  var cur=null; try{cur=JSON.parse(localStorage.getItem(gfk)||'null');}catch(e){}
+  var ex=(cur&&cur.excluded)?cur.excluded:[];
+  if(!ex.length) return {n:0,pts:0,groups:[]};
+  var g={};
+  ex.forEach(function(k){
+    var s=String(k); var ser=s.split('||')[0]||'?';
+    var pm=/Port=([^|]+?)(?:\s{2,}|\||$)/.exec(s); var port=pm?pm[1].trim():'';
+    var whole=/\|\|manual\|\|0$/.test(s);
+    var id=ser+(port?(' ('+port+')'):'');
+    if(!g[id]) g[id]={id:id,pts:0,whole:false};
+    g[id].pts++; if(whole) g[id].whole=true;
+  });
+  var groups=Object.keys(g).map(function(id){return g[id];}).sort(function(a,b){return b.pts-a.pts;});
+  return {n:groups.length,pts:ex.length,groups:groups};
+}
+function PADB_gfToggleInspect(){
+  if(typeof GF_MODE_KEY==='undefined') return;
+  var m=((localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus')?'exclude':'focus';
+  try{localStorage.setItem(GF_MODE_KEY,m);}catch(e){}
+  if(_padbLockReg&&_padbLockReg.onGf){ try{_padbLockReg.onGf();}catch(e){} }
+  PADB_lockRenderBar({});
+}
+function PADB_gfClearAll(){
+  if(typeof GF_KEY==='undefined') return;
+  if(!confirm('Clear the ENTIRE Global Filter for this test? Every view updates. (Export first if unsure -- this cannot be undone.)')) return;
+  try{localStorage.removeItem(GF_KEY);}catch(e){}
+  try{ if(typeof PADB_LOCK_GF_KEY!=='undefined') localStorage.removeItem(PADB_LOCK_GF_KEY); }catch(e){}
+  if(_padbLockReg&&_padbLockReg.onGf){ try{_padbLockReg.onGf();}catch(e){} }
+  PADB_lockRenderBar({});
+}
+var _padbLockReg=null;   /* {read:fn->obj, apply:fn(obj)->{...}, onLock?:fn(obj), onClear?:fn(bool), onGf?:fn()} */
 function PADB_lockRegister(a){ _padbLockReg=a; }
 function PADB_lockGet(){ try{var s=localStorage.getItem(PADB_LOCK_KEY); return s?JSON.parse(s):null;}catch(e){return null;} }
 function PADB_lockSet(o){ try{localStorage.setItem(PADB_LOCK_KEY,JSON.stringify(o));}catch(e){} }
@@ -4049,6 +4088,21 @@ function PADB_lockRenderBar(rep){
     }
     html += '<span onclick="PADB_lockSave()" title="Save ALL of this view\'s data filters -- conditions, frequency range, temperature, serial/port, and Passing/Failing -- as a cross-view lock; other views auto-apply it. On the boxplot, if you have narrowed serial/port it ALSO pins that exact per-unit population everywhere (handled for you). Clear removes only what this lock added -- any other Global-Filter items you set stay. (Plot type, group-by, table mode and zoom stay per-view.)" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
       '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>';
+  }
+  /* ---- Global Filter section: shown whenever a GF exists (with or without a lock), so its
+     state is visible + manageable from ANY view, not just the boxplot (David 2026-09-28). ---- */
+  var _gf=PADB_gfSummary();
+  if(_gf&&_gf.pts>0){
+    var _insp=(typeof GF_MODE_KEY!=='undefined')&&((localStorage.getItem(GF_MODE_KEY)||'exclude')==='focus');
+    var _gtop=_gf.groups.slice(0,6).map(function(x){return x.id+(x.whole?' (all)':' ×'+x.pts);}).join(', ');
+    if(_gf.groups.length>6) _gtop+=' +'+(_gf.groups.length-6)+' more';
+    html += (html?'<div style="border-top:1px solid #e2e8f0;margin:6px 0 3px"></div>':'')+
+      '<div style="font-weight:700;color:'+(_insp?'#0044aa':'#900')+'">🌐 Global Filter: '+_gf.pts+' pt'+(_gf.pts!==1?'s':'')+', '+_gf.n+' unit'+(_gf.n!==1?'s':'')+(_insp?' — INSPECT':'')+'</div>'+
+      '<div style="margin:2px 0;color:#555;font-size:11px;max-width:40vw" title="'+_gf.groups.map(function(x){return x.id+(x.whole?' (whole DUT)':' x'+x.pts+' pts');}).join(', ').replace(/"/g,'&quot;')+'">'+_gtop+'</div>'+
+      '<div style="margin-top:2px">'+
+      '<span onclick="PADB_gfToggleInspect()" title="Inspect: show ONLY the GF-matched points (see what is excluded) instead of hiding them. Resets to normal on reload." style="'+btn+';margin-left:0'+(_insp?';background:#e8f0ff;border-color:#6688cc':'')+'">'+(_insp?'Exit Inspect':'Inspect')+'</span>'+
+      '<span onclick="PADB_gfClearAll()" title="Clear the ENTIRE Global Filter for this test -- every view updates. Cannot be undone; Export from the boxplot first if unsure." style="'+btn+';color:#b00">Clear GF</span>'+
+      '</div>';
   }
   // keep the hidden import input
   var imp=document.getElementById('padb_lock_import');
@@ -5922,7 +5976,7 @@ function _distLockApply(o){
   if(typeof update==='function') update();
   return {applied:applied,skipped:skipped};
 }
-PADB_lockRegister({read:_distLockRead,apply:_distLockApply});
+PADB_lockRegister({read:_distLockRead,apply:_distLockApply,onGf:function(){_loadDistGlobalFilter();update();}});
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(PADB_lockInit,400);}); else setTimeout(PADB_lockInit,400);
 function _distCondKeep(raw,i,condFilts){
   for(var ci=0;ci<condFilts.length;ci++){
@@ -9831,7 +9885,7 @@ function _ssLockApply(o){
   if(typeof update==='function') update();
   return {applied:applied,skipped:skipped};
 }
-PADB_lockRegister({read:_ssLockRead,apply:_ssLockApply});
+PADB_lockRegister({read:_ssLockRead,apply:_ssLockApply,onGf:function(){_loadStatGlobalFilter();update();}});
 PADB_lockInit();
 /* ---- Auto-filter bad DUTs (population view: stat_summary) ----
    Gathers per-(condition, frequency) DUT populations from the RAW active
@@ -11079,7 +11133,7 @@ function _ecLockApply(o){
   if(typeof update==='function') update();
   return {applied:applied,skipped:skipped};
 }
-PADB_lockRegister({read:_ecLockRead,apply:_ecLockApply});
+PADB_lockRegister({read:_ecLockRead,apply:_ecLockApply,onGf:function(){_loadEcGlobalFilter();update();}});
 if(document.readyState==='loading') document.addEventListener('DOMContentLoaded',function(){setTimeout(PADB_lockInit,400);}); else setTimeout(PADB_lockInit,400);
 /* Regroup checkbox-filtered conditions by a single COND_DIMS value, pooling
    every matching condition's DUTs into one virtual condition -- e.g.
@@ -17611,7 +17665,7 @@ function loadState(){
      fold the old "Sync this selection to all views" into the single Lock button (David
      2026-09-28): Lock also pins the exact serial+port population via the GF, Clear removes
      only those keys. */
-  PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply,onLock:_bxLockOnLock,onClear:_bxLockOnClear});
+  PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply,onLock:_bxLockOnLock,onClear:_bxLockOnClear,onGf:function(){_loadBoxGlobalFilter();_updateBoxGfStatus();update();}});
   PADB_lockInit();
 })();
 """
@@ -20795,7 +20849,7 @@ function _sumLockApply(o){
   if(typeof update==='function') update();
   return {applied:applied,skipped:skipped};
 }
-PADB_lockRegister({read:_sumLockRead,apply:_sumLockApply});
+PADB_lockRegister({read:_sumLockRead,apply:_sumLockApply,onGf:function(){_loadSumGlobalFilter();update();}});
 PADB_lockInit();
 /* ---- Auto-filter bad DUTs + Workflow (population view: summary) ----
    Per-(condition, frequency) DUT population = each DUT's cross-temperature mean
