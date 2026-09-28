@@ -1408,7 +1408,8 @@ def test_locked_filters_crossview() -> None:
                    ("_hLockRead", "_hLockApply")):
         check(f"view adapter registered: {rd}/{ap}",
               f"function {rd}(" in src and f"function {ap}(" in src
-              and f"PADB_lockRegister({{read:{rd},apply:{ap}}})" in src)
+              # prefix match: boxplot's registration carries extra onLock/onClear hooks (Path B)
+              and f"PADB_lockRegister({{read:{rd},apply:{ap}" in src)
     check("boxplot lock apply won't empty the view on a non-existent locked value",
           "if(m&&r.want[m[1].trim()]) r.applicable=true;" in src and "if(active.length){" in src)
     check("histogram translates its all/pass/fail select to the lock's all/passing/failing",
@@ -1479,9 +1480,10 @@ def test_locked_filters_crossview() -> None:
     # re-reading changes nothing visible) and TELLS the user to Reset/Autoscale to restore
     # full data, instead of silently appearing to do nothing (David 2026-09-24, seen on
     # reference; "any change would need a reset").
-    check("PADB_lockClear drops the lock only + hints to Reset/Autoscale (no silent no-op)",
-          "PADB_lockRenderBar({cleared:true})" in src
-          and "resetFilters();" not in src.split("function PADB_lockClear(")[1].split("}")[0]
+    check("PADB_lockClear drops the lock + removes only ITS own GF keys + hints to Reset/Autoscale",
+          "PADB_lockRenderBar({cleared:true, gfCleared:" in src
+          and "PADB_lockSubtractGf()" in src            # subtract only the keys this lock added
+          and "resetFilters();" not in src.split("function PADB_lockClear(")[1].split("PADB_lockRenderBar")[0]
           and "Lock cleared" in src and "Press <b>Reset</b>" in src)
     # Lock-apply freq: the plot AXIS must follow the locked range, not just the filter
     # (David 2026-09-24: "plot axis stayed full after a locked freq"). The 4 freq-x plot views
@@ -1766,6 +1768,49 @@ def test_coverage_gap_excludes_identifier_dims() -> None:
           src.count("if _is_coverage_identifier_dim(") >= 2)
     check("padb_v2 render_summary coverage-gap loop guards on the helper (summary view)",
           "_pp._is_coverage_identifier_dim(" in v2)
+
+
+def test_lock_folds_sync_population() -> None:
+    """Path B (David 2026-09-28): the single "Lock these filters" button folds in the old
+    "Sync this selection to all views" -- on boxplot it ALSO pins the exact serial+port
+    population via the GF, and Clear removes ONLY the keys that lock added (any other
+    Global-Filter items the user set separately survive). Complexity hidden behind one
+    button. Mechanism: PADB_lockSave calls a per-view onLock hook; boxplot's _bxLockOnLock
+    (when serial/port is narrowed) strips Serial/Port from the saved lock, _mergeGf's the
+    keep-only keys, and RECORDS them (PADB_lockRecordGf). PADB_lockClear calls the
+    view-agnostic PADB_lockSubtractGf (removes only the recorded keys from the GF) then a
+    per-view onClear hook to re-render. The redundant Sync/Clear-sync buttons are gone.
+    TEETH: hooks wired, record/subtract present, only-recorded-keys removed, buttons gone."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # Shared core: save/clear call the hooks; GF record + selective subtract exist.
+    check("PADB_lockSave calls the onLock hook",
+          "if(_padbLockReg.onLock){ try{_padbLockReg.onLock(o);}catch(e){} }" in src)
+    check("PADB_lockClear subtracts only its own GF keys + calls onClear",
+          "var _gfCleared=PADB_lockSubtractGf();" in src
+          and "if(_padbLockReg&&_padbLockReg.onClear){ try{_padbLockReg.onClear(_gfCleared);}catch(e){} }" in src)
+    check("GF record/subtract helpers + per-test key defined",
+          "var PADB_LOCK_GF_KEY=PADB_LOCK_KEY+'_gf';" in src
+          and "function PADB_lockRecordGf(" in src
+          and "function PADB_lockSubtractGf(" in src)
+    check("PADB_lockSubtractGf removes ONLY the recorded keys (preserves other GF items)",
+          "var kept=cur.excluded.filter(function(k){return !drop[k];});" in src)
+    # Boxplot wires the hooks; onLock strips Serial/Port + merges + records, gated on narrowed.
+    check("boxplot registers onLock/onClear hooks",
+          "PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply,onLock:_bxLockOnLock,onClear:_bxLockOnClear});" in src)
+    check("boxplot onLock pins the exact population (strip Serial/Port + mergeGf + record), gated on narrowed",
+          "function _bxLockOnLock(" in src
+          and "if(c.narrowed&&c.keys.length){" in src
+          and "delete o.dims['Serial Number']; delete o.dims['Port'];" in src
+          and "_mergeGf(c.keys);" in src
+          and "PADB_lockRecordGf(c.keys);" in src)
+    # The redundant Sync / Clear-sync buttons are gone (folded into Lock).
+    check("Sync / Clear-sync buttons removed (folded into the one Lock button)",
+          "Sync this selection to all views</button>" not in src
+          and 'onclick="clearSyncAllViews()"' not in src)
+    # The single Lock button's tooltip explains the folded-in behavior.
+    check("Lock button tooltip explains it pins the population + Clear removes only its own GF",
+          "it ALSO pins that exact per-unit population everywhere" in src
+          and "Clear removes only what this lock added" in src)
 
 
 def test_summary_group_by_serial() -> None:
@@ -3270,6 +3315,7 @@ def main() -> None:
                test_segment_hint_when_no_bands_on_key,
                test_coverage_gap_excludes_identifier_dims,
                test_binary_encode_freq_full_precision,
+               test_lock_folds_sync_population,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()

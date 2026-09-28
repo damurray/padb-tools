@@ -3937,7 +3937,28 @@ _LOCK_JS = r"""
 var PADB_LOCK_KEY=(typeof GF_KEY!=='undefined'&&GF_KEY&&GF_KEY.indexOf('padb_v2_excluded_')===0)
   ? ('padb_v2_locked_filters_'+GF_KEY.slice(17)) : 'padb_v2_locked_filters';
 try{ if(PADB_LOCK_KEY!=='padb_v2_locked_filters') localStorage.removeItem('padb_v2_locked_filters'); }catch(e){}
-var _padbLockReg=null;   /* {read:fn->obj, apply:fn(obj)->{applied:[],skipped:[]}} */
+/* Path B (David 2026-09-28): the single "Lock these filters" button also pins the EXACT
+   serial+port population (boxplot, via the point-precise GF) -- folding the old "Sync this
+   selection to all views" into one button so the GF plumbing is hidden. The GF keys the
+   lock adds are RECORDED here so Clear removes ONLY them and any other GF line-items the
+   user set separately survive (same "remove only what I added" pattern as the auto-filter).
+   View-agnostic: recorded as key strings, so Clear works from any view. */
+var PADB_LOCK_GF_KEY=PADB_LOCK_KEY+'_gf';
+function PADB_lockRecordGf(keys){ try{localStorage.setItem(PADB_LOCK_GF_KEY,JSON.stringify(keys||[]));}catch(e){} }
+function PADB_lockSubtractGf(){
+  var gfk=(typeof GF_KEY!=='undefined')?GF_KEY:null; if(!gfk) return false;
+  var lk=[]; try{lk=JSON.parse(localStorage.getItem(PADB_LOCK_GF_KEY)||'[]');}catch(e){}
+  try{localStorage.removeItem(PADB_LOCK_GF_KEY);}catch(e){}
+  if(!lk||!lk.length) return false;
+  var cur=null; try{cur=JSON.parse(localStorage.getItem(gfk)||'null');}catch(e){}
+  if(cur&&cur.excluded&&cur.excluded.length){
+    var drop={}; lk.forEach(function(k){drop[k]=1;});
+    var kept=cur.excluded.filter(function(k){return !drop[k];});
+    try{ if(kept.length) localStorage.setItem(gfk,JSON.stringify({v:1,excluded:kept})); else localStorage.removeItem(gfk); }catch(e){}
+  }
+  return true;
+}
+var _padbLockReg=null;   /* {read:fn->obj, apply:fn(obj)->{applied:[],skipped:[]}, onLock?:fn(obj), onClear?:fn(bool)} */
 function PADB_lockRegister(a){ _padbLockReg=a; }
 function PADB_lockGet(){ try{var s=localStorage.getItem(PADB_LOCK_KEY); return s?JSON.parse(s):null;}catch(e){return null;} }
 function PADB_lockSet(o){ try{localStorage.setItem(PADB_LOCK_KEY,JSON.stringify(o));}catch(e){} }
@@ -3947,7 +3968,11 @@ function PADB_lockSummary(o){ if(!o) return '';
   if(o.passfail&&o.passfail!=='all') parts.push(o.passfail==='failing'?'Failing only':'Passing only');
   return parts.length?parts.join('  ·  '):'(no narrowed filters)'; }
 function PADB_lockSave(){ if(!_padbLockReg){return;} var o=_padbLockReg.read()||{}; o.v=1; o.ts=Date.now();
-  o.title=(typeof TITLE!=='undefined'?TITLE:document.title); PADB_lockSet(o); PADB_lockRenderBar({saved:true}); }
+  o.title=(typeof TITLE!=='undefined'?TITLE:document.title); PADB_lockSet(o);
+  /* View hook: boxplot uses this to ALSO pin the exact serial+port population via the GF
+     (and strip Serial/Port from the just-saved lock) -- the folded-in Sync. No-op elsewhere. */
+  if(_padbLockReg.onLock){ try{_padbLockReg.onLock(o);}catch(e){} }
+  PADB_lockRenderBar({saved:true}); }
 function PADB_lockApply(){ var o=PADB_lockGet(); if(!o||!_padbLockReg) return null; var rep=_padbLockReg.apply(o)||{}; rep.applied2=true; PADB_lockRenderBar(rep); return rep; }
 function PADB_lockClear(){
   /* Drop the saved lock only; leave the view's current filter controls as they are (a lock
@@ -3955,7 +3980,14 @@ function PADB_lockClear(){
      actual filter change -- so tell the user to press Reset (or Autoscale) to restore the
      full data, instead of Clear silently appearing to do nothing (David 2026-09-24). */
   try{localStorage.removeItem(PADB_LOCK_KEY);}catch(e){}
-  PADB_lockRenderBar({cleared:true});
+  /* Remove ONLY the population keys THIS lock added to the GF; any other GF line-items the
+     user set separately survive (David 2026-09-28). View-agnostic (operates on recorded key
+     strings), so it works even when Clear is pressed from a different view than the Lock. */
+  var _gfCleared=PADB_lockSubtractGf();
+  /* View hook: re-read the GF + re-render so the subtraction shows immediately (boxplot).
+     Views without the hook reflect it on their next Reset/Autoscale (the hint below). */
+  if(_padbLockReg&&_padbLockReg.onClear){ try{_padbLockReg.onClear(_gfCleared);}catch(e){} }
+  PADB_lockRenderBar({cleared:true, gfCleared:_gfCleared});
 }
 function PADB_lockExport(){ var o=PADB_lockGet(); if(!o){alert('No locked filters to export.');return;}
   var blob=new Blob([JSON.stringify(o,null,2)],{type:'application/json'}); var url=URL.createObjectURL(blob);
@@ -4011,10 +4043,11 @@ function PADB_lockRenderBar(rep){
       '</div>';
   } else {
     if(rep&&rep.cleared){
-      html += '<div style="color:#b26a00;margin-bottom:3px">Lock cleared &mdash; the view kept its filters. '+
-        'Press <b>Reset</b> (or <b>Autoscale</b>) to restore the full data.</div>';
+      html += '<div style="color:#b26a00;margin-bottom:3px">Lock cleared'+
+        (rep.gfCleared?' (its kept-population Global Filter was removed too; any other GF items you set stay)':'')+
+        ' &mdash; the view kept its filters. Press <b>Reset</b> (or <b>Autoscale</b>) to restore the full data.</div>';
     }
-    html += '<span onclick="PADB_lockSave()" title="Save ALL of this view\'s data filters -- conditions, frequency range, temperature, serial/port, and Passing/Failing -- as a cross-view lock; other views auto-apply it. (Plot type, group-by, table mode and zoom stay per-view.)" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
+    html += '<span onclick="PADB_lockSave()" title="Save ALL of this view\'s data filters -- conditions, frequency range, temperature, serial/port, and Passing/Failing -- as a cross-view lock; other views auto-apply it. On the boxplot, if you have narrowed serial/port it ALSO pins that exact per-unit population everywhere (handled for you). Clear removes only what this lock added -- any other Global-Filter items you set stay. (Plot type, group-by, table mode and zoom stay per-view.)" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
       '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>';
   }
   // keep the hidden import input
@@ -16446,6 +16479,23 @@ function clearSyncAllViews(){
   _loadBoxGlobalFilter();_updateBoxGfStatus();update();
   alert('Sync cleared: the cross-view lock and the kept-population Global Filter were both removed.\n\nOn other views, press Reset (or Autoscale) to restore their full data if a lock had set their filters.');
 }
+/* Path B (David 2026-09-28): the shared "Lock these filters" button's onLock/onClear hooks.
+   onLock folds in the old Sync -- when serial/port is narrowed it pins the EXACT per-unit
+   population via the GF (keys RECORDED so Clear removes only them) and strips Serial/Port
+   from the saved lock so the GF is the sole population indicator. Silent (no alert): the
+   complexity is hidden; the lock bar shows what happened. onClear re-reads the GF + rerenders
+   so the (already-done, view-agnostic) key subtraction shows immediately here. */
+function _bxLockOnLock(o){
+  var c=_keepPopulationCore();
+  if(c.narrowed&&c.keys.length){
+    o=o||(typeof PADB_lockGet==='function'?PADB_lockGet():null)||{}; o.dims=o.dims||{};
+    delete o.dims['Serial Number']; delete o.dims['Port'];   // GF owns the exact population
+    if(typeof PADB_lockSet==='function') PADB_lockSet(o);
+    _mergeGf(c.keys);                                         // add to GF + reload + update()
+    if(typeof PADB_lockRecordGf==='function') PADB_lockRecordGf(c.keys);   // remember for a clean Clear
+  }
+}
+function _bxLockOnClear(gfCleared){ _loadBoxGlobalFilter(); _updateBoxGfStatus(); update(); }
 function applyGlobalFilter(){
   var selConds=getSelectedConds(),selTemps=getSelectedTemps();
   var yFlt=getYFilter(),selBoxSers=getSelectedBoxSerials();
@@ -17557,8 +17607,11 @@ function loadState(){
   if(typeof ALL_BOX_PORTS!=='undefined'&&ALL_BOX_PORTS&&ALL_BOX_PORTS.length){
     var _mc=document.getElementById('box_padb_mc_note');if(_mc)_mc.style.display='';
   }
-  /* Locked filters: register this view's adapters + auto-apply any saved lock. */
-  PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply});
+  /* Locked filters: register this view's adapters + auto-apply any saved lock. onLock/onClear
+     fold the old "Sync this selection to all views" into the single Lock button (David
+     2026-09-28): Lock also pins the exact serial+port population via the GF, Clear removes
+     only those keys. */
+  PADB_lockRegister({read:_bxLockRead,apply:_bxLockApply,onLock:_bxLockOnLock,onClear:_bxLockOnClear});
   PADB_lockInit();
 })();
 """
@@ -18116,15 +18169,10 @@ def _build_box_interactive_html(
           'border:1px solid #e4e4e4;border-radius:5px;margin:4px 0;background:#fafafa">\n'
         + '  <span style="font-weight:700;color:#666;font-size:10px;text-transform:uppercase;'
           'letter-spacing:.05em;margin-right:4px;white-space:nowrap">Global Filter</span>\n'
-        + '  <button class="toggle-btn"'
-        ' style="background:#0066cc;border-color:#0066cc;color:#fff;font-weight:700"'
-        ' title="ONE-CLICK: make every other view show exactly what you have selected here. Locks the dimension filters (conditions, frequency range, pass/fail, temperature -- these set the visible checkboxes on the other views) AND keeps your exact serial+port population (via the Global Filter, exact per-unit port). This is the easy way -- it does the &quot;Lock these filters&quot; + &quot;Keep only this population&quot; steps together. Undo it all with &quot;Clear sync&quot;."'
-        ' onclick="syncSelectionToAllViews()">&#128279;&nbsp;Sync this selection to all views</button>\n'
-        + '  <button class="toggle-btn"'
-        ' style="background:#fff;border-color:#0066cc;color:#0066cc"'
-        ' title="Undo Sync: remove BOTH the cross-view lock and the kept-population Global Filter in one click. On other views press Reset (or Autoscale) afterwards to restore their full data."'
-        ' onclick="clearSyncAllViews()">Clear sync</button>\n'
-        + '  <span style="color:#bbb;margin:0 2px">|</span>\n'
+        # "Sync this selection to all views" / "Clear sync" were folded into the single
+        # "Lock these filters" button (David 2026-09-28, Path B): Lock now also pins the exact
+        # serial+port population via the GF (onLock hook) and Clear removes only those keys
+        # (PADB_lockSubtractGf), so the two-button dance is gone and the GF plumbing is hidden.
         + '  <button class="toggle-btn"'
         ' style="background:#e8f4ff;border-color:#0066cc;color:#0066cc;font-weight:600"'
         ' title="Set currently selected conditions + serials as the global exclusion filter -- adds to the existing filter, doesn\'t replace it (use Clear global filter to start over)"'
