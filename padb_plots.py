@@ -1291,7 +1291,7 @@ function loadState(){
 }
 
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false,_segBaseColSel=null;
 var SEG_KEY_FIELDS={limit:['Upper_Limit','Lower_Limit'],spec:['Spec_Hi','Spec_Lo'],uncertainty:['Unc_Hi','Unc_Lo']};
 var _segKey=null;
 /* Which field pair the segment tabs use is a user-facing choice (Limit/Spec/
@@ -1331,6 +1331,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
@@ -1366,14 +1367,24 @@ function _segFilterCondDims(seg){
      widened back to "all" by the tab itself. A dim still at its default
      "everything checked" state imposes no real constraint, so the
      original from-scratch-narrowing behavior is unchanged in that
-     (previously-verified) case. */
+     (previously-verified) case.
+     Baseline (David 2026-09-27): snapshot the dim selection ONCE when stepping begins
+     (_segBaseColSel, cleared on basis change) and narrow every step from THAT, not from
+     the live (already-auto-narrowed) state -- otherwise a dim a PREVIOUS step narrowed
+     (e.g. Test Event Status -> [P] in an all-passing band) stays held fixed and hides a
+     later band's failures (F). The user's own pre-step narrowing is in the baseline, so it
+     is still preserved. */
+  if(!_segBaseColSel){
+    _segBaseColSel={};
+    GROUP_COLS.forEach(function(pair){
+      var col=pair[0];
+      var boxes=document.querySelectorAll('.fchk[data-col="'+col+'"]');
+      if(!boxes.length) return;
+      _segBaseColSel[col]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+    });
+  }
   var curColSel={};
-  GROUP_COLS.forEach(function(pair){
-    var col=pair[0];
-    var boxes=document.querySelectorAll('.fchk[data-col="'+col+'"]');
-    if(!boxes.length) return;
-    curColSel[col]=new Set(Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;}));
-  });
+  Object.keys(_segBaseColSel).forEach(function(col){curColSel[col]=new Set(_segBaseColSel[col]);});
   var rowsInSeg=DATA.filter(function(r){
     if(r.Frequency_MHz<seg.lo||r.Frequency_MHz>seg.hi) return false;
     if(selTemps){
@@ -3513,7 +3524,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false,_segBaseColSel=null;
 var SEG_KEY_FIELDS={limit:['Upper_Limit','Lower_Limit'],spec:['Spec_Hi','Spec_Lo'],uncertainty:['Unc_Hi','Unc_Lo']};
 var _segKey=null;
 /* Which field pair the segment tabs use is a user-facing choice (Limit/Spec/
@@ -3553,6 +3564,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
@@ -5963,7 +5975,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false,_segBaseColSel=null;
 var SEG_KEY_FIELDS={limit:['hi','lo'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -5981,6 +5993,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
@@ -6031,7 +6044,10 @@ function _segFilterCondDims(seg){
      original from-scratch-narrowing behavior is unchanged in that,
      previously-verified, case) -- see boxplot's identical fix for the
      full rationale. */
-  var curChecked=new Set(Array.from(chks).filter(function(c){return c.checked;}).map(function(c){return c.value;}));
+  if(!_segBaseColSel){
+    _segBaseColSel=Array.from(chks).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+  }
+  var curChecked=new Set(_segBaseColSel);
   var allowed={};
   SPUR_TYPES.forEach(function(name,si){
     if(!curChecked.has(name)) return;
@@ -9144,7 +9160,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false,_segBaseColSel=null;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -9162,6 +9178,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
@@ -9229,12 +9246,16 @@ function _segFilterCondDims(seg){
      rationale. A dim still at its default "everything checked" state
      imposes no constraint, so the original from-scratch-narrowing
      behavior is unchanged for that (previously-verified) case. */
+  if(!_segBaseColSel){
+    _segBaseColSel={};
+    if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+      var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
+      if(!boxes.length) return;
+      _segBaseColSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+    });
+  }
   var curDimSel={};
-  if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
-    var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
-    if(!boxes.length) return;
-    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
-  });
+  Object.keys(_segBaseColSel).forEach(function(colId){curDimSel[colId]=_segBaseColSel[colId];});
   function matchesCurSel(cond){
     for(var colId in curDimSel){
       var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
@@ -11678,7 +11699,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false,_segBaseColSel=null;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -11696,6 +11717,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
@@ -11749,12 +11771,16 @@ function _segFilterCondDims(seg){
      rationale. A dim still at its default "everything checked" state
      imposes no constraint, so the original from-scratch-narrowing
      behavior is unchanged for that (previously-verified) case. */
+  if(!_segBaseColSel){
+    _segBaseColSel={};
+    if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+      var boxes=document.querySelectorAll('.'+dim.col_id);
+      if(!boxes.length) return;
+      _segBaseColSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+    });
+  }
   var curDimSel={};
-  if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
-    var boxes=document.querySelectorAll('.'+dim.col_id);
-    if(!boxes.length) return;
-    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
-  });
+  Object.keys(_segBaseColSel).forEach(function(colId){curDimSel[colId]=_segBaseColSel[colId];});
   function matchesCurSel(cond){
     for(var colId in curDimSel){
       var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];
@@ -16960,7 +16986,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false,_segBaseColSel=null;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -16978,6 +17004,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
@@ -17035,13 +17062,19 @@ function _segFilterCondDims(seg){
      all, so the original from-scratch-narrowing behavior is unchanged for
      that (the common, previously-verified) case. */
   var lfChks=document.querySelectorAll('.box_cond_lf_chk');
-  var curLfSel=lfChks.length?new Set(Array.from(lfChks).filter(function(c){return c.checked;}).map(function(c){return c.value;})):null;
+  if(!_segBaseColSel){
+    var _bLf=lfChks.length?Array.from(lfChks).filter(function(c){return c.checked;}).map(function(c){return c.value;}):null;
+    var _bDims={};
+    if(!_bLf&&typeof COND_DIMS!=='undefined'&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+      var boxes=document.querySelectorAll('.box_cond_'+dim.col_id);
+      if(!boxes.length) return;
+      _bDims[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+    });
+    _segBaseColSel={lf:_bLf,dims:_bDims};
+  }
+  var curLfSel=_segBaseColSel.lf?new Set(_segBaseColSel.lf):null;
   var curDimSel={};
-  if(!curLfSel&&typeof COND_DIMS!=='undefined'&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
-    var boxes=document.querySelectorAll('.box_cond_'+dim.col_id);
-    if(!boxes.length) return;
-    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
-  });
+  Object.keys(_segBaseColSel.dims).forEach(function(colId){curDimSel[colId]=_segBaseColSel.dims[colId];});
   function matchesCurSel(cond){
     if(curLfSel) return curLfSel.has(cond);
     for(var colId in curDimSel){
@@ -20222,7 +20255,7 @@ function getSpecSegments(hiPoints,loPoints){
   return segs;
 }
 /* ---- spec-segment tab navigation ---- */
-var _specSegments=[],_segIdx=-1,_segIdxPinned=false;
+var _specSegments=[],_segIdx=-1,_segIdxPinned=false,_segBaseColSel=null;
 var SEG_KEY_FIELDS={limit:['upper_limit','lower_limit'],spec:['spec_hi','spec_lo'],uncertainty:['unc_hi','unc_lo']};
 var _segKey=null;
 function _defaultSegKey(){
@@ -20236,6 +20269,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
 function _segLabelText(seg,i,n){
@@ -20290,12 +20324,16 @@ function _segFilterCondDims(seg){
      rationale. A dim still at its default "everything checked" state
      imposes no constraint, so the original from-scratch-narrowing
      behavior is unchanged for that (previously-verified) case. */
+  if(!_segBaseColSel){
+    _segBaseColSel={};
+    if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
+      var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
+      if(!boxes.length) return;
+      _segBaseColSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
+    });
+  }
   var curDimSel={};
-  if(COND_DIMS&&COND_DIMS.length) COND_DIMS.forEach(function(dim){
-    var boxes=document.querySelectorAll('.fchk[data-col="cond_'+dim.col_id+'"]');
-    if(!boxes.length) return;
-    curDimSel[dim.col_id]=Array.from(boxes).filter(function(c){return c.checked;}).map(function(c){return c.value;});
-  });
+  Object.keys(_segBaseColSel).forEach(function(colId){curDimSel[colId]=_segBaseColSel[colId];});
   function matchesCurSel(cd){
     for(var colId in curDimSel){
       var dim=COND_DIMS.filter(function(d){return d.col_id===colId;})[0];

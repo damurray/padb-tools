@@ -1592,6 +1592,42 @@ def test_named_band_segments_crossview() -> None:
           f"count={src.count('function _recomputeSpecSegments(){')}")
 
 
+def test_named_band_segment_no_compounding() -> None:
+    """Segment-by stepping must NOT compound its own auto-narrowing across steps
+    (David 2026-09-27). Bug: _segFilterCondDims() snapshotted the LIVE (already
+    narrowed by the previous step) condition-dim selection each step to "hold it
+    fixed" -- so stepping onto an all-passing band narrowed e.g. Test Event Status
+    to [P], and the NEXT band (which has the fail) kept [P], hiding the fail from
+    both plot and table. Reported on the Analog_mod_AM1 compare: the 93.75 MHz fail
+    (US65080430) vanished when stepping Named bands 1->2. Fix: capture the dim
+    baseline ONCE into _segBaseColSel when stepping begins (cleared on basis change
+    in segKeyChange) and narrow every step from THAT, never from the compounding
+    live state -- so a genuinely-present condition (the fail's F status) survives
+    stepping onto its band. Verified live: Band 2 retains F checked and the fail
+    renders on the plot AND appears (FAIL) in the data table. TEETH: all 6 active
+    _segFilterCondDims must arm the baseline; a live re-snapshot per step regresses."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # The shared segment state var + its reset on basis change (segKeyChange) exist
+    # once per view block (7 declarations: 6 active + the extra non-cond block).
+    check("_segBaseColSel declared per view block (baseline holder)",
+          src.count("_segIdxPinned=false,_segBaseColSel=null;") == 7,
+          f"count={src.count('_segIdxPinned=false,_segBaseColSel=null;')}")
+    check("_segBaseColSel reset on segment-basis change (segKeyChange), 7 copies",
+          src.count("_segBaseColSel=null;   /* re-capture the dim baseline") == 7,
+          f"count={src.count('_segBaseColSel=null;   /* re-capture the dim baseline')}")
+    # Every ACTIVE _segFilterCondDims arms the baseline lazily (if(!_segBaseColSel)),
+    # one per active view -- the 6 real views (scatter/stat_summary/summary/
+    # env_coverage/boxplot/distribution). A step that re-reads the live checkboxes
+    # instead of the baseline is the regression this pin catches.
+    check("all 6 active _segFilterCondDims arm the baseline (if(!_segBaseColSel))",
+          src.count("if(!_segBaseColSel){") == 6,
+          f"count={src.count('if(!_segBaseColSel){')}")
+    # boxplot keeps both longform + per-dim baselines in a {lf,dims} shape.
+    check("boxplot baseline captures longform + per-dim selection",
+          "_segBaseColSel={lf:_bLf,dims:_bDims};" in src
+          and "var curLfSel=_segBaseColSel.lf?new Set(_segBaseColSel.lf):null;" in src)
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -3089,6 +3125,7 @@ def main() -> None:
                test_run_index_derivation, test_dataset_summary_lines,
                test_common_prelude_and_feature_registry,
                test_named_band_segments_crossview,
+               test_named_band_segment_no_compounding,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()
