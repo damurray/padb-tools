@@ -966,6 +966,8 @@ def render_summary(
             _label = _col.removeprefix("_grp_")
             if _label == "Site":
                 continue
+            if _pp._is_coverage_identifier_dim(_label):
+                continue   # unique per-instance tag (datetime/run) -> never a real cross-site gap
             _gap_lines += _site_coverage_gaps(_label, df[_col])
         if _gap_lines:
             coverage_gap_html = (

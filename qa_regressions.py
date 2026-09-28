@@ -1735,8 +1735,15 @@ def test_coverage_gap_excludes_identifier_dims() -> None:
     for k in ("Temperature", "Mode", "Port", "Depth (%)", "SpurType", "Run Rate", "Runout"):
         check(f"coverage-gap keeps real/controlled dim: {k!r}", f(k) is False)
     src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
-    check("both coverage-gap loops guard on _is_coverage_identifier_dim",
+    v2 = (HERE / "padb_v2.py").read_text(encoding="utf-8")
+    # THREE coverage-gap builders exist: padb_plots stat_summary-inline + the
+    # _stat_boxplot_interactive one (feed stat_summary/boxplot), AND padb_v2
+    # render_summary (feeds the SUMMARY view -- the one the bug was reported on).
+    # All three must guard on the helper.
+    check("both padb_plots coverage-gap loops guard on _is_coverage_identifier_dim",
           src.count("if _is_coverage_identifier_dim(") >= 2)
+    check("padb_v2 render_summary coverage-gap loop guards on the helper (summary view)",
+          "_pp._is_coverage_identifier_dim(" in v2)
 
 
 def test_summary_group_by_serial() -> None:
