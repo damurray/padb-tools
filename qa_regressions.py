@@ -1851,6 +1851,25 @@ def test_gf_in_lock_bar() -> None:
           "onGf:function(){_loadRefGlobalFilter();update();}" in ref)
 
 
+def test_stat_summary_failing_marker_outline() -> None:
+    """stat_summary mean markers get a RED OUTLINE on a FAILING frequency (David 2026-09-28)
+    so a failing point is unmistakable regardless of its normality FILL colour -- green
+    (=Normal) was reading as "passing" on a Failing-only plot, because a frequency fails on
+    its tolerance-interval bound (the red X), not its mean, so the mean dot alone was
+    ambiguous. Per-point marker.line colour/width arrays (red #c00 / 2.2 for fail, else
+    white / 1); the normality legend gains a red-outline "fails spec (TI)" swatch. TEETH:
+    the per-point outline arrays are built + wired into the mean trace."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("buildTraces builds per-point mean-outline arrays (red for failing)",
+          "var mkLineCols=[],mkLineWs=[];" in src
+          and "mkLineCols.push(pass?'white':'#c00');" in src
+          and "mkLineWs.push(pass?1:2.2);" in src)
+    check("mean trace uses the per-point outline (color+width arrays)",
+          "line:{color:mkLineCols,width:mkLineWs}" in src)
+    check("normality legend documents the red-outline = fails-spec swatch",
+          "fails spec (TI)" in src and "border:2px solid #c00" in src)
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -3355,6 +3374,7 @@ def main() -> None:
                test_binary_encode_freq_full_precision,
                test_lock_folds_sync_population,
                test_gf_in_lock_bar,
+               test_stat_summary_failing_marker_outline,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()

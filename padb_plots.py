@@ -8068,6 +8068,7 @@ function buildTraces(conds,params){
       return;
     }
     var freqs=[],ti_ups=[],ti_los=[],means=[],nmCols=[],markerSyms=[],hover=[];
+    var mkLineCols=[],mkLineWs=[];   /* per-point mean-marker outline: red for a FAILING freq (David 2026-09-28) */
     var fail_x=[],fail_y=[];
     var any_fail=false;
 
@@ -8095,6 +8096,12 @@ function buildTraces(conds,params){
         'Norm: '+fs.norm+' (W='+fs.W+', p='+fs.p+')<br>'+outStr
       );
       var pass=r.pass_up&&r.pass_lo;
+      /* Red outline on the mean marker of a FAILING frequency so a failing point is
+         unmistakable regardless of its normality fill colour (green=Normal was reading
+         as "passing" on a Failing-only plot -- David 2026-09-28). The failure is on the
+         TI bound (the red X), not the mean, so the mean dot alone was ambiguous. */
+      mkLineCols.push(pass?'white':'#c00');
+      mkLineWs.push(pass?1:2.2);
       if(!r.pass_up){fail_x.push(fs.freq);fail_y.push(r.ti_up);}
       if(!r.pass_lo){fail_x.push(fs.freq);fail_y.push(r.ti_lo);}
       if(!pass) any_fail=true;
@@ -8123,10 +8130,10 @@ function buildTraces(conds,params){
       name:cd.condition+' TI↑↓',legendgroup:cd.condition,showlegend:false,
       hoverinfo:'skip'
     });
-    // Trace 3: Mean line + markers colored by normality; diamond = NP TI active
+    // Trace 3: Mean line + markers colored by normality (fill); RED OUTLINE = failing freq
     traces.push({
       type:'scatter',x:freqs,y:means,mode:'markers+lines',
-      marker:{size:7,color:nmCols,symbol:markerSyms,line:{color:'white',width:1}},
+      marker:{size:7,color:nmCols,symbol:markerSyms,line:{color:mkLineCols,width:mkLineWs}},
       line:{color:color,width:1.5},
       name:cd.condition,legendgroup:cd.condition,
       text:hover,
@@ -10487,7 +10494,9 @@ def _build_stat_summary_html(
         f'  <span class="norm-legend">'
         f'&nbsp;<span class="nl-dot" style="background:green"></span>Normal'
         f'&nbsp;<span class="nl-dot" style="background:orange"></span>Marginal'
-        f'&nbsp;<span class="nl-dot" style="background:red"></span>Non-normal</span>\n'
+        f'&nbsp;<span class="nl-dot" style="background:red"></span>Non-normal'
+        f'&nbsp;&nbsp;<span class="nl-dot" style="background:#fff;border:2px solid #c00"></span>'
+        f'<span title="A mean marker with a red outline is a FAILING frequency (its tolerance interval crosses spec). The fill colour still shows normality; the outline shows pass/fail.">fails spec (TI)</span></span>\n'
         '</div>\n'
         '<div class="footnote"><span id="n_footnote"></span></div>\n'
     )
