@@ -1628,6 +1628,65 @@ def test_named_band_segment_no_compounding() -> None:
           and "var curLfSel=_segBaseColSel.lf?new Set(_segBaseColSel.lf):null;" in src)
 
 
+def test_passfail_note_when_no_spec_basis() -> None:
+    """The All/Passing/Failing data filter shows an inline note (but stays ENABLED) when
+    the dataset has no pass/fail basis -- no CSV spec/limit AND no live manual Spec/TLL
+    override (David 2026-09-28). Reported on a VSWR compare whose limits are all NA and
+    whose Test Event Status is uniformly "P": "Passing only" == "All" and "Failing only"
+    empties the plot, which reads as a broken filter. The control is deliberately NOT
+    disabled -- it's still useful with a typed Spec override (classify against your own
+    limit), so the note points the user at the override rather than removing the control
+    (refined from an earlier disable+note). Applies to the 3 aggregate views with a Spec
+    override (summary/stat_summary/boxplot); scatter/histogram already HIDE their control
+    when there's nothing to classify (scatter's status field only renders on a real FAIL
+    token; histogram's pf_html gates on has_spec). The basis is computed ONCE in padb_v2
+    over the full df (fail-open) + injected as var HAS_SPEC_BASIS; a shared note-only
+    helper PADB_setPassFailBasis toggles the note, called at the top of each update() AND
+    on summary's direct-newPlot load path. The note clears once a basis exists (CSV limit
+    or typed override). TEETH: flag, helper, per-view injection, note spans, update()
+    calls, and the override-read (which clears the note) must all be present."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    v2 = (HERE / "padb_v2.py").read_text(encoding="utf-8")
+    # Build-time flag over the 4 spec/limit columns, fail-open.
+    check("padb_v2 computes _has_spec_basis over Upper/Lower Limit + Spec_Hi/Lo (fail-open)",
+          'if "_has_spec_basis" not in cfg:' in v2
+          and '("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo")' in v2
+          and 'cfg["_has_spec_basis"] = bool(_sb)' in v2
+          and 'cfg["_has_spec_basis"] = True' in v2)
+    # Shared NOTE-ONLY helper defined + appended to _COMMON_JS. It must NOT disable the
+    # radios (the control stays usable via the Spec override) -- teeth against a
+    # regression back to disabling.
+    check("PADB_setPassFailBasis helper defined in _PASSFAIL_JS + appended to _COMMON_JS",
+          '_PASSFAIL_JS = r"""' in src
+          and "function PADB_setPassFailBasis(radioName, hasBasis, noteId){" in src
+          and "set a Spec override below to filter Passing/Failing" in src
+          and '+ "\\n" + _PASSFAIL_JS' in src)
+    check("helper is NOTE-ONLY -- never disables the radios",
+          "r.disabled=!hasBasis;" not in src and ".disabled=!hasBasis" not in src)
+    # HAS_SPEC_BASIS injected into all 4 radio-view builders (scatter injects it for
+    # uniformity even though it hides its control when truly empty).
+    check("HAS_SPEC_BASIS injected into 4 view builders",
+          src.count("f\"var HAS_SPEC_BASIS={json.dumps(bool((cfg or {}).get('_has_spec_basis', True)))};\",") == 4,
+          f"count={src.count(chr(34)+'var HAS_SPEC_BASIS=')}")
+    # The 3 aggregate update()s call the helper with their radio group + note id.
+    for grp, note in (("sum_flt", "sum_pf_note"), ("data_flt", "stat_pf_note"), ("box_flt", "box_pf_note")):
+        check(f"update() notes {grp} via PADB_setPassFailBasis('{grp}',hb,'{note}')",
+              f"PADB_setPassFailBasis('{grp}',hb,'{note}')" in src)
+    # summary's first render is a direct newPlot (bypasses update()), so the note must
+    # also be applied on the load path -- else it wouldn't show until first interaction.
+    check("summary load path (direct newPlot) also applies the note",
+          "Gate Passing/Failing at load too: summary's first render is a direct newPlot" in src)
+    # Note spans present in the 3 aggregate view bodies.
+    for note in ("sum_pf_note", "stat_pf_note", "box_pf_note"):
+        check(f"inline note span present: {note}",
+              f'id="{note}"' in src)
+    # A live manual override clears the note (each aggregate view reads its override field).
+    check("override fields clear the note (sum_tll/stat_spec/box_tll read in update)",
+          "document.getElementById('sum_tll_hi')" in src
+          and "document.getElementById('stat_spec_hi')" in src
+          and "document.getElementById('box_tll_hi')" in src)
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -3126,6 +3185,7 @@ def main() -> None:
                test_common_prelude_and_feature_registry,
                test_named_band_segments_crossview,
                test_named_band_segment_no_compounding,
+               test_passfail_note_when_no_spec_basis,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()

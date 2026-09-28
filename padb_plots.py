@@ -2962,6 +2962,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         # as a smooth response). DISPLAY ONLY -- pass/fail stays per-point from
         # each measurement's CSV limit, so this never changes a verdict.
         f"var SPEC_INTERP={json.dumps({'lin': 'linear', 'spl': 'spline'}.get(str((cfg or {}).get('spec_interp', 'step')).lower()[:3], 'hv'))};",
+        f"var HAS_SPEC_BASIS={json.dumps(bool((cfg or {}).get('_has_spec_basis', True)))};",
         f"var FREQ_MIN={freq_min!r};",
         f"var FREQ_MAX={freq_max!r};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
@@ -4189,7 +4190,28 @@ function PADB_setFilterChip(active, resetFn, note){
   } else { bar.style.display='none'; bar.innerHTML=''; }
 }
 """
-_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS + "\n" + _FILTER_CHIP_JS
+_PASSFAIL_JS = r"""
+/* Inform (don't disable) when the dataset has no pass/fail basis -- no CSV spec/limit
+   AND no live manual Spec/TLL override. The All/Passing/Failing filter is STILL useful
+   with no CSV limit: type a Spec override and it classifies against your own limit
+   (David 2026-09-28 -- refined from an earlier disable+note; keeping the control usable
+   beats removing it, as long as the user is told why it looks inert). Without a basis,
+   "Passing only" == "All" and "Failing only" empties the plot, so an inline amber note
+   points the user at the Spec override; the note clears once a basis exists (CSV limit
+   or a typed override). Shared across the 3 aggregate radio views (stat_summary/summary/
+   boxplot -- each has a Spec override); scatter hides its own control when there's no
+   spec and no failing status, so it isn't wired here. radioName is accepted for call
+   compatibility but the control is left fully enabled. noteId = an inline <span> next to
+   the control; hasBasis = HAS_SPEC_BASIS || an override is currently typed. */
+function PADB_setPassFailBasis(radioName, hasBasis, noteId){
+  var note=noteId?document.getElementById(noteId):null;
+  if(note){
+    note.textContent=hasBasis?'':'No spec/limits in this data -- set a Spec override below to filter Passing/Failing against your own limit.';
+    note.style.display=hasBasis?'none':'inline';
+  }
+}
+"""
+_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS + "\n" + _FILTER_CHIP_JS + "\n" + _PASSFAIL_JS
 
 # Static loading overlay, painted before the giant data <script> parses (so the page
 # never just looks dead). Hidden by PADB_busyHide (_COMMON_JS) after the first render.
@@ -9470,6 +9492,12 @@ function _ssActiveFilters(){
   return a;
 }
 function update(){
+  /* Disable Passing/Failing + note when there's no pass/fail basis (no CSV
+     spec/limit AND no manual Spec override typed) -- see PADB_setPassFailBasis. */
+  (function(){var hb=(typeof HAS_SPEC_BASIS==='undefined')?true:HAS_SPEC_BASIS;
+    if(!hb){var oh=document.getElementById('stat_spec_hi'),ol=document.getElementById('stat_spec_lo');
+      hb=(oh&&oh.value!==''&&isFinite(parseFloat(oh.value)))||(ol&&ol.value!==''&&isFinite(parseFloat(ol.value)));}
+    if(typeof PADB_setPassFailBasis==='function') PADB_setPassFailBasis('data_flt',hb,'stat_pf_note');})();
   /* Capture the live axis state BEFORE Plotly.purge() below destroys it --
      see this file's top-of-module note on why update() (not buildLayout())
      has to be the one to read this. */
@@ -10082,6 +10110,7 @@ def _build_stat_summary_html(
         f"var FREQ_MAX={freq_max!r};",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
+        f"var HAS_SPEC_BASIS={json.dumps(bool((cfg or {}).get('_has_spec_basis', True)))};",
         f"var DEFAULT_P={_snap_pc_opt(default_P, _PC_P_OPTS)!r};",
         f"var DEFAULT_C={_snap_pc_opt(default_C, _PC_C_OPTS)!r};",
         f"var DEFAULT_MU={default_mu!r};",
@@ -10342,6 +10371,7 @@ def _build_stat_summary_html(
         '  <label title="Show only conditions/frequencies that FAIL -- the exact complement of Passing only (TI not within TLL)">'
         '<input type="radio" name="data_flt" value="failing"'
         ' onchange="update()"> Failing&nbsp;only</label>\n'
+        '  <span id="stat_pf_note" style="display:none;color:#8a5a00;font-size:11px;font-style:italic;margin-left:4px"></span>\n'
         '  <small style="color:#888">(to override the spec, use Spec&#8595;/Spec&#8593; below &mdash; recomputes TLL/margin for plot and table)</small>\n'
         '  <span class="sep"></span>\n'
         '  <label title="Use non-parametric (distribution-free) order-statistic TI'
@@ -17306,6 +17336,13 @@ function _boxActiveFilters(){
   return a;
 }
 function update(){
+  /* Disable Passing/Failing + note when there's no pass/fail basis (no CSV
+     spec/limit AND no manual Spec override typed) -- see PADB_setPassFailBasis.
+     Runs before getYFilter() reads the mode so forcing "All" takes effect. */
+  (function(){var hb=(typeof HAS_SPEC_BASIS==='undefined')?true:HAS_SPEC_BASIS;
+    if(!hb){var oh=document.getElementById('box_tll_hi'),ol=document.getElementById('box_tll_lo');
+      hb=(oh&&oh.value!==''&&isFinite(parseFloat(oh.value)))||(ol&&ol.value!==''&&isFinite(parseFloat(ol.value)));}
+    if(typeof PADB_setPassFailBasis==='function') PADB_setPassFailBasis('box_flt',hb,'box_pf_note');})();
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
   _updatePassingWarn(yFlt);
@@ -17807,6 +17844,7 @@ def _build_box_interactive_html(
         ' onchange="update()">&nbsp;Failing&nbsp;only</label>\n'
         '  <span id="box_passing_warn" style="display:none;background:#fff0e8;color:#c04000;'
         'font-weight:bold;padding:1px 6px;border-radius:3px"></span>\n'
+        '  <span id="box_pf_note" style="display:none;color:#8a5a00;font-size:11px;font-style:italic;margin-left:4px"></span>\n'
         + _fgl("Trim", "Data-cleaning trim: drop raw samples beyond a hard value BEFORE computing Q1/Q2/Q3/whiskers. Independent of the pass/fail filter and the Spec override -- combine with either. Leave blank for no trim.")
         + '  <label style="font-size:12px" title="Drop raw samples ABOVE this value before computing the box">above&nbsp;'
         '<input type="number" id="box_flt_yhi" placeholder="none" step="0.001" style="width:80px"'
@@ -17895,6 +17933,7 @@ def _build_box_interactive_html(
         f"var BOX_FREQ_MAX={box_freq_max!r};",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
+        f"var HAS_SPEC_BASIS={json.dumps(bool((cfg or {}).get('_has_spec_basis', True)))};",
         f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var Y_LIM={json.dumps(y_lim)};",
         f"var Y_LABEL={json.dumps(y_label)};",
@@ -20497,6 +20536,13 @@ function _sumActiveFilters(){
 }
 /* ---- main update ---- */
 function update(){
+  /* Disable Passing/Failing + note when there's no pass/fail basis (no CSV
+     spec/limit AND no manual Spec override typed) -- see PADB_setPassFailBasis.
+     Runs first so forcing "All" changes what _getFilteredActive() then reads. */
+  (function(){var hb=(typeof HAS_SPEC_BASIS==='undefined')?true:HAS_SPEC_BASIS;
+    if(!hb){var oh=document.getElementById('sum_tll_hi'),ol=document.getElementById('sum_tll_lo');
+      hb=(oh&&oh.value!==''&&isFinite(parseFloat(oh.value)))||(ol&&ol.value!==''&&isFinite(parseFloat(ol.value)));}
+    if(typeof PADB_setPassFailBasis==='function') PADB_setPassFailBasis('sum_flt',hb,'sum_pf_note');})();
   var active=_getFilteredActive();
   document.getElementById('n_groups').textContent=active.length+' groups';
   var showExcl=document.getElementById('sum_show_excl_chk');
@@ -20580,6 +20626,13 @@ function loadState(){
 _loadSumGlobalFilter();
 loadState();
 updateSumFilterLabels();
+/* Gate Passing/Failing at load too: summary's first render is a direct newPlot
+   (not via update()), so the pass/fail disable+note must be applied here as well
+   -- see PADB_setPassFailBasis. Runs before _getFilteredActive() reads the mode. */
+(function(){var hb=(typeof HAS_SPEC_BASIS==='undefined')?true:HAS_SPEC_BASIS;
+  if(!hb){var oh=document.getElementById('sum_tll_hi'),ol=document.getElementById('sum_tll_lo');
+    hb=(oh&&oh.value!==''&&isFinite(parseFloat(oh.value)))||(ol&&ol.value!==''&&isFinite(parseFloat(ol.value)));}
+  if(typeof PADB_setPassFailBasis==='function') PADB_setPassFailBasis('sum_flt',hb,'sum_pf_note');})();
 var _sumInitActive=_getFilteredActive();
 Plotly.newPlot('plot',buildTraces(_sumInitActive,[]),buildLayout());
 document.getElementById('n_groups').textContent=_sumInitActive.length+' groups';
@@ -20887,6 +20940,7 @@ def _build_summary_html(
         f"var SUM_ALL_SERIALS={json.dumps(all_sum_serials)};",
         f"var HI_SPEC={hi_js};",
         f"var LO_SPEC={lo_js};",
+        f"var HAS_SPEC_BASIS={json.dumps(bool((cfg or {}).get('_has_spec_basis', True)))};",
         f"var SPEC_DIRECTION={json.dumps(spec_dir_js)};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_LABEL={json.dumps(x_label)};",
@@ -21087,6 +21141,7 @@ def _build_summary_html(
         + '  <label title="Show only conditions that FAIL -- the exact complement of Passing only (TTL crosses Spec at any visible frequency)">'
         + '<input type="radio" name="sum_flt" value="failing"'
         + ' onchange="update()"> Failing&nbsp;only</label>\n'
+        + '  <span id="sum_pf_note" style="display:none;color:#8a5a00;font-size:11px;font-style:italic;margin-left:4px"></span>\n'
         + '  <span class="sep"></span>\n'
         + '  <label title="Data-cleaning trim: hide whole conditions whose data crosses a hard value at any visible frequency. Independent of the pass/fail filter above -- combine with either. Leave blank for no trim.">Hide&nbsp;conditions&nbsp;beyond:</label>\n'
         + '  <span id="sum_flt_hi_wrap"><label style="font-size:12px" title="Hide conditions whose MAX data exceeds this value">above&nbsp;'

@@ -1327,6 +1327,28 @@ def generate_report(
             cfg["_named_bands"] = []
             print(f"  [bands] skipped ({_exc})", flush=True)
 
+    # Pass/fail basis: does this dataset carry ANY numeric spec/limit to classify
+    # points against? When it doesn't (no Upper/Lower Limit and no Spec_Hi/Lo
+    # anywhere -- e.g. a VSWR compare whose limits are all NA and whose Test Event
+    # Status is uniformly "P"), the All/Passing/Failing data filter is inert:
+    # "Passing only" == "All" and "Failing only" empties the plot, which reads as a
+    # broken filter. Each view disables the Passing/Failing choices + shows an
+    # inline note in that case (David 2026-09-28: disable+note, chosen over a
+    # hover-only tip and over hiding the control). Computed once here over the full
+    # df so every view agrees, threaded via cfg -> injected as var HAS_SPEC_BASIS.
+    # A live manual Spec/TLL override re-enables the control client-side (views with
+    # an override field OR HAS_SPEC_BASIS in the value). Fail OPEN (True) on any
+    # uncertainty -- never disable a working control by mistake.
+    if "_has_spec_basis" not in cfg:
+        try:
+            _sb = any(
+                _c in df.columns and df[_c].notna().any()
+                for _c in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo")
+            )
+            cfg["_has_spec_basis"] = bool(_sb)
+        except Exception:
+            cfg["_has_spec_basis"] = True
+
     room_values = set(cfg.get("room_values", ["Room"]))
     is_room_only = set(df["Temperature"].dropna().unique()) <= room_values
 
