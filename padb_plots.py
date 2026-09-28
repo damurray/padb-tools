@@ -1494,6 +1494,7 @@ function _recomputeSpecSegments(){
   }
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
+  if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);
   if(_specSegments.length<2){bar.style.display='none';return;}
   bar.style.display='';
   /* Read the exact freq from the text box, not the range slider's own .value --
@@ -3613,6 +3614,7 @@ function _recomputeSpecSegments(){
   _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(mask.hi,mask.lo);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
+  if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);
   if(_specSegments.length<2){bar.style.display='none';return;}
   bar.style.display='';
   /* Read the exact freq from the text box, not the range slider's own .value --
@@ -4211,7 +4213,36 @@ function PADB_setPassFailBasis(radioName, hasBasis, noteId){
   }
 }
 """
-_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS + "\n" + _FILTER_CHIP_JS + "\n" + _PASSFAIL_JS
+_SEGHINT_JS = r"""
+/* Segment-by hint: when the active basis yields <2 bands (Prev/Next hidden) but Named
+   bands DO exist and would step, show an inline hint pointing there -- so a dataset
+   whose limit is flat along the swept x (limits vary by CONDITION, not frequency:
+   e.g. AM2 Accuracy&Distortion) doesn't strand the user on a dead default. David
+   2026-09-28 chose a hint over changing the default seg key. The hint <span> is
+   created lazily next to the "Segment by" dropdown (no per-view HTML needed).
+   curKey=_segKey; curCount=_specSegments.length. typeof-guarded so the EXCLUDED
+   legacy distribution() (no _COMMON_JS) is a safe no-op. */
+function PADB_segLabel(k){return {spec:'Spec',limit:'Limit',uncertainty:'Uncertainty',bands:'Named bands'}[k]||k;}
+function PADB_segHint(curKey,curCount){
+  var sel=document.getElementById('segKeySel'); if(!sel) return;
+  var el=document.getElementById('seg_hint');
+  if(!el){
+    el=document.createElement('span'); el.id='seg_hint';
+    el.style.cssText='display:none;color:#8a5a00;font-size:11px;font-style:italic;margin-left:6px';
+    var lbl=(sel.closest?sel.closest('label'):null)||sel.parentNode;
+    if(lbl&&lbl.parentNode) lbl.parentNode.insertBefore(el,lbl.nextSibling); else sel.parentNode.appendChild(el);
+  }
+  var msg='';
+  if(curCount<2 && curKey!=='bands'
+     && typeof PADB_hasNamedBands==='function' && PADB_hasNamedBands()
+     && typeof PADB_bandSegs==='function'){
+    var nb=PADB_bandSegs();
+    if(nb&&nb.length>=2) msg='"'+PADB_segLabel(curKey)+'" has no bands along the x-axis here -- switch Segment by to "Named bands" ('+nb.length+') to step.';
+  }
+  el.textContent=msg; el.style.display=msg?'inline':'none';
+}
+"""
+_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS + "\n" + _FILTER_CHIP_JS + "\n" + _PASSFAIL_JS + "\n" + _SEGHINT_JS
 
 # Static loading overlay, painted before the giant data <script> parses (so the page
 # never just looks dead). Hidden by PADB_busyHide (_COMMON_JS) after the first render.
@@ -6139,6 +6170,7 @@ function _recomputeSpecSegments(){
   if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
+  if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);
   if(_specSegments.length<2){bar.style.display='none';return;}
   bar.style.display='';
   var loTxt=document.getElementById('dist_freq_lo_txt');
@@ -9376,6 +9408,7 @@ function _recomputeSpecSegments(){
   if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
+  if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);
   if(_specSegments.length<2){bar.style.display='none';return;}
   bar.style.display='';
   var loTxt=document.getElementById('freq_lo_txt');
@@ -11907,6 +11940,7 @@ function _recomputeSpecSegments(){
   if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
+  if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);
   if(_specSegments.length<2){bar.style.display='none';return;}
   bar.style.display='';
   var loTxt=document.getElementById('ec_freq_lo_txt');
@@ -17238,6 +17272,7 @@ function _recomputeSpecSegments(){
   if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
+  if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);
   if(_specSegments.length<2){bar.style.display='none';return;}
   bar.style.display='';
   var loTxt=document.getElementById('box_freq_lo');
@@ -20493,6 +20528,7 @@ function _recomputeSpecSegments(){
   if(!_segIdxPinned) _specSegments=(_segKey==='bands'&&typeof PADB_bandSegs==='function')?PADB_bandSegs():getSpecSegments(hiPoints,loPoints);
   var bar=document.getElementById('segTabBar');
   if(!bar) return;
+  if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);
   if(_specSegments.length<2){bar.style.display='none';return;}
   bar.style.display='';
   var loTxt=document.getElementById('freq_lo_txt');

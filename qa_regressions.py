@@ -1687,6 +1687,38 @@ def test_passfail_note_when_no_spec_basis() -> None:
           and "document.getElementById('box_tll_hi')" in src)
 
 
+def test_segment_hint_when_no_bands_on_key() -> None:
+    """When the active "Segment by" basis yields <2 bands (Prev/Next hidden) but Named
+    bands DO exist and would step, an inline hint points the user there (David
+    2026-09-28 -- hint, NOT a default-key change). Reported on the AM2 Accuracy&Distortion
+    boxplot: limits vary by CONDITION (Measurement/Depth), not along the frequency sweep,
+    so `_defaultSegKey()` picks "limit" but limit collapses to a single band -> the
+    Prev/Next bar hides and the user thinks Segment-by is broken, not realising "Named
+    bands" (4) is right there in the same dropdown. Fix: a shared note-only helper
+    PADB_segHint (in _SEGHINT_JS, appended to _COMMON_JS) lazily creates a #seg_hint
+    span by the dropdown and, when curCount<2 and Named bands has >=2, shows the hint;
+    it clears once the active basis has >=2 bands. Wired into every _recomputeSpecSegments
+    via the shared bar-hide line (typeof-guarded so the EXCLUDED legacy distribution() is a
+    safe no-op). Verified live: AM2 boxplot loads on "limit" (1 band) with the hint;
+    switching to Named bands (4) clears it and shows Prev/Next. TEETH: helper + suggestion
+    text + the guarded call on every recompute copy."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("PADB_segHint helper defined in _SEGHINT_JS + appended to _COMMON_JS",
+          '_SEGHINT_JS = r"""' in src
+          and "function PADB_segHint(curKey,curCount){" in src
+          and "function PADB_segLabel(" in src
+          and '+ "\\n" + _SEGHINT_JS' in src)
+    check("hint suggests Named bands + is lazily created (no per-view HTML)",
+          'switch Segment by to "Named bands"' in src
+          and "el=document.createElement('span'); el.id='seg_hint';" in src)
+    # The guarded call reaches every _recomputeSpecSegments (7 = 6 active + legacy).
+    check("PADB_segHint called from every _recomputeSpecSegments (guarded)",
+          src.count("if(typeof PADB_segHint==='function') PADB_segHint(_segKey,_specSegments.length);")
+          == src.count("function _recomputeSpecSegments(){"),
+          f"calls={src.count(chr(39)+'function') if False else src.count('PADB_segHint(_segKey,_specSegments.length)')}"
+          f" recomputes={src.count('function _recomputeSpecSegments(){')}")
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -3186,6 +3218,7 @@ def main() -> None:
                test_named_band_segments_crossview,
                test_named_band_segment_no_compounding,
                test_passfail_note_when_no_spec_basis,
+               test_segment_hint_when_no_bands_on_key,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()
