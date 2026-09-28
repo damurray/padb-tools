@@ -9913,6 +9913,25 @@ function toggleStatWorkflow(){_afToggleWorkflow(STAT_AF);}
 """
 
 
+def _is_coverage_identifier_dim(key: str) -> bool:
+    """True for a condition dimension that is a unique per-instance TAG rather than a
+    replicable/controlled setting -- so listing it in the cross-site "Coverage gap"
+    banner is pure noise (David 2026-09-28). A Test Run Datetime is unique per run and
+    can NEVER match between sites; Run NN are unique run tags, not settings. Datasheet-
+    meaningful dims (Temperature/Mode/Port/Depth/SpurType/...) are kept. Name-based on
+    purpose (predictable -- never suppresses a real gap); add a name here if another
+    identifier dim surfaces."""
+    import re as _re
+    k = (key or "").strip().lower()
+    if any(t in k for t in ("datetime", "timestamp")):
+        return True
+    if "date" in k and "time" in k:                # "Test Run Date/Time", "... Date Time"
+        return True
+    if _re.match(r"^(test\s+)?run(\s*(number|no\.?|index|idx|id|#|tag))?$", k):
+        return True
+    return False
+
+
 def _build_stat_summary_html(
     stat_data: list,
     k_table: dict,
@@ -10071,6 +10090,8 @@ def _build_stat_summary_html(
         for key in sorted(dim_vals.keys()):
             if key == "Site":
                 continue
+            if _is_coverage_identifier_dim(key):
+                continue   # unique per-instance tag (datetime/run) -> never a real cross-site gap
             val_by_site: dict[str, set] = {}
             for cd in stat_data:
                 if not cd.get("site"):
@@ -18426,6 +18447,8 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         for _key in cond_keys:
             if _key == "Site":
                 continue
+            if _is_coverage_identifier_dim(_key):
+                continue   # unique per-instance tag (datetime/run) -> never a real cross-site gap
             _gap_lines += _site_coverage_gaps(_key, df["Group"].map(lambda g, _k=_key: group_kv.get(g, {}).get(_k)))
         if _gap_lines:
             coverage_gap_html = (

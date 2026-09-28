@@ -1719,6 +1719,26 @@ def test_segment_hint_when_no_bands_on_key() -> None:
           f" recomputes={src.count('function _recomputeSpecSegments(){')}")
 
 
+def test_coverage_gap_excludes_identifier_dims() -> None:
+    """The cross-site "Coverage gap" banner must EXCLUDE unique-per-instance identifier
+    dims -- Test Run Datetime (unique per run, can never match between sites) and Run NN
+    (unique run tags, not settings) -- while keeping real controlled dims like
+    Temperature/Mode/Port/Depth (David 2026-09-28). Reported on the Harmonics compare
+    summary: the banner listed ~96 datetimes + 18 Run tags as "gaps", pure noise.
+    Module helper `_is_coverage_identifier_dim` (name-based, predictable) gates BOTH
+    Python coverage-gap builders (stat_summary inline + the shared boxplot/summary one).
+    TEETH: behavioral -- calls the real helper; and both loops must guard on it."""
+    import padb_plots as pp
+    f = pp._is_coverage_identifier_dim
+    for k in ("Test Run Datetime", "Run", "Test Run", "Run Number", "Acquisition Timestamp"):
+        check(f"coverage-gap excludes identifier dim: {k!r}", f(k) is True)
+    for k in ("Temperature", "Mode", "Port", "Depth (%)", "SpurType", "Run Rate", "Runout"):
+        check(f"coverage-gap keeps real/controlled dim: {k!r}", f(k) is False)
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("both coverage-gap loops guard on _is_coverage_identifier_dim",
+          src.count("if _is_coverage_identifier_dim(") >= 2)
+
+
 def test_summary_group_by_serial() -> None:
     """summary view offers a 'Group by: Serial Number' option (David 2026-09-23) --
     a special per-DUT pooling entry (like boxplot's __serial__), NOT a parsed
@@ -3219,6 +3239,7 @@ def main() -> None:
                test_named_band_segment_no_compounding,
                test_passfail_note_when_no_spec_basis,
                test_segment_hint_when_no_bands_on_key,
+               test_coverage_gap_excludes_identifier_dims,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
             fn()
