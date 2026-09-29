@@ -394,9 +394,16 @@ function setFreqBand(lo,hi){
   var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
   s1.value=loV;s2.value=hiV;
   /* Set text boxes directly from the intended values, not the slider's
-     (possibly step-snapped) .value -- see freqTxtChange's identical fix. */
-  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
-  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+     (possibly step-snapped) .value -- see freqTxtChange's identical fix.
+     Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest:
+     applyFilters reads the text box at full precision, and a segment/band
+     boundary that lands mid-thousandth (e.g. 44.53125) would otherwise round
+     INWARD (-> 44.531) and clip the boundary data point. A sparse segment whose
+     only rows sit on its own edges then filters to nothing -- the plot goes
+     empty on a "Segment by: Limit" step (David 2026-09-29, single-site AMC2).
+     Same outward-rounding rule Reset/freqStep already use. */
+  document.getElementById('freq_lo_txt').value=(Math.floor(loV*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(hiV*1000)/1000).toFixed(3);
   var log=isLogX();
   Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
   update();
@@ -3448,9 +3455,16 @@ function setFreqBand(lo,hi){
   var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
   s1.value=loV;s2.value=hiV;
   /* Set text boxes directly from the intended values, not the slider's
-     (possibly step-snapped) .value -- see freqTxtChange's identical fix. */
-  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
-  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+     (possibly step-snapped) .value -- see freqTxtChange's identical fix.
+     Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest:
+     applyFilters reads the text box at full precision, and a segment/band
+     boundary that lands mid-thousandth (e.g. 44.53125) would otherwise round
+     INWARD (-> 44.531) and clip the boundary data point. A sparse segment whose
+     only rows sit on its own edges then filters to nothing -- the plot goes
+     empty on a "Segment by: Limit" step (David 2026-09-29, single-site AMC2).
+     Same outward-rounding rule Reset/freqStep already use. */
+  document.getElementById('freq_lo_txt').value=(Math.floor(loV*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(hiV*1000)/1000).toFixed(3);
   update();
 }
 function applyFilters(data){
@@ -6198,8 +6212,11 @@ function segTab(dir){
   /* Write the exact values straight to the text boxes, not the slider's
      (possibly step-snapped) .value -- see setFreqBand's identical fix in
      the scatter/distribution-histogram views. */
-  document.getElementById('dist_freq_lo_txt').value=seg.lo.toFixed(3);
-  document.getElementById('dist_freq_hi_txt').value=seg.hi.toFixed(3);
+  /* Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest, so a
+     boundary data point on a segment edge isn't clipped and a sparse segment
+     doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
+  document.getElementById('dist_freq_lo_txt').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
+  document.getElementById('dist_freq_hi_txt').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
   _segFilterCondDims(seg);
   /* See scatter/summary's identical segTab() fix -- a Y range pinned by
      Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
@@ -9391,8 +9408,11 @@ function segTab(dir){
   /* Write the exact values straight to the text boxes, not the slider's
      (possibly step-snapped) .value -- see setFreqBand's identical fix in
      the scatter/distribution views. */
-  document.getElementById('freq_lo_txt').value=seg.lo.toFixed(3);
-  document.getElementById('freq_hi_txt').value=seg.hi.toFixed(3);
+  /* Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest, so a
+     boundary data point on a segment edge isn't clipped and a sparse segment
+     doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
+  document.getElementById('freq_lo_txt').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
   _segFilterCondDims(seg);
   /* Pin BOTH axes for the new segment before update(). update() reads
      _liveAxisRange('xaxis')/('yaxis') BEFORE its own Plotly.purge(), and
@@ -9878,8 +9898,11 @@ function setFreqBand(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
   var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
   s1.value=loV;s2.value=hiV;
-  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
-  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+  /* Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest, so a
+     boundary data point on a segment/band edge isn't clipped and a sparse
+     segment doesn't filter to empty (David 2026-09-29). */
+  document.getElementById('freq_lo_txt').value=(Math.floor(loV*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(hiV*1000)/1000).toFixed(3);
   /* Relayout the x-axis to the band (log-aware) so a programmatic band set (locked
      filters, band step) moves the axis, not just the filter -- update()'s _liveAxisRange
      otherwise preserves the old pinned range and the axis stayed full (David 2026-09-24).
@@ -11786,8 +11809,10 @@ function setFreqBand(lo,hi){
   var s1=document.getElementById('ec_freq_lo'),s2=document.getElementById('ec_freq_hi');
   var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
   s1.value=loV;s2.value=hiV;
-  document.getElementById('ec_freq_lo_txt').value=loV.toFixed(3);
-  document.getElementById('ec_freq_hi_txt').value=hiV.toFixed(3);
+  /* Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest, so a
+     boundary data point on a segment/band edge isn't clipped (David 2026-09-29). */
+  document.getElementById('ec_freq_lo_txt').value=(Math.floor(loV*1000)/1000).toFixed(3);
+  document.getElementById('ec_freq_hi_txt').value=(Math.ceil(hiV*1000)/1000).toFixed(3);
   /* Relayout the x-axis to the band (log-aware) so a programmatic band set (locked
      filters, band step) moves the axis, not just the filter (David 2026-09-24).
      _ecBandRelayouting guards _onPlotRelayout so this doesn't re-enter and loop. */
@@ -11962,8 +11987,11 @@ function segTab(dir){
   /* Write the exact values straight to the text boxes, not the slider's
      (possibly step-snapped) .value -- see setFreqBand's identical fix in
      the scatter/distribution views. */
-  document.getElementById('ec_freq_lo_txt').value=seg.lo.toFixed(3);
-  document.getElementById('ec_freq_hi_txt').value=seg.hi.toFixed(3);
+  /* Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest, so a
+     boundary data point on a segment edge isn't clipped and a sparse segment
+     doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
+  document.getElementById('ec_freq_lo_txt').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
+  document.getElementById('ec_freq_hi_txt').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
   _segFilterCondDims(seg);
   var log=isLogX();
   /* 'yaxis.autorange':true clears any Y range pinned by Autoscale Y or a
@@ -17448,8 +17476,11 @@ function segTab(dir){
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
   _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
-  document.getElementById('box_freq_lo').value=seg.lo.toFixed(3);
-  document.getElementById('box_freq_hi').value=seg.hi.toFixed(3);
+  /* Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest, so a
+     boundary categorical box on a segment edge isn't clipped and a sparse segment
+     doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
+  document.getElementById('box_freq_lo').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
+  document.getElementById('box_freq_hi').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
   _segFilterCondDims(seg);
   /* See scatter/summary's identical segTab() fix -- a Y range pinned by
      Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
@@ -18997,9 +19028,16 @@ function setFreqBand(lo,hi){
   var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
   s1.value=loV;s2.value=hiV;
   /* Set text boxes directly from the intended values, not the slider's
-     (possibly step-snapped) .value -- see freqTxtChange's identical fix. */
-  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
-  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+     (possibly step-snapped) .value -- see freqTxtChange's identical fix.
+     Round OUTWARD (floor lo / ceil hi), not toFixed's round-to-nearest:
+     applyFilters reads the text box at full precision, and a segment/band
+     boundary that lands mid-thousandth (e.g. 44.53125) would otherwise round
+     INWARD (-> 44.531) and clip the boundary data point. A sparse segment whose
+     only rows sit on its own edges then filters to nothing -- the plot goes
+     empty on a "Segment by: Limit" step (David 2026-09-29, single-site AMC2).
+     Same outward-rounding rule Reset/freqStep already use. */
+  document.getElementById('freq_lo_txt').value=(Math.floor(loV*1000)/1000).toFixed(3);
+  document.getElementById('freq_hi_txt').value=(Math.ceil(hiV*1000)/1000).toFixed(3);
   var log=isLogX();
   Plotly.relayout('plot',{'xaxis.range':log?[Math.log10(Math.max(loV,1e-9)),Math.log10(Math.max(hiV,1e-9))]:[loV,hiV]});
   update();

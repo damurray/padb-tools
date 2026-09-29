@@ -1,8 +1,14 @@
-# Changelog — 2026-08-17 to 2026-09-28
+# Changelog — 2026-08-17 to 2026-09-29
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
 
 ---
+
+## 2026-09-29
+
+### Fix: "Segment by: Limit" step went empty on single-site line-limit jobs
+- **Stepping the segment stepper (Prev/Next) could empty the plot** on a standard (non-compare) interactive job whose spec is a frequency mask (`Limits_YLimit=Line`) — reported on the freshly-run single-site AMC2 MaxPower job. Root cause: the programmatic freq-range setters wrote the freq filter with `toFixed(3)` (round-to-**nearest**), which rounds *inward* at a segment boundary that lands mid-thousandth (e.g. `44.53125 → 44.531`). Segment boundaries **are** data frequencies, so a sparse segment whose only rows sit exactly on its edges had *both* edges clipped → zero points, no error. Fix: round **outward** (floor the low bound, ceil the high bound) in every `setFreqBand` (5 copies) and every `segTab` that writes the freq filter directly (stat_summary / env_coverage / distribution / boxplot) — the same outward-rounding rule Reset/`freqStep` already used. Verified live across scatter / stat_summary / boxplot: all 8 segments now populate (segment 2 went 0 → 22/57/… points). **Rebuild existing plots to pick this up.**
+- Only recently-QA'd *compare* jobs were exercised, whose denser segments keep interior points even when an edge clips — so this single-site regression slipped through. New source-contract pin `test_setfreqband_rounds_outward` (with teeth) guards all copies.
 
 ## 2026-09-28
 

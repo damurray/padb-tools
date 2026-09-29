@@ -1630,6 +1630,67 @@ def test_named_band_segment_no_compounding() -> None:
           and "var curLfSel=_segBaseColSel.lf?new Set(_segBaseColSel.lf):null;" in src)
 
 
+def test_setfreqband_rounds_outward() -> None:
+    """setFreqBand must round its freq TEXT boxes OUTWARD (floor lo / ceil hi), not
+    with toFixed's round-to-nearest (David 2026-09-29). Bug: setFreqBand wrote
+    freq_lo_txt=loV.toFixed(3) / freq_hi_txt=hiV.toFixed(3). applyFilters reads the
+    text box at full precision, so a segment/band boundary landing mid-thousandth
+    (e.g. 44.53125) rounded INWARD to 44.531 and clipped the boundary data point. A
+    sparse segment whose only rows sit on its own edges then filtered to NOTHING --
+    the plot went empty on a "Segment by: Limit" step. Seen on the single-site AMC2
+    MaxPower job (line-limit mask, segment 2 = [42.1875,44.53125] with data only at
+    those two edge freqs); missed because recent QA exercised only dense compares
+    whose segments keep interior points. Fix: floor lo / ceil hi (the same outward
+    rounding Reset/freqStep already use), so a boundary point is never clipped. All
+    5 setFreqBand copies (scatter/stat_summary/summary/env_coverage + the boxplot-
+    area view) must round outward. TEETH: no setFreqBand may write *_txt=loV.toFixed
+    or *_txt=hiV.toFixed, and every setFreqBand must use the floor/ceil idiom."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    n_def = src.count("function setFreqBand(lo,hi){")
+    check("5 setFreqBand definitions present", n_def == 5, f"count={n_def}")
+    # The regression form -- a text box set straight from toFixed (round-to-nearest).
+    # Must be GONE from every setFreqBand. The remaining loV.toFixed(3) lines belong
+    # to zoom-sync / typed-entry handlers, which don't move to segment boundaries.
+    bad_lo = "freq_lo_txt').value=loV.toFixed(3);"
+    bad_hi = "freq_hi_txt').value=hiV.toFixed(3);"
+    # Slice out each setFreqBand body and assert none uses the inward form.
+    import re as _re
+    bodies = []
+    for m in _re.finditer(r"function setFreqBand\(lo,hi\)\{", src):
+        seg = src[m.start(): src.find("\nfunction ", m.end())]
+        bodies.append(seg[:1200])
+    check("all 5 setFreqBand bodies captured", len(bodies) == 5, f"count={len(bodies)}")
+    for i, b in enumerate(bodies):
+        check(f"setFreqBand #{i+1} does not set lo text box via inward toFixed",
+              bad_lo not in b and "ec_freq_lo_txt').value=loV.toFixed(3);" not in b)
+        check(f"setFreqBand #{i+1} does not set hi text box via inward toFixed",
+              bad_hi not in b and "ec_freq_hi_txt').value=hiV.toFixed(3);" not in b)
+        check(f"setFreqBand #{i+1} floors the lo text box (outward)",
+              "value=(Math.floor(loV*1000)/1000).toFixed(3);" in b)
+        check(f"setFreqBand #{i+1} ceils the hi text box (outward)",
+              "value=(Math.ceil(hiV*1000)/1000).toFixed(3);" in b)
+    # Some segTab copies (stat_summary/summary?/env_coverage/distribution/boxplot)
+    # write the freq FILTER directly instead of routing through setFreqBand -- those
+    # must round outward too. The regression form is a filter set straight from
+    # seg.lo/seg.hi via toFixed (round-to-nearest). NB: _segLabelText legitimately
+    # uses seg.lo.toFixed(3) for the LABEL string ("42.188-44.531 MHz") -- that's a
+    # concatenation ("+"), not a "value=" assignment, so the ".value=" anchor below
+    # excludes it. TEETH: no direct freq-filter write may use the inward form.
+    check("no segTab writes a freq filter via inward .value=seg.lo.toFixed(3)",
+          ".value=seg.lo.toFixed(3);" not in src,
+          "a direct segTab write still rounds inward (clips segment-edge points)")
+    check("no segTab writes a freq filter via inward .value=seg.hi.toFixed(3)",
+          ".value=seg.hi.toFixed(3);" not in src)
+    # And the outward direct-write form is present for every view that writes direct
+    # (distribution/stat_summary/env_coverage/boxplot = 4).
+    check("4 direct-write segTabs floor seg.lo outward",
+          src.count("(Math.floor(seg.lo*1000)/1000).toFixed(3)") == 4,
+          f"count={src.count('(Math.floor(seg.lo*1000)/1000).toFixed(3)')}")
+    check("4 direct-write segTabs ceil seg.hi outward",
+          src.count("(Math.ceil(seg.hi*1000)/1000).toFixed(3)") == 4,
+          f"count={src.count('(Math.ceil(seg.hi*1000)/1000).toFixed(3)')}")
+
+
 def test_passfail_note_when_no_spec_basis() -> None:
     """The All/Passing/Failing data filter shows an inline note (but stays ENABLED) when
     the dataset has no pass/fail basis -- no CSV spec/limit AND no live manual Spec/TLL
@@ -3452,6 +3513,7 @@ def main() -> None:
                test_common_prelude_and_feature_registry,
                test_named_band_segments_crossview,
                test_named_band_segment_no_compounding,
+               test_setfreqband_rounds_outward,
                test_passfail_note_when_no_spec_basis,
                test_segment_hint_when_no_bands_on_key,
                test_coverage_gap_excludes_identifier_dims,
