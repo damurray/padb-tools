@@ -4006,8 +4006,23 @@ function PADB_lockSummary(o){ if(!o) return '';
   if(o.freq&&(o.freq.lo!=null||o.freq.hi!=null)) parts.push('freq '+(o.freq.lo==null?'*':o.freq.lo)+'-'+(o.freq.hi==null?'*':o.freq.hi));
   if(o.passfail&&o.passfail!=='all') parts.push(o.passfail==='failing'?'Failing only':'Passing only');
   return parts.length?parts.join('  ·  '):'(no narrowed filters)'; }
+/* Two DIFFERENT pass/fail notions conflict if locked together (David 2026-09-28): the
+   "Test Event Status" condition dim is the PADB VERDICT (P/F), while the Passing/Failing
+   filter is the SPEC pass/fail. Locking a narrowed Test Event Status AND Passing/Failing
+   scopes the spec filter to only that verdict's conditions -- so e.g. "Exclude the locked
+   slice" leaves spec-fails in the OTHER verdict behind (the reported surprise). Warn once at
+   lock time; the info's also in the lock summary but is easy to miss. Returns false to cancel. */
+function PADB_lockPassFailConflict(o){
+  if(!o||!o.dims||!o.passfail||o.passfail==='all') return false;
+  var k=Object.keys(o.dims).filter(function(x){return /event status/i.test(x)||/^test\s*status$/i.test(x)||/verdict/i.test(x);})[0];
+  if(!k) return false;
+  var pf=o.passfail==='failing'?'Failing only':'Passing only';
+  return !confirm('Heads-up: this lock narrows "'+k+'" to ['+(o.dims[k]||[]).join(', ')+'] -- that is the PADB pass/fail VERDICT -- AND also sets '+pf+', which is the SPEC pass/fail filter.\n\nThese are two different notions of pass/fail. Combined, '+pf+' applies ONLY within the "'+k+'" values you kept, so spec '+(o.passfail==='failing'?'fails':'passes')+' in the other verdict are left in -- usually not what you want (e.g. "Exclude the locked slice" would miss them).\n\nLock anyway?');
+}
 function PADB_lockSave(){ if(!_padbLockReg){return;} var o=_padbLockReg.read()||{}; o.v=1; o.ts=Date.now();
-  o.title=(typeof TITLE!=='undefined'?TITLE:document.title); PADB_lockSet(o);
+  o.title=(typeof TITLE!=='undefined'?TITLE:document.title);
+  if(PADB_lockPassFailConflict(o)) return;   // user cancelled the verdict-vs-spec pass/fail warning
+  PADB_lockSet(o);
   /* View hook: boxplot uses this to ALSO pin the exact serial+port population via the GF
      (and strip Serial/Port from the just-saved lock) -- the folded-in Sync. No-op elsewhere. */
   if(_padbLockReg.onLock){ try{_padbLockReg.onLock(o);}catch(e){} }

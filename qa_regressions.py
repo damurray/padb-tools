@@ -1870,6 +1870,24 @@ def test_stat_summary_failing_marker_outline() -> None:
           "fails spec (TI)" in src and "border:2px solid #c00" in src)
 
 
+def test_lock_passfail_verdict_conflict_guard() -> None:
+    """Warn when a lock combines a narrowed "Test Event Status" (PADB VERDICT) dim with the
+    Passing/Failing (SPEC) filter (David 2026-09-28). These are two different pass/fail notions;
+    combined, the spec filter applies only within the kept verdict -- so "Exclude the locked
+    slice" leaves spec-fails in the other verdict (the reported surprise: locked Status=P +
+    Failing, excluded the slice, but Status=F fails stayed). PADB_lockSave calls
+    PADB_lockPassFailConflict before saving and cancels if the user declines. TEETH: the guard
+    exists, matches an event-status/verdict dim + a non-'all' passfail, and gates the save."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("PADB_lockPassFailConflict guard defined (detects verdict dim + spec pass/fail)",
+          "function PADB_lockPassFailConflict(o){" in src
+          and "/event status/i.test(x)" in src
+          and "o.passfail==='all'" in src)
+    check("PADB_lockSave gates on the conflict guard before saving",
+          "if(PADB_lockPassFailConflict(o)) return;" in src
+          and src.index("if(PADB_lockPassFailConflict(o)) return;") < src.index("PADB_lockSet(o);\n  /* View hook"))
+
+
 def test_lock_applied_badge_not_stale() -> None:
     """The lock bar's "applied N" badge must not go stale after Reset / "Show all data"
     (David 2026-09-28: it kept saying "applied 2" after Show-all, when the filters were
@@ -3425,6 +3443,7 @@ def main() -> None:
                test_gf_in_lock_bar,
                test_stat_summary_failing_marker_outline,
                test_lock_applied_badge_not_stale,
+               test_lock_passfail_verdict_conflict_guard,
                test_set_filter_as_gf_respects_passfail,
                test_plotly_api_lint_and_render_guards, test_jsrules_behavioral_gate_present):
         try:
