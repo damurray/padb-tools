@@ -1,6 +1,39 @@
-# Changelog — 2026-08-17 to 2026-09-24
+# Changelog — 2026-08-17 to 2026-09-28
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
+
+---
+
+## 2026-09-28
+
+### Global Filter & Locked filters — one clearer "cross-view state" bar
+- **The Global Filter is now shown and managed on the floating bar, on every view** (not just the Boxplot). Whenever a GF exists, the bar gains a **🌐 Global Filter** section with the point count, a **readable grouped summary** (by unit + port, e.g. "US65080432 (RF1) (all), … +15 more" — never raw keys), an **Inspect** toggle, and **Clear GF**. Setting exclusions still happens on the Boxplot; viewing/inspecting/clearing now works from anywhere.
+- **One Lock button.** "Lock these filters" now also pins your exact serial+port population when you've narrowed serial/port (the old "Sync this selection to all views" / "Clear sync" buttons are gone — folded in). **Clearing a lock removes only the population the lock added** to the Global Filter; any other GF entries you set separately survive.
+- **"Keep only this population" → "Keep only what's shown."** It now stores the **true inverse of the current visible slice** — everything not on screen (conditions, frequency, serial/port, temperature, pass/fail) is excluded, so every view shows exactly what you're looking at. (Stepped into a named band, it keeps that band's shown slice and excludes the rest — clear the frequency range first if you want a population across all bands.)
+- **GF buttons grouped by intent** — **Keep only ▸** (green; saves the inverse so those stay) vs **Exclude ▸** (amber; adds the shown slice to the exclusion list so those disappear). "Add locked filters to GF" is renamed **"Exclude the locked slice."**
+- **"Set filter as GF" now respects the pass/fail filter** — under "Failing only" it captures only the failing measurements (it used to sweep in passing points too).
+- **"applied N" no longer goes stale.** After Reset / "Show all data" the lock bar shows **"not applied"** (the lock is still saved, just not the current filter) instead of a stale "applied N"; it returns to "applied N" when you re-Apply.
+- **Warning when a lock mixes two pass/fail notions.** `Test Event Status` is the PADB *verdict* (P/F); "Passing/Failing only" is the *spec* filter. Locking both together (e.g. Status=P + Failing) scopes the spec filter to only that verdict — so "Exclude the locked slice" would leave the other verdict's fails behind. Saving such a lock now asks you to confirm.
+- **GF Inspect: heads-up when your filters hide the flagged data.** In Inspect mode, if a condition you've deselected (e.g. `Test Event Status=F`) hides all the GF-flagged points, the banner now says so and points you at Reset — instead of Inspect looking empty for no reason.
+
+### Stat Summary — failing points get a red outline
+- On Stat Summary the mean marker's fill colour is *normality* (green = Normal), which reads as "pass." A frequency actually fails on its tolerance-interval bound, not its mean, so a green dot could sit within spec on a "Failing only" plot and look out of place. Failing frequencies' mean markers now carry a **red outline** (with a "fails spec (TI)" swatch in the legend) so they're unmistakable regardless of the normality colour.
+
+### Correctness
+- **Scatter vs Boxplot per-band fail counts now match.** Scatter's frequency axis was float32-encoded (for size) while the boxplot's stays full precision — at a named-band edge that tiny difference put an edge point in a different band, so the two views disagreed by a point or two. Frequency is now kept full-precision (only the Y value is compressed), so both views bin every edge point identically.
+- **Cross-site "Coverage gap" banner drops meaningless dimensions.** Test Run Datetime (unique per run — can never match between sites) and Run NN (unique tags) are no longer listed as "gaps"; real controlled dims (Temperature/Mode/Port/…) still are.
+
+### Segment-by
+- **No compounding across steps.** Stepping the "Segment by" bands no longer lets one band's auto-narrowing leak into the next (a fail that lived in a later band could vanish while stepping). Each step now narrows from the selection you had when you began stepping.
+- **Hint to Named bands.** When the chosen "Segment by" basis has no bands along the current x-axis (so Prev/Next are hidden) but Named bands would step, an inline hint points you there.
+
+## 2026-09-27
+
+### View pages remember your display state
+- Each view now remembers its **pass/fail, table view (grouped vs per-point), and table-open** state — not just its filters — so flipping between views and back keeps the same setup. Reset / "Show all data" clears it back to a clean slate.
+
+### Data filter with no spec — informed, not removed
+- When a dataset carries no spec/limit at all (and no manual Spec override), the All/Passing/Failing control would be inert ("Failing only" shows nothing). Rather than disable it, an inline note now points you at the **Spec override** (type your own limit to make the filter meaningful); the note clears once a limit exists.
 
 ---
 
