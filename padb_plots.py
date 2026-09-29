@@ -1431,7 +1431,7 @@ function segTab(dir){
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
   _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
-  _segFilterCondDims(seg);
+  if(_segKey!=='bands') _segFilterCondDims(seg);  /* Named bands scope the FREQUENCY window only -- don't narrow the condition/serial filters, so every unit and condition in the band stays visible (David 2026-09-29). A named band is an arbitrary frequency chunk, so narrowing e.g. Serial Number to "units with a point at these exact freqs" silently drops units (looked like "removes data using the filters"). Spec/Limit/Uncertainty segments still narrow -- there a segment IS a set of conditions. Plot+table stay coupled either way (both freq-scoped). */
   /* Real bug reported by the user (2026-08-31): a Y range pinned by
      Autoscale Y (or a manual drag-zoom) for the PREVIOUS segment's data
      silently persisted onto the NEW segment after tabbing -- correct for
@@ -6217,7 +6217,7 @@ function segTab(dir){
      doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
   document.getElementById('dist_freq_lo_txt').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
   document.getElementById('dist_freq_hi_txt').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
-  _segFilterCondDims(seg);
+  if(_segKey!=='bands') _segFilterCondDims(seg);  /* Named bands scope the FREQUENCY window only -- don't narrow the condition/serial filters, so every unit and condition in the band stays visible (David 2026-09-29). A named band is an arbitrary frequency chunk, so narrowing e.g. Serial Number to "units with a point at these exact freqs" silently drops units (looked like "removes data using the filters"). Spec/Limit/Uncertainty segments still narrow -- there a segment IS a set of conditions. Plot+table stay coupled either way (both freq-scoped). */
   /* See scatter/summary's identical segTab() fix -- a Y range pinned by
      Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
      silently persist onto a genuinely different new segment. */
@@ -9413,7 +9413,7 @@ function segTab(dir){
      doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
   document.getElementById('freq_lo_txt').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
   document.getElementById('freq_hi_txt').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
-  _segFilterCondDims(seg);
+  if(_segKey!=='bands') _segFilterCondDims(seg);  /* Named bands scope the FREQUENCY window only -- don't narrow the condition/serial filters, so every unit and condition in the band stays visible (David 2026-09-29). A named band is an arbitrary frequency chunk, so narrowing e.g. Serial Number to "units with a point at these exact freqs" silently drops units (looked like "removes data using the filters"). Spec/Limit/Uncertainty segments still narrow -- there a segment IS a set of conditions. Plot+table stay coupled either way (both freq-scoped). */
   /* Pin BOTH axes for the new segment before update(). update() reads
      _liveAxisRange('xaxis')/('yaxis') BEFORE its own Plotly.purge(), and
      buildLayout() prefers that live range over the new freq band
@@ -11992,7 +11992,7 @@ function segTab(dir){
      doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
   document.getElementById('ec_freq_lo_txt').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
   document.getElementById('ec_freq_hi_txt').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
-  _segFilterCondDims(seg);
+  if(_segKey!=='bands') _segFilterCondDims(seg);  /* Named bands scope the FREQUENCY window only -- don't narrow the condition/serial filters, so every unit and condition in the band stays visible (David 2026-09-29). A named band is an arbitrary frequency chunk, so narrowing e.g. Serial Number to "units with a point at these exact freqs" silently drops units (looked like "removes data using the filters"). Spec/Limit/Uncertainty segments still narrow -- there a segment IS a set of conditions. Plot+table stay coupled either way (both freq-scoped). */
   var log=isLogX();
   /* 'yaxis.autorange':true clears any Y range pinned by Autoscale Y or a
      manual drag-zoom for the PREVIOUS segment -- see scatter/summary's
@@ -17481,7 +17481,7 @@ function segTab(dir){
      doesn't filter to empty (David 2026-09-29 -- see setFreqBand). */
   document.getElementById('box_freq_lo').value=(Math.floor(seg.lo*1000)/1000).toFixed(3);
   document.getElementById('box_freq_hi').value=(Math.ceil(seg.hi*1000)/1000).toFixed(3);
-  _segFilterCondDims(seg);
+  if(_segKey!=='bands') _segFilterCondDims(seg);  /* Named bands scope the FREQUENCY window only -- don't narrow the condition/serial filters, so every unit and condition in the band stays visible (David 2026-09-29). A named band is an arbitrary frequency chunk, so narrowing e.g. Serial Number to "units with a point at these exact freqs" silently drops units (looked like "removes data using the filters"). Spec/Limit/Uncertainty segments still narrow -- there a segment IS a set of conditions. Plot+table stay coupled either way (both freq-scoped). */
   /* See scatter/summary's identical segTab() fix -- a Y range pinned by
      Autoscale Y or a manual drag-zoom for the PREVIOUS segment shouldn't
      silently persist onto a genuinely different new segment. */
@@ -20641,7 +20641,7 @@ function segTab(dir){
   _segIdx=Math.max(0,Math.min(_specSegments.length-1,_segIdx+dir));
   _segIdxPinned=true;
   var seg=_specSegments[_segIdx];
-  _segFilterCondDims(seg);
+  if(_segKey!=='bands') _segFilterCondDims(seg);  /* Named bands scope the FREQUENCY window only -- don't narrow the condition/serial filters, so every unit and condition in the band stays visible (David 2026-09-29). A named band is an arbitrary frequency chunk, so narrowing e.g. Serial Number to "units with a point at these exact freqs" silently drops units (looked like "removes data using the filters"). Spec/Limit/Uncertainty segments still narrow -- there a segment IS a set of conditions. Plot+table stay coupled either way (both freq-scoped). */
   /* Real bug reported by the user (2026-08-31): a Y range pinned by
      Autoscale Y (or a manual drag-zoom) for the PREVIOUS segment's data
      silently persisted onto the NEW segment after tabbing -- correct for

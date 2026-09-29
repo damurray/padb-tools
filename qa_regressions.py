@@ -1630,6 +1630,31 @@ def test_named_band_segment_no_compounding() -> None:
           and "var curLfSel=_segBaseColSel.lf?new Set(_segBaseColSel.lf):null;" in src)
 
 
+def test_named_band_step_is_frequency_only() -> None:
+    """Stepping "Segment by: Named bands" must scope the FREQUENCY window ONLY -- it must
+    NOT narrow the condition/serial filters (David 2026-09-29, "Frequency only"). A named
+    band is an arbitrary frequency chunk, so narrowing e.g. Serial Number to "units with a
+    point at these exact freqs" silently drops units (reported as "named bands removes data
+    using the filters" on the single-site Harmonics scatter/boxplot: Serial 11->4). Spec/
+    Limit/Uncertainty segmentation STILL narrows -- there a segment genuinely IS a set of
+    conditions. Fix: every segTab guards its _segFilterCondDims(seg) call with
+    if(_segKey!=='bands'). Verified live (scatter+boxplot): a named-band step scopes freq to
+    the band while HarmonicNumber/Serial stay fully checked; Reset still restores. TEETH:
+    no segTab may call _segFilterCondDims(seg) unguarded (an unguarded call = named bands
+    narrowing again); every one of the 6 calls must carry the band guard."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    # Every _segFilterCondDims(seg) call is guarded by the named-bands skip.
+    guarded = src.count("if(_segKey!=='bands') _segFilterCondDims(seg);")
+    check("all 6 segTab _segFilterCondDims(seg) calls carry the named-bands guard",
+          guarded == 6, f"guarded={guarded}")
+    # And NO unguarded call remains (the regression form: a bare call that narrows even
+    # for named bands). A start-of-line bare call is the pre-fix shape.
+    import re as _re
+    bare = len(_re.findall(r"(?m)^\s*_segFilterCondDims\(seg\);", src))
+    check("no unguarded _segFilterCondDims(seg) call (would narrow named bands too)",
+          bare == 0, f"bare={bare}")
+
+
 def test_setfreqband_rounds_outward() -> None:
     """setFreqBand must round its freq TEXT boxes OUTWARD (floor lo / ceil hi), not
     with toFixed's round-to-nearest (David 2026-09-29). Bug: setFreqBand wrote
@@ -3513,6 +3538,7 @@ def main() -> None:
                test_common_prelude_and_feature_registry,
                test_named_band_segments_crossview,
                test_named_band_segment_no_compounding,
+               test_named_band_step_is_frequency_only,
                test_setfreqband_rounds_outward,
                test_passfail_note_when_no_spec_basis,
                test_segment_hint_when_no_bands_on_key,
