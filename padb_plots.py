@@ -130,6 +130,11 @@ function _liveAxisRange(axis){
    lines" noticeably slower than "Log X" on a large dataset (Log X was
    already special-cased this way; this checkbox wasn't). */
 var _lastMaskTraces=[],_lastSpecShapes=[],_lastSpecAnnotations=[];
+/* Conflicting/unstable-spec state (David 2026-09-29): when the flat-line branch would
+   draw >3 distinct binned limit lines (specs still being set at SR / two sites with
+   different limits), suppress them + show a datasheet note. _specForceShow lets the user
+   reveal the raw lines anyway; resets to off (hidden) on reload. */
+var _specConflictN=null,_specForceShow=false;
 /* Spec/limit guide-line shape between per-x spec points. Default from the job's
    spec_interp key (SPEC_INTERP: 'step'->'hv' stair, 'linear'->straight interp).
    DISPLAY ONLY -- pass/fail is per-point from each measurement's CSV limit, so
@@ -171,6 +176,28 @@ function toggleHideSpec(){
   if(_lastSpecShapes.length||_lastSpecAnnotations.length){
     Plotly.relayout('plot',{shapes:hideSpec?[]:_lastSpecShapes,annotations:hideSpec?[]:_lastSpecAnnotations});
   }
+}
+/* Toggle the "show the raw (unstable) spec lines anyway" override, then re-render. */
+function _specToggleForceShow(){_specForceShow=!_specForceShow;update();}
+/* Amber note shown when buildLayout suppressed a stack of conflicting/unstable spec lines
+   (David 2026-09-29). Lazily created above the plot; points the user at the datasheet since
+   the real limit shape (flat / stepped by start-stop / interpolated) is test-specific and
+   can't be inferred from limits that were still being set. */
+function _specConflictNote(){
+  var plot=document.getElementById('plot'); if(!plot||!plot.parentNode) return;
+  var note=document.getElementById('spec_conflict_note');
+  if(!note){
+    note=document.createElement('div');note.id='spec_conflict_note';
+    note.style.cssText='margin:4px 0;padding:6px 9px;background:#fff8e1;border:1px solid #e0b400;border-radius:4px;font-size:12px;color:#7a5c00;';
+    plot.parentNode.insertBefore(note,plot);
+  }
+  if(_specConflictN&&!_specForceShow){
+    note.style.display='';
+    note.innerHTML='&#9888; <b>Multiple differing spec limits detected</b> ('+_specConflictN.lo+' lower, '+_specConflictN.hi+' upper distinct values). Specs are usually still being set at SR and can change over time, stabilizing by the time units ship to MY/AMC — so these don\'t reflect one authoritative limit. <b>Spec lines hidden; refer to the datasheet</b> for the real limit (flat, stepped by start/stop frequency, or interpolated — whichever the test defines). Pass/fail still uses each measurement\'s own recorded limit. <a href="#" onclick="_specToggleForceShow();return false;">Show the raw spec lines anyway</a>';
+  } else if(_specConflictN&&_specForceShow){
+    note.style.display='';
+    note.innerHTML='&#9888; Showing '+(_specConflictN.lo+_specConflictN.hi)+' raw spec lines from unstable/conflicting limits — not authoritative; see the datasheet. <a href="#" onclick="_specToggleForceShow();return false;">Hide them</a>';
+  } else { note.style.display='none'; }
 }
 function median(arr){
   var s=[].concat(arr).sort(function(a,b){return a-b;});
@@ -856,6 +883,19 @@ function buildLayout(filtered){
   });
   if(!Object.keys(hiSpecs).length&&HI_SPEC!==null){var _hk=Math.round(HI_SPEC);hiSpecs[_hk]=HI_SPEC;}
   if(!Object.keys(loSpecs).length&&LO_SPEC!==null){var _lk=Math.round(LO_SPEC);loSpecs[_lk]=LO_SPEC;}
+  /* Conflicting/unstable specs (David 2026-09-29): >3 distinct 1-dBc-binned limit values
+     that DON'T form a clean per-frequency mask (that path draws a proper step/interp line
+     in buildTraces) usually means the spec was still being set -- SR sets specs and they
+     often change over time, stabilizing by the time units ship to MY/AMC -- or two sites
+     carry different limits. Drawing a stack of full-width flat lines then implies limits
+     that don't really apply across all frequencies. Suppress them by default and let
+     _specConflictNote() show a "refer to the datasheet" note; the correct representation
+     (flat / stepped by start-stop / interpolated) is test-specific -- use spec_interp /
+     named bands where a mask is actually defined. Pass/fail is unaffected (judged per
+     point against each row's own limit). _specForceShow reveals the raw lines on demand. */
+  var _loN=Object.keys(loSpecs).length,_hiN=Object.keys(hiSpecs).length;
+  _specConflictN=(_loN>3||_hiN>3)?{lo:_loN,hi:_hiN}:null;
+  if(!_specConflictN||_specForceShow){
   Object.values(hiSpecs).sort(function(a,b){return a-b;}).forEach(function(v){
     shapes.push({type:'line',xref:'paper',x0:0,x1:1,y0:v,y1:v,line:{color:'red',dash:'dash',width:1.5}});
     annotations.push({xref:'paper',yref:'y',x:0.99,y:v,text:'Spec '+v.toFixed(2),showarrow:false,xanchor:'right',yanchor:'bottom',font:{color:'red',size:11}});
@@ -865,6 +905,7 @@ function buildLayout(filtered){
     annotations.push({xref:'paper',yref:'y',x:0.01,y:v,text:'Spec '+v.toFixed(2),showarrow:false,xanchor:'left',yanchor:'bottom',font:{color:'red',size:11}});
   });
   }
+  } else { _specConflictN=null; }
   _lastSpecShapes=shapes;_lastSpecAnnotations=annotations;
   var curX=_liveAxisRange('xaxis');
   var curY=Y_LIM||_liveAxisRange('yaxis');
@@ -1148,6 +1189,7 @@ function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkU
   var filtered=applyFilters(DATA);
   document.getElementById('n_points').textContent=filtered.length.toLocaleString()+' pts';
   Plotly.react('plot',buildTraces(filtered),buildLayout(filtered));
+  if(typeof _specConflictNote==='function') _specConflictNote();
   _recomputeSpecSegments();
   updateScatterTable(filtered);
   /* Caveat: in a Lines draw mode with a Passing/Failing filter, the connecting lines span the
@@ -1563,6 +1605,7 @@ _loadGlobalFilter();
 loadState();
 var _initData=applyFilters(DATA);
 Plotly.newPlot('plot',buildTraces(_initData),buildLayout(_initData));
+if(typeof _specConflictNote==='function') _specConflictNote();  /* initial render bypasses update() -- show the conflict note on load too */
 /* Attach once after the initial newPlot -- scatter's update() uses Plotly.react()
    in place (never purge/newPlot), so this listener survives every later render. */
 document.getElementById('plot').on('plotly_relayout',_onPlotRelayout);

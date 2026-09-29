@@ -1655,6 +1655,38 @@ def test_named_band_step_is_frequency_only() -> None:
           bare == 0, f"bare={bare}")
 
 
+def test_spec_conflict_note() -> None:
+    """When the scatter flat-line branch would draw >3 distinct 1-dBc-binned limit lines
+    (unstable/conflicting specs -- SR is where specs get set and they change over time,
+    stabilizing by the time units ship to MY/AMC; or two compared sites carry different
+    limits), it now SUPPRESSES the lines and shows a datasheet note (David 2026-09-29).
+    Reported on the MaxPower SR-vs-AMC compare: 7 full-width flat spec lines
+    (30/23/22.44/21.44/19.3/18.48/17.3) implied limits applying across ALL frequencies,
+    while Segment-by-Limit saw only 1 flat band. Fix: buildLayout sets _specConflictN when
+    >3 distinct binned lower/upper values AND not a mask; the flat lines are pushed only
+    when (!_specConflictN || _specForceShow); _specConflictNote() renders an amber note
+    (refer to the datasheet -- the real shape is test-specific: flat / stepped / interp)
+    with a show-anyway toggle, called from update() AND after the initial newPlot (the
+    initial render bypasses update()). Genuine frequency masks are UNAFFECTED (drawn as a
+    step/interp trace in buildTraces; _specConflictN=null). TEETH: threshold, suppression
+    guard, mask-branch reset, note fn + datasheet text + toggle, and BOTH call sites."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("conflict threshold (>3 distinct binned lower/upper) sets _specConflictN",
+          "_specConflictN=(_loN>3||_hiN>3)?{lo:_loN,hi:_hiN}:null;" in src)
+    check("flat spec lines drawn only when no conflict or force-show",
+          "if(!_specConflictN||_specForceShow){" in src)
+    check("mask branch resets the conflict flag (no false trigger on real masks)",
+          "} else { _specConflictN=null; }" in src)
+    check("_specConflictNote helper exists and points at the datasheet",
+          "function _specConflictNote()" in src and "refer to the datasheet" in src)
+    check("show-the-raw-lines-anyway toggle exists",
+          "function _specToggleForceShow()" in src
+          and "Show the raw spec lines anyway" in src)
+    n_calls = src.count("if(typeof _specConflictNote==='function') _specConflictNote();")
+    check("note is invoked from update() AND the initial newPlot path (2 call sites)",
+          n_calls == 2, f"count={n_calls}")
+
+
 def test_setfreqband_rounds_outward() -> None:
     """setFreqBand must round its freq TEXT boxes OUTWARD (floor lo / ceil hi), not
     with toFixed's round-to-nearest (David 2026-09-29). Bug: setFreqBand wrote
@@ -3539,6 +3571,7 @@ def main() -> None:
                test_named_band_segments_crossview,
                test_named_band_segment_no_compounding,
                test_named_band_step_is_frequency_only,
+               test_spec_conflict_note,
                test_setfreqband_rounds_outward,
                test_passfail_note_when_no_spec_basis,
                test_segment_hint_when_no_bands_on_key,
