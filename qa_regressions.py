@@ -1813,6 +1813,23 @@ def test_lock_folds_sync_population() -> None:
           and "Clear removes only what this lock added" in src)
 
 
+def test_gf_inspect_hidden_by_filters_warning() -> None:
+    """When GF Inspect (focus) mode is on but the view's OWN filters (e.g. a deselected Test
+    Event Status) hide ALL the GF-flagged data, the boxplot Inspect banner warns that the
+    filters are hiding it + points at Clear everything -- instead of Inspect looking empty
+    for no reason (David 2026-09-28: Inspect showed nothing with Status=F deselected).
+    Detected via _boxPerPointPoints (in focus mode it returns the visible GF-matched set)
+    being empty while _gfAnyMatch. TEETH: the empty-check + the hiding-all banner text."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    check("boxplot Inspect banner detects filters hiding all GF-flagged data",
+          "_gfHiddenAll=(_boxPerPointPoints(getSelectedConds(),getYFilter(),getSelectedBoxSerials(),getSelectedTemps()).length===0)" in src
+          and "if(_gfAnyMatch){ _gfHiddenAll=" in src)
+    check("boxplot Inspect banner shows the 'filters are HIDING all of it' warning",
+          "are HIDING all of it" in src and "re-select the deselected conditions" in src)
+    check("box update() refreshes the GF banner so the warning appears/clears live",
+          "_updateBoxGfStatus();   /* refresh GF badge/Inspect banner on every filter change" in src)
+
+
 def test_gf_in_lock_bar() -> None:
     """The Global Filter is surfaced + managed on the shared cross-view bar (David 2026-09-28):
     its state (count + readable grouped contents), an Inspect toggle, and Clear-all are shown
@@ -3440,6 +3457,7 @@ def main() -> None:
                test_coverage_gap_excludes_identifier_dims,
                test_binary_encode_freq_full_precision,
                test_lock_folds_sync_population,
+               test_gf_inspect_hidden_by_filters_warning,
                test_gf_in_lock_bar,
                test_stat_summary_failing_marker_outline,
                test_lock_applied_badge_not_stale,

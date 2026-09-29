@@ -16414,9 +16414,21 @@ function _updateBoxGfStatus(){
   if(btn) btn.textContent='GF Mode: '+(mode==='focus'?'Inspect ◆':'Exclude ◇');
   /* Prominent banner while in Inspect mode -- Inspect shows ONLY the
      GF-flagged data, so ordinary filters look like they "do nothing"; the
-     GF Mode button says "Inspect" but is easy to miss. */
+     GF Mode button says "Inspect" but is easy to miss. When the view's OWN
+     filters (e.g. a deselected Test Event Status) hide ALL the flagged data,
+     Inspect looks empty for no visible reason -- so warn + point at Reset
+     (David 2026-09-28). */
   var banner=document.getElementById('box_inspect_banner');
-  if(banner) banner.style.display=(mode==='focus')?'':'none';
+  if(banner){
+    if(mode==='focus'){
+      banner.style.display='';
+      var _gfHiddenAll=false;
+      try{ if(_gfAnyMatch){ _gfHiddenAll=(_boxPerPointPoints(getSelectedConds(),getYFilter(),getSelectedBoxSerials(),getSelectedTemps()).length===0); } }catch(e){}
+      banner.innerHTML=_gfHiddenAll
+        ? '&#9888; INSPECT MODE &mdash; the Global Filter has flagged data, but your current filters (e.g. a deselected <b>Test Event Status</b> or condition) are HIDING all of it, so nothing shows. Press <b>Clear everything</b> (or re-select the deselected conditions) to see the flagged data.'
+        : '&#9888; INSPECT MODE &mdash; the plot is showing ONLY the Global-Filter-flagged data, so most filters below will appear to do nothing. Click the <b>GF Mode</b> button to return to Exclude, or <b>Clear everything</b> to reset.';
+    } else { banner.style.display='none'; }
+  }
   if(!s) return;
   try{
     var raw=localStorage.getItem(GF_KEY);
@@ -17609,6 +17621,7 @@ function update(){ if(typeof PADB_lockMarkUnapplied==='function') PADB_lockMarkU
   var selConds=getSelectedConds();var selTemps=getSelectedTemps();var yFlt=getYFilter();
   var selBoxSers=getSelectedBoxSerials();
   _updatePassingWarn(yFlt);
+  _updateBoxGfStatus();   /* refresh GF badge/Inspect banner on every filter change (so the "filters are hiding the flagged data" Inspect warning appears/clears live) */
   /* If an Autoscale-Y pin is active and the plotted set changed since it was set,
      re-fit Y this rebuild (so newly-shown boxes can't clip off-screen). */
   var _csY=_condSigY();
