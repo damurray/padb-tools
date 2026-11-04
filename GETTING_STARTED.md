@@ -117,4 +117,4 @@ If your new pod is a fifth measurement family, read all of the above before assu
 
 ## If you're using Claude Code
 
-Type `/padb-tools` for an on-demand summary of the architecture, gotchas, and new-pod checklist without having to read all six docs — it's scoped to this repo (`.claude/commands/padb-tools.md`), so it travels with a clone. `CLAUDE.md` loads automatically at session start when your working directory is inside this repo; `/padb-tools` is for invoking the same knowledge explicitly, from anywhere.
+Type `/padb-tools` for an on-demand summary of the architecture, gotchas, and new-pod checklist without having to read all six docs — it's scoped to this repo (`.claude/commands/padb-tools.md`), so it travels with a clone. `CLAUDE.md` loads automatically at session start when your working directory is inside this repo; `/padb-tools` is for invoking the same knowledge explicitly, from anywhere inside the repo. Because the command is repo-scoped, start Claude Code with this repo as the working directory; a session started elsewhere won't list it. To use it from any folder, copy `.claude/commands/padb-tools.md` to `~/.claude/commands/`.
