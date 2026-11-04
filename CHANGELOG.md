@@ -1,8 +1,20 @@
-# Changelog — 2026-08-17 to 2026-09-29
+# Changelog — 2026-08-17 to 2026-11-04
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
 
 ---
+
+## 2026-11-04
+
+### Web app: edit job files, History / undo, and named job lists
+- **Edit a job from the jobs table.** Tick a row and an **Edit** button appears in its Name cell. The modal edits the raw job JSON: **Review changes** validates it and shows a colour-coded diff (nothing written), **Confirm save** writes it. Every save first makes a timestamped `.bak` copy (newest 20 kept per job; same-second saves never overwrite each other), swaps the file in atomically, is blocked while the job is queued/running, and preserves the file's own line endings (the browser textarea normalises CRLF, which had made every line look changed). Pinned by `test_edit_job_file`.
+- **History / undo.** Lists a job's earlier versions (newest first, lines-differ count); **Load this version** loads one into the editor and shows the diff; the restore goes through the normal save, so it is backed up and itself undoable. Pinned by `test_job_history_and_restore`.
+- **Named job lists** (e.g. Production / NPI). A **List** dropdown filters the jobs table; Add checked to list… / Remove checked from list / Rename / Delete manage `job_lists.json` in the Data folder. Lists are a view only — job files, schedules, results and run order are untouched; a job can be in several lists; stale names prune automatically. **Select Filtered** respects the chosen list. Pinned by `test_job_lists`.
+- **Fixes found while building it:** the Edit button now alerts (instead of failing silently) when the running server is older than the page — restart via `Start_web.bat` and Ctrl+F5; the Edit button moved into the Name cell so a narrow window can't push it off-screen.
+- QA: `qa_webapp.py` 111/0; each new guard (running-job block, backup, same-second stepping, pruning, name validation, list pruning/validation/remove) was individually broken to prove its test fails.
+
+### Docs
+- `/padb-tools` (Claude Code command) is repo-scoped: start Claude Code with this repo as the working directory, or copy `.claude/commands/padb-tools.md` to `~/.claude/commands/` to use it anywhere (`GETTING_STARTED.md`).
 
 ## 2026-09-29
 
