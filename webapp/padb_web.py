@@ -39,7 +39,7 @@ import tempfile
 import threading
 import time
 import webbrowser
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -1522,7 +1522,13 @@ def save_job_file():
     if not isinstance(cfg, dict):
         return jsonify(error="Job file must be a JSON object"), 400
     with open(p, encoding="utf-8", newline="") as f:
-        old = f.read()
+        old_raw = f.read()
+    # The browser textarea normalises CRLF -> LF, so compare on LF and write the
+    # file back with ITS original line endings (else every line looks changed
+    # and a save would silently convert the file's line endings).
+    eol = "\r\n" if "\r\n" in old_raw else "\n"
+    old = old_raw.replace("\r\n", "\n")
+    text = text.replace("\r\n", "\n")
     if body.get("preview"):
         diff = "".join(difflib.unified_diff(
             old.splitlines(True), text.splitlines(True),
@@ -1532,13 +1538,72 @@ def save_job_file():
         return jsonify(error="This job is queued or running -- wait for it to finish before saving."), 409
     if old == text:
         return jsonify(ok=True, changed=False, backup=None)
-    backup = p.with_name(p.name + ".bak_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+    # Second-resolution names: if two saves land in the same second, step forward
+    # rather than overwrite (and so lose) the earlier backup.
+    stamp_dt = datetime.now()
+    backup = p.with_name(p.name + ".bak_" + stamp_dt.strftime("%Y%m%d_%H%M%S"))
+    while backup.exists():
+        stamp_dt = stamp_dt + timedelta(seconds=1)
+        backup = p.with_name(p.name + ".bak_" + stamp_dt.strftime("%Y%m%d_%H%M%S"))
     shutil.copy2(p, backup)
+    _prune_job_backups(p)
     tmp = p.with_name(p.name + ".tmp")
     with open(tmp, "w", encoding="utf-8", newline="") as f:
-        f.write(text)
+        f.write(text.replace("\n", eol))
     os.replace(tmp, p)
     return jsonify(ok=True, changed=True, backup=str(backup))
+
+
+MAX_JOB_BACKUPS = 20  # per job; oldest are deleted after each save
+
+
+def _job_backups(p: Path) -> list[Path]:
+    """Backups of job file p, newest first (timestamp is in the name)."""
+    pat = re.compile(re.escape(p.name) + r"\.bak_\d{8}_\d{6}$")
+    return sorted((x for x in p.parent.iterdir() if pat.match(x.name)),
+                  key=lambda x: x.name, reverse=True)
+
+
+def _prune_job_backups(p: Path) -> None:
+    for old in _job_backups(p)[MAX_JOB_BACKUPS:]:
+        with contextlib.suppress(OSError):
+            old.unlink()
+
+
+@app.route("/api/job-backups")
+def list_job_backups():
+    import difflib
+    p = _editable_job_path(request.args.get("path", ""))
+    if p is None:
+        return jsonify(error="not an editable job file"), 400
+    with open(p, encoding="utf-8", newline="") as f:
+        cur = f.read().replace("\r\n", "\n").splitlines()
+    out = []
+    for b in _job_backups(p):
+        stamp = b.name.rsplit(".bak_", 1)[1]
+        when = datetime.strptime(stamp, "%Y%m%d_%H%M%S").strftime("%Y-%m-%d %H:%M:%S")
+        try:
+            with open(b, encoding="utf-8", newline="") as f:
+                old = f.read().replace("\r\n", "\n").splitlines()
+        except OSError:
+            continue
+        n = sum(1 for ln in difflib.unified_diff(cur, old, n=0, lineterm="")
+                if ln[:1] in "+-" and ln[:3] not in ("+++", "---"))
+        out.append({"name": b.name, "when": when, "diff_lines": n})
+    return jsonify(backups=out, max=MAX_JOB_BACKUPS)
+
+
+@app.route("/api/job-backup")
+def get_job_backup():
+    p = _editable_job_path(request.args.get("path", ""))
+    if p is None:
+        return jsonify(error="not an editable job file"), 400
+    name = request.args.get("name", "")
+    match = next((b for b in _job_backups(p) if b.name == name), None)
+    if match is None:
+        return jsonify(error="backup not found"), 404
+    with open(match, encoding="utf-8", newline="") as f:
+        return jsonify(name=name, text=f.read())
 
 
 @app.route("/api/schedule", methods=["POST"])

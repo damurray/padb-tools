@@ -222,9 +222,63 @@ def test_edit_job_file():
           and not list(_TMP.glob("*.tmp")), f"{j} baks={baks}")
     check(".bak files are not picked up as jobs",
           all(".bak_" not in x["name"] for x in client.get("/api/jobs").get_json()["jobs"]))
+    CRLF = bytes([13, 10])
+    # CRLF file edited via an LF textarea: diff must show only the real change and
+    # the saved file must keep its CRLF line endings.
+    cp = _TMP / "crlf_v2_job.json"
+    cp.write_bytes(b'{' + CRLF + b'  "csv_path": "x.csv",' + CRLF + b'  "views": ["scatter"]' + CRLF + b'}' + CRLF)
+    edited = "\n".join(['{', '  "csv_path": "x.csv",', '  "views": ["scatter", "boxplot"]', '}', ''])
+    pvc = client.post("/api/job-file", json={"path": str(cp), "text": edited, "preview": True}).get_json()
+    plus = [l for l in pvc["diff"].splitlines() if l.startswith("+") and not l.startswith("+++")]
+    check("CRLF file: diff shows only the changed line, not the whole file", len(plus) == 1, f"{plus}")
+    client.post("/api/job-file", json={"path": str(cp), "text": edited})
+    raw = cp.read_bytes()
+    check("CRLF file keeps CRLF after save", b"boxplot" in raw and raw.count(CRLF) == raw.count(bytes([10])), f"{raw!r}")
+    for b in _TMP.glob("crlf_v2_job.json.bak_*"):
+        b.unlink()
+    cp.unlink()
+
     same = client.post("/api/job-file", json={"path": q, "text": new}).get_json()
     check("saving identical text is a no-op (no extra backup)",
           same["changed"] is False and len(list(_TMP.glob("edt_v2_job.json.bak_*"))) == 1)
+
+
+def test_job_history_and_restore():
+    _clear_jobs_dir()
+    for b in _TMP.glob("*.bak_*"):
+        b.unlink()
+    jp = _write_job("hist_v2_job.json", {"csv_path": "x.csv", "views": ["v0"]})
+    q = str(jp)
+    # three rapid saves (same second) must give three distinct backups
+    for v in ("v1", "v2", "v3"):
+        r = client.post("/api/job-file", json={"path": q, "text": json.dumps({"csv_path": "x.csv", "views": [v]})})
+        assert r.status_code == 200, r.get_json()
+    lst = client.get("/api/job-backups", query_string={"path": q}).get_json()
+    names = [b["name"] for b in lst["backups"]]
+    check("3 rapid saves keep 3 distinct backups (none overwritten)", len(names) == 3 == len(set(names)), f"{names}")
+    check("history is newest-first", names == sorted(names, reverse=True))
+    texts = [client.get("/api/job-backup", query_string={"path": q, "name": n}).get_json()["text"] for n in names]
+    check("backups hold the prior versions (v2, v1, v0 newest-first)",
+          ["v2" in texts[0], "v1" in texts[1], "v0" in texts[2]] == [True, True, True], f"{texts}")
+    check("backup read rejects an unknown / traversal name",
+          client.get("/api/job-backup", query_string={"path": q, "name": "../../x"}).status_code == 404
+          and client.get("/api/job-backup", query_string={"path": q, "name": "hist_v2_job.json"}).status_code == 404)
+    # restore = load backup text through the normal save: itself backed up (undoable)
+    r = client.post("/api/job-file", json={"path": q, "text": texts[2]})
+    check("restoring v0 writes it and backs up the version it replaced",
+          r.status_code == 200 and "v0" in jp.read_text(encoding="utf-8")
+          and len(client.get("/api/job-backups", query_string={"path": q}).get_json()["backups"]) == 4)
+    # prune: cap at MAX_JOB_BACKUPS
+    for i in range(padb_web.MAX_JOB_BACKUPS + 5):
+        (_TMP / f"hist_v2_job.json.bak_20200101_{i:06d}").write_text("{}", encoding="utf-8")
+    client.post("/api/job-file", json={"path": q, "text": json.dumps({"csv_path": "x.csv", "views": ["v9"]})})
+    n = len(client.get("/api/job-backups", query_string={"path": q}).get_json()["backups"])
+    check("backups are pruned to the cap", n == padb_web.MAX_JOB_BACKUPS, f"n={n}")
+    check("pruning keeps the newest (the just-made backup survives)",
+          any("v0" in (_TMP / x["name"]).read_text(encoding="utf-8")
+              for x in client.get("/api/job-backups", query_string={"path": q}).get_json()["backups"][:1]))
+    for b in _TMP.glob("hist_v2_job.json.bak_*"):
+        b.unlink()
 
 
 def test_jobs_listing_and_kind():
@@ -638,7 +692,7 @@ def main() -> None:
         pass
     print("qa_webapp -- Flask test-client route coverage (hermetic)")
     for fn in (test_index, test_sites, test_config, test_jobs_listing_and_kind,
-               test_edit_job_file, test_results_token_roundtrip, test_schedule, test_unschedule,
+               test_edit_job_file, test_job_history_and_restore, test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
                test_generate_reduce, test_compare_reduce_on_merged,
                test_link_reduce_report_in_index, test_open_viewer,

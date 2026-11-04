@@ -104,10 +104,11 @@ th:first-child, td:first-child { width: 1.5rem; }
   text-overflow: unset;
 }
 #jobsTable th:first-child, #jobsTable td:first-child { width: 1.8rem; overflow: visible; }
-#jobsTable th:nth-child(2), #jobsTable td:nth-child(2) { width: 240px; }
+#jobsTable th:nth-child(2), #jobsTable td:nth-child(2) { width: 200px; }
 #jobsTable th:nth-child(3), #jobsTable td:nth-child(3) { width: 80px; }
-#jobsTable th:nth-child(4), #jobsTable td:nth-child(4) { width: 240px; }
-#jobsTable th:nth-child(5), #jobsTable td:nth-child(5) { width: 280px; }
+#jobsTable th:nth-child(4), #jobsTable td:nth-child(4) { width: 190px; }
+/* Description (col 5) has no width: it absorbs whatever is left, so the fixed
+   columns after it (incl. Edit) are never squeezed out of a narrow window. */
 #jobsTable th:nth-child(6), #jobsTable td:nth-child(6) { width: 130px; }
 #jobsTable th:nth-child(7), #jobsTable td:nth-child(7) { width: 140px; }
 #jobsTable th:nth-child(8), #jobsTable td:nth-child(8) { width: 70px; }

@@ -402,13 +402,15 @@ function renderJobsTable() {
     tr.innerHTML += `<td class="wrap">${job.name}</td><td>${job.mode}</td>` +
       `<td class="wrap">${job.pod}</td><td class="wrap">${job.description}</td>` +
       `<td class="wrap">${scheduledCell}</td><td>${job.last_run || ""}</td><td>${resultsCell}</td>`;
-    const editTd = document.createElement("td");
     const editBtn = document.createElement("button");
     editBtn.textContent = "Edit";
     editBtn.title = "Edit this job.json (extraction + analysis options). Changes are reviewed as a diff before saving; a .bak copy is kept.";
     editBtn.addEventListener("click", () => openEditJob(job.path));
-    editTd.appendChild(editBtn);
-    tr.appendChild(editTd);
+    editBtn.style.marginRight = "6px";
+    editBtn.style.display = "none"; // revealed only while this row is selected
+    editBtn.className = "edit-job-btn";
+    const nameCell = tr.children[1];
+    nameCell.insertBefore(editBtn, nameCell.firstChild);
     tbody.appendChild(tr);
   }
   applyTooltipPref(); // Results link's title is only known once rendered here
@@ -417,7 +419,19 @@ function renderJobsTable() {
 
 // The PDF "site" scope dropdown only does anything on compare jobs (Site
 // dimension); grey it out unless a compare job is in the current selection.
+// Edit buttons are shown only on selected rows. Called from every path that
+// changes a selection (row change, Select All Runnable/Filtered, re-render) --
+// bulk selects set .checked programmatically, which fires no change event.
+function syncEditButtons() {
+  for (const tr of document.querySelectorAll("#jobsTable tbody tr")) {
+    const cb = tr.querySelector('input[type="checkbox"]');
+    const btn = tr.querySelector(".edit-job-btn");
+    if (btn) btn.style.display = cb && cb.checked ? "" : "none";
+  }
+}
+
 function updatePdfSiteEnabled() {
+  syncEditButtons();
   const sel = document.getElementById("pdfFilterSite");
   if (!sel) return;
   const anyCompare = [...document.querySelectorAll("#jobsTable tbody input[type=checkbox]:checked")]
@@ -978,8 +992,16 @@ function _ejMode(review) {
   _ej("editJobSave").style.display = review ? "" : "none";
 }
 async function openEditJob(path) {
-  const res = await fetch("/api/job-file?path=" + encodeURIComponent(path));
-  const data = await res.json();
+  let res, data;
+  try {
+    res = await fetch("/api/job-file?path=" + encodeURIComponent(path));
+    data = await res.json();
+  } catch (e) {
+    alert("Cannot edit: the webapp server did not answer the edit request (" +
+      (res ? "HTTP " + res.status : e) + "). If you just updated the tool, restart the webapp (Start_web.bat) -- " +
+      "the page can be newer than the running server.");
+    return;
+  }
   if (!res.ok) { alert("Cannot edit: " + data.error); return; }
   editJobPath = data.path;
   _ej("editJobTitle").textContent = "Edit " + data.name;
@@ -990,6 +1012,7 @@ async function openEditJob(path) {
   if (data.scheduled) note += "This job is scheduled: saved changes apply to its next scheduled run. ";
   note += "Extraction keys (subex, pod) need a full re-run; analysis keys (views, spec_*, x_*) only need a re-plot. Sibling *_v2_job.json files sharing results_dir/publish_to are NOT changed.";
   _ej("editJobNote").textContent = note;
+  _ej("editJobHist").style.display = "none";
   _ejMode(false);
   _ej("editJobModal").style.display = "";
 }
@@ -1002,11 +1025,41 @@ async function _ejPost(preview) {
   });
   return { ok: res.ok, data: await res.json() };
 }
+// Colour-coded diff: removed lines red, added lines green, hunk headers blue,
+// dark text on solid backgrounds so it stays readable (no inherited grey).
+function _ejRenderDiff(diff) {
+  const box = _ej("editJobDiff");
+  box.textContent = "";
+  if (!diff) {
+    box.textContent = "(no changes)";
+    return;
+  }
+  for (const line of diff.split(/\r?\n/)) {
+    if (line === "") continue;
+    const d = document.createElement("div");
+    d.textContent = line;
+    d.style.whiteSpace = "pre";
+    d.style.padding = "0 6px";
+    if (line.startsWith("+++") || line.startsWith("---")) {
+      d.style.color = "#555"; d.style.fontWeight = "700";
+    } else if (line.startsWith("@@")) {
+      d.style.color = "#0b3d91"; d.style.background = "#e3eefc";
+    } else if (line.startsWith("+")) {
+      d.style.color = "#0a3d12"; d.style.background = "#c8f0cf";
+    } else if (line.startsWith("-")) {
+      d.style.color = "#5a0a0a"; d.style.background = "#f8caca";
+    } else {
+      d.style.color = "#222";
+    }
+    box.appendChild(d);
+  }
+}
+
 _ej("editJobReview").addEventListener("click", async () => {
   const { ok, data } = await _ejPost(true);
   if (!ok) { _ej("editJobErr").textContent = data.error; return; }
   _ej("editJobErr").textContent = data.changed ? "" : "No changes.";
-  _ej("editJobDiff").textContent = data.changed ? data.diff : "(no changes)";
+  _ejRenderDiff(data.changed ? data.diff : "");
   _ejMode(true);
   _ej("editJobSave").disabled = !data.changed;
 });
@@ -1016,4 +1069,55 @@ _ej("editJobSave").addEventListener("click", async () => {
   _ej("editJobModal").style.display = "none";
   if (data.backup) alert("Saved. Previous version kept at:\n" + data.backup);
   loadJobs();
+});
+
+// History / undo: list the .bak versions, load one into the editor, then run the
+// normal Review -> Confirm path (so a restore is diffed, backed up, and guarded
+// exactly like any other save -- and is itself undoable).
+_ej("editJobHistory").addEventListener("click", async () => {
+  const box = _ej("editJobHist");
+  if (box.style.display !== "none") { box.style.display = "none"; return; }
+  _ej("editJobErr").textContent = "";
+  let data;
+  try {
+    const res = await fetch("/api/job-backups?path=" + encodeURIComponent(editJobPath));
+    data = await res.json();
+    if (!res.ok) { _ej("editJobErr").textContent = data.error; return; }
+  } catch (e) {
+    _ej("editJobErr").textContent = "Could not load history (is the webapp server up to date? restart it).";
+    return;
+  }
+  box.textContent = "";
+  if (!data.backups.length) {
+    box.textContent = "No earlier versions yet -- one is saved each time you save an edit here.";
+  } else {
+    const head = document.createElement("div");
+    head.style.cssText = "color:#555;margin-bottom:4px";
+    head.textContent = "Newest first. Keeps the last " + data.max + " per job.";
+    box.appendChild(head);
+    for (const b of data.backups) {
+      const row = document.createElement("div");
+      row.style.cssText = "display:flex;gap:10px;align-items:center;padding:3px 0;border-top:1px solid #eee";
+      const label = document.createElement("span");
+      label.style.flex = "1";
+      label.textContent = b.when + "  --  " +
+        (b.diff_lines ? b.diff_lines + " line(s) differ from current" : "same as current");
+      const btn = document.createElement("button");
+      btn.textContent = "Load this version";
+      btn.title = "Puts this version in the editor and shows a diff against the current file. Nothing is saved until you press Confirm save.";
+      btn.addEventListener("click", async () => {
+        const r = await fetch("/api/job-backup?path=" + encodeURIComponent(editJobPath) +
+                              "&name=" + encodeURIComponent(b.name));
+        const d = await r.json();
+        if (!r.ok) { _ej("editJobErr").textContent = d.error; return; }
+        _ej("editJobText").value = d.text;
+        box.style.display = "none";
+        _ej("editJobReview").click();
+      });
+      row.appendChild(label);
+      row.appendChild(btn);
+      box.appendChild(row);
+    }
+  }
+  box.style.display = "";
 });

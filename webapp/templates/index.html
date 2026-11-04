@@ -233,7 +233,7 @@
     </div>
     <div id="jobsTableWrap" class="scroll-box">
       <table id="jobsTable" title="Scheduled/Last Run/Results are read from disk and Windows Task Scheduler on every Refresh -- Last Run reflects the last successful run (index.html is only written on success), not the last attempt.">
-        <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th><th>Edit</th></tr></thead>
+        <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -258,9 +258,11 @@
     </div>
     <div id="editJobNote" style="font-size:12px;color:#a60;margin:6px 0"></div>
     <textarea id="editJobText" spellcheck="false" style="font-family:Consolas,monospace;font-size:12px;flex:1;min-height:50vh;white-space:pre"></textarea>
-    <pre id="editJobDiff" style="display:none;font-size:12px;overflow:auto;max-height:50vh;background:#f6f8fa;border:1px solid #ddd;padding:6px;margin:0"></pre>
+    <div id="editJobHist" style="display:none;overflow:auto;max-height:50vh;border:1px solid #bbb;padding:6px;margin:0 0 6px 0;font-size:13px"></div>
+    <pre id="editJobDiff" style="display:none;font-size:12px;overflow:auto;max-height:50vh;background:#fff;color:#222;font-family:Consolas,monospace;font-size:13px;border:1px solid #bbb;padding:6px 0;margin:0"></pre>
     <div id="editJobErr" style="color:#b00;font-size:12px;margin:6px 0"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="editJobHistory" title="Earlier versions of this job file (kept automatically each time you save here). Loading one shows a diff first; nothing changes until you confirm.">History / undo</button>
       <button id="editJobReview" title="Validate the JSON and show what changed. Nothing is written yet.">Review changes</button>
       <button id="editJobBack" style="display:none" title="Return to editing">Back to editing</button>
       <button id="editJobSave" style="display:none" title="Writes the job file (a timestamped .bak copy of the old file is kept alongside)">Confirm save</button>
