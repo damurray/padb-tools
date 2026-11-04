@@ -281,6 +281,54 @@ def test_job_history_and_restore():
         b.unlink()
 
 
+def test_job_lists():
+    _clear_jobs_dir()
+    lp = _TMP / "job_lists.json"
+    if lp.exists():
+        lp.unlink()
+    a = _write_job("p1_run_job.json", {"pod": "a.pod"})
+    b = _write_job("p2_v2_job.json", {"csv_path": "b.csv"})
+    c = _write_job("n1_run_job.json", {"pod": "c.pod"})
+
+    def post(**kw):
+        return client.post("/api/job-lists", json=kw)
+
+    check("no lists file -> empty lists", client.get("/api/job-lists").get_json()["lists"] == {})
+    r = post(op="add", list="Production", names=[a.name, b.name])
+    check("add creates a list", r.status_code == 200 and client.get("/api/job-lists").get_json()["lists"]
+          == {"Production": [a.name, b.name]})
+    post(op="add", list="NPI", names=[c.name, a.name])
+    lists = client.get("/api/job-lists").get_json()["lists"]
+    check("a job can be in several lists", a.name in lists["Production"] and a.name in lists["NPI"])
+    post(op="add", list="Production", names=[a.name])
+    check("adding twice does not duplicate", client.get("/api/job-lists").get_json()["lists"]["Production"].count(a.name) == 1)
+    check("add rejects an unknown job file",
+          post(op="add", list="X", names=["nope_job.json"]).status_code == 400)
+    check("add rejects a path-like job name",
+          post(op="add", list="X", names=["../p1_run_job.json"]).status_code == 400)
+    check("list name 'All' / slash / empty rejected",
+          all(post(op="add", list=n, names=[a.name]).status_code == 400 for n in ("All", "a/b", "")))
+    post(op="remove", list="Production", names=[b.name])
+    check("remove takes a job out of the list only",
+          client.get("/api/job-lists").get_json()["lists"]["Production"] == [a.name] and b.exists())
+    check("rename moves a list", post(op="rename", list="NPI", new="Pilot").status_code == 200
+          and "Pilot" in client.get("/api/job-lists").get_json()["lists"])
+    check("rename onto an existing name rejected", post(op="rename", list="Pilot", new="Production").status_code == 400)
+    c.unlink()
+    check("a deleted job file disappears from list output",
+          c.name not in client.get("/api/job-lists").get_json()["lists"]["Pilot"])
+    post(op="add", list="Production", names=[a.name])
+    check("stale names are pruned from the file on the next write", c.name not in lp.read_text(encoding="utf-8"))
+    check("delete removes only the list", post(op="delete", list="Pilot").status_code == 200
+          and "Pilot" not in client.get("/api/job-lists").get_json()["lists"] and a.exists())
+    check("delete of an unknown list -> 404", post(op="delete", list="Pilot").status_code == 404)
+    lp.write_text("{ not json", encoding="utf-8")
+    check("corrupt lists file degrades to empty, not a 500", client.get("/api/job-lists").status_code == 200)
+    check("job_lists.json is not mistaken for a job",
+          all(x["name"].endswith("_job.json") for x in client.get("/api/jobs").get_json()["jobs"]))
+    lp.unlink()
+
+
 def test_jobs_listing_and_kind():
     _clear_jobs_dir()
     _write_job("aaa_run_job.json", {"pod": "x.pod", "mode": "legacy", "description": "a run job"})
@@ -692,7 +740,7 @@ def main() -> None:
         pass
     print("qa_webapp -- Flask test-client route coverage (hermetic)")
     for fn in (test_index, test_sites, test_config, test_jobs_listing_and_kind,
-               test_edit_job_file, test_job_history_and_restore, test_results_token_roundtrip, test_schedule, test_unschedule,
+               test_edit_job_file, test_job_history_and_restore, test_job_lists, test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
                test_generate_reduce, test_compare_reduce_on_merged,
                test_link_reduce_report_in_index, test_open_viewer,

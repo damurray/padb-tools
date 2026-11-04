@@ -1606,6 +1606,85 @@ def get_job_backup():
         return jsonify(name=name, text=f.read())
 
 
+LISTS_FILENAME = "job_lists.json"
+_lists_lock = threading.Lock()
+
+
+def _lists_path() -> Path:
+    return DATA_DIR / LISTS_FILENAME
+
+
+def _read_lists() -> dict[str, list[str]]:
+    """{list name: [job filenames]} from job_lists.json (missing/corrupt -> {})."""
+    try:
+        with open(_lists_path(), encoding="utf-8") as f:
+            raw = json.load(f).get("lists", {})
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+    return {str(k): [str(x) for x in v] for k, v in raw.items() if isinstance(v, list)}
+
+
+def _write_lists(lists: dict[str, list[str]]) -> None:
+    p = _lists_path()
+    tmp = p.with_name(p.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"lists": lists}, f, indent=2)
+    os.replace(tmp, p)
+
+
+@app.route("/api/job-lists")
+def get_job_lists():
+    """Named job lists. Names of job files that no longer exist are hidden from
+    the response (and pruned from the file on the next write)."""
+    present = {p.name for p in DATA_DIR.glob("*_job.json")}
+    with _lists_lock:
+        lists = _read_lists()
+    return jsonify(lists={k: [n for n in v if n in present] for k, v in lists.items()})
+
+
+@app.route("/api/job-lists", methods=["POST"])
+def update_job_lists():
+    """op = add (create list if new, add names) | remove (names out of a list)
+    | delete (whole list) | rename (list -> new). Only the lists file changes;
+    job files are never touched."""
+    body = request.get_json(force=True) or {}
+    op = body.get("op")
+    name = str(body.get("list", "")).strip()
+    if not name or len(name) > 60 or name.lower() == "all" or any(c in name for c in "/" + chr(92)):
+        return jsonify(error="List name must be 1-60 characters, not 'All', and contain no slashes."), 400
+    present = {p.name for p in DATA_DIR.glob("*_job.json")}
+    names = [str(n) for n in (body.get("names") or [])]
+    bad = [n for n in names if n not in present]
+    if op in ("add", "remove") and (not names or bad):
+        return jsonify(error="Unknown or missing job file(s): " + ", ".join(bad or ["(none given)"])), 400
+    with _lists_lock:
+        lists = _read_lists()
+        # drop entries whose job file is gone, so the file doesn't accrete stale names
+        lists = {k: [n for n in v if n in present] for k, v in lists.items()}
+        if op == "add":
+            cur = lists.setdefault(name, [])
+            cur.extend(n for n in names if n not in cur)
+        elif op == "remove":
+            if name not in lists:
+                return jsonify(error="No such list"), 404
+            lists[name] = [n for n in lists[name] if n not in names]
+        elif op == "delete":
+            if lists.pop(name, None) is None:
+                return jsonify(error="No such list"), 404
+        elif op == "rename":
+            new = str(body.get("new", "")).strip()
+            if (not new or len(new) > 60 or new.lower() == "all" or any(c in new for c in "/" + chr(92))
+                    or new in lists):
+                return jsonify(error="Invalid or already-used new name."), 400
+            if name not in lists:
+                return jsonify(error="No such list"), 404
+            lists[new] = lists.pop(name)
+        else:
+            return jsonify(error="op must be add, remove, delete or rename"), 400
+        _write_lists(lists)
+    return jsonify(ok=True, lists=lists)
+
+
 @app.route("/api/schedule", methods=["POST"])
 def schedule_jobs():
     body = request.get_json(force=True) or {}

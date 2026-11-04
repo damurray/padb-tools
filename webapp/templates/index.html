@@ -123,6 +123,11 @@
         </select>
       </label>
       <label title="Case-insensitive filter on job filename.">Name <input type="text" id="nameFilter" placeholder="filter by name…"></label>
+      <label title="Show only the jobs in a saved list (e.g. Production, NPI). Lists only choose what is shown here -- job files, schedules and results are untouched, and a job can be in several lists.">List <select id="listFilter"><option value="all">All jobs</option></select></label>
+      <button id="addToListBtn" class="secondary" title="Adds the checked jobs to a list (you type a name; a new name creates the list).">Add checked to list&hellip;</button>
+      <button id="removeFromListBtn" class="secondary" title="Removes the checked jobs from the list shown in the List dropdown. The job files themselves are not deleted." disabled>Remove checked from list</button>
+      <button id="renameListBtn" class="secondary" title="Renames the list shown in the List dropdown." disabled>Rename list</button>
+      <button id="deleteListBtn" class="secondary" title="Deletes the list shown in the List dropdown. Only the list is removed -- no job files are deleted." disabled>Delete list</button>
       <button id="selectAllRunnableBtn" class="secondary" title="Checks every currently-visible Run job and unchecks everything else -- the safe way to bulk-select for Run Selected without also grabbing Plot jobs, which would just fail.">Select All Runnable</button>
       <button id="selectFilteredBtn" class="secondary" title="Checks every job matching the current Mode/Kind/Name filters (all rows shown in the table), Run and Plot alike, and unchecks everything else.">Select Filtered</button>
       <button id="runSelectedBtn" title="Queues every checked job. PADB-R.exe runs are strictly serialized (one at a time, others wait as queued); Run jobs are always queued ahead of Plot jobs regardless of selection order, since a Plot job may read a CSV its own Run job just produced.">Run Selected</button>

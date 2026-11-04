@@ -371,6 +371,7 @@ async function loadJobs() {
   const res = await fetch("/api/jobs");
   const data = await res.json();
   allJobs = data.jobs;
+  await loadJobLists();
   renderJobsTable();
 }
 
@@ -378,9 +379,12 @@ function renderJobsTable() {
   const modeFilter = document.getElementById("modeFilter").value;
   const kindFilter = document.getElementById("kindFilter").value;
   const nameFilter = document.getElementById("nameFilter").value.trim().toLowerCase();
+  const listSel = document.getElementById("listFilter").value;
+  const listSet = listSel !== "all" && jobLists[listSel] ? new Set(jobLists[listSel]) : null;
   const tbody = document.querySelector("#jobsTable tbody");
   tbody.innerHTML = "";
   for (const job of allJobs) {
+    if (listSet && !listSet.has(job.name)) continue;
     if (modeFilter !== "all" && job.mode !== modeFilter) continue;
     if (kindFilter !== "all" && job.kind !== kindFilter) continue;
     if (nameFilter && !job.name.toLowerCase().includes(nameFilter)) continue;
@@ -1120,4 +1124,107 @@ _ej("editJobHistory").addEventListener("click", async () => {
     }
   }
   box.style.display = "";
+});
+
+
+// ---------------------------------------------------------------------------
+// Job lists (named views over the jobs table; job files are never touched)
+// ---------------------------------------------------------------------------
+
+let jobLists = {};
+const LIST_PREF_KEY = "padb_web_job_list";
+
+async function loadJobLists() {
+  try {
+    const res = await fetch("/api/job-lists");
+    if (res.ok) jobLists = (await res.json()).lists || {};
+  } catch (e) { jobLists = {}; }
+  const sel = document.getElementById("listFilter");
+  let want = sel.value;
+  if (want === "all" || !want) {
+    try { want = localStorage.getItem(LIST_PREF_KEY) || "all"; } catch (e) { want = "all"; }
+  }
+  sel.innerHTML = "";
+  const all = document.createElement("option");
+  all.value = "all"; all.textContent = "All jobs (" + allJobs.length + ")";
+  sel.appendChild(all);
+  for (const name of Object.keys(jobLists).sort((a, b) => a.localeCompare(b))) {
+    const o = document.createElement("option");
+    o.value = name; o.textContent = name + " (" + jobLists[name].length + ")";
+    sel.appendChild(o);
+  }
+  sel.value = jobLists[want] ? want : "all";
+  syncListButtons();
+}
+
+function syncListButtons() {
+  const inList = document.getElementById("listFilter").value !== "all";
+  for (const id of ["removeFromListBtn", "renameListBtn", "deleteListBtn"]) {
+    document.getElementById(id).disabled = !inList;
+  }
+}
+
+async function listOp(body) {
+  const res = await fetch("/api/job-lists", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await res.json();
+  if (!res.ok) { alert(data.error); return false; }
+  return true;
+}
+
+function checkedJobNames() {
+  return [...document.querySelectorAll("#jobsTable tbody input[type=checkbox]:checked")]
+    .map(cb => cb.value.split(/[\\/]/).pop());
+}
+
+document.getElementById("listFilter").addEventListener("change", () => {
+  try { localStorage.setItem(LIST_PREF_KEY, document.getElementById("listFilter").value); } catch (e) {}
+  syncListButtons();
+  renderJobsTable();
+});
+
+document.getElementById("addToListBtn").addEventListener("click", async () => {
+  const names = checkedJobNames();
+  if (!names.length) { alert("Tick at least one job first."); return; }
+  const cur = document.getElementById("listFilter").value;
+  const existing = Object.keys(jobLists);
+  const hint = existing.length ? "Existing lists: " + existing.join(", ") + "\n\n" : "";
+  const name = prompt(hint + "Add " + names.length + " job(s) to which list?\n(type a new name to create one)",
+                      cur !== "all" ? cur : "");
+  if (!name || !name.trim()) return;
+  if (await listOp({ op: "add", list: name.trim(), names })) {
+    try { localStorage.setItem(LIST_PREF_KEY, name.trim()); } catch (e) {}
+    await loadJobs();
+  }
+});
+
+document.getElementById("removeFromListBtn").addEventListener("click", async () => {
+  const list = document.getElementById("listFilter").value;
+  const names = checkedJobNames();
+  if (list === "all" || !names.length) { alert("Pick a list, then tick the jobs to remove from it."); return; }
+  if (!confirm("Remove " + names.length + " job(s) from the list '" + list + "'?\n\nThe job files are not deleted.")) return;
+  if (await listOp({ op: "remove", list, names })) await loadJobs();
+});
+
+document.getElementById("renameListBtn").addEventListener("click", async () => {
+  const list = document.getElementById("listFilter").value;
+  if (list === "all") return;
+  const nn = prompt("New name for the list '" + list + "':", list);
+  if (!nn || !nn.trim() || nn.trim() === list) return;
+  if (await listOp({ op: "rename", list, new: nn.trim() })) {
+    try { localStorage.setItem(LIST_PREF_KEY, nn.trim()); } catch (e) {}
+    await loadJobs();
+  }
+});
+
+document.getElementById("deleteListBtn").addEventListener("click", async () => {
+  const list = document.getElementById("listFilter").value;
+  if (list === "all") return;
+  if (!confirm("Delete the list '" + list + "'?\n\nOnly the list is removed; no job files are deleted.")) return;
+  if (await listOp({ op: "delete", list })) {
+    try { localStorage.setItem(LIST_PREF_KEY, "all"); } catch (e) {}
+    document.getElementById("listFilter").value = "all";
+    await loadJobs();
+  }
 });
