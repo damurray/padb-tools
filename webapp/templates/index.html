@@ -233,7 +233,7 @@
     </div>
     <div id="jobsTableWrap" class="scroll-box">
       <table id="jobsTable" title="Scheduled/Last Run/Results are read from disk and Windows Task Scheduler on every Refresh -- Last Run reflects the last successful run (index.html is only written on success), not the last attempt.">
-        <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th></tr></thead>
+        <thead><tr><th></th><th>Name</th><th>Mode</th><th>Pod</th><th>Description</th><th>Scheduled</th><th>Last Run</th><th>Results</th><th>Edit</th></tr></thead>
         <tbody></tbody>
       </table>
     </div>
@@ -248,6 +248,25 @@
     <div id="statusPanels" title="One card per job queued this session (cleared on page reload) -- badge shows queued/running/done/failed/cancelled, with a live tail of the job's own console output below it."></div>
   </section>
 </main>
+
+
+<div id="editJobModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:1000">
+  <div style="background:#fff;margin:4vh auto;width:min(900px,94vw);border-radius:6px;padding:14px;max-height:92vh;display:flex;flex-direction:column">
+    <div style="display:flex;justify-content:space-between;align-items:center">
+      <b id="editJobTitle">Edit job</b>
+      <button id="editJobClose" title="Close without saving">&times;</button>
+    </div>
+    <div id="editJobNote" style="font-size:12px;color:#a60;margin:6px 0"></div>
+    <textarea id="editJobText" spellcheck="false" style="font-family:Consolas,monospace;font-size:12px;flex:1;min-height:50vh;white-space:pre"></textarea>
+    <pre id="editJobDiff" style="display:none;font-size:12px;overflow:auto;max-height:50vh;background:#f6f8fa;border:1px solid #ddd;padding:6px;margin:0"></pre>
+    <div id="editJobErr" style="color:#b00;font-size:12px;margin:6px 0"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button id="editJobReview" title="Validate the JSON and show what changed. Nothing is written yet.">Review changes</button>
+      <button id="editJobBack" style="display:none" title="Return to editing">Back to editing</button>
+      <button id="editJobSave" style="display:none" title="Writes the job file (a timestamped .bak copy of the old file is kept alongside)">Confirm save</button>
+    </div>
+  </div>
+</div>
 
 <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

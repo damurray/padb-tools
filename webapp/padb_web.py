@@ -1471,6 +1471,76 @@ def list_jobs():
     return jsonify(jobs=jobs)
 
 
+def _editable_job_path(raw: str) -> Path | None:
+    """Resolve a client-supplied path to a job file we may edit: must be a
+    *_job.json directly inside DATA_DIR (no traversal, no other files)."""
+    try:
+        p = Path(raw).resolve()
+    except (OSError, ValueError):
+        return None
+    if p.parent != DATA_DIR.resolve() or not p.name.endswith("_job.json") or not p.is_file():
+        return None
+    return p
+
+
+def _job_is_active(path: Path) -> bool:
+    with _jobs_lock:
+        return any(j["path"] == str(path) and j["status"] in ("queued", "running")
+                   for j in _jobs.values())
+
+
+@app.route("/api/job-file")
+def get_job_file():
+    p = _editable_job_path(request.args.get("path", ""))
+    if p is None:
+        return jsonify(error="not an editable job file"), 400
+    scheduled = (TASK_PREFIX + p.stem).upper() in {t.upper() for t in discover_all_padb_tasks()}
+    with open(p, encoding="utf-8", newline="") as f:
+        text = f.read()
+    return jsonify(path=str(p), name=p.name, text=text, scheduled=scheduled,
+                   active=_job_is_active(p))
+
+
+@app.route("/api/job-file", methods=["POST"])
+def save_job_file():
+    """Edit a job.json. preview=true -> validate + return a unified diff only
+    (nothing written). Otherwise: refuse while the job is queued/running,
+    write a timestamped .bak copy, then atomically replace (temp + os.replace)
+    so a concurrent reader (scheduler/CLI) never sees a half-written file."""
+    import difflib
+    body = request.get_json(force=True) or {}
+    p = _editable_job_path(body.get("path", ""))
+    if p is None:
+        return jsonify(error="not an editable job file"), 400
+    text = body.get("text")
+    if not isinstance(text, str):
+        return jsonify(error="text must be a string"), 400
+    try:
+        cfg = json.loads(text)
+    except json.JSONDecodeError as e:
+        return jsonify(error=f"Invalid JSON: {e.msg} (line {e.lineno}, col {e.colno})"), 400
+    if not isinstance(cfg, dict):
+        return jsonify(error="Job file must be a JSON object"), 400
+    with open(p, encoding="utf-8", newline="") as f:
+        old = f.read()
+    if body.get("preview"):
+        diff = "".join(difflib.unified_diff(
+            old.splitlines(True), text.splitlines(True),
+            fromfile="current", tofile="edited", n=2))
+        return jsonify(ok=True, changed=(old != text), diff=diff)
+    if _job_is_active(p):
+        return jsonify(error="This job is queued or running -- wait for it to finish before saving."), 409
+    if old == text:
+        return jsonify(ok=True, changed=False, backup=None)
+    backup = p.with_name(p.name + ".bak_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
+    shutil.copy2(p, backup)
+    tmp = p.with_name(p.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write(text)
+    os.replace(tmp, p)
+    return jsonify(ok=True, changed=True, backup=str(backup))
+
+
 @app.route("/api/schedule", methods=["POST"])
 def schedule_jobs():
     body = request.get_json(force=True) or {}

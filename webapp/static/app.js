@@ -402,6 +402,13 @@ function renderJobsTable() {
     tr.innerHTML += `<td class="wrap">${job.name}</td><td>${job.mode}</td>` +
       `<td class="wrap">${job.pod}</td><td class="wrap">${job.description}</td>` +
       `<td class="wrap">${scheduledCell}</td><td>${job.last_run || ""}</td><td>${resultsCell}</td>`;
+    const editTd = document.createElement("td");
+    const editBtn = document.createElement("button");
+    editBtn.textContent = "Edit";
+    editBtn.title = "Edit this job.json (extraction + analysis options). Changes are reviewed as a diff before saving; a .bak copy is kept.";
+    editBtn.addEventListener("click", () => openEditJob(job.path));
+    editTd.appendChild(editBtn);
+    tr.appendChild(editTd);
     tbody.appendChild(tr);
   }
   applyTooltipPref(); // Results link's title is only known once rendered here
@@ -955,3 +962,58 @@ fetch("/api/active-jobs")
   .then(res => res.json())
   .then(data => (data.job_ids || []).forEach(startPolling))
   .catch(() => {});
+
+
+// ---------------------------------------------------------------------------
+// Edit job.json
+// ---------------------------------------------------------------------------
+
+let editJobPath = null;
+function _ej(id) { return document.getElementById(id); }
+function _ejMode(review) {
+  _ej("editJobText").style.display = review ? "none" : "";
+  _ej("editJobDiff").style.display = review ? "" : "none";
+  _ej("editJobReview").style.display = review ? "none" : "";
+  _ej("editJobBack").style.display = review ? "" : "none";
+  _ej("editJobSave").style.display = review ? "" : "none";
+}
+async function openEditJob(path) {
+  const res = await fetch("/api/job-file?path=" + encodeURIComponent(path));
+  const data = await res.json();
+  if (!res.ok) { alert("Cannot edit: " + data.error); return; }
+  editJobPath = data.path;
+  _ej("editJobTitle").textContent = "Edit " + data.name;
+  _ej("editJobText").value = data.text;
+  _ej("editJobErr").textContent = "";
+  let note = "";
+  if (data.active) note += "This job is queued/running -- saving is blocked until it finishes. ";
+  if (data.scheduled) note += "This job is scheduled: saved changes apply to its next scheduled run. ";
+  note += "Extraction keys (subex, pod) need a full re-run; analysis keys (views, spec_*, x_*) only need a re-plot. Sibling *_v2_job.json files sharing results_dir/publish_to are NOT changed.";
+  _ej("editJobNote").textContent = note;
+  _ejMode(false);
+  _ej("editJobModal").style.display = "";
+}
+_ej("editJobClose").addEventListener("click", () => { _ej("editJobModal").style.display = "none"; });
+_ej("editJobBack").addEventListener("click", () => { _ej("editJobErr").textContent = ""; _ejMode(false); });
+async function _ejPost(preview) {
+  const res = await fetch("/api/job-file", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: editJobPath, text: _ej("editJobText").value, preview }),
+  });
+  return { ok: res.ok, data: await res.json() };
+}
+_ej("editJobReview").addEventListener("click", async () => {
+  const { ok, data } = await _ejPost(true);
+  if (!ok) { _ej("editJobErr").textContent = data.error; return; }
+  _ej("editJobErr").textContent = data.changed ? "" : "No changes.";
+  _ej("editJobDiff").textContent = data.changed ? data.diff : "(no changes)";
+  _ejMode(true);
+  _ej("editJobSave").disabled = !data.changed;
+});
+_ej("editJobSave").addEventListener("click", async () => {
+  const { ok, data } = await _ejPost(false);
+  if (!ok) { _ej("editJobErr").textContent = data.error; return; }
+  _ej("editJobModal").style.display = "none";
+  if (data.backup) alert("Saved. Previous version kept at:\n" + data.backup);
+  loadJobs();
+});

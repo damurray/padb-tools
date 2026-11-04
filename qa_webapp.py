@@ -181,6 +181,52 @@ def test_config():
           f"j={j}")
 
 
+def test_edit_job_file():
+    _clear_jobs_dir()
+    for b in _TMP.glob("*.bak_*"):
+        b.unlink()
+    jp = _write_job("edt_v2_job.json", {"csv_path": "x.csv", "views": ["scatter"]})
+    q = str(jp)
+    g = client.get("/api/job-file", query_string={"path": q})
+    check("GET /api/job-file returns the file text", g.status_code == 200 and "scatter" in g.get_json()["text"])
+    check("GET /api/job-file rejects a non-job path",
+          client.get("/api/job-file", query_string={"path": str(_TMP / "nope.txt")}).status_code == 400)
+    outside = _TMP.parent / "evil_job.json"
+    outside.write_text("{}", encoding="utf-8")
+    check("job-file rejects a *_job.json outside DATA_DIR",
+          client.get("/api/job-file", query_string={"path": str(outside)}).status_code == 400)
+    outside.unlink()
+    new = json.dumps({"csv_path": "x.csv", "views": ["scatter", "boxplot"]}, indent=2)
+    bad = client.post("/api/job-file", json={"path": q, "text": "{not json"})
+    check("invalid JSON is rejected (400) and file untouched",
+          bad.status_code == 400 and "scatter" in jp.read_text(encoding="utf-8")
+          and "boxplot" not in jp.read_text(encoding="utf-8"))
+    check("non-object JSON rejected",
+          client.post("/api/job-file", json={"path": q, "text": "[1]"}).status_code == 400)
+    pv = client.post("/api/job-file", json={"path": q, "text": new, "preview": True})
+    check("preview returns a diff and writes nothing",
+          pv.status_code == 200 and pv.get_json()["changed"] and "boxplot" in pv.get_json()["diff"]
+          and "boxplot" not in jp.read_text(encoding="utf-8"))
+    # active-job guard
+    padb_web._jobs["__edit_t"] = {"status": "running", "path": q}
+    blocked = client.post("/api/job-file", json={"path": q, "text": new})
+    del padb_web._jobs["__edit_t"]
+    check("save blocked (409) while the job is running",
+          blocked.status_code == 409 and "boxplot" not in jp.read_text(encoding="utf-8"))
+    ok = client.post("/api/job-file", json={"path": q, "text": new})
+    j = ok.get_json()
+    baks = list(_TMP.glob("edt_v2_job.json.bak_*"))
+    check("save writes the new text, a .bak of the old, no temp left",
+          ok.status_code == 200 and j["changed"] and "boxplot" in jp.read_text(encoding="utf-8")
+          and len(baks) == 1 and "boxplot" not in baks[0].read_text(encoding="utf-8")
+          and not list(_TMP.glob("*.tmp")), f"{j} baks={baks}")
+    check(".bak files are not picked up as jobs",
+          all(".bak_" not in x["name"] for x in client.get("/api/jobs").get_json()["jobs"]))
+    same = client.post("/api/job-file", json={"path": q, "text": new}).get_json()
+    check("saving identical text is a no-op (no extra backup)",
+          same["changed"] is False and len(list(_TMP.glob("edt_v2_job.json.bak_*"))) == 1)
+
+
 def test_jobs_listing_and_kind():
     _clear_jobs_dir()
     _write_job("aaa_run_job.json", {"pod": "x.pod", "mode": "legacy", "description": "a run job"})
@@ -592,7 +638,7 @@ def main() -> None:
         pass
     print("qa_webapp -- Flask test-client route coverage (hermetic)")
     for fn in (test_index, test_sites, test_config, test_jobs_listing_and_kind,
-               test_results_token_roundtrip, test_schedule, test_unschedule,
+               test_edit_job_file, test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
                test_generate_reduce, test_compare_reduce_on_merged,
                test_link_reduce_report_in_index, test_open_viewer,
