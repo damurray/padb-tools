@@ -49,6 +49,7 @@ a floor was violated -- a bug, reported loudly rather than shipped silently).
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 from pathlib import Path
 
@@ -411,8 +412,135 @@ def _fragile_ceiling(label: str, frag: list[tuple[str, float]]):
     return min(hits) if hits else None
 
 
+# --- gross-failing runs (a unit/setup problem, not a test-plan problem) -------
+# Spec fails are hard-protected (a frequency that fails must stay in the sweep).
+# In an ALL-RUNS study that rule is defeated by a few bad unit-runs: a single run
+# failing broadband protects every frequency it touches, and across hundreds of
+# runs the protected set becomes the whole sweep (real case, 2026-11-04: 3 of 253
+# unit-runs -- one failing at 287 of 373 frequencies -- protected all 373, so the
+# report recommended dropping NOTHING). A unit-run that fails across a large share
+# of the sweep is a DUT / fixture / station problem; repairing it is the fix, and it
+# says nothing about which test points are redundant. So such runs are excluded from
+# the analysis and listed loudly. Guard: when MANY unit-runs fail broadly the problem
+# is systemic (the spec or the test itself) -- then nothing is excluded and a warning
+# is shown instead, because excluding most of the data would hide a real issue.
+def _run_ids(df: pd.DataFrame):
+    """Per-row (serial, run-key) strings parsed from the Group text. The run key is
+    the Group item whose name has 'run' plus 'date' or 'time' (e.g. 'Test Run
+    Datetime'); falls back to the loader's Serial column when Group has no serial."""
+    if "Group" not in df.columns:
+        return None
+    ser_of: dict[str, str] = {}
+    run_of: dict[str, str] = {}
+    for g in df["Group"].dropna().unique():
+        kv = padb_plots._parse_group_kv(g)
+        sv = rv = ""
+        for k, v in kv.items():
+            kl = k.lower()
+            if not sv and any(x in kl for x in _SERIAL_KEY_KWS):
+                sv = v
+            elif not rv and "run" in kl and ("date" in kl or "time" in kl):
+                rv = v
+        if not sv:
+            for v in kv.values():
+                if _SERIAL_VAL_PAT.match(v):
+                    sv = v
+                    break
+        ser_of[g] = sv
+        run_of[g] = rv
+    ser = df["Group"].map(ser_of).fillna("")
+    run = df["Group"].map(run_of).fillna("")
+    if "Serial" in df.columns:
+        ser = ser.where(ser != "", df["Serial"].fillna("").astype(str))
+    return ser, run
+
+
+def _exclude_gross_runs(df: pd.DataFrame, frac: float, min_n: int, max_share: float):
+    """Return (df_without_gross_runs, info). A unit-run (serial + run key) is gross
+    when the number of DISTINCT frequencies it fails at is >= max(min_n,
+    ceil(frac * frequencies that run measured)). frac<=0 disables. If the gross runs
+    are more than max_share of all unit-runs the problem is systemic: nothing is
+    excluded (info['systemic'] is set so the report warns)."""
+    info = {"enabled": frac > 0, "excluded": [], "systemic": False, "n_unit_runs": 0,
+            "n_gross": 0, "share": 0.0, "note": ""}
+    if frac <= 0:
+        return df, info
+    ids = _run_ids(df)
+    if ids is None:
+        info["note"] = "no Group text -- gross-run check skipped"
+        return df, info
+    ser, run = ids
+    key = ser + "|" + run
+    if (key.str.strip("|") == "").all():
+        info["note"] = "no serial/run identifiers in Group -- gross-run check skipped"
+        return df, info
+    fail = pd.Series(False, index=df.index)
+    if "Upper_Limit" in df.columns:
+        fail |= df["Value"] > df["Upper_Limit"]
+    if "Lower_Limit" in df.columns:
+        fail |= df["Value"] < df["Lower_Limit"]
+    fail = fail.fillna(False)
+    work = pd.DataFrame({"k": key.to_numpy(), "f": df["Frequency_MHz"].to_numpy(),
+                         "fail": fail.to_numpy()})
+    measured = work.groupby("k")["f"].nunique()
+    failing = work[work["fail"]]
+    fail_freqs = failing.groupby("k")["f"].nunique()
+    fail_rows = failing.groupby("k").size()
+    info["n_unit_runs"] = int(len(measured))
+    gross = [k for k, nf in fail_freqs.items()
+             if nf >= max(int(min_n), math.ceil(frac * int(measured[k])))]
+    info["n_gross"] = len(gross)
+    if not gross:
+        return df, info
+    info["share"] = len(gross) / max(1, len(measured))
+    if info["share"] > max_share:
+        info["systemic"] = True
+        return df, info
+    rows = []
+    for k in gross:
+        sv, rv = k.split("|", 1)
+        rows.append({"serial": sv, "run": rv, "fail_freqs": int(fail_freqs[k]),
+                     "measured_freqs": int(measured[k]), "fail_rows": int(fail_rows[k])})
+    rows.sort(key=lambda r: (-r["fail_freqs"], r["serial"], r["run"]))
+    info["excluded"] = rows
+    return df[~key.isin(set(gross)).to_numpy()], info
+
+
+def _gross_lines(info: dict, frac: float, min_n: int, max_share: float) -> list[str]:
+    """Report section describing the gross-run check (empty when disabled/clean)."""
+    if not info.get("enabled"):
+        return ["Gross-failing runs:     check disabled (--gross-frac 0)", ""]
+    out: list[str] = []
+    if info.get("note"):
+        out += [f"Gross-failing runs:     {info['note']}", ""]
+    elif info.get("systemic"):
+        out += ["!! WARNING: many unit-runs fail broadly -- NOT excluded (looks systemic)",
+                f"   {info['n_gross']} of {info['n_unit_runs']} unit-runs ({info['share'] * 100:.0f}%) "
+                f"fail at >= max({min_n}, {frac * 100:.0f}% of the sweep) frequencies, above the "
+                f"{max_share * 100:.0f}% limit for treating them as bad units.",
+                "   That points at the spec or the test itself, not individual DUTs; every failing",
+                "   frequency stays protected, so expect few or no drop recommendations until resolved.", ""]
+    elif info["excluded"]:
+        ex = info["excluded"]
+        out += [f"Gross-failing runs EXCLUDED from this analysis: {len(ex)} of {info['n_unit_runs']} unit-runs",
+                f"  (a run failing at >= max({min_n}, {frac * 100:.0f}% of its measured frequencies) is a",
+                "   DUT / fixture / station problem, not a test-plan problem -- repair or re-test these;",
+                "   their failures no longer force every frequency to be kept. Use --gross-frac 0 to disable.)",
+                f"  {'serial':<16} {'run':<22} {'fail freqs':>10} {'of measured':>12} {'fail rows':>10}"]
+        for r in ex[:25]:
+            out.append(f"  {r['serial']:<16} {r['run']:<22} {r['fail_freqs']:>10} "
+                       f"{r['measured_freqs']:>12} {r['fail_rows']:>10}")
+        if len(ex) > 25:
+            out.append(f"  ... and {len(ex) - 25} more")
+        out.append("")
+    else:
+        out += ["Gross-failing runs:     none detected", ""]
+    return out
+
+
 def build_report(csv_path: Path, conds, grid, protected, retained, dropped,
-                 eps, ret_count, floor, args, mu_budget, summary_lines=None) -> tuple[str, str]:
+                 eps, ret_count, floor, args, mu_budget, summary_lines=None,
+                 gross_info=None) -> tuple[str, str]:
     n = len(grid)
     kept = sorted(retained)
     n_drop = len(dropped)
@@ -427,6 +555,10 @@ def build_report(csv_path: Path, conds, grid, protected, retained, dropped,
     if summary_lines:
         lines.extend(summary_lines)
         lines.append("")
+    if gross_info is not None:
+        lines.extend(_gross_lines(gross_info, float(getattr(args, "gross_frac", 0.10)),
+                                  int(getattr(args, "gross_min", 25)),
+                                  float(getattr(args, "gross_max_share", 0.25))))
     lines.append(f"Swept frequencies:        {n}")
     lines.append(f"Recommend KEEP:           {len(kept)}")
     lines.append(f"Recommend DROP (redundant): {n_drop}   (~{pct:.1f}% fewer sweep points)")
@@ -545,6 +677,9 @@ def main(argv=None) -> None:
     ap.add_argument("--fragile", action="append", default=[], metavar="SUBSTR[:CEIL]", help="mark conditions whose label contains SUBSTR as fragile, capping their reduction at CEIL (default 0.20); repeatable. Durable form is a loadable per-family config (future).")
     ap.add_argument("--x-col", default=None, help="exact swept-x column name if not Frequency/X value")
     ap.add_argument("--out", type=Path, default=None, help="output dir (default: alongside the CSV)")
+    ap.add_argument("--gross-frac", type=float, default=0.10, help="exclude unit-runs failing at >= this fraction of the frequencies they measured (a DUT/setup problem that would otherwise protect every frequency); 0 disables (default 0.10)")
+    ap.add_argument("--gross-min", type=int, default=25, help="...and at least this many distinct failing frequencies, so a handful of frequency-specific fails (which must stay protected) never counts as a bad unit (default 25)")
+    ap.add_argument("--gross-max-share", type=float, default=0.25, help="if more than this share of unit-runs are gross the problem is systemic: exclude nothing and warn (default 0.25)")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args(argv)
 
@@ -561,6 +696,12 @@ def main(argv=None) -> None:
         print("[FAIL] no usable (frequency, value) rows -- see padb_csv_check.py.")
         sys.exit(1)
 
+    df_all = df
+    df, gross_info = _exclude_gross_runs(df, float(args.gross_frac), int(args.gross_min),
+                                         float(args.gross_max_share))
+    if not len(df):
+        print("[FAIL] every row belongs to a gross-failing run -- nothing left to analyse.")
+        sys.exit(1)
     conds, grid = _build_conditions(df)
     if len(grid) < 3:
         print(f"[NOTE] only {len(grid)} swept frequency(ies) -- nothing to reduce.")
@@ -583,9 +724,10 @@ def main(argv=None) -> None:
               f"floor_violations={bad_floor[:5]}")
         sys.exit(1)
 
-    summary_lines = padb_plots.dataset_summary_lines(df)
+    summary_lines = padb_plots.dataset_summary_lines(df_all)  # whole dataset, as collected
     txt, csv_txt = build_report(args.csv, conds, grid, protected, retained, dropped,
-                                eps, ret_count, floor, args, mu_budget, summary_lines)
+                                eps, ret_count, floor, args, mu_budget, summary_lines,
+                                gross_info=gross_info)
     out_dir = args.out or args.csv.parent
     out_dir.mkdir(parents=True, exist_ok=True)
     stem = args.csv.stem

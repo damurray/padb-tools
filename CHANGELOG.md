@@ -13,6 +13,10 @@ Pulled directly from git history. Newest summary first; the full day-by-day log 
 - **Fixes found while building it:** the Edit button now alerts (instead of failing silently) when the running server is older than the page — restart via `Start_web.bat` and Ctrl+F5; the Edit button moved into the Name cell so a narrow window can't push it off-screen.
 - QA: `qa_webapp.py` 111/0; each new guard (running-job block, backup, same-second stepping, pruning, name validation, list pruning/validation/remove) was individually broken to prove its test fails.
 
+### Test-point reduction: gross-failing runs no longer block every recommendation
+- On the Harmonics & Sub-harmonics all-runs study (253 unit-runs) the report recommended **dropping 0 of 373 frequencies**: spec fails are always protected, and 3 runs (one failing at 287 of 373 frequencies) put a fail at every frequency. The reducer now excludes unit-runs that fail broadly (>= `--gross-min` 25 distinct frequencies and >= `--gross-frac` 10% of what that run measured), lists them in the report as DUT/fixture/station problems to repair, and keeps protecting genuine frequency-specific fails. If more than `--gross-max-share` (25%) of unit-runs are gross it is treated as systemic: nothing is excluded and the report warns. `--gross-frac 0` restores the old behaviour. Result on that dataset: **80 of 373 (21.4%) droppable**. `qa_testpoint_reduce` 11 -> 20, each new guard proven to fail when broken.
+- Note: a `*_run_job.json` only extracts; the reduction report is the separate **Test-point Reduce** action.
+
 ### Docs
 - `/padb-tools` (Claude Code command) is repo-scoped: start Claude Code with this repo as the working directory, or copy `.claude/commands/padb-tools.md` to `~/.claude/commands/` to use it anywhere (`GETTING_STARTED.md`).
 

@@ -55,6 +55,32 @@ def _synth(with_fail=True, bump_at=20, transition_at=30):
     return pd.DataFrame(rows)
 
 
+def _synth_runs(n_runs=60, broad=None, local=None):
+    """All-runs shaped data: n_runs unit-runs, each measuring the same 40 freqs of one
+    low-noise flat condition, upper limit -50. `broad` {run_idx: n_fail_freqs} makes that
+    run fail at its first n freqs (a unit/setup problem); `local` {run_idx: n} does the
+    same but meant for a handful (frequency-specific fails). 60 distinct run keys keeps
+    'Test Run Datetime' out of the condition labels (>50 distinct), like real data."""
+    rng = np.random.default_rng(11)
+    broad = broad or {}
+    local = local or {}
+    rows = []
+    for ri in range(n_runs):
+        ser = f"US6500000{ri % 6}"
+        run = f"2026/06/{1 + ri // 24:02d} {ri % 24:02d}:{ri:02d}:00"
+        nfail = broad.get(ri, local.get(ri, 0))
+        for f in range(1, 41):
+            v = -70.0 + rng.normal(0, 0.3)
+            if f <= nfail:
+                v = -30.0
+            rows.append({"Frequency_MHz": float(f), "Value": v,
+                         "Group": f"Amp State: 0  Serial Number: {ser}  Test Run Datetime: {run}",
+                         "Upper_Limit": -50.0, "Lower_Limit": np.nan,
+                         "Spec_Hi": np.nan, "Spec_Lo": np.nan, "Unc_Hi": np.nan,
+                         "Unc_Lo": np.nan, "Temperature": "Room", "Serial": ""})
+    return pd.DataFrame(rows)
+
+
 def _run(df, args):
     conds, grid = R._build_conditions(df)
     prot = R._protected_frequencies(df, grid, conds, float(args.margin_k))
@@ -107,6 +133,54 @@ def main():
     # safety invariant: no protected point was ever dropped
     check("no protected frequency is ever in the dropped set",
           not (set(prot) & dropped))
+
+    # --- Gross-failing runs (2026-11-04) -------------------------------------
+    # all-runs data: 60 unit-runs x 40 freqs. A broadband-failing run protects every
+    # frequency it touches unless it is recognised as a unit/setup problem.
+    def _pipeline(df, frac=0.10, min_n=25, share=0.25):
+        d2, info = R._exclude_gross_runs(df, frac, min_n, share)
+        conds_, grid_ = R._build_conditions(d2)
+        prot_ = R._protected_frequencies(d2, grid_, conds_, float(args.margin_k))
+        ret_, drp_, _e, _c, _fl = R.reduce_testpoints(conds_, grid_, prot_, args, 0.0)
+        return d2, info, prot_, {f for f, _, _ in drp_}
+
+    bad_run = 7  # fails broadly (30 of 40 freqs)
+    dfg = _synth_runs(broad={bad_run: 30})
+    _, info0, prot0, drop0 = _pipeline(dfg, frac=0)  # check disabled == old behaviour
+    check("without the check, one broadband-failing run protects (nearly) the whole sweep",
+          sum(1 for r in prot0.values() if r == "spec fail") >= 30 and len(drop0) <= 10,
+          f"spec-fail-protected={sum(1 for r in prot0.values() if r == 'spec fail')} dropped={len(drop0)}")
+    d1, info1, prot1, drop1 = _pipeline(dfg)
+    check("gross run is detected and excluded (exactly that unit-run)",
+          len(info1["excluded"]) == 1 and info1["excluded"][0]["fail_freqs"] == 30
+          and len(d1) == len(dfg) - 40, f"{info1['excluded']}")
+    check("excluding it frees the sweep to reduce again (many more drops)",
+          len(drop1) >= 8 and len(drop1) > len(drop0), f"dropped {len(drop0)} -> {len(drop1)}")
+    # frequency-specific fails must STAY protected and the run must NOT be excluded
+    dfs = _synth_runs(local={9: 3})
+    ds, infos, progs, drops = _pipeline(dfs)
+    check("a run failing at only a few frequencies is not excluded",
+          infos["excluded"] == [] and len(ds) == len(dfs), f"{infos['excluded']}")
+    check("...and its failing frequencies stay protected", sum(
+        1 for r in progs.values() if r == "spec fail") == 3)
+    # systemic: most runs fail broadly -> exclude nothing, warn
+    dfy = _synth_runs(broad={i: 30 for i in range(0, 30)})
+    dy, infoy, _p, _d = _pipeline(dfy)
+    check("systemic breadth (>25% of runs) excludes nothing and is flagged",
+          infoy["systemic"] and infoy["excluded"] == [] and len(dy) == len(dfy),
+          f"share={infoy['share']:.2f}")
+    # report text carries the exclusion / warning
+    txt_ex = "\n".join(R._gross_lines(info1, 0.10, 25, 0.25))
+    txt_sy = "\n".join(R._gross_lines(infoy, 0.10, 25, 0.25))
+    check("report lists the excluded run", "EXCLUDED" in txt_ex and "US65000001" in txt_ex)
+    check("report warns on systemic failures", "WARNING" in txt_sy and "NOT excluded" in txt_sy)
+    # no identifiers -> check skipped quietly, nothing excluded
+    dfn = dfg.copy()
+    dfn["Group"] = "Amp State: 0"
+    dfn["Serial"] = ""
+    dn, infon, _p, _d = _pipeline(dfn)
+    check("no serial/run identifiers -> check skipped, nothing excluded",
+          infon["excluded"] == [] and len(dn) == len(dfn) and bool(infon["note"]))
 
     print(f"\n{'=' * 60}\n  PASS: {len(_PASS)}    FAIL: {len(_FAIL)}")
     sys.exit(1 if _FAIL else 0)
