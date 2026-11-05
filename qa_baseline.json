@@ -21,11 +21,11 @@
       "failed": 0
     },
     "qa_webapp": {
-      "passed": 76,
+      "passed": 111,
       "failed": 0
     },
     "qa_regressions": {
-      "passed": 711,
+      "passed": 721,
       "failed": 0
     },
     "qa_subpop": {

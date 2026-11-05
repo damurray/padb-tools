@@ -113,6 +113,8 @@ Every key below is optional and defaults to prior behaviour (no existing pod's o
 
 Clears stale `results/padb/` files whose stem has fresh output this run before copying (stops Simple-mode PNG bloat) — stems with **no** fresh output are left (preserves the clock-spurs manual-CSV workaround). A **stale R-Plots leftover never clobbers fresh `-dir` output**: an R-Plots candidate older than `run_start` is skipped when `results/padb/` already has a fresh same-stem file (was silently serving stale data on ~11/16 runs before this).
 
+
+**"No output" warning accuracy (2026-11-05).** `_collect_padb_outputs` warns "N analytic(s) produced no output" only for real gaps now. (1) **SummaryPlot (Type=90)** analytics write a `.txt` only by design -- a matched `.txt` counts as their output (a **Type=80** with only a `.txt` is still flagged: that is PADB's error-dump convention). (2) PADB writes filenames through a Windows-safe filter (`: * ? " < > | / \` -> `_`), so an OutputFile like `..._:LogScale_AMC2` lands as `...__LogScale_AMC2.csv`; `_win_safe` is applied in `filename_stem_variants`, `_analytic_stems` and `_own_stems`. (3) `find_csvs` is **two-pass**: exact stem matches first, and the 15-char fuzzy-glob fallback may only take a CSV no other analytic matched exactly (it used to take the alphabetically-first prefix match, handing an analytic ANOTHER analytic's CSV and listing it twice). Pinned by `qa_regressions.test_run_output_warnings` (each guard proven to fail when removed).
 ## Run logs
 
 Every `padb_run.py` run tees stdout to `results_dir/padb_run_YYYYMMDD_HHMMSS.log` via `_Tee` (survives crashes, works headless, accumulates). `_Tee` doesn't `.flush()`; piped stdout is block-buffered — the webapp forces `PYTHONUNBUFFERED=1` for live logs.

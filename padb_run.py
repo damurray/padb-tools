@@ -586,6 +586,8 @@ def _analytic_stems(analytics: list[dict]) -> set[str]:
             primary = val.replace(" ", "_")
             stems.add(primary)
             stems.add(primary.replace("-", "_"))
+            stems.add(_win_safe(primary))
+            stems.add(_win_safe(primary).replace("-", "_"))
     return stems
 
 
@@ -653,6 +655,7 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
         # set used to decide whether that analytic is covered.
         s = {v.replace(" ", "_") for v in
              (a.get("output_file") or "", a.get("name") or "") if v}
+        s = s | {_win_safe(x) for x in s}
         return s | {x.replace("-", "_") for x in s}
 
     present = [f for f in results_padb.iterdir() if f.is_file() and _matched_stem(f.stem)]
@@ -672,6 +675,11 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
     # `present` itself still lists every matched file, .txt included, so
     # the "Found N file(s)" listing stays a complete, honest inventory.
     present_stems = {_matched_stem(f.stem) for f in present if f.suffix.lower() != ".txt"}
+    # SummaryPlot (Type=90) analytics never write a CSV -- their .txt IS the real
+    # output (e.g. Summary_Abs.txt). Counting only non-.txt files wrongly flagged
+    # every one of them as "produced no output at all" on every run (real case
+    # 2026-11-05: 4 false warnings per run on the AmplitudeAccuracy pod).
+    txt_stems = {_matched_stem(f.stem) for f in present if f.suffix.lower() == ".txt"}
 
     # _analytic_stems() deliberately gives each analytic *two* candidate
     # stems (its AnalyticName and its OutputConfig_OutputFile, since PADB
@@ -682,7 +690,10 @@ def _collect_padb_outputs(cfg: dict, analytics: list[dict], results_padb: Path,
     missing_analytics: list[str] = []
     for a in analytics:
         label = a.get("name") or a.get("output_file") or "?"
-        if not (_own_stems(a) & present_stems):
+        covered = _own_stems(a) & present_stems
+        if not covered and a.get("type") == 90:
+            covered = _own_stems(a) & txt_stems
+        if not covered:
             missing_analytics.append(label)
 
     # Test-point-reduction extractions keep native render ON (see
@@ -825,6 +836,19 @@ def run_padb(cfg: dict, run_pod: Path, results_padb: Path,
 # CSV discovery
 # ---------------------------------------------------------------------------
 
+# PADB writes output filenames through a Windows-safe filter: characters a filename
+# cannot hold (: * ? " < > | / \\) become "_". Real case (2026-11-05): an analytic whose
+# OutputFile is "..._GreaterThan_minus90dBm_:LogScale_AMC2" was written as
+# "..._GreaterThan_minus90dBm__LogScale_AMC2.csv"; without this the predicted name
+# never matched, the analytic was reported "no output at all" and find_csvs fell
+# through to a fuzzy glob that attributed ANOTHER analytic's CSV to it.
+_WIN_ILLEGAL_RE = re.compile(r'[:*?"<>|/\\]')
+
+
+def _win_safe(s: str) -> str:
+    return _WIN_ILLEGAL_RE.sub("_", s)
+
+
 def filename_stem_variants(s: str) -> list[str]:
     """
     Return candidate filename stems for a name string.
@@ -846,6 +870,10 @@ def filename_stem_variants(s: str) -> list[str]:
     for stem in (p0, p1, p2, p3):
         if stem not in seen:
             seen.append(stem)
+    for stem in (p0, p1, p2, p3):          # + PADB's Windows-safe form (":" -> "_" ...)
+        w = _win_safe(stem)
+        if w not in seen:
+            seen.append(w)
     return seen
 
 
@@ -869,7 +897,15 @@ def find_csvs(results_padb: Path, analytics: list[dict]) -> dict[str, Path]:
     all_csv_stems: dict[str, Path] = {p.stem: p for p in results_padb.glob("*.csv")}
     _stems = filename_stem_variants
 
+    # Pass 1 = exact stem matches for every analytic; pass 2 = the fuzzy glob
+    # fallback, which may only take a CSV NO other analytic matched exactly. (It used
+    # to take the alphabetically-first prefix match unconditionally, so an analytic
+    # whose own file was missed got another analytic's CSV and that file was listed
+    # twice -- real case 2026-11-05.) csv_map keeps the analytics' original order.
     csv_map: dict[str, Path] = {}
+    exact: dict[str, Path] = {}
+    pending: list[tuple[str, str]] = []
+    order: list[str] = []
     for a in analytics:
         analytic_name = a.get("name") or ""
         output_file = a.get("output_file") or ""
@@ -879,6 +915,7 @@ def find_csvs(results_padb: Path, analytics: list[dict]) -> dict[str, Path]:
         # Skip analytics that don't produce CSVs
         if not key or not a.get("output_csv", True):
             continue
+        order.append(key)
 
         found: Path | None = None
 
@@ -896,15 +933,28 @@ def find_csvs(results_padb: Path, analytics: list[dict]) -> dict[str, Path]:
                 found = all_csv_stems[stem]
                 break
 
-        # Fuzzy glob fallback: first 15 chars of primary AnalyticName stem
-        if found is None and analytic_name:
-            slug = analytic_name.replace(" ", "_")[:15]
-            matches = sorted(results_padb.glob(f"{slug}*.csv"))
-            if matches:
-                found = matches[0]
-
         if found is not None:
-            csv_map[key] = found
+            exact[key] = found
+        elif analytic_name:
+            pending.append((key, analytic_name))
+
+    # Fuzzy glob fallback: first 15 chars of primary AnalyticName stem, restricted
+    # to CSVs not already claimed by an exact match (or an earlier fuzzy match).
+    claimed = {p.resolve() for p in exact.values()}
+    fuzzy: dict[str, Path] = {}
+    for key, analytic_name in pending:
+        slug = analytic_name.replace(" ", "_")[:15]
+        for m in sorted(results_padb.glob(f"{slug}*.csv")):
+            if m.resolve() not in claimed:
+                fuzzy[key] = m
+                claimed.add(m.resolve())
+                break
+
+    for key in order:
+        if key in exact:
+            csv_map[key] = exact[key]
+        elif key in fuzzy:
+            csv_map[key] = fuzzy[key]
 
     return csv_map
 

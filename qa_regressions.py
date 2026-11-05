@@ -175,6 +175,81 @@ def test_filename_stem_variants():
           "Sub_Harmonics_1_5" in v, f"v={v}")
     check("filename_stem_variants de-dups a name with nothing to normalise",
           pr.filename_stem_variants("Plain") == ["Plain"], f"v={pr.filename_stem_variants('Plain')}")
+    check("filename_stem_variants offers PADB's Windows-safe form (':' -> '_')",
+          "Run_a__b" in pr.filename_stem_variants("Run_a:_b"),
+          f"v={pr.filename_stem_variants('Run_a:_b')}")
+
+
+# ---------------------------------------------------------------------------
+# "produced no output" warning accuracy + find_csvs attribution (2026-11-05)
+# Real pod (AmplitudeAccuracyClosedLoop_AMC2): 5 of 6 warnings were false --
+# 4 SummaryPlot (Type 90) analytics write .txt only by design, and one analytic's
+# OutputFile contained ':' which PADB writes as '_' -- and find_csvs handed that
+# analytic ANOTHER analytic's CSV via its fuzzy fallback (listed twice).
+# ---------------------------------------------------------------------------
+def test_run_output_warnings():
+    import contextlib
+    import io
+    import tempfile
+
+    def _missing(analytics, files):
+        with tempfile.TemporaryDirectory() as td:
+            res = Path(td) / "padb"
+            res.mkdir()
+            for f in files:
+                (res / f).write_text("x\n", encoding="utf-8")
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                pr._collect_padb_outputs({"padb_output_dir": ""}, analytics, res, run_start=None)
+            out = buf.getvalue()
+        if "produced no output" not in out:
+            return []
+        return [ln.strip() for ln in out.split("produced no output", 1)[1].splitlines()[1:] if ln.strip().startswith("")
+                and ln.strip() and not ln.strip().startswith(("WARNING", "(", "Found"))][:10]
+
+    sanit = {"index": 1, "type": 80, "name": "Sweep (>-90 LogScale)",
+             "output_file": "Sweep_GreaterThan_minus90dBm_:LogScale_AMC2"}
+    m = _missing([sanit], ["Sweep_GreaterThan_minus90dBm__LogScale_AMC2.csv"])
+    check("PADB's ':'->'_' output name is recognised (no false 'no output' warning)",
+          m == [], f"flagged={m}")
+    m = _missing([sanit], [])
+    check("TEETH: the same analytic with NO file at all is still flagged",
+          m == ["Sweep (>-90 LogScale)"], f"flagged={m}")
+
+    summ = {"index": 2, "type": 90, "name": "Summary Abs", "output_file": None}
+    m = _missing([summ], ["Summary_Abs.txt"])
+    check("a SummaryPlot (Type 90) with its .txt is NOT flagged", m == [], f"flagged={m}")
+    m = _missing([summ], [])
+    check("TEETH: a SummaryPlot with nothing at all IS flagged", m == ["Summary Abs"], f"flagged={m}")
+    scat = {"index": 3, "type": 80, "name": "My Scatter", "output_file": "My_Scatter"}
+    m = _missing([scat], ["My_Scatter.txt"])
+    check("TEETH: a Type 80 with only a .txt (PADB error dump, 2026-08-27 rule) is STILL flagged",
+          m == ["My Scatter"], f"flagged={m}")
+
+    # find_csvs: fuzzy fallback must not steal another analytic's exact file
+    with tempfile.TemporaryDirectory() as td:
+        res = Path(td)
+        (res / "Relative_Frequency_Sweep_Alpha.csv").write_text("x\n", encoding="utf-8")
+        a = {"index": 1, "type": 80, "name": "Relative Frequency Sweep Alpha",
+             "output_file": "Relative_Frequency_Sweep_Alpha", "output_csv": True}
+        b = {"index": 2, "type": 80, "name": "Relative Frequency Sweep Beta",
+             "output_file": "Relative_Frequency_Sweep_Beta", "output_csv": True}
+        cm = pr.find_csvs(res, [b, a])  # b first: it must not grab a's file by prefix
+        check("find_csvs: an analytic with no file of its own does NOT inherit another's CSV",
+              "Relative Frequency Sweep Beta" not in cm, f"map={ {k: v.name for k, v in cm.items()} }")
+        check("find_csvs: the analytic that owns the file still gets it",
+              cm.get("Relative Frequency Sweep Alpha") is not None
+              and cm["Relative Frequency Sweep Alpha"].name == "Relative_Frequency_Sweep_Alpha.csv")
+        check("find_csvs: no CSV is attributed to two analytics",
+              len({str(v) for v in cm.values()}) == len(cm))
+        # fuzzy fallback still works for a genuinely unclaimed file
+        (res / "Totally_Different_Name_v2.csv").write_text("x\n", encoding="utf-8")
+        c = {"index": 3, "type": 80, "name": "Totally Different Name", "output_file": "NoMatchHere",
+             "output_csv": True}
+        cm2 = pr.find_csvs(res, [c])
+        check("find_csvs: fuzzy fallback still resolves an unclaimed prefix match",
+              cm2.get("Totally Different Name") is not None
+              and cm2["Totally Different Name"].name == "Totally_Different_Name_v2.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -2577,8 +2652,8 @@ def test_dataset_summary_lines() -> None:
     red = (HERE / "padb_testpoint_reduce.py").read_text(encoding="utf-8")
     sen = (HERE / "padb_sentinel.py").read_text(encoding="utf-8")
     check("summary: reduce report wires in dataset_summary_lines",
-          "dataset_summary_lines(df)" in red and "summary_lines" in red
-          and "lines.extend(summary_lines)" in red)
+          ("dataset_summary_lines(df)" in red or "dataset_summary_lines(df_all)" in red)
+          and "summary_lines" in red and "lines.extend(summary_lines)" in red)
     check("summary: sentinel report wires in dataset_summary_lines",
           "dataset_summary_lines(df)" in sen and "df.attrs.get(\"summary_lines\")" in sen
           and "L.extend(summary_lines)" in sen)
@@ -3533,7 +3608,7 @@ def main() -> None:
     for fn in (test_freq_floor_ceil, test_freq_label_map, test_snap_pc_opt,
                test_short_x_label, test_parse_group_kv, test_extract_group_field,
                test_has_segmentable_spec, test_resolve_date_sentinel,
-               test_filename_stem_variants, test_x_axis_detection,
+               test_filename_stem_variants, test_run_output_warnings, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
                test_filter_state_scoping, test_spec_mask_interpolation,
                test_scatter_mask_is_dataset_level,
