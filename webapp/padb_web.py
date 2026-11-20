@@ -227,7 +227,7 @@ def _find_v2_siblings(job_path: Path, run_cfg: dict) -> list[Path]:
             plot_cfg = json.loads(candidate.read_text(encoding="utf-8"))
         except (json.JSONDecodeError, OSError):
             continue
-        csv_path = plot_cfg.get("csv_path")
+        csv_path = plot_cfg.get("csv_path") or plot_cfg.get("parquet_path")
         if csv_path and run_results_dir and run_results_dir not in csv_path.lower():
             continue
         siblings.append(candidate)
@@ -602,7 +602,7 @@ def _reduce_targets(job_path: Path, cfg: dict) -> list[Path]:
             if pd_dir.exists():
                 csvs = sorted(pd_dir.glob("*.csv"))
     else:
-        cp = cfg.get("csv_path")
+        cp = cfg.get("csv_path") or cfg.get("parquet_path")
         if cp:
             p = Path(cp)
             if not p.is_absolute():
@@ -1128,11 +1128,11 @@ def _read_units(csv_path: Path) -> set[str]:
     the column is missing or unreadable -- absence of information isn't
     proof of a mismatch."""
     try:
-        header = pd.read_csv(csv_path, nrows=0, dtype=str)
+        header = _pp._read_table(csv_path, nrows=0, dtype=str)
         header.columns = header.columns.str.strip()
         if "Units" not in header.columns:
             return set()
-        col = pd.read_csv(csv_path, usecols=["Units"], dtype=str)["Units"]
+        col = _pp._read_table(csv_path, usecols=["Units"], dtype=str)["Units"]
     except Exception:
         return set()
     return set(col.dropna().str.strip().unique()) - {""}
@@ -1147,7 +1147,7 @@ def _detect_x_axis_col(csv_path: Path) -> str | None:
     -- read straight from the header, no pod involved. Returns None if no
     matching column exists at all."""
     try:
-        header = pd.read_csv(csv_path, nrows=0, dtype=str)
+        header = _pp._read_table(csv_path, nrows=0, dtype=str)
     except Exception:
         return None
     for col in header.columns:
@@ -1429,7 +1429,7 @@ def compare_create():
 def _job_kind(cfg: dict) -> str:
     if "pod" in cfg:
         return "run"
-    if "csv_path" in cfg or "analytic" in cfg or "compare_csv" in cfg:
+    if "csv_path" in cfg or "parquet_path" in cfg or "analytic" in cfg or "compare_csv" in cfg:
         return "plot"
     return "unknown"
 

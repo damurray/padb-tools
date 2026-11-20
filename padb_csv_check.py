@@ -76,7 +76,7 @@ def fail(msg: str) -> None:
 def check_csv(csv_path: Path, x_col: str | None = None) -> None:
     print(f"Checking: {csv_path}\n")
 
-    raw = pd.read_csv(csv_path, dtype=str)
+    raw = pp._read_table(csv_path, dtype=str)
     raw.columns = raw.columns.str.strip()
     print(f"  {len(raw):,} rows, {len(raw.columns)} columns: {list(raw.columns)}\n")
 

@@ -129,7 +129,7 @@ def _diagnose_no_data(csv_path: Path, cfg: dict | None, detail: str = "") -> str
     its own column names -- the 'good reference' being what a real scatter
     CSV looks like (a Frequency / X-value column plus a numeric measurement)."""
     try:
-        cols = list(pd.read_csv(csv_path, nrows=0).columns)
+        cols = list(_pp._read_table(csv_path, nrows=0).columns)
     except Exception:
         cols = []
     has_x = any(("frequency" in c.lower() or "x value" in c.lower()) for c in cols)
@@ -259,6 +259,10 @@ def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) 
     sidecar + a misleading "Large-dataset viewer" section on its index; the parquet
     viewer only helps when the self-contained HTML is too big to open. Set
     export_parquet:true to force one on a small job.) Never fails the build."""
+    if csv_path.suffix.lower() == ".parquet":
+        # The source IS a parquet: nothing to export, and out_path may be the very
+        # file being read (a sidecar already in the results dir) -- never touch it.
+        return
     out_path = output_dir / (csv_path.stem + ".parquet")
 
     def _drop_stale():
@@ -1159,9 +1163,27 @@ def _fill_spec_nulls(df: pd.DataFrame, spec_interp: str = "none") -> pd.DataFram
     coarse_grp = [c for c in all_grp if c not in exclude_cols] + ["Frequency_MHz"]
     fine_grp   = all_grp + ["Frequency_MHz"]
 
-    def _mode_fill(series: "pd.Series") -> "pd.Series":
-        known = series.dropna()
-        return series.fillna(known.mode().iloc[0]) if not known.empty else series
+    def _group_mode_fill(frame: "pd.DataFrame", col: str, keys: list) -> "pd.Series":
+        """Fill nulls in frame[col] with the modal non-null value of the row's
+        `keys` group (ties -> smallest value, same as Series.mode().iloc[0]);
+        groups with no non-null value stay null.  Vectorised: only the (few) rows
+        that HAVE a limit are grouped, then merged back.  The old
+        groupby(...).transform(python fn) called Python once per group, which is
+        ~one group per row on wide sweeps (680k rows -> hours)."""
+        known = frame.loc[frame[col].notna(), keys + [col]]
+        if known.empty:
+            return frame[col]
+        cnt = (known.groupby(keys + [col], dropna=False, sort=False)
+                    .size().rename("_n").reset_index())
+        modes = (cnt.sort_values(["_n", col], ascending=[False, True], kind="stable")
+                    .drop_duplicates(keys)[keys + [col]]
+                    .rename(columns={col: "_mode"}))
+        # an all-NaN object key column comes back float64 from groupby/reset_index;
+        # restore the frame's dtypes so the merge keys line up
+        modes = modes.astype({k: frame[k].dtype for k in keys})
+        fill = frame[keys].merge(modes, on=keys, how="left")["_mode"]
+        fill.index = frame.index
+        return frame[col].fillna(fill)
 
     df = df.copy()
     for col in ("Upper_Limit", "Lower_Limit"):
@@ -1174,12 +1196,12 @@ def _fill_spec_nulls(df: pd.DataFrame, spec_interp: str = "none") -> pd.DataFram
             continue
 
         # Pass 1: fine grouping
-        df[col] = df.groupby(fine_grp, group_keys=False)[col].transform(_mode_fill)
+        df[col] = _group_mode_fill(df, col, fine_grp)
         after_p1 = int(df[col].isna().sum())
 
         # Pass 2: coarser grouping (drop path-selector dims) for still-null rows
         if df[col].isna().any() and coarse_grp != fine_grp:
-            df[col] = df.groupby(coarse_grp, group_keys=False)[col].transform(_mode_fill)
+            df[col] = _group_mode_fill(df, col, coarse_grp)
         after_p2 = int(df[col].isna().sum())
 
         n_filled = total_null - after_p2
@@ -1878,7 +1900,7 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path, x_col
         p = _resolve_csv_path(p)
         if not p.exists():
             sys.exit(f"compare_csv: site {site_name!r} CSV not found: {p}")
-        df = pd.read_csv(p, dtype=str)
+        df = _pp._read_table(p, dtype=str)
         df.columns = df.columns.str.strip()
         group_col = next((c for c in df.columns if c.strip().lower() == "group"), None)
         if group_col is None:
@@ -2070,8 +2092,10 @@ def main(argv: list[str] | None = None) -> None:
             cfg["views"] = ["histogram"]
             print("  compare_csv: no numeric x-axis at any site -> auto-selecting histogram view", flush=True)
         print(f"  CSV  : {csv_path.name} (merged compare_csv, primary_site={cfg['primary_site']!r})")
-    elif cfg.get("csv_path"):
-        csv_path = _resolve_csv_path(Path(cfg["csv_path"]).resolve())
+    elif cfg.get("parquet_path") or cfg.get("csv_path"):
+        # parquet_path: a .parquet with the same columns as the CSV (padb-tools' own
+        # sidecar / padb_csv_to_parquet output) -- loaded directly, no CSV needed.
+        csv_path = _resolve_csv_path(Path(cfg.get("parquet_path") or cfg["csv_path"]).resolve())
         print(f"  CSV  : {csv_path.name} (from job json)")
     else:
         # Check if a CSV already exists in the results dir

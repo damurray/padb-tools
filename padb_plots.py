@@ -1678,6 +1678,47 @@ def _extract_group_field(group_series: pd.Series, field_label: str) -> tuple[pd.
     return pd.to_numeric(hi, errors="coerce"), pd.to_numeric(lo, errors="coerce")
 
 
+# pandas' default CSV null tokens: read_csv(dtype=str) turns these into NaN even
+# for string columns, whereas Arrow (which wrote the parquet) keeps them as text.
+_CSV_NA_TOKENS = ["", "#N/A", "#N/A N/A", "#NA", "-1.#IND", "-1.#QNAN", "-NaN", "-nan",
+                  "1.#IND", "1.#QNAN", "<NA>", "N/A", "NA", "NULL", "NaN", "None",
+                  "n/a", "nan", "null"]
+
+
+def _read_table(path, dtype=None, **kw) -> pd.DataFrame:
+    """Read a PADB result table from a .csv OR a .parquet (the sidecar written by
+    padb_v2 / padb_csv_to_parquet, same columns as the CSV).  With dtype=str a
+    parquet is returned exactly as read_csv(dtype=str) would give it -- every cell
+    text, CSV null tokens and blanks as NaN -- so all downstream numeric parsing and
+    column detection behave identically for both formats.  Supports the kwargs the
+    loaders use: nrows (0 = header only) and usecols."""
+    p = Path(path)
+    if p.suffix.lower() != ".parquet":
+        return pd.read_csv(path, dtype=dtype, **kw)
+    import pyarrow.parquet as pq
+    kw.pop("low_memory", None)
+    nrows = kw.pop("nrows", None)
+    usecols = kw.pop("usecols", None)
+    if kw:
+        raise TypeError("_read_table: unsupported option(s) for parquet: %s" % sorted(kw))
+    pf = pq.ParquetFile(str(p))
+    names = list(pf.schema_arrow.names)
+    if nrows == 0:
+        return pd.DataFrame(columns=[c for c in names if usecols is None or c in usecols])
+    cols = [c for c in names if usecols is None or c in usecols]
+    df = pf.read(columns=cols).to_pandas()
+    if nrows is not None:
+        df = df.head(nrows)
+    if dtype is str:
+        for c in df.columns:
+            s = df[c]
+            if s.dtype == object or str(s.dtype).startswith(("str", "string")):
+                df[c] = s.where(~s.isin(_CSV_NA_TOKENS))
+            else:
+                df[c] = s.astype(str).where(s.notna())
+    return df
+
+
 def _load_scatter_csv(csv_path: Path) -> pd.DataFrame:
     """
     Load a PADB ScatterPlot (Type=80) CSV.
@@ -1685,7 +1726,7 @@ def _load_scatter_csv(csv_path: Path) -> pd.DataFrame:
         Frequency_MHz, Value, Serial, Station, Lower_Limit, Upper_Limit,
         Spec_Hi, Spec_Lo, Unc_Hi, Unc_Lo, Group
     """
-    df = pd.read_csv(csv_path, dtype=str)
+    df = _read_table(csv_path, dtype=str)
     df.columns = df.columns.str.strip()
 
     col_lower = {c.lower(): c for c in df.columns}
@@ -1741,7 +1782,7 @@ def _load_env_csv(csv_path: Path) -> pd.DataFrame:
     Returns DataFrame with standardised columns:
         Frequency_MHz, Min_Env, Max_Env, Mean_Env, Lower_Limit, Upper_Limit, Group
     """
-    df = pd.read_csv(csv_path, dtype=str)
+    df = _read_table(csv_path, dtype=str)
     df.columns = df.columns.str.strip()
     col_lower = {c.lower(): c for c in df.columns}
 
@@ -1865,15 +1906,19 @@ def _parse_group_fields(df: pd.DataFrame) -> pd.DataFrame:
     """
     if "Group" not in df.columns or df["Group"].isna().all():
         return df
+    # Parse each UNIQUE Group string exactly once, then map the result onto the
+    # rows. (Was one regex parse per row per key: rows x keys, hours on a 680k-row
+    # parquet-derived CSV with many condition keys.)
+    parsed = {g: _parse_group_kv(str(g)) for g in df["Group"].dropna().unique()}
     all_keys: set[str] = set()
-    for g in df["Group"].dropna().unique():
-        for k in _parse_group_kv(str(g)):
-            all_keys.add(k)
+    for d in parsed.values():
+        all_keys.update(d)
     df = df.copy()
+    grp = df["Group"]
     for key in sorted(all_keys):
-        df[f"_grp_{key}"] = df["Group"].apply(
-            lambda g: _parse_group_kv(str(g)).get(key) if pd.notna(g) else None
-        )
+        mapping = {g: d.get(key) for g, d in parsed.items()}
+        col = grp.map(mapping).astype(object)
+        df[f"_grp_{key}"] = col.where(col.notna(), None)
     return _derive_run_index(df)
 
 
@@ -7282,7 +7327,7 @@ def _load_scatter_for_stats(csv_path: Path, x_col: str | None = None) -> pd.Data
     *different* column happens to contain "frequency" as a secondary/order
     dimension -- auto-detection would otherwise silently grab the wrong column.
     """
-    df_raw = pd.read_csv(csv_path, dtype=str)
+    df_raw = _read_table(csv_path, dtype=str)
     df_raw.columns = df_raw.columns.str.strip()
     col_lower = {c.lower(): c for c in df_raw.columns}
 
@@ -13071,7 +13116,7 @@ def _build_env_coverage_html(
 
 def _load_env_csv(csv_path: Path) -> pd.DataFrame:
     """Load a PADB Environmental (Type=60) summary CSV into a DataFrame."""
-    df = pd.read_csv(csv_path)
+    df = _read_table(csv_path)
     df.columns = [c.strip() for c in df.columns]
     _INT_MAX = 2_000_000_000
     num_cols = [
@@ -21743,7 +21788,7 @@ def _load_histogram_csv(csv_path: Path) -> dict:
     parses Group into condition dimensions + serial, and reads the spec limits.
     Returns the compact payload the JS histogram consumes, or {} if there's no
     usable numeric measurement column."""
-    df = pd.read_csv(csv_path, low_memory=False)
+    df = _read_table(csv_path, low_memory=False)
     df.columns = [str(c).strip() for c in df.columns]
 
     # --- measurement column: most-numeric column that isn't metadata/limit ---

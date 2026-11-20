@@ -1705,6 +1705,164 @@ def test_named_band_segment_no_compounding() -> None:
           and "var curLfSel=_segBaseColSel.lf?new Set(_segBaseColSel.lf):null;" in src)
 
 
+def test_parse_group_fields_parses_unique_once() -> None:
+    """_parse_group_fields must parse each UNIQUE Group string once (not once per
+    row per key: 680k rows x 25 keys took hours) and still give per-row values
+    identical to a direct per-row _parse_group_kv, with missing keys/NaN -> None."""
+    rows = []
+    for i in range(300):
+        g = f"Mode: {i % 3}  Port: RF{i % 2}  Serial Number: S{i % 5}"
+        if i % 7 == 0:
+            g = f"Mode: {i % 3}  Serial Number: S{i % 5}"   # no Port key
+        rows.append(g)
+    rows[10] = None
+    df = pd.DataFrame({"Group": rows, "Value": range(300)})
+    calls = {"n": 0}
+    orig = pp._parse_group_kv
+
+    def counting(s):
+        calls["n"] += 1
+        return orig(s)
+    pp._parse_group_kv = counting
+    try:
+        out = pp._parse_group_fields(df)
+    finally:
+        pp._parse_group_kv = orig
+    n_unique = df["Group"].nunique()
+    check("parse_group_fields: each unique Group parsed once",
+          calls["n"] == n_unique, f"calls={calls['n']} unique={n_unique}")
+    ok = True
+    for key in ("Mode", "Port", "Serial Number"):
+        col = out[f"_grp_{key}"]
+        for g, v in zip(df["Group"], col):
+            want = orig(str(g)).get(key) if pd.notna(g) else None
+            if pd.isna(v) and pd.isna(want):
+                continue          # missing is missing (None vs NaN is immaterial)
+            if v != want:
+                ok = False
+    check("parse_group_fields: per-row values match direct per-row parse (incl. missing key / NaN Group)", ok)
+
+
+def test_fill_spec_nulls_matches_groupwise_mode() -> None:
+    """_fill_spec_nulls is vectorised (the per-group python transform took hours on
+    ~one-group-per-row wide sweeps).  It must still equal the per-group modal fill:
+    ties -> smallest value, groups with no limit stay null, pass-2 drops serial dims."""
+    import numpy as np
+    import padb_v2 as _v2
+    rng = np.random.default_rng(1)
+    n = 3000
+    df = pd.DataFrame({
+        "Frequency_MHz": rng.choice([1.0, 2.0, 3.0, 4.0, 5.0], n),
+        "_grp_A": rng.choice(["a", "b", "c"], n),
+        "_grp_Serial Number": rng.choice(["US12345", "US54321", "MY99999"], n),
+        "Upper_Limit": np.where(rng.random(n) < .05, rng.choice([-50.0, -60.0, -70.0], n), np.nan),
+        "Lower_Limit": np.nan,
+    })
+    all_grp = [c for c in df.columns if c.startswith("_grp_")]
+    fine = all_grp + ["Frequency_MHz"]
+    coarse = [c for c in all_grp if "serial" not in c.lower()] + ["Frequency_MHz"]
+
+    def mf(s):
+        k = s.dropna()
+        return s.fillna(k.mode().iloc[0]) if not k.empty else s
+    ref = df.copy()
+    ref["Upper_Limit"] = ref.groupby(fine, group_keys=False)["Upper_Limit"].transform(mf)
+    if ref["Upper_Limit"].isna().any():
+        ref["Upper_Limit"] = ref.groupby(coarse, group_keys=False)["Upper_Limit"].transform(mf)
+    import contextlib, io
+    with contextlib.redirect_stdout(io.StringIO()):
+        got = _v2._fill_spec_nulls(df)
+    check("fill_spec_nulls: vectorised fill == per-group modal fill (fine then coarse pass)",
+          got["Upper_Limit"].equals(ref["Upper_Limit"]))
+    check("fill_spec_nulls: all-null Lower_Limit left untouched",
+          got["Lower_Limit"].isna().all())
+    tie = pd.DataFrame({"Frequency_MHz": [1.0] * 4, "_grp_A": ["a"] * 4,
+                        "Upper_Limit": [-60.0, -50.0, np.nan, np.nan]})
+    with contextlib.redirect_stdout(io.StringIO()):
+        t = _v2._fill_spec_nulls(tie)
+    check("fill_spec_nulls: modal tie resolves to the smallest value (like Series.mode)",
+          list(t["Upper_Limit"]) == [-60.0, -50.0, -60.0, -60.0])
+    # a key column that is all-NaN among the rows that carry a limit (real padbloader
+    # data: _grp_Graph Suffix) must not break the merge with a dtype error
+    sparse = pd.DataFrame({"Frequency_MHz": [1.0, 1.0, 2.0, 2.0], "_grp_A": ["a", "a", "b", "b"],
+                           "_grp_G": pd.Series([None, None, "x", "x"], dtype=object),
+                           "Upper_Limit": [-60.0, np.nan, np.nan, np.nan]})
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            s = _v2._fill_spec_nulls(sparse)
+        ok = float(s["Upper_Limit"].iloc[1]) == -60.0
+    except Exception:
+        ok = False
+    check("fill_spec_nulls: key column all-NaN among limit rows does not break the merge", ok)
+
+
+def test_parquet_source_loads_like_csv() -> None:
+    """A .parquet with the CSV's columns (padb-tools' own sidecar / padb_csv_to_parquet)
+    must load IDENTICALLY to the CSV it came from -- including CSV null tokens ('NA')
+    that Arrow keeps as text but read_csv turns into NaN -- and the build must never
+    delete a parquet SOURCE sitting where the sidecar would be written."""
+    import contextlib, io
+    import padb_csv_to_parquet as c2p
+    import padb_v2 as _v2
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = td / "t.csv"
+        src.write_bytes(
+            b'Analysis Type,Model(s),Algorithm -> Result,Units,Group,Frequency (MHz),Val (dBc),'
+            b'Serial Number,Upper Limit\n'
+            b'ScatterPlot,SG,A,dBc,"Mode: 0  Port: RF1  Test Event Status: P",100,-50.5,US1,-40\n'
+            b'ScatterPlot,SG,A,dBc,"Mode: 0  Port: NA  Test Event Status: P",200,-51.25,US2,\n'
+            b'ScatterPlot,SG,A,dBc,"Mode: 1  Port: RF2  Test Event Status: F",300,-30,NA,-40\n')
+        with contextlib.redirect_stdout(io.StringIO()):
+            c2p.convert(src, verify=True)
+        a = pp._load_scatter_for_stats(src)
+        b = pp._load_scatter_for_stats(td / "t.parquet")
+        a, b = a.reset_index(drop=True), b.reset_index(drop=True)
+        check("parquet source: _load_scatter_for_stats frame identical to the CSV's",
+              list(a.columns) == list(b.columns) and a.equals(b),
+              f"csv={a.to_dict('list')} pq={b.to_dict('list')}")
+        check("parquet source: header-only read (nrows=0) returns the columns",
+              list(pp._read_table(td / "t.parquet", nrows=0).columns)
+              == list(pp._read_table(src, nrows=0).columns))
+        # sidecar guard: source parquet in the results dir (== where the sidecar would go)
+        before = (td / "t.parquet").read_bytes()
+        _v2._maybe_export_parquet({"export_parquet": False}, td / "t.parquet", td)
+        _v2._maybe_export_parquet({}, td / "t.parquet", td)
+        check("parquet source: never exported over or dropped as its own stale sidecar",
+              (td / "t.parquet").is_file() and (td / "t.parquet").read_bytes() == before)
+
+
+def test_csv_to_parquet_converter() -> None:
+    """padb_csv_to_parquet: round-trips values (incl. embedded newline/quotes),
+    skips an existing .parquet unless --force, falls back to pandas for ragged rows
+    (trailing empty field dropped), and never leaves a half-written .parquet."""
+    import padb_csv_to_parquet as c2p
+    import pyarrow.parquet as _pq
+    with tempfile.TemporaryDirectory() as td:
+        td = Path(td)
+        src = td / "a.csv"
+        src.write_bytes(b'Group,Value,Serial\n"x: 1\n  y: 2",1.5,US1\n"say ""hi""",2.5,US2\n')
+        st, rows, _, _, _ = c2p.convert(src, verify=True)
+        got = _pq.read_table(td / "a.parquet").to_pandas()
+        check("csv_to_parquet: converts + verifies, embedded newline/quotes preserved",
+              st == "ok" and rows == 2 and got["Group"].iloc[0] == "x: 1\n  y: 2"
+              and got["Group"].iloc[1] == 'say "hi"' and list(got["Value"]) == [1.5, 2.5])
+        check("csv_to_parquet: existing .parquet skipped without --force",
+              c2p.convert(src)[0] == "skipped" and c2p.convert(src, force=True)[0] == "ok")
+        rag = td / "r.csv"
+        rag.write_text("a,b,c\n1,2,3\n4,5\n", encoding="utf-8")   # 2nd row: trailing field dropped
+        st2, rows2, _, _, note2 = c2p.convert(rag, verify=True)
+        r = _pq.read_table(td / "r.parquet").to_pandas()
+        check("csv_to_parquet: ragged CSV falls back to pandas and pads the blank field",
+              st2 == "ok" and rows2 == 2 and "pandas" in note2 and pd.isna(r["c"].iloc[1]))
+        empty = td / "e.csv"
+        empty.write_text("a,b\n", encoding="utf-8")
+        st3 = c2p.convert(empty)[0]
+        check("csv_to_parquet: header-only CSV fails cleanly, leaves no .parquet/.part",
+              st3 == "FAILED" and not (td / "e.parquet").exists()
+              and not (td / "e.parquet.part").exists())
+
+
 def test_named_band_step_is_frequency_only() -> None:
     """Stepping "Segment by: Named bands" must scope the FREQUENCY window ONLY -- it must
     NOT narrow the condition/serial filters (David 2026-09-29, "Frequency only"). A named
@@ -3645,6 +3803,10 @@ def main() -> None:
                test_common_prelude_and_feature_registry,
                test_named_band_segments_crossview,
                test_named_band_segment_no_compounding,
+               test_parse_group_fields_parses_unique_once,
+               test_fill_spec_nulls_matches_groupwise_mode,
+               test_csv_to_parquet_converter,
+               test_parquet_source_loads_like_csv,
                test_named_band_step_is_frequency_only,
                test_spec_conflict_note,
                test_setfreqband_rounds_outward,

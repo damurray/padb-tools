@@ -152,6 +152,23 @@ py qa_subpop.py
 ```
 Baseline: **18 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
 
+### `qa_csv_to_parquet.py` — CSV → Parquet converter
+QA for `padb_csv_to_parquet.py` (an encoding change only: same rows, columns, values).
+Fidelity is judged by an **independent** comparer (stdlib `csv` vs the parquet, never the
+converter's own reader) over a seeded fuzz CSV — unicode, commas, quotes, embedded newlines,
+blank cells, datetimes, CRLF, a UTF-8 BOM. Also: streaming/multi-batch row counts, a type
+change after the first chunk on the ragged-row path (must fail loudly, never truncate),
+`--verify` catching a dropped row / reordered columns / float32 loss, atomicity (a dying
+conversion leaves no `.parquet`/`.part` and never clobbers an existing one), and CLI exit
+codes / folder mode / `--out`. **Teeth:** the comparer and `--verify` are run against
+deliberately broken converters (drop last row, float32, reversed columns) and must catch each.
+```bash
+py qa_csv_to_parquet.py                    # synthetic, deterministic
+py qa_csv_to_parquet.py --sweep <folder>   # also convert + verify every real CSV in a folder
+```
+Baseline: **29 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite. (It caught a real bug in
+the converter's `--verify`: a datetime column was a false mismatch.)
+
 ### `padb_csv_check.py` — pre-flight one CSV (or one job)
 Inspects a single extracted CSV before you build plots: load success, x-axis/value
 auto-detection, serial/temperature/spec detection, Group cardinality, drop rate.
