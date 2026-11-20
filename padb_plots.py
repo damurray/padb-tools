@@ -4252,7 +4252,20 @@ function PADB_lockRenderBar(rep){
 }
 /* Call at the END of a view's init (after its filter fns + first render): draw the bar
    and, if a lock exists, auto-apply it (best-effort) so this view matches the others. */
-function PADB_lockInit(){ try{ PADB_lockRenderBar(); if(PADB_lockGet()) PADB_lockApply(); }catch(e){} }
+function PADB_lockInit(){ try{ PADB_lockRenderBar(); if(PADB_lockGet()) PADB_lockApply(); }catch(e){}
+  try{ PADB_applyResultDefault(); }catch(e){} }
+/* A multi-RESULT dataset (padbloader combined job: e.g. the dBc level + 'Carrier Power
+   (dBm)') has a 'Result' condition dimension and the job names RESULT_DEFAULT (injected by
+   padb_v2). Select that result at load -- but ONLY while the Result dim is still un-narrowed,
+   so a lock / saved view state the user already set wins -- so different units are never
+   mixed on one axis until they tick another result. Runs through the view's own lock
+   adapter (the same best-effort, label-matched dims path), without saving a lock. */
+function PADB_applyResultDefault(){
+  if(typeof RESULT_DEFAULT==='undefined'||!RESULT_DEFAULT||!_padbLockReg||!_padbLockReg.apply) return;
+  var cur=_padbLockReg.read&&_padbLockReg.read(); if(cur&&cur.dims&&cur.dims['Result']) return;
+  _padbLockApplying=true;
+  try{ _padbLockReg.apply({v:1,dims:{'Result':[RESULT_DEFAULT]}}); }finally{ _padbLockApplying=false; }
+}
 /* ---- helpers views reuse in their read/apply adapters ---- */
 /* Best-effort checkbox set: given a NodeList of checkboxes and the desired values,
    check only values that exist; if NONE of the desired values exist here, leave all

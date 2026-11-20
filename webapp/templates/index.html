@@ -13,10 +13,15 @@
 
 <main>
   <section id="upload-section">
-    <h2>1. Drop a .pod file</h2>
+    <h2>1. Drop a .pod file (or a padbloader .parquet)</h2>
     <div id="dropzone" title="Saves the pod into your data directory -- overwrites an existing pod of the same name (re-dropping an already-onboarded pod to regenerate its job.json is the normal case, not a collision to avoid).">
-      <p>Drag a <code>.pod</code> file here, or click to choose one</p>
-      <input type="file" id="fileInput" accept=".pod" hidden>
+      <p>Drag a <code>.pod</code> file here, or click to choose one<br>or drop a padbloader <code>.parquet</code> to generate plot jobs from it</p>
+      <input type="file" id="fileInput" accept=".pod,.parquet" hidden>
+    </div>
+    <div class="toolbar" id="parquetPathRow">
+      <label title="Use a padbloader parquet that is already on disk IN PLACE (no upload / copy -- these files can be hundreds of MB). Same result as dropping it above: its algorithms are listed and Generate Plot Jobs writes one PADB-style parquet + one *_v2_job.json per ticked algorithm.">Or use a padbloader parquet already on disk
+        <input type="text" id="parquetPathInput" size="62" placeholder="C:\path	o\padbloader_YYYYMMDD_HHMMSS.parquet"></label>
+      <button type="button" id="parquetPathBtn" title="List this parquet's algorithms (nothing is copied or written yet).">Use this path</button>
     </div>
     <div id="uploadResult" class="panel hidden">
       <h3 id="uploadPodName"></h3>
@@ -54,6 +59,13 @@
       <label title="How to use: optional. Sets the publish destination to this EXACT path, used verbatim -- the pod name is NOT appended and the standard root + Folder name are ignored. Use only to publish somewhere off the standard share tree.&#10;Example: '\\srsnas01.srs.is.keysight.com\prod\MIDRF3\SG6311A\PADB-Custom\MyDest' publishes straight into that folder.&#10;Leave blank to use the standard root + Folder name.&#10;If both are filled, this override wins.&#10;Publishing still only happens if 'Publish to share after run' is ticked.">Share path (override) <input type="text" id="sharePathInput" placeholder="blank = standard root\folder name" size="40"></label>
       <label title="Relative or absolute date sentinel resolved at run time (e.g. &quot;8 weeks ago&quot;, &quot;today&quot;, or a literal YYYY-MM-DD). Leave blank to use the pod's own baked-in date range unchanged.">Min date <input type="text" id="minDateInput" placeholder='e.g. "8 weeks ago" (optional)'></label>
       <label title="Same sentinel rules as Min date.">Max date <input type="text" id="maxDateInput" placeholder='e.g. "today" (optional)'></label>
+      <label id="combineResultsLabel" class="hidden inline" title="A padbloader algorithm can emit several RESULTS (e.g. the dBc level plus 'Carrier Power (dBm)' and 'Impurity Power (dBm)'). Ticked: ONE job per algorithm; its ticked results share one plot and you pick the result with the Result filter (the main one is pre-selected, so dBc and dBm are never mixed until you tick another). Unticked: a separate job and plot per result."><input type="checkbox" id="combineResultsChk" checked> Combine an algorithm's results into one plot (Result filter)</label>
+      <label id="runAfterLabel" class="hidden inline" title="After the jobs are written, queue them straight away: they appear in the Running Jobs panel below with a live log, elapsed time and Cancel -- useful for the long builds (a wide sweep's box plot can take 10+ minutes). Jobs that were skipped because a job file already existed are NOT run. Nothing is published (use Run Selected with 'Publish to share' for that)."><input type="checkbox" id="runAfterChk" checked> Run the plots now (shows in Running Jobs)</label>
+      <fieldset id="viewsRow" class="hidden" title="Which analysis views each generated job builds. Every applicable view starts ticked; untick the ones you don't want (the choice is written to each job's &quot;views&quot; list, so you can still edit it later in the job editor). The two environmental views (Distribution, Env coverage) are offered only when the data has more than one test step (e.g. Room + Hot + Cold) -- they make no sense for Room-only data.">
+        <legend>Plots to generate</legend>
+        <span id="viewsChoices"></span>
+        <div id="viewsWarn" class="warn-banner hidden"></div>
+      </fieldset>
       <label title="Allow overwriting an already-generated job.json of the same name -- off by default so a hand-tuned job.json is never silently clobbered."><input type="checkbox" id="forceCheckbox"> Overwrite existing job file(s)</label>
       <button type="submit" title="Runs padb_make_job.py (simple) or padb_make_v2_job.py (interactive) against the dropped pod and writes the resulting job.json file(s) into your data directory.">Generate Job</button>
     </form>

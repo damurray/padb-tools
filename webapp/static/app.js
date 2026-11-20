@@ -1,6 +1,7 @@
 "use strict";
 
 let currentPodPath = null;
+let currentKind = "pod"; // "pod" or "parquet" (a padbloader parquet dropped instead of a pod)
 let allJobs = [];
 const activePolls = new Set();
 
@@ -40,7 +41,171 @@ dropzone.addEventListener("drop", e => {
   if (files.length) uploadPod(files[0]);
 });
 
+document.getElementById("parquetPathBtn").addEventListener("click", () => {
+  const v = document.getElementById("parquetPathInput").value.trim().replace(/^"|"$/g, "");
+  if (!v) { alert("Enter the path of a .parquet file"); return; }
+  usePathParquet(v);
+});
+
+const POD_THEAD = "<tr><th>#</th><th>Type</th><th>Name</th><th>Output File</th></tr>";
+
+// Switch the shared "dropped file" panel + Generate form between pod mode and
+// padbloader-parquet mode: pod-only controls (convert-site, mode, dates) hide for
+// a parquet, which has no pod/extraction step.
+function setKindUi(kind) {
+  currentKind = kind;
+  const parquet = kind === "parquet";
+  document.querySelectorAll("#uploadResult .toolbar").forEach(el => el.classList.toggle("hidden", parquet));
+  document.getElementById("combineResultsLabel").classList.toggle("hidden", !parquet);
+  document.getElementById("viewsRow").classList.toggle("hidden", !parquet);
+  document.getElementById("runAfterLabel").classList.toggle("hidden", !parquet);
+  for (const id of ["modeSelect", "minDateInput", "maxDateInput"]) {
+    const lab = document.getElementById(id).closest("label");
+    if (lab) lab.classList.toggle("hidden", parquet);
+  }
+  document.querySelector("#generate-section h2").textContent =
+    parquet ? "2. Generate plot jobs from the parquet" : "2. Generate a job.json";
+  document.querySelector("#generateForm button[type=submit]").textContent =
+    parquet ? "Generate Plot Jobs" : "Generate Job";
+}
+
+// fetch + JSON with a LOUD failure when the server is older than this page (the page
+// is re-read from disk, padb_web.py is not): an unknown route returns an HTML 404
+// that res.json() chokes on, which used to look like "nothing happens".
+async function fetchJson(url, opts) {
+  let res, data = null;
+  try {
+    res = await fetch(url, opts);
+    data = await res.json();
+  } catch (e) {
+    const stale = res && res.status === 404;
+    alert(stale
+      ? "The padb-tools web server is older than this page (it doesn't have " + url + ").\n\n" +
+        "Restart it with Start_web.bat, then press Ctrl+F5."
+      : "Request to " + url + " failed: " + e);
+    return null;
+  }
+  return { res, data };
+}
+
+// Views a padbloader-parquet job can build.  Everything applicable starts TICKED; the
+// environmental views are offered only for multi-step (Room/Hot/Cold) data; "heavy" ones
+// get a warning on a wide sweep (e.g. harmonics, 696 x: boxplot 11 min / 70 MB).
+const VIEW_DEFS = [
+  { name: "scatter", label: "Scatter" },
+  { name: "boxplot", label: "Box plot", heavy: true },
+  { name: "reference", label: "Reference statistics", heavy: true },
+  { name: "summary", label: "Summary" },
+  { name: "stat_summary", label: "Statistical summary", heavy: true },
+  { name: "distribution", label: "Distribution", env: true },
+  { name: "env_coverage", label: "Env coverage", env: true },
+];
+let parquetRows = [];
+const viewTicks = {}; // name -> last user choice (kept across refreshes)
+
+function tickedParquetRows() {
+  const on = new Set([...document.querySelectorAll(".algoChk:checked")].map(c => c.dataset.algo));
+  return parquetRows.filter(r => on.has(r.algorithm));
+}
+
+function refreshViewChoices() {
+  const rows = tickedParquetRows();
+  const anyWide = rows.some(r => r.wide);
+  const hasEnv = rows.some(r => (r.n_steps || 1) > 1);
+  const box = document.getElementById("viewsChoices");
+  box.innerHTML = "";
+  const heavyOn = [];
+  for (const v of VIEW_DEFS) {
+    if (v.env && !hasEnv) continue;
+    const ticked = v.name in viewTicks ? viewTicks[v.name] : true;
+    const lab = document.createElement("label");
+    lab.className = "inline";
+    const badge = (v.heavy && anyWide) ? " ⚠" : "";
+    lab.innerHTML = `<input type="checkbox" class="viewChk" value="${v.name}"${ticked ? " checked" : ""}> ${esc(v.label)}${badge} `;
+    lab.querySelector("input").addEventListener("change", e => {
+      viewTicks[v.name] = e.target.checked;
+      refreshViewChoices();
+    });
+    box.appendChild(lab);
+    if (v.heavy && anyWide && ticked) heavyOn.push(v.label);
+  }
+  const warn = document.getElementById("viewsWarn");
+  if (anyWide && heavyOn.length) {
+    const nx = Math.max(...rows.filter(r => r.wide).map(r => r.n_x));
+    warn.textContent = "⚠ Wide sweep (" + nx.toLocaleString() + " x values): " + heavyOn.join(", ") +
+      " can take many minutes and produce very large pages (a 696-x harmonics sweep: Box plot 11 min / 70 MB). " +
+      "Untick them to skip.";
+    warn.classList.remove("hidden");
+  } else {
+    warn.classList.add("hidden");
+  }
+}
+
+function selectedViews() {
+  return [...document.querySelectorAll(".viewChk:checked")].map(c => c.value);
+}
+
+function esc(t) {
+  return String(t ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+// A padbloader parquet (direct-from-Oracle extract): list its algorithms; Generate
+// writes one PADB-style parquet + one *_v2_job.json per ticked algorithm.
+async function uploadParquet(file) {
+  const form = new FormData();
+  form.append("parquet", file);
+  const r = await fetchJson("/api/upload-parquet", { method: "POST", body: form });
+  if (!r) return;
+  if (!r.res.ok) {
+    alert("Upload failed: " + r.data.error);
+    return;
+  }
+  showParquetAnalytics(r.data);
+}
+
+// "Use this path" -- a parquet already on disk is used in place (no upload/copy).
+async function usePathParquet(path) {
+  const r = await fetchJson("/api/upload-parquet", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path }),
+  });
+  if (!r) return;
+  if (!r.res.ok) {
+    alert("Could not use that file: " + r.data.error);
+    return;
+  }
+  showParquetAnalytics(r.data);
+}
+
+function showParquetAnalytics(data) {
+  setKindUi("parquet");
+  // a padb-tools table has ONE value column, so there is nothing to combine
+  document.getElementById("combineResultsLabel").classList.toggle("hidden", data.kind === "padb");
+  parquetRows = data.analytics;
+  currentPodPath = data.parquet_path;
+  document.getElementById("uploadPodName").textContent = data.parquet_name;
+  document.querySelector("#analyticsTable thead").innerHTML =
+    "<tr><th></th><th>Result stream</th><th>Rows</th><th>Units</th><th>Limits</th><th>Swept x</th><th>Default views</th></tr>";
+  const tbody = document.querySelector("#analyticsTable tbody");
+  tbody.innerHTML = "";
+  for (const a of data.analytics) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td><input type="checkbox" class="algoChk" data-algo="${esc(a.algorithm)}" checked></td>` +
+      `<td>${esc(a.algorithm)}</td><td>${a.rows.toLocaleString()}</td><td>${esc(a.units)}</td>` +
+      `<td>${a.has_limits ? "yes" : "no"}</td><td>${esc(a.x_col)} (${a.n_x.toLocaleString()} values)</td>` +
+      `<td>${a.wide ? "scatter + summary (wide sweep)" : "all"}</td>`;
+    tbody.appendChild(tr);
+  }
+  tbody.querySelectorAll(".algoChk").forEach(c => c.addEventListener("change", refreshViewChoices));
+  refreshViewChoices();
+  document.getElementById("uploadResult").classList.remove("hidden");
+  document.getElementById("generate-section").classList.remove("hidden");
+}
+
 async function uploadPod(file) {
+  if (/\.parquet$/i.test(file.name)) return uploadParquet(file);
+  setKindUi("pod");
+  document.querySelector("#analyticsTable thead").innerHTML = POD_THEAD;
   const form = new FormData();
   form.append("pod", file);
   const res = await fetch("/api/upload-pod", { method: "POST", body: form });
@@ -72,7 +237,54 @@ async function uploadPod(file) {
 document.getElementById("generateForm").addEventListener("submit", async e => {
   e.preventDefault();
   if (!currentPodPath) {
-    alert("Drop a .pod file first");
+    alert("Drop a .pod (or padbloader .parquet) file first");
+    return;
+  }
+  if (currentKind === "parquet") {
+    const algorithms = [...document.querySelectorAll(".algoChk:checked")].map(c => c.dataset.algo);
+    if (!algorithms.length) {
+      alert("Tick at least one algorithm");
+      return;
+    }
+    const views = selectedViews();
+    if (!views.length) {
+      alert("Tick at least one plot to generate");
+      return;
+    }
+    const pr = await fetchJson("/api/generate-parquet-jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        parquet_path: currentPodPath,
+        algorithms,
+        combine_results: document.getElementById("combineResultsChk").checked,
+        views,
+        module: document.getElementById("moduleInput").value,
+        publish_to: document.getElementById("sharePathInput").value,
+        force: document.getElementById("forceCheckbox").checked,
+      }),
+    });
+    if (!pr) return;
+    if (!pr.res.ok) {
+      alert("Generate failed: " + pr.data.error);
+      return;
+    }
+    renderGenerated(pr.data);
+    // Queue the freshly written jobs so they show in Running Jobs (live log / cancel)
+    const runAfter = document.getElementById("runAfterChk");
+    const fresh = pr.data.jobs.filter(j => j.status === "ok").map(j => j.path);
+    if (runAfter && runAfter.checked && fresh.length) {
+      const rr = await fetchJson("/api/execute-job", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: fresh, dry_run: false, publish: false }),
+      });
+      if (rr && rr.res.ok) {
+        for (const jobId of rr.data.job_ids) startPolling(jobId);
+        if (rr.data.job_ids.length) scrollJobStatusIntoView(rr.data.job_ids[0]);
+      } else if (rr) {
+        alert("Jobs were written but could not be queued: " + rr.data.error);
+      }
+    }
     return;
   }
   const body = {
@@ -94,6 +306,10 @@ document.getElementById("generateForm").addEventListener("submit", async e => {
     alert("Generate failed: " + data.error);
     return;
   }
+  renderGenerated(data);
+});
+
+function renderGenerated(data) {
   document.getElementById("generateStdout").textContent = data.stdout + (data.stderr || "");
   const container = document.getElementById("generatedJobs");
   container.innerHTML = "";
@@ -110,7 +326,7 @@ document.getElementById("generateForm").addEventListener("submit", async e => {
   }
   document.getElementById("generateResult").classList.remove("hidden");
   loadJobs();
-});
+}
 
 // ---------------------------------------------------------------------------
 // Compare mode

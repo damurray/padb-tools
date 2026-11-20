@@ -260,8 +260,24 @@ def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) 
     viewer only helps when the self-contained HTML is too big to open. Set
     export_parquet:true to force one on a small job.) Never fails the build."""
     if csv_path.suffix.lower() == ".parquet":
-        # The source IS a parquet: nothing to export, and out_path may be the very
+        # The source IS a parquet: nothing to convert, and out_path may be the very
         # file being read (a sidecar already in the results dir) -- never touch it.
+        # For a big dataset, COPY the source next to the report so the index offers
+        # the same "Large-dataset viewer" link a CSV-derived sidecar gets (size is
+        # judged by rows: a parquet is ~50-100x smaller than the CSV it replaces).
+        explicit = cfg.get("export_parquet")
+        big = df is not None and len(df) >= int(cfg.get("export_parquet_auto_rows",
+                                                        AUTO_BINARY_ENCODE_ROWS))
+        try:
+            dest = output_dir / csv_path.name
+            if (explicit is True or (explicit is None and big)) \
+                    and csv_path.resolve() != dest.resolve():
+                import shutil
+                shutil.copy2(str(csv_path), str(dest))
+                print(f"  NOTE: copied parquet source {csv_path.name} next to the report "
+                      f"for padb_viewer.py.", flush=True)
+        except OSError as exc:  # pragma: no cover - never break a build
+            _log_note(output_dir, f"parquet copy skipped for {csv_path.name}: {exc}")
         return
     out_path = output_dir / (csv_path.stem + ".parquet")
 
@@ -299,6 +315,27 @@ def _maybe_export_parquet(cfg: dict, csv_path: Path, output_dir: Path, df=None) 
     print(f"  NOTE: wrote parquet sidecar {out_path.name} ({rows:,} rows, "
           f"{smb:.0f} MB CSV -> {dmb:.1f} MB parquet, {ratio:.0f}x) -- open with "
           f"padb_viewer.py for large datasets a browser can't load as HTML.", flush=True)
+
+
+def _inject_result_default(out_html: Path, cfg: dict) -> None:
+    """A dataset holding several RESULTS (padbloader combined jobs: the dBc level plus
+    dBm power results) carries a 'Result' condition dimension; the job's
+    "result_default" names the one to show initially, so results in different units are
+    never mixed on one axis until the user ticks another.  The views read the injected
+    RESULT_DEFAULT in PADB_lockInit (applies only while the Result dim is un-narrowed,
+    so a saved filter / lock still wins).  No-op without the key."""
+    rd = cfg.get("result_default")
+    if not rd:
+        return
+    try:
+        txt = out_html.read_text(encoding="utf-8")
+        i = txt.find("</head>")
+        if i < 0:
+            return
+        tag = "<script>var RESULT_DEFAULT=%s;</script>\n" % json.dumps(str(rd)).replace("</", "<\\/")
+        out_html.write_text(txt[:i] + tag + txt[i:], encoding="utf-8")
+    except OSError as exc:  # pragma: no cover - never break a build
+        print(f"    note: could not inject result_default into {out_html.name}: {exc}", flush=True)
 
 
 def _warn_if_view_too_large(out_html: Path, view: str, cfg: dict, output_dir: Path) -> None:
@@ -1422,6 +1459,7 @@ def generate_report(
         print(f"  Rendering {_view_label(view)} -> {html_name}", flush=True)
         try:
             fn(use_df, view_cfg, out_html)
+            _inject_result_default(out_html, cfg)
             generated.append(out_html)
             gen_pairs.append((view, out_html))
             _warn_if_view_too_large(out_html, view, cfg, output_dir)

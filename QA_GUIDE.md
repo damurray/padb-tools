@@ -169,6 +169,26 @@ py qa_csv_to_parquet.py --sweep <folder>   # also convert + verify every real CS
 Baseline: **29 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite. (It caught a real bug in
 the converter's `--verify`: a datetime column was a false mismatch.)
 
+### `qa_loader_adapter.py` — padbloader adapter + webapp drop zone
+Synthetic seeded padbloader parquet (two algorithms: narrow + wide sweep). **Adapter:**
+`list_algorithms`; parquet output loads identically to the CSV output through the real loader;
+the high-cardinality per-row id stays out of Group; wide sweeps default to `scatter`+`summary`
+(narrow ones carry no `views`); an existing job file is kept unless `force`; the `{algo}` publish
+placeholder; a real `padb_v2` build from the generated `parquet_path` job. **Routes** (Flask
+test client): `/api/upload-parquet` (multipart, in-place path, junk/missing/wrong-extension
+rejected) and `/api/generate-parquet-jobs` (jobs written, Folder-name / Share-path publish
+rules, skip-existing, validation errors). **UI** (browser tier, Playwright; SKIPs honestly when
+unavailable): a real drop onto the drop zone lists the algorithms, Generate writes only the
+ticked ones, the jobs table shows them, no page errors. **Teeth:** the wide-sweep rule and the
+`force` guard are shown to change behaviour when broken.
+```bash
+py qa_loader_adapter.py
+```
+**Multi-result algorithms:** an algorithm with several results in different units (harmonics: dBc + two dBm) must never be plotted as one stream -- tested in both modes: *combined* (one job per algorithm, `Result` Group key, per-row Units, `result_default`, a single-result algorithm gets no Result key) and *split* (a job per result); selecting only the main datum must not drag in the dBm ones; and a **browser test** that the combined page opens with ONLY the main result ticked (y range all dBc), then ticking the dBm result brings it into the plot (teeth: without `result_default` all results open ticked -- shown).
+**Plots-to-generate / test steps / Running Jobs:** `n_steps` and the `Test Step` column (native `Room`/`NN.N Deg C`; the real loader then sees 3 temperatures), env views kept for multi-temperature data and dropped (with a note) for single-temperature data, an unrecognised step name warned and counted as Room, an unknown/empty `views` list rejected (adapter ValueError, route 400), all 7 views really building from a multi-step job, and browser checks: Room data offers 5 views all ticked and no environmental ones, a wide sweep shows heavy views ticked with a warning that disappears when only a narrow result is ticked, the job's `views` equals exactly the ticked plots, "Run the plots now" puts the job in the Running Jobs panel, and multi-temperature data offers all 7 ticked.
+**padb-tools' own parquet:** a synthetic sidecar (incl. an all-null `Upper Limit (<=)` column, parquet type null, like the real EP5 file) is sniffed (`padb` / `padbloader` / junk -> None), described (usable rows exclude a value-less row), turned into a job that points at it in place (never copied; wide sweep -> scatter+summary; force/exists; env views dropped), loaded and built by `padb_v2`, listed by the CLI, accepted by the upload/generate routes (junk rejected with a clear message) and shown in the drop zone with one entry, no combine option and the wide-sweep warning.
+Baseline: **78 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
+
 ### `padb_csv_check.py` — pre-flight one CSV (or one job)
 Inspects a single extracted CSV before you build plots: load success, x-axis/value
 auto-detection, serial/temperature/spec detection, Group cardinality, drop rate.

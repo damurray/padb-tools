@@ -52,6 +52,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 import padb_batch  # noqa: E402
 import padb_config  # noqa: E402
 import padb_convert_site  # noqa: E402
+import padb_loader_adapter  # noqa: E402
 import padb_make_v2_job  # noqa: E402
 import padb_plots as _pp  # noqa: E402
 from padb_run import parse_pod_analytics  # noqa: E402
@@ -937,6 +938,119 @@ def upload_pod():
             for a in analytics
         ],
     )
+
+
+PARQUET_STAGE_DIRNAME = "padbloader_parquet"   # uploads land in DATA_DIR/<this>, not beside the job files
+
+
+def _padbloader_analytics(parquet_path: Path, kind: str = "padbloader") -> list[dict]:
+    """The dropped parquet's analytics, shaped like the pod analytics table.  kind is
+    'padbloader' (algorithms/results of a padbloader extract) or 'padb' (padb-tools' own
+    parquet: one entry, the value column)."""
+    if kind == "padb":
+        algos = padb_loader_adapter.describe_padb_parquet(str(parquet_path))
+    else:
+        algos = padb_loader_adapter.list_algorithms(str(parquet_path))
+    return [{"algorithm": a["algorithm"], "rows": a["rows"], "units": a["units"],
+             "has_limits": a["has_limits"], "x_col": a["x_col"], "n_x": a["n_x"],
+             "wide": a["wide"], "n_steps": a["n_steps"]} for a in algos]
+
+
+@app.route("/api/upload-parquet", methods=["POST"])
+def upload_parquet():
+    """Stage a padbloader parquet and list its algorithms.  Either a multipart
+    upload (field "parquet": saved to DATA_DIR/padbloader_parquet/) or a JSON
+    {"path": "<existing .parquet>"} used IN PLACE (no copy of a file that may be
+    hundreds of MB)."""
+    f = request.files.get("parquet")
+    if f and f.filename:
+        filename = secure_filename(f.filename)
+        if not filename.lower().endswith(".parquet"):
+            return jsonify(error="Not a .parquet file"), 400
+        stage = DATA_DIR / PARQUET_STAGE_DIRNAME
+        stage.mkdir(parents=True, exist_ok=True)
+        dest = stage / filename
+        f.save(str(dest))
+    else:
+        body = request.get_json(silent=True) or {}
+        raw = (body.get("path") or "").strip().strip('"')
+        dest = Path(raw) if raw else None
+        if dest is None or dest.suffix.lower() != ".parquet" or not dest.is_file():
+            return jsonify(error="No file provided (or path is not an existing .parquet)"), 400
+    try:
+        kind = padb_loader_adapter.sniff_parquet(str(dest))
+        if kind is None:
+            return jsonify(error="Not a recognised parquet: it is neither a padbloader extract "
+                                 "nor a padb-tools table (a Group column plus a Frequency / X value "
+                                 "column)"), 400
+        analytics = _padbloader_analytics(dest, kind)
+    except Exception as exc:
+        return jsonify(error=f"Could not read this parquet: {exc}"), 400
+    if not analytics:
+        return jsonify(error="No measurements found in this parquet"), 400
+    return jsonify(parquet_path=str(dest), parquet_name=dest.name, kind=kind, analytics=analytics)
+
+
+@app.route("/api/generate-parquet-jobs", methods=["POST"])
+def generate_parquet_jobs():
+    """Run the padbloader adapter for the chosen algorithms: writes one PADB-style
+    parquet + one *_v2_job.json per algorithm into DATA_DIR (the jobs table picks
+    them up).  Publish rules mirror Generate Job: explicit Share path wins, else
+    <Interactive root>/<Folder name>/<name>, else a local-only job."""
+    body = request.get_json(force=True) or {}
+    pq_path = Path((body.get("parquet_path") or "").strip())
+    if not pq_path.is_file() or pq_path.suffix.lower() != ".parquet":
+        return jsonify(error="parquet_path missing or not an existing .parquet"), 400
+    algos = [a for a in (body.get("algorithms") or []) if isinstance(a, str) and a]
+    if not algos:
+        return jsonify(error="Select at least one algorithm"), 400
+    module = (body.get("module") or "").strip()
+    share = (body.get("publish_to") or "").strip()
+    force = bool(body.get("force"))
+    combine = bool(body.get("combine_results", True))
+    views = body.get("views")
+    if views is not None:
+        if (not isinstance(views, list) or not views
+                or any(v not in padb_loader_adapter.ALL_VIEWS for v in views)):
+            return jsonify(error="views must be a non-empty list of: "
+                           + ", ".join(padb_loader_adapter.ALL_VIEWS)), 400
+    stem = padb_loader_adapter._slug(pq_path.stem)
+    if share:
+        publish_to = share if len(algos) == 1 else share.rstrip("\\") + "\\{algo}"
+    elif module:
+        root = padb_config.load_defaults()["publish_root"].replace("PADB-Simple", "PADB-Interactive")
+        publish_to = f"{root}\\{module}\\{stem}_{{algo}}"
+    else:
+        publish_to = ""      # local-only
+    out_dir = DATA_DIR / f"{stem}_results"
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf):
+            if padb_loader_adapter.sniff_parquet(str(pq_path)) == "padb":
+                # padb-tools' own parquet: no conversion -- the job points at it in place
+                made = padb_loader_adapter.convert_padb_parquet(
+                    str(pq_path), str(DATA_DIR), publish_to=publish_to, views=views, force=force)
+            else:
+                made = padb_loader_adapter.convert(
+                    str(pq_path), str(out_dir), str(DATA_DIR), algorithms=algos,
+                    publish_to=publish_to, force=force, combine_results=combine, views=views)
+    except Exception as exc:
+        return jsonify(error=f"Adapter failed: {exc}", stdout=buf.getvalue()), 500
+    lines = []
+    jobs = []
+    for r in made:
+        if r["status"] == "exists":
+            lines.append(f"{r['algorithm']}: skipped -- {r['note']}")
+        else:
+            lines.append(f"{r['algorithm']}: {r['rows']:,} rows"
+                         + (f", {r['serials']} serials" if r["serials"] is not None else "")
+                         + f", limits={r['limits']}" + (f"  [{r['note'].strip()}]" if r["note"] else ""))
+        p = Path(r["job_path"])
+        if p.exists():
+            jobs.append({"path": str(p), "name": p.name, "status": r["status"],
+                         "content": p.read_text(encoding="utf-8")})
+        lines.append(f"  job: {r['job_path']}")
+    return jsonify(stdout=buf.getvalue() + "\n".join(lines) + "\n", stderr="", returncode=0, jobs=jobs)
 
 
 @app.route("/api/sites")

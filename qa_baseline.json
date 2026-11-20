@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 23,
+      "passed": 25,
       "failed": 0
     },
     "qa_padb": {
@@ -42,6 +42,10 @@
     },
     "qa_csv_to_parquet": {
       "passed": 29,
+      "failed": 0
+    },
+    "qa_loader_adapter": {
+      "passed": 78,
       "failed": 0
     }
   }
