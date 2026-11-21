@@ -32,6 +32,7 @@ import socket
 import sys
 import tempfile
 import threading
+import time
 import webbrowser
 from pathlib import Path
 
@@ -138,7 +139,36 @@ def _detect_columns(schema_names, x_override=None, value_override=None):
     return x_col, value_col, serial_col, group_col, temp_col
 
 
-class DataSet:
+def _spec_segments_from(rows, x_max):
+    """Contiguous x-bands of constant (yhi, ylo). `rows` yields objects/tuples with
+    .x/.yhi/.ylo (None or NaN = no limit), ordered by x. Shared by both engines."""
+    def _k(v):
+        return round(float(v), 4) if pd.notna(v) else None
+    def _v(v):
+        return float(v) if pd.notna(v) else None
+    segs, cur_lo, cur_key, cur_val, prev_x = [], None, None, None, None
+    for row in rows:
+        k = (_k(row.yhi), _k(row.ylo))
+        if cur_key is None:
+            cur_lo, cur_key, cur_val = row.x, k, (_v(row.yhi), _v(row.ylo))
+        elif k != cur_key:
+            segs.append({"lo": float(cur_lo), "hi": float(prev_x),
+                         "hi_val": cur_val[0], "lo_val": cur_val[1]})
+            cur_lo, cur_key, cur_val = row.x, k, (_v(row.yhi), _v(row.ylo))
+        prev_x = row.x
+    if cur_lo is not None:
+        segs.append({"lo": float(cur_lo), "hi": float(prev_x),
+                     "hi_val": cur_val[0], "lo_val": cur_val[1]})
+    # Make contiguous (each segment's hi = next segment's lo; last -> x_max) so a
+    # step covers the whole staircase with no gaps.
+    for i in range(len(segs) - 1):
+        segs[i]["hi"] = segs[i + 1]["lo"]
+    if segs:
+        segs[-1]["hi"] = x_max
+    return segs
+
+
+class PandasDataSet:
     """Loads the needed columns once, keeps them in memory (parquet is tiny;
     the in-memory frame is a few numeric/category columns) and answers
     filtered+decimated scatter queries."""
@@ -208,12 +238,15 @@ class DataSet:
         df["fail"] = ((_hi.notna() & (df["y"] > _hi)) | (_lo.notna() & (df["y"] < _lo)))
         self.has_limits = bool(df["scored"].any())
         self.df = df[["x", "y", "site", "serial", "temp", "yhi", "ylo", "scored", "fail"]] \
-            .sort_values("x").reset_index(drop=True)
+            .sort_values("x", kind="stable").reset_index(drop=True)
         self.x_min = float(self.df["x"].min())
         self.x_max = float(self.df["x"].max())
         self.sites = list(map(str, self.df["site"].cat.categories))
         self.temps = list(map(str, self.df["temp"].cat.categories))
         self.is_room_only = len(self.temps) < 2
+        self.n_rows = int(len(self.df))
+        self.n_serials = int(self.df["serial"].cat.categories.size)
+        self.engine = "pandas"
         self.value_label = self.value_col
         self.x_label = self.x_col
         m = re.search(r"\(([^)]+)\)", self.x_label)
@@ -221,6 +254,9 @@ class DataSet:
         self.bands: list[dict] = []  # filled by _load_bands() in main()
         self.band_counts: list[int] = []  # rows per band, filled by compute_band_counts()
         self.max_band_rows: int = 0       # largest single band's row count
+
+    def distinct_x(self):
+        return self.df["x"].unique().tolist()
 
     def compute_band_counts(self):
         """Row count inside each named band, and the largest (drives the band-view load
@@ -237,14 +273,15 @@ class DataSet:
     def meta(self):
         return {
             "parquet": self.path.name,
-            "rows": int(len(self.df)),
+            "rows": int(self.n_rows),
+            "engine": self.engine,
             "x_label": self.x_label,
             "value_label": self.value_label,
             "x_min": self.x_min,
             "x_max": self.x_max,
             "sites": self.sites,
             "temps": self.temps,
-            "n_serials": int(self.df["serial"].cat.categories.size),
+            "n_serials": int(self.n_serials),
             "x_unit": self.x_unit,
             "bands": self.bands,
             "band_counts": self.band_counts,
@@ -265,30 +302,7 @@ class DataSet:
             return []
         per = (self.df.groupby("x", observed=True)
                .agg(yhi=("yhi", "first"), ylo=("ylo", "first")).reset_index().sort_values("x"))
-        def _k(v):
-            return round(float(v), 4) if pd.notna(v) else None
-        def _v(v):
-            return float(v) if pd.notna(v) else None
-        segs, cur_lo, cur_key, cur_val, prev_x = [], None, None, None, None
-        for row in per.itertuples(index=False):
-            k = (_k(row.yhi), _k(row.ylo))
-            if cur_key is None:
-                cur_lo, cur_key, cur_val = row.x, k, (_v(row.yhi), _v(row.ylo))
-            elif k != cur_key:
-                segs.append({"lo": float(cur_lo), "hi": float(prev_x),
-                             "hi_val": cur_val[0], "lo_val": cur_val[1]})
-                cur_lo, cur_key, cur_val = row.x, k, (_v(row.yhi), _v(row.ylo))
-            prev_x = row.x
-        if cur_lo is not None:
-            segs.append({"lo": float(cur_lo), "hi": float(prev_x),
-                         "hi_val": cur_val[0], "lo_val": cur_val[1]})
-        # Make contiguous (each segment's hi = next segment's lo; last -> x_max) so a
-        # step covers the whole staircase with no gaps.
-        for i in range(len(segs) - 1):
-            segs[i]["hi"] = segs[i + 1]["lo"]
-        if segs:
-            segs[-1]["hi"] = self.x_max
-        return segs
+        return _spec_segments_from(per.itertuples(index=False), self.x_max)
 
     def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all"):
         d = self.df
@@ -315,6 +329,265 @@ class DataSet:
             traces.append({"site": str(site), "x": xs, "y": ys, "n": int(len(gx))})
         n_ret = sum(len(t["x"]) for t in traces)
         return {"traces": traces, "n_total": n_total, "n_returned": n_ret}
+
+
+def _qi(name: str) -> str:
+    """Quote a column name for DuckDB SQL."""
+    return '"' + str(name).replace('"', '""') + '"'
+
+
+class DuckDataSet:
+    """DuckDB-backed twin of PandasDataSet (same public interface).
+
+    The parquet is read ONCE by DuckDB (streamed, parallel, bigger-than-RAM capable) into
+    a small derived columnar table in a temp database file -- x, y, site, serial, temp,
+    limits, fail flag, plus the source row number -- sorted by x so range filters prune
+    on zone maps. Every query (filter + min/max-envelope decimation, per-band counts,
+    spec segments, band slices) then runs in SQL inside the engine; nothing but the
+    decimated result is ever materialised in Python, so a multi-million-row analytic
+    needs neither a big pandas frame nor the whole raw table held in memory.
+
+    Group/Test Step parsing (Site/Serial/Temp) is done in Python over the DISTINCT
+    values only (tens of thousands, not millions) with the SAME regexes as the pandas
+    path, then joined in -- so the two engines classify every row identically."""
+
+    def __init__(self, parquet_path: Path, x_override=None, value_override=None):
+        import duckdb
+        self.path = parquet_path
+        names = pq.ParquetFile(parquet_path).schema.names
+        self.x_col, self.value_col, self.serial_col, self.group_col, self.temp_col = \
+            _detect_columns(names, x_override, value_override)
+        if not self.x_col or not self.value_col:
+            sys.exit(f"Could not detect x/value columns in {parquet_path.name} "
+                     f"(cols: {names}). Use --x / --value to set them.")
+        _low = {n.lower(): n for n in names}
+
+        def _find(*subs):
+            for k, orig in _low.items():
+                if all(s in k for s in subs):
+                    return orig
+            return None
+        self.hi_col = _find("upper", "limit") or _find("upper", "spec")
+        self.lo_col = _find("lower", "limit") or _find("lower", "spec")
+
+        self._tmpdir = Path(tempfile.mkdtemp(prefix="padb_duck_"))
+        import atexit
+        import shutil
+        atexit.register(shutil.rmtree, str(self._tmpdir), True)
+        self.con = duckdb.connect(str(self._tmpdir / "viewer.duckdb"))
+        self.con.execute("SET temp_directory = ?", [str(self._tmpdir / "spill")])
+        self._src = "read_parquet('" + str(parquet_path).replace("\\", "/").replace("'", "''") + "')"
+        self._build()
+        self.engine = "duckdb"
+        self.value_label = self.value_col
+        self.x_label = self.x_col
+        m = re.search(r"\(([^)]+)\)", self.x_label)
+        self.x_unit = m.group(1) if m else ""
+        self.bands: list[dict] = []
+        self.band_counts: list[int] = []
+        self.max_band_rows: int = 0
+
+    # -- build ------------------------------------------------------------------
+    def _distinct_map(self, col, fn, out_cols):
+        """DISTINCT values of `col` (null -> 'nan', as pandas astype(str) does) mapped
+        through python fn -> tuple, registered as a join table. Returns table name."""
+        rows = self.con.execute(
+            f"SELECT DISTINCT COALESCE(CAST({_qi(col)} AS VARCHAR), 'nan') FROM {self._src}"
+        ).fetchall()
+        vals = [r[0] for r in rows]
+        mapped = [fn(v) for v in vals]
+        return vals, mapped
+
+    def _build(self):
+        con = self.con
+        # Group -> site / serial (python regexes over distinct groups only)
+        site_expr, serial_expr = "'(all)'", "'?'"
+        gjoin = ""
+        if self.group_col:
+            vals, _ = self._distinct_map(self.group_col, lambda v: v, None)
+            site_re = re.compile(r"Site:\s*([^\s]+)")
+            ser_re1 = re.compile(r"Serial\s*(?:Number|No|Num)?\s*:\s*([^\s|]+)")
+            ser_re2 = re.compile(r"\b([A-Za-z]{2,3}\d{5,})\b")
+            sites = []
+            sers1 = []
+            for v in vals:
+                m = site_re.search(v)
+                sites.append(m.group(1) if m else "(all)")
+                m = ser_re1.search(v)
+                sers1.append(m.group(1) if m else None)
+            if all(x is None for x in sers1):
+                sers = []
+                for v in vals:
+                    m = ser_re2.search(v)
+                    sers.append(m.group(1) if m else None)
+            else:
+                sers = sers1
+            gdf = pd.DataFrame({"g": vals, "g_site": sites,
+                                "g_serial": [x if x is not None else "?" for x in sers]})
+            con.register("gmap_df", gdf)
+            con.execute("CREATE TABLE gmap AS SELECT * FROM gmap_df")
+            con.unregister("gmap_df")
+            gjoin = (f"LEFT JOIN gmap ON gmap.g = COALESCE(CAST(r.{_qi(self.group_col)} "
+                     f"AS VARCHAR), 'nan')")
+            site_expr = "gmap.g_site"
+            serial_expr = "gmap.g_serial"
+        if self.serial_col:
+            serial_expr = f"CAST(r.{_qi(self.serial_col)} AS VARCHAR)"
+        tjoin, temp_expr = "", "'Room'"
+        if self.temp_col:
+            vals, _ = self._distinct_map(self.temp_col, lambda v: v, None)
+            tdf = pd.DataFrame({"t": vals,
+                                "t_temp": [(v.strip() or "Room") for v in vals]})
+            con.register("tmap_df", tdf)
+            con.execute("CREATE TABLE tmap AS SELECT * FROM tmap_df")
+            con.unregister("tmap_df")
+            tjoin = (f"LEFT JOIN tmap ON tmap.t = COALESCE(CAST(r.{_qi(self.temp_col)} "
+                     f"AS VARCHAR), 'nan')")
+            temp_expr = "tmap.t_temp"
+
+        def num(col):
+            return f"TRY_CAST(r.{_qi(col)} AS DOUBLE)"
+        hi = f"CASE WHEN isnan({num(self.hi_col)}) THEN NULL ELSE {num(self.hi_col)} END" \
+            if self.hi_col else "CAST(NULL AS DOUBLE)"
+        lo = f"CASE WHEN isnan({num(self.lo_col)}) THEN NULL ELSE {num(self.lo_col)} END" \
+            if self.lo_col else "CAST(NULL AS DOUBLE)"
+        con.execute(f"""
+            CREATE TABLE pts AS
+            SELECT x, y, site, serial, temp, yhi, ylo,
+                   (yhi IS NOT NULL OR ylo IS NOT NULL) AS scored,
+                   COALESCE((yhi IS NOT NULL AND y > yhi) OR (ylo IS NOT NULL AND y < ylo), false) AS fail,
+                   rid
+            FROM (
+              SELECT {num(self.x_col)} AS x, {num(self.value_col)} AS y,
+                     {site_expr} AS site, {serial_expr} AS serial, {temp_expr} AS temp,
+                     {hi} AS yhi, {lo} AS ylo, r.file_row_number AS rid
+              FROM read_parquet('{str(self.path).replace(chr(92), '/').replace("'", "''")}',
+                                file_row_number=true) r
+              {gjoin} {tjoin}
+            ) WHERE x IS NOT NULL AND y IS NOT NULL AND NOT isnan(x) AND NOT isnan(y)
+            ORDER BY x, rid""")
+        r = con.execute("SELECT count(*), min(x), max(x), count(DISTINCT serial), "
+                        "bool_or(scored) FROM pts").fetchone()
+        self.n_rows, self.x_min, self.x_max, self.n_serials = int(r[0]), r[1], r[2], int(r[3])
+        self.has_limits = bool(r[4])
+        if self.n_rows == 0:
+            sys.exit(f"No usable (x, value) rows in {self.path.name}")
+        self.x_min, self.x_max = float(self.x_min), float(self.x_max)
+        self.sites = [str(v[0]) for v in con.execute(
+            "SELECT DISTINCT site FROM pts ORDER BY site").fetchall() if v[0] is not None]
+        self.temps = [str(v[0]) for v in con.execute(
+            "SELECT DISTINCT temp FROM pts ORDER BY temp").fetchall() if v[0] is not None]
+        self.is_room_only = len(self.temps) < 2
+
+    def _all(self, sql, params=None):
+        return self.con.cursor().execute(sql, params or []).fetchall()
+
+    # -- interface shared with PandasDataSet --------------------------------------
+    meta = PandasDataSet.meta
+
+    def distinct_x(self):
+        return [r[0] for r in self._all("SELECT DISTINCT x FROM pts ORDER BY x")]
+
+    def compute_band_counts(self):
+        self.band_counts, self.max_band_rows = [], 0
+        for b in self.bands:
+            n = int(self._all("SELECT count(*) FROM pts WHERE x >= ? AND x <= ?",
+                              [b["lo"], b["hi"]])[0][0])
+            self.band_counts.append(n)
+            b["count"] = n
+        self.max_band_rows = max(self.band_counts) if self.band_counts else 0
+
+    def spec_segments(self):
+        if not self.has_limits:
+            return []
+        rows = self._all(
+            "SELECT x, arg_min(yhi, rid) FILTER (WHERE yhi IS NOT NULL), "
+            "arg_min(ylo, rid) FILTER (WHERE ylo IS NOT NULL) FROM pts GROUP BY x ORDER BY x")
+        import collections
+        R = collections.namedtuple("R", "x yhi ylo")
+        return _spec_segments_from((R(*r) for r in rows), self.x_max)
+
+    def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all"):
+        where, args = ["x >= ?", "x <= ?"], [flo, fhi]
+        if sites:
+            where.append("site IN (" + ",".join("?" * len(sites)) + ")")
+            args += list(sites)
+        if temps:
+            where.append("temp IN (" + ",".join("?" * len(temps)) + ")")
+            args += list(temps)
+        if pf == "fail":
+            where.append("fail")
+        elif pf == "pass":
+            where.append("NOT fail")
+        w = " AND ".join(where)
+        counts = self._all(f"SELECT site, count(*) FROM pts WHERE {w} GROUP BY site ORDER BY site", args)
+        n_total = int(sum(c for _, c in counts))
+        nb = max(1, maxpts // 2)
+        span = (fhi - flo) or 1.0
+        traces = []
+        for site, n in counts:
+            if n == 0:
+                continue
+            if n <= maxpts:
+                rows = self._all(f"SELECT x, y FROM pts WHERE {w} AND site = ? ORDER BY x, rid",
+                                 args + [site])
+            else:
+                rows = self._all(f"""
+                    WITH b AS (
+                      SELECT x, y, rid,
+                             LEAST({nb - 1}, GREATEST(0, CAST(floor((x - ?) / ? * {nb}) AS BIGINT))) AS bk
+                      FROM pts WHERE {w} AND site = ?),
+                    m AS (SELECT arg_min(rid, y) AS r1, arg_max(rid, y) AS r2 FROM b GROUP BY bk)
+                    SELECT x, y FROM b
+                    WHERE rid IN (SELECT r1 FROM m UNION SELECT r2 FROM m)
+                    ORDER BY x, rid""", [flo, span] + args + [site])
+            xs = [r[0] for r in rows]
+            ys = [r[1] for r in rows]
+            traces.append({"site": str(site), "x": xs, "y": ys, "n": int(n)})
+        n_ret = sum(len(t["x"]) for t in traces)
+        return {"traces": traces, "n_total": n_total, "n_returned": n_ret}
+
+    # -- band slices of the RAW parquet (for the padb_v2 band views) ---------------
+    def _band_pred(self):
+        return f"TRY_CAST({_qi(self.x_col)} AS DOUBLE) BETWEEN ? AND ?"
+
+    def band_row_count(self, flo, fhi):
+        return int(self._all(f"SELECT count(*) FROM {self._src} WHERE {self._band_pred()}",
+                             [flo, fhi])[0][0])
+
+    def band_table(self, flo, fhi):
+        """Raw rows (all original columns) with x in [flo,fhi], as a pyarrow Table."""
+        q = f"SELECT * FROM {self._src} WHERE {self._band_pred()}"
+        cur = self.con.cursor()
+        try:
+            rel = cur.sql(q, params=[flo, fhi])      # relation API: no extra row copy
+            t = rel.to_arrow_table()
+        except Exception:
+            cur = cur.execute(q, [flo, fhi])
+            for name in ("to_arrow_table", "fetch_arrow_table", "arrow"):  # API differs by version
+                fn = getattr(cur, name, None)
+                if fn:
+                    t = fn()
+                    break
+            else:
+                raise RuntimeError("this duckdb version has no arrow export")
+        return t.read_all() if hasattr(t, "read_all") else t
+
+
+def DataSet(parquet_path, x_override=None, value_override=None, engine=None):
+    """Factory: DuckDB engine when available (default), else/or the pandas engine.
+    Override with engine='pandas'|'duckdb' or env PADB_VIEWER_ENGINE."""
+    engine = (engine or os.environ.get("PADB_VIEWER_ENGINE") or "duckdb").lower()
+    if engine == "duckdb":
+        try:
+            import duckdb  # noqa: F401
+        except Exception:
+            print("  [engine] duckdb not installed -- falling back to pandas "
+                  "(py -m pip install duckdb)", flush=True)
+            engine = "pandas"
+    if engine == "pandas":
+        return PandasDataSet(parquet_path, x_override, value_override)
+    return DuckDataSet(parquet_path, x_override, value_override)
 
 
 def _decimate(x, y, flo, fhi, maxpts):
@@ -710,17 +983,22 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
     if cached and os.path.exists(cached[0]):
         return cached
 
-    # Read the raw parquet once and reuse it across band requests (was re-read every call).
-    t = getattr(DS, "_raw_table", None)
-    if t is None:
-        t = pqm.read_table(str(DS.path))
-        try: DS._raw_table = t
-        except Exception: pass
-    col = pc.cast(t.column(DS.x_col), pa.float64())
-    mask = pc.and_(pc.greater_equal(col, pa.scalar(flo)),
-                   pc.less_equal(col, pa.scalar(fhi)))
-    t2 = t.filter(mask)
-    n = t2.num_rows
+    if hasattr(DS, "band_row_count"):
+        # DuckDB engine: count in-engine; only materialise the slice if it will be rendered.
+        n = DS.band_row_count(flo, fhi)
+        t2 = None
+    else:
+        # Read the raw parquet once and reuse it across band requests (was re-read every call).
+        t = getattr(DS, "_raw_table", None)
+        if t is None:
+            t = pqm.read_table(str(DS.path))
+            try: DS._raw_table = t
+            except Exception: pass
+        col = pc.cast(t.column(DS.x_col), pa.float64())
+        mask = pc.and_(pc.greater_equal(col, pa.scalar(flo)),
+                       pc.less_equal(col, pa.scalar(fhi)))
+        t2 = t.filter(mask)
+        n = t2.num_rows
 
     # Large-band guard: any band view over the row cap gets a "narrow the band" page.
     # The cap floors at the largest named band so single-band views always render.
@@ -731,6 +1009,8 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
             f.write(_band_guard_html(view, n, flo, fhi))
         _band_cache[key] = (out, n)
         return out, n
+    if t2 is None:
+        t2 = DS.band_table(flo, fhi)
 
     tmp = Path(tempfile.mkdtemp(prefix="padbview_"))
     band_csv = tmp / "band.csv"
@@ -800,6 +1080,9 @@ def main(argv=None):
     ap.add_argument("--x", help="Exact x-axis column name (override auto-detect)")
     ap.add_argument("--value", help="Exact value column name (override auto-detect)")
     ap.add_argument("--no-open", action="store_true", help="Do not open a browser")
+    ap.add_argument("--engine", choices=["duckdb", "pandas"], default=None,
+                    help="Query engine (default duckdb if installed, else pandas; "
+                         "env PADB_VIEWER_ENGINE also works)")
     ap.add_argument("--bands", help="JSON file of named frequency bands "
                     "(default: bands.json / padb_viewer_bands.json next to the parquet)")
     ap.add_argument("--auto-bands", dest="auto_bands", action="store_true", default=True,
@@ -813,7 +1096,9 @@ def main(argv=None):
     target = Path(args.target).resolve() if args.target else _default_target()
     pqpath = _find_parquet(target)
     print(f"Loading {pqpath} ...", flush=True)
-    DS = DataSet(pqpath, x_override=args.x, value_override=args.value)
+    t0 = time.time()
+    DS = DataSet(pqpath, x_override=args.x, value_override=args.value, engine=args.engine)
+    print(f"  [engine] {DS.engine}: ready in {time.time() - t0:.1f}s", flush=True)
 
     if args.bands:
         DS.bands = _load_bands(Path(args.bands).resolve(), DS.x_unit)
@@ -821,7 +1106,7 @@ def main(argv=None):
         # Shared discovery: existing sidecar wins; otherwise auto-generate an editable
         # starter from the actual swept data (David 2026-09-24) and invite edits.
         DS.bands, bpath, created = padb_bands.find_or_create_bands(
-            DS.df["x"].tolist(), DS.x_unit, [pqpath.parent], allow_create=args.auto_bands,
+            DS.distinct_x(), DS.x_unit, [pqpath.parent], allow_create=args.auto_bands,
             x_label=DS.x_label)
         if created and bpath:
             print(f"  [bands] no band file found -- auto-generated {len(DS.bands)} starter "

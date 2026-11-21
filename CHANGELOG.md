@@ -6,6 +6,10 @@ Pulled directly from git history. Newest summary first; the full day-by-day log 
 
 ## 2026-11-20 — v2.0: padbloader parquet integration and build speed
 
+### Large-dataset viewer: DuckDB query engine
+
+`padb_viewer.py` now answers every query in DuckDB (default when installed; automatic pandas fallback; `--engine pandas|duckdb`). Real 3.78M-row Closed Loop: load 4.9 s / +2.6 GB -> 1.0 s / +104 MB; scatter queries 20-60 ms. Output identical to the pandas engine (pinned by `qa_viewer` engine-parity checks, including a byte-identical band-slice CSV). Spec-segment tie order at a repeated x is now deterministic (first in file order). `build_viewer.py` bundles duckdb.
+
 ### padbloader parquet -> plots (web app drop zone + CLI)
 - **padbloader** is a separate tool (a colleague's) that extracts straight from Oracle and exports CSV / Parquet / dbdiff. It owns extraction, credentials and (planned) scheduling; **padb-tools consumes its Parquet**. Its CSV export is not a usable input (one row per attribute; no serial/limits/run attributes).
 - **Drop a `.parquet` on the web app's drop zone** (or use one already on disk, in place): it lists the algorithms (rows, units, limits, swept x, temperatures), you tick algorithms and the **plots to generate** (every applicable view ticked; the environmental views are an opt-out and offered only when there is more than one test temperature; on a wide sweep the heavy views are shown ticked with a warning), and **Generate Plot Jobs** writes a `*_v2_job.json` per algorithm. **Run the plots now** (default on) queues them into the **Running Jobs** panel with a live log and Cancel. CLI equivalent: `padb_loader_adapter.py`.

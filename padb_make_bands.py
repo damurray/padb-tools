@@ -81,7 +81,7 @@ def _auto_from_dataset(target: Path, count: int):
         raise SystemExit(f"ERROR: auto mode needs padb_viewer importable ({exc})")
     pq = padb_viewer._find_parquet(target.resolve())
     ds = padb_viewer.DataSet(pq)
-    bands = padb_bands.auto_bands(ds.df["x"].tolist(), ds.x_unit, target=count)
+    bands = padb_bands.auto_bands(ds.distinct_x(), ds.x_unit, target=count)
     if not bands:
         raise SystemExit("ERROR: could not derive bands (need a swept x with >=2 values). "
                          "Use --band or --sg6311a to specify bands manually.")

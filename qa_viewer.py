@@ -323,6 +323,70 @@ def main() -> None:
           and json.loads(f4.read_text(encoding="utf-8")).get("_auto_generated") is True
           and len(json.loads(f4.read_text(encoding="utf-8"))["bands"]) >= 2)
 
+    # --- DuckDB engine == pandas engine (2026-11-20) --------------------------------
+    # The DuckDB engine must answer every query exactly like the pandas one (it only
+    # changes WHERE the work happens). Compare meta, spec segments, band counts, scatter
+    # (multiset of drawn points; n_total) over filters, and the raw band slice.
+    try:
+        import duckdb  # noqa: F401
+        _have_duck = True
+    except Exception:
+        _have_duck = False
+    if not _have_duck:
+        print("  SKIP  duckdb not installed -- engine parity not run")
+    else:
+        D = V.DataSet(pq, engine="duckdb")
+        P = V.DataSet(pq, engine="pandas")
+        D.bands, P.bands = [dict(b) for b in V.DS.bands], [dict(b) for b in V.DS.bands]
+        D.compute_band_counts()
+        P.compute_band_counts()
+        check("engine parity: engines are what they claim", (D.engine, P.engine) == ("duckdb", "pandas"))
+        dm, pm = D.meta(), P.meta()
+        dm.pop("engine")
+        pm.pop("engine")
+        check("engine parity: meta identical", dm == pm, str([k for k in dm if dm[k] != pm[k]]))
+        check("engine parity: spec segments identical", D.spec_segments() == P.spec_segments())
+        check("engine parity: distinct x identical", D.distinct_x() == sorted(P.distinct_x()))
+        check("engine parity: per-band counts identical", D.band_counts == P.band_counts,
+              str((D.band_counts, P.band_counts)))
+
+        def _pts(r):
+            return sorted((t["site"], x, y) for t in r["traces"] for x, y in zip(t["x"], t["y"]))
+        _allok, _ncases, _decimated = True, 0, False
+        for pf in ("all", "pass", "fail"):
+            for lo, hi, mp in ((xmin, xmax, 100000), (xmin, xmax, 200), (xmin, mid, 200),
+                               (mid, xmax, 100)):
+                for sites, temps in (([], None), (D.sites[:1], None), ([], D.temps[:1])):
+                    a = D.scatter(lo, hi, sites, mp, temps, pf)
+                    b = P.scatter(lo, hi, sites, mp, temps, pf)
+                    _ncases += 1
+                    _decimated = _decimated or (a["n_returned"] < a["n_total"])
+                    if a["n_total"] != b["n_total"] or _pts(a) != _pts(b):
+                        _allok = False
+        check(f"engine parity: scatter identical over {_ncases} filter/window/decimation cases",
+              _allok)
+        check("engine parity: the cases really exercised decimation", _decimated)
+        # TEETH: a wrong filter must be caught by this comparison.
+        _a = D.scatter(xmin, xmax, [], 100000, None, "all")
+        _b = P.scatter(xmin, mid, [], 100000, None, "all")
+        check("engine parity: teeth -- different windows differ so a wrong filter would be caught",
+              _pts(_a) != _pts(_b) or _a["n_total"] != _b["n_total"])
+        # Raw band slice -> the CSV padb_v2 consumes must be byte-identical.
+        import pyarrow.csv as _pacsv
+        import pyarrow.parquet as _pqm
+        import pyarrow as _pa
+        import pyarrow.compute as _pc
+        _t = _pqm.read_table(str(pq))
+        _col = _pc.cast(_t.column(P.x_col), _pa.float64())
+        _ref = _t.filter(_pc.and_(_pc.greater_equal(_col, _pa.scalar(xmin)),
+                                  _pc.less_equal(_col, _pa.scalar(mid))))
+        _rb, _db = io.BytesIO(), io.BytesIO()
+        _pacsv.write_csv(_ref, _rb)
+        _pacsv.write_csv(D.band_table(xmin, mid), _db)
+        check("engine parity: band slice row count", D.band_row_count(xmin, mid) == _ref.num_rows)
+        check("engine parity: band slice CSV byte-identical to the pyarrow filter path",
+              _rb.getvalue() == _db.getvalue(), f"{len(_rb.getvalue())} vs {len(_db.getvalue())}")
+
     print(f"\nqa_viewer: PASS={_PASS}  FAIL={_FAIL}")
     sys.exit(1 if _FAIL else 0)
 
