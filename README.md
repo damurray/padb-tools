@@ -1,6 +1,6 @@
 # padb-tools
 
-Automates PADB-R.exe — Keysight's RF characterisation database tool — to run headlessly, collect CSV outputs, and generate self-contained interactive HTML plots for SG6311A signal generator data.
+Automates PADB-R.exe — Keysight's RF characterisation database tool — to run headlessly, collect CSV outputs, and generate self-contained interactive HTML plots for SG6311A signal generator data. It can also build the same plots from **Parquet** files — including those exported by **padbloader**, a separate direct-from-Oracle extraction tool (padbloader extracts and schedules; padb-tools analyses).
 
 All HTML output is fully self-contained (Plotly.js embedded inline). Engineers open results directly from a Windows network share with no server required.
 
@@ -20,6 +20,9 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_convert_site.py` | Converts a `.pod`/job.json between PADB database sites (e.g. Santa Rosa ↔ AMC2/Malaysia) — site registry in `padb_sites.json` — `py padb_convert_site.py --pod MyPod.pod --to AMC2` |
 | `padb_csv_check.py` | Pre-flight CSV sanity check — run between extraction and `padb_v2.py` to catch orphaned columns, inverted spec rows, and high Group cardinality before building plots — `py padb_csv_check.py path\to\Scatter.csv` |
 | `padb_viewer.py` | Local-server viewer for datasets too big to open as self-contained HTML — reads a compact `.parquet` sidecar (written automatically by `padb_v2.py` for compares / large data) and serves only the decimated slice being viewed — `py padb_viewer.py <results-folder>`. `build_viewer.py` freezes it to `PADB_Viewer.exe`. Optional: the HTML plots have the same analysis; use the viewer only when they're too large to open. |
+| `padb_loader_adapter.py` | Turns a **padbloader** parquet (direct-from-Oracle extract) into PADB-style data + plot jobs; also accepts padb-tools' own parquet in place — `py padb_loader_adapter.py <file.parquet> --list` / `--out <dir>`. Also drives the web app's parquet drop zone |
+| `padb_csv_to_parquet.py` | Streamed CSV → zstd parquet converter (80–140× smaller, same columns; `--verify` compares row count, columns and the first 1000 cells) — `py padb_csv_to_parquet.py <file.csv\|folder> --verify` |
+| `padb_make_bands.py` | Creates a named-band file for "Segment by: Named bands" — `--sg6311a` preset, `--band "Name:lo:hi"`, or auto from the data |
 | `padb_pdf_report.py` | Opt-in comprehensive multi-view PDF report (cover + every view with its table), built via Playwright/Chromium; filter-aware and on-demand variants |
 | `padb_scheduler.py` | tkinter GUI for managing Windows Task Scheduler entries |
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
@@ -81,6 +84,18 @@ py padb_run.py job.json --dry-run
 py padb_v2.py job.json --csv path\to\data.csv
 ```
 
+### Plot from a padbloader (or padb-tools) parquet — no PADB-R.exe
+
+[padbloader](PADB_Tools_Guide.md#parquet-input-and-padbloader-v20) is a separate tool that extracts directly from Oracle and exports Parquet. padb-tools consumes that parquet (padbloader owns extraction and scheduling):
+
+```
+py padb_loader_adapter.py data.parquet --list                    # algorithms, rows, units, limits, swept x
+py padb_loader_adapter.py data.parquet --out C:\temp\data        # write a *_v2_job.json per algorithm
+py padb_v2.py C:\temp\data\<name>_v2_job.json                    # build the plots
+```
+
+Or simply drop the `.parquet` on the web app's drop zone, tick the algorithms and the plots you want, and **Generate Plot Jobs** (optionally run them straight into the Running Jobs panel). A job can also point at a parquet directly with `"parquet_path"`. See `PADB_Tools_Guide.md` → **Parquet input and padbloader**.
+
 ### Schedule overnight runs
 
 ```
@@ -97,7 +112,7 @@ py webapp\padb_web.py
 
 (Or double-click **`Start_web.bat`** in the tools root — same thing, no terminal needed.)
 
-Opens a local web UI (`http://127.0.0.1:5000`, local use only) for five workflows: drop a `.pod` file to auto-generate its job.json, select one or more job files to execute, schedule/unschedule jobs in Windows Task Scheduler, convert a pod or job between database sites, and pair two already-extracted CSVs into a cross-site comparison job (collapsed by default — a corner case, mainly useful the first time a new site comes online). PADB-R.exe runs are strictly serialized through a background queue — this also holds across separate process launches (e.g. a webapp restart) via `padb_batch.py`'s cross-process exclusivity guard, not just within one queue's lifetime. Run jobs execute before plot jobs in a mixed selection, a queued or running job can be aborted, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. Publishing to the network share is opt-in per run — a **Publish to share after run** checkbox (default off) next to Run Selected; off passes `--no-publish`, on honors each job's own `publish_to` (job files are never rewritten). The jobs table filters by mode/kind/name (with **Select All Runnable** / **Select Filtered** for bulk selection) and shows each job's actual schedule cadence, when it last ran, and a link to its results gallery; a failed job shows a **View log** link. A "Show tooltip help" checkbox toggles hover tooltips across the whole page. See `CLAUDE.md` → **Web app**, **Cross-process PADB-R.exe exclusivity guard**, and **Cross-site comparison** for details. It can also **edit a job file in place** (Edit button on selected rows: JSON editor with diff review, automatic timestamped backups and a History / undo) and organise the jobs table with **named job lists** (e.g. Production / NPI) — see `PADB_Tools_Guide.md` → Web App.
+Opens a local web UI (`http://127.0.0.1:5000`, local use only) for these workflows: drop a `.pod` file to auto-generate its job.json (or drop a **padbloader / padb-tools `.parquet`** to generate plot jobs from it — choose the algorithms and plots, optionally run them straight into Running Jobs), select one or more job files to execute, schedule/unschedule jobs in Windows Task Scheduler, convert a pod or job between database sites, and pair two already-extracted CSVs into a cross-site comparison job (collapsed by default — a corner case, mainly useful the first time a new site comes online). PADB-R.exe runs are strictly serialized through a background queue — this also holds across separate process launches (e.g. a webapp restart) via `padb_batch.py`'s cross-process exclusivity guard, not just within one queue's lifetime. Run jobs execute before plot jobs in a mixed selection, a queued or running job can be aborted, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. Publishing to the network share is opt-in per run — a **Publish to share after run** checkbox (default off) next to Run Selected; off passes `--no-publish`, on honors each job's own `publish_to` (job files are never rewritten). The jobs table filters by mode/kind/name (with **Select All Runnable** / **Select Filtered** for bulk selection) and shows each job's actual schedule cadence, when it last ran, and a link to its results gallery; a failed job shows a **View log** link. A "Show tooltip help" checkbox toggles hover tooltips across the whole page. See `CLAUDE.md` → **Web app**, **Cross-process PADB-R.exe exclusivity guard**, and **Cross-site comparison** for details. It can also **edit a job file in place** (Edit button on selected rows: JSON editor with diff review, automatic timestamped backups and a History / undo) and organise the jobs table with **named job lists** (e.g. Production / NPI) — see `PADB_Tools_Guide.md` → Web App.
 
 ---
 

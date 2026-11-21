@@ -1,6 +1,28 @@
-# Changelog — 2026-08-17 to 2026-11-04
+# Changelog — 2026-08-17 to 2026-11-20
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
+
+---
+
+## 2026-11-20 — v2.0: padbloader parquet integration and build speed
+
+### padbloader parquet -> plots (web app drop zone + CLI)
+- **padbloader** is a separate tool (a colleague's) that extracts straight from Oracle and exports CSV / Parquet / dbdiff. It owns extraction, credentials and (planned) scheduling; **padb-tools consumes its Parquet**. Its CSV export is not a usable input (one row per attribute; no serial/limits/run attributes).
+- **Drop a `.parquet` on the web app's drop zone** (or use one already on disk, in place): it lists the algorithms (rows, units, limits, swept x, temperatures), you tick algorithms and the **plots to generate** (every applicable view ticked; the environmental views are an opt-out and offered only when there is more than one test temperature; on a wide sweep the heavy views are shown ticked with a warning), and **Generate Plot Jobs** writes a `*_v2_job.json` per algorithm. **Run the plots now** (default on) queues them into the **Running Jobs** panel with a live log and Cancel. CLI equivalent: `padb_loader_adapter.py`.
+- **Multi-result algorithms.** The unit of selection is *(algorithm, result)*: one padbloader algorithm can emit several results in different units (Harmonics: dBc level + `Carrier Power (dBm)` + `Impurity Power (dBm)`). Default **combined**: one dataset with a leading `Result` filter dimension and the main result pre-selected (`result_default`), so dBc and dBm are never plotted on one axis; untick *Combine* for a separate job per result.
+- **padb-tools' own parquet** (the sidecar written for big datasets, or `padb_csv_to_parquet.py` output) is a first-class source too: a job points at it in place with `parquet_path`; the drop zone, `padb_csv_check.py` and `compare_csv` accept it.
+- **`padb_csv_to_parquet.py`** — streamed CSV -> zstd parquet converter (80-140x smaller; `--verify` compares row count, columns and the first 1000 cells). Test temperature comes from a `Test Step` column in the loader's native form.
+- Known limitation (unchanged, documented): a step such as `-40 Deg C` is read as +40 C by the plot loader (the regex drops the minus sign); non-`Deg C` step text counts as Room.
+- QA: `qa_loader_adapter` (78), `qa_csv_to_parquet` (29), new `qa_regressions` pins. Docs: `PADB_Tools_Guide.md` -> **Parquet input and padbloader**, `README.md`, `GETTING_STARTED.md`, `Interactive_Plots_User_Guide.md` (Result filter).
+
+### Build speed (output byte-identical)
+Profiled a real 965k-row, 7,662-offset phase-noise build with py-spy; the time was Python loops, not file format.
+- **Tolerance interval:** `nonparam_tolerance_interval` did one scalar `scipy.stats.beta.cdf` per (i, j) pair -- O(n^2) per frequency (54% of the summary build). Coverage depends only on `n` and the gap `k = j - i`, so it is now one cached vectorised table per `(n, P, C)`; the narrowest-window tie-break is preserved exactly (n=300: 2.03 s -> 0.0002 s). Pinned against the old double loop on 351 cases incl. ties/NaN, with teeth on the tie-break.
+- **Per-frequency DataFrame filters** (`df[df.Frequency == f]` inside `for f in freqs`) replaced by one `groupby` per condition in `render_summary`, `_aggregate_stat_data` and the boxplot aggregation; `iterrows()` / `to_dict("records")` per frequency replaced by column lists.
+- **Parallel views** (`parallel_views`, default auto: big data + 2 or more views): each view renders in its own worker process (`padb_v2.py --worker-view`), heaviest first, capped by `parallel_workers` (default min(3, cpus/4) -- memory is the real limit). Pages are identical to a serial build.
+- **Compressed embedded data** (`compress_data`, default auto for pages of 20 MB or more): each very large `var NAME=<json>;` becomes `PADB_unz("<deflated base64>",n)` with a small synchronous inflate in `<head>` -- pages shrink **5-16x** (a 313 MB boxplot -> 29 MB; scatter 83 -> 5 MB), so they open from the network share much faster, and the decoded data is byte-identical. In place and synchronous on purpose, so script order and DOMContentLoaded timing are unchanged. New `padb_compress.py`, `qa_compress.py` (26, incl. every deflate block type decoded in a real browser and a teeth check).
+- **Result on the real EP5 build** (965k rows, 7,662 offsets, all five views): **31 min 47 s -> 10 min 47 s (2.9x)**. Per view, old -> new: summary 8 min 8 s -> 87 s, statistical summary 8 min 48 s -> 3 min 48 s, box plot 14 min 12 s -> 10 min 19 s (now the single slowest view, so total time is about that); output size on disk 771 MB -> 105 MB. The box plot's remaining time has not been profiled yet (next candidate).
+- Proof: old code == new code (serial) == new code (parallel), byte-for-byte, on all five views; compressed pages decode to identical data in a real browser (same constants hashed, same traces, no page errors).
 
 ---
 

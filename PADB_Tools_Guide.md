@@ -538,6 +538,71 @@ Open `results\index.html` in any browser. Works from a network share — no serv
 
 ---
 
+## Parquet input and padbloader (v2.0)
+
+### Where the data comes from
+
+padb-tools has two data sources:
+
+1. **PADB-R.exe extraction** (the original path) — `padb_run.py` drives PADB-R.exe and collects Type=80 CSVs.
+2. **padbloader** — a separate tool (written by a colleague, not part of this repo) that extracts **directly from Oracle** and exports CSV, Parquet or dbdiff results. It is far faster than the PADB GUI/command line, and it runs locally on your own PC.
+
+**Division of labour:** padbloader owns extraction, credentials and (in future) scheduling. padb-tools **consumes the Parquet files padbloader writes** and turns them into the interactive plot set. padb-tools does not talk to Oracle itself for this path. Use padbloader's **Parquet** export; its **CSV** export is *not* a usable input (it is one row per attribute — no serial, limits or run attributes — and every `EVENT_NUM` is 0).
+
+### The three kinds of file padb-tools reads
+
+| Kind | What it is | How it is used |
+|---|---|---|
+| **padbloader parquet** | Long format: `algorithm`, `result`, `value`, `units`, `limit_*`, `serial`, `step`, `c_*` condition columns, `r_*` run attributes; labels/units in the schema metadata | Converted by `padb_loader_adapter.py` into a PADB-style table + a `*_v2_job.json` per algorithm |
+| **padb-tools parquet** | The table padb-tools itself writes (the sidecar for large datasets) or `padb_csv_to_parquet.py` produces — the same columns as a Type=80 scatter CSV | Used **in place** — no conversion; a job simply points at it with `parquet_path` |
+| **CSV** | A PADB Type=80 scatter CSV | Unchanged (`csv_path`) |
+
+Parquet is quicker than CSV mainly because the file is 80–140× smaller and loads without text parsing; the big build-time wins came from removing slow Python loops, not from the file format (see **Performance**).
+
+### Drop a parquet on the web app
+
+On the web app's drop zone (the same one that takes a `.pod`):
+
+1. **Drop the `.parquet`** (or use **"use a parquet already on disk"** — the file is used where it is, nothing is uploaded or copied).
+2. The panel lists what it found: one row per algorithm (rows, units, whether it carries spec limits, swept x, number of test temperatures).
+3. **Tick the algorithms** you want. Selection is by exact *(algorithm, result)* — ticking the dBc result of a harmonics algorithm does **not** pull in its dBm results.
+4. **Combine an algorithm's results into one plot** (ticked by default; padbloader parquet only). One padbloader algorithm can emit several *results in different units* (e.g. Harmonics: the dBc level plus `Carrier Power (dBm)` and `Impurity Power (dBm)`). Combined, they share one dataset with a leading **`Result`** filter dimension; the main result is pre-selected (`result_default`), so dBc and dBm are never plotted on one axis until you tick another result. Untick to get a separate job per result.
+5. **Plots to generate** — every applicable view starts ticked (opt-out). The environmental views (`distribution`, `env_coverage`) are offered only when the data has more than one test temperature. On a **wide sweep** (more than 300 distinct x values) the heavy views (box plot, reference, statistical summary) are shown **ticked with a warning** — a 696-offset harmonics box plot took ~11 min and 70 MB; a 7,662-offset phase-noise box plot is ~300 MB. Your choice is written to each job's `views` and can be edited later.
+6. **Share path / Folder name** — same rules as Generate Job: Share path, else Folder name (`--module`), else local-only. `{algo}` in a path expands to the algorithm's name so algorithms never share a folder.
+7. **Generate Plot Jobs.** With **"Run the plots now (shows in Running Jobs)"** ticked (the default) the new jobs are queued straight into the **Running Jobs** panel (live log, elapsed time, Cancel). Jobs skipped because a job file already existed are not run; an existing job file is never overwritten without **force**.
+
+> After a code update, restart the web app (`Start_web.bat`) and hard-refresh (Ctrl+F5) — the page is re-read from disk but `padb_web.py` is not. The drop zone shows an explicit "server is older than the page" message if a route is missing.
+
+### Command line
+
+```
+py padb_loader_adapter.py <file.parquet> --list                       # what is in it
+py padb_loader_adapter.py <file.parquet> --out <dir> [--algorithm S]   # make the jobs
+        [--format parquet|csv] [--split-results] [--views a,b,...]
+        [--x-col NAME] [--no-publish | --publish-to PATH] [--force]
+py padb_v2.py <the_v2_job.json>                                        # build the plots
+py padb_csv_to_parquet.py <file.csv|folder> [--out] [--force] [--verify]
+```
+
+`padb_loader_adapter.py` recognises both parquet kinds (`sniff_parquet`). For a padb-tools parquet it writes only the job (pointing at the file) and honours the same `--views` / `--publish-to` / `--force`.
+
+### Job keys and behaviour
+
+- **`parquet_path`** — alias of `csv_path`; a parquet with the same columns as the CSV is a first-class source (also in `compare_csv` entries, `padb_csv_check.py` and the web app). A source parquet is never exported over or deleted as its own sidecar.
+- **`result_default`** — written for combined multi-result jobs; selects the main result at page load unless a saved lock/state says otherwise.
+- **Test temperature** comes from the `Test Step` column, written in the loader's native form (`Room` / `NN.N Deg C`). A step name that names no temperature (e.g. "Hot") is **warned** and counts as Room. Environmental views are dropped for single-temperature data.
+- **Condition columns** with more than 100 distinct values (e.g. a per-row event id) stay out of the Group string.
+- **Wide sweeps** (> 300 distinct x) default to `["scatter","summary"]` unless you tick more.
+- The adapter keeps a hand-edited job file unless you pass `--force`.
+
+### Known limitations
+
+- The plot loader reads a step such as `-40.0 Deg C` as **+40 °C** (the regex drops the minus sign) and any non-`Deg C` step text as Room. This affects temperature filters only, not values; it is documented rather than changed because fixing it would alter existing outputs.
+- A parquet at that scale still produces very large self-contained pages for the heavy views — use the scatter, or the **Large-dataset viewer** below, for multi-million-row sweeps.
+- Parquet is only as good as what padbloader exported: if its extract has no limits, the plots have no spec lines (use `spec_direction` or the manual Spec override).
+
+---
+
 ## Large-dataset viewer (parquet + `padb_viewer.py`)
 
 Self-contained HTML embeds every point, so a genuinely huge analytic (wide phase-noise offset sweeps, big cross-site compares, millions of points) can exceed what a browser can open. For those cases the pipeline writes a compact **parquet sidecar** next to the results and offers a small **local-server viewer** that serves only the slice being viewed.
@@ -1045,9 +1110,15 @@ Two opt-in job.json keys for pods large enough to produce an impractically large
 
 **`scatter_decimate`** (`"auto"` | `"always"` | `"off"`, default `"auto"`) — reduces each independent (DUT × condition) series above `scatter_decimate_threshold` (default 2000 points) down to `scatter_decimate_target` (default 3000) via min/max-envelope bucketing along the x-axis: both the highest and lowest value in every bucket are always kept, so a narrow spike or glitch is never silently dropped, only the "boring middle" between the two extremes. Each series' true first/last x sample is also always kept, so the visible frequency range can never shrink. A visible on-page banner discloses when decimation actually ran (series affected, raw vs. embedded row count) — this is disclosed up front, not tucked into the Help panel, since a viewer comparing this page against the raw CSV or a native PADB render needs to know it isn't every raw point. Real result: an 8.5M-row DCFM CSV's scatter view dropped from ~400MB to 99MB.
 
-**`binary_encode`** (`true`/`false`, default `false`) — encodes the numeric columns that dominate file size as raw float32 bytes (base64'd into a plain string) instead of JSON text, decoded client-side straight into a typed array with no per-value text parsing. Byte-for-byte identical page output when omitted.
-- **`scatter`**: encodes `Frequency_MHz`/`Value`.
+**`binary_encode`** (`true`/`false`; **auto-enabled** when the CSV is ≥ 25 MB or ≥ 250k rows — `binary_encode_auto_mb`/`_rows` override, an explicit `true`/`false` always wins; plain `false` output is byte-identical when disabled) — encodes the numeric columns that dominate file size as raw float32 bytes (base64'd into a plain string) instead of JSON text, decoded client-side straight into a typed array with no per-value text parsing. Output is byte-identical to the unencoded page when the key is `false`.
+- **`scatter`**: encodes `Value` only. **`Frequency_MHz` is deliberately kept at full precision** — it is the band/segment axis, and float32 rounding of an edge frequency could move a point into a different named band than the box plot places it (a real per-band fail-count mismatch).
 - **`stat_boxplot`**: encodes `vals_detail` (the raw per-point array "Show points", exact duplicate-run detection, and the Site Population Check all need — it can't tolerate scatter's own decimation) — a real report that a phase-noise compare boxplot (625k raw points) took forever to load at 765MB motivated this. Columnar encoding (not array-of-objects) plus a (serial, port) lookup table cut a real 625k-point dataset from 225.4MB to 150.8MB (33.1%).
+**`parallel_views`** (`"auto"` default | `true` | `false`) and **`parallel_workers`** — render the views in separate worker processes instead of one after another. `auto` turns it on for big data only (≥ 200k usable rows, `parallel_views_auto_rows`) with two or more views, so small jobs behave exactly as before. Default workers = `min(3, cpus / 4)`; each worker holds its own copy of the dataset, so memory — not core count — is the limit. The pages are **byte-identical** to a serial build; only elapsed time changes (it becomes roughly the time of the slowest single view). The log shows `[view]`-prefixed lines per worker and a `finished in Ns` line per view; a view that fails in its worker gets the same placeholder page a serial failure does.
+
+**`compress_data`** (`"auto"` default | `true` | `false`, plus `compress_data_auto_mb`, default 20) — the very large data constants inside a page are deflated and decoded by a small inline routine when the page opens. Typical result: pages **5–16× smaller** (a 313 MB box plot became 41 MB; a scatter 83 MB → 10 MB), so they open much faster from the network share. The decoded data is identical, nothing about the plot changes, and it never fails a build. This shrinks the *file* — a very large page still needs the same memory once open, so for multi-million-row sweeps the scatter or the large-dataset viewer remains the right choice.
+
+**Why builds were slow, and the rule:** the time was Python loops (a per-frequency DataFrame filter, `iterrows`, and an O(n²) tolerance-interval search), not the file format. A real 965k-row, 7,662-offset phase-noise build with all five views went from **31m47s to 10m47s** with identical output (summary 8m → 87s; the box plot, now the slowest view, 14m → 10m). See `CLAUDE.md` → *Build-speed rule*.
+
 - Float32 has ~7 significant decimal digits — a deliberate precision reduction from JSON's full float64 text, comfortably enough for any dBm/dBc/Hz value in this codebase (e.g. `-76.7` round-trips as `-76.69999694824219`, expected float32 rounding, not a bug).
 
 ---

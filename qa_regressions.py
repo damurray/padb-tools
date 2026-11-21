@@ -1796,6 +1796,106 @@ def test_fill_spec_nulls_matches_groupwise_mode() -> None:
     check("fill_spec_nulls: key column all-NaN among limit rows does not break the merge", ok)
 
 
+def test_np_tolerance_interval_matches_pairwise_reference() -> None:
+    """nonparam_tolerance_interval was O(n^2) scalar scipy calls per call (54% of a
+    7,662-x summary build).  The vectorised/cached version must return the SAME
+    interval and flag as the original double loop -- incl. ties (first strictly
+    narrower pair in i-major, j-minor order wins), NaN-bearing data and several P/C."""
+    import numpy as np
+    from scipy import stats as _st
+    import padb_stats as pst
+
+    def ref(data, p, c):
+        d = pst._clean(data); n = len(d)
+        if n < 2:
+            return np.nan, np.nan, True
+        s = np.sort(d); n_req = pst.n_required_nonparam(p, c)
+        bi, bj, bw, found = 0, n - 1, np.inf, False
+        for i in range(n):
+            for j in range(i + 1, n):
+                if 1 - _st.beta.cdf(p, j - i, n - j + i + 1) >= c:
+                    w = s[j] - s[i]
+                    if w < bw:
+                        bw, bi, bj, found = w, i, j, True
+        if not found:
+            return s[0], s[-1], True
+        return s[bi], s[bj], n < n_req
+
+    def same(a, b):
+        return a[2] == b[2] and np.array_equal(np.array(a[:2], float), np.array(b[:2], float), equal_nan=True)
+
+    rng = np.random.default_rng(7)
+    bad = 0; cases = 0
+    for n in list(range(2, 40)) + [60]:
+        for p, c in [(0.9, 0.9), (0.95, 0.95), (0.99, 0.9)]:
+            for kind in range(3):
+                d = rng.normal(size=n)
+                if kind == 1:
+                    d = np.round(d, 1)                    # heavy ties
+                if kind == 2:
+                    d[:max(1, n // 5)] = np.nan
+                cases += 1
+                if not same(ref(d, p, c), pst.nonparam_tolerance_interval(d, p, c)):
+                    bad += 1
+    check("np TI: vectorised == pairwise reference over %d cases (ties, NaN, 3 P/C levels)" % cases, bad == 0)
+
+    # TEETH: a variant that resolves ties the other way must be caught by the same data
+    def broken(data, p, c):
+        d = pst._clean(data); n = len(d)
+        if n < 2:
+            return np.nan, np.nan, True
+        s = np.sort(d); ok = pst._valid_gaps(n, float(p), float(c))
+        best = None
+        for k in np.nonzero(ok)[0]:
+            w = s[k:] - s[:n - k]
+            i = int(len(w) - 1 - np.argmin(w[::-1]))      # LAST minimum instead of first
+            cand = (float(w[i]), -i, int(k))
+            if best is None or cand < best:
+                best = cand
+        if best is None:
+            return s[0], s[-1], True
+        i = -best[1]
+        return s[i], s[i + best[2]], n < pst.n_required_nonparam(p, c)
+    # evenly spaced data: every window of a given gap has the SAME width, so the answer is
+    # decided purely by the tie-break (reference + real function pick the first, i = 0)
+    ties = np.arange(60.0)
+    check("np TI: evenly spaced (all-ties) data resolves to the first window like the reference",
+          same(ref(ties, .9, .9), pst.nonparam_tolerance_interval(ties, .9, .9)))
+    check("np TI: teeth -- a wrong tie-break is detected by the reference comparison",
+          not same(ref(ties, .9, .9), broken(ties, .9, .9)))
+    # the per-(n,P,C) gap table is cached
+    pst._valid_gaps.cache_clear()
+    pst.nonparam_tolerance_interval(rng.normal(size=50), .9, .9)
+    pst.nonparam_tolerance_interval(rng.normal(size=50), .9, .9)
+    check("np TI: coverage table cached per (n,P,C)", pst._valid_gaps.cache_info().hits >= 1)
+
+
+def test_summary_modal_by_freq_matches_mode() -> None:
+    """render_summary's per-frequency spec (modal Upper/Lower_Limit) now comes from one
+    groupby (_modal_by_freq) instead of a boolean row filter + .mode() per frequency.
+    Same answer required: ties -> smallest value, frequencies with no limit absent."""
+    import numpy as np
+    import padb_v2 as _v2
+    rng = np.random.default_rng(3)
+    n = 4000
+    df = pd.DataFrame({
+        "Frequency_MHz": rng.choice(np.arange(1.0, 41.0), n),
+        "Upper_Limit": np.where(rng.random(n) < .5, rng.choice([-50.0, -60.0, -70.0, -55.5], n), np.nan),
+    })
+    df.loc[df["Frequency_MHz"] == 7.0, "Upper_Limit"] = np.nan        # a freq with no limit at all
+    got = _v2._modal_by_freq(df, "Upper_Limit")
+    ok = True
+    for f in sorted(df["Frequency_MHz"].unique()):
+        v = df[df["Frequency_MHz"] == f]["Upper_Limit"].dropna()
+        want = float(v.mode().iloc[0]) if len(v) else None
+        have = float(got[f]) if f in got else None
+        if want != have:
+            ok = False
+    check("summary modal spec: _modal_by_freq == per-frequency .mode().iloc[0] (ties, all-null freq)", ok)
+    check("summary modal spec: empty/all-null column -> {}", _v2._modal_by_freq(
+        pd.DataFrame({"Frequency_MHz": [1.0], "Upper_Limit": [np.nan]}), "Upper_Limit") == {})
+
+
 def test_parquet_source_loads_like_csv() -> None:
     """A .parquet with the CSV's columns (padb-tools' own sidecar / padb_csv_to_parquet)
     must load IDENTICALLY to the CSV it came from -- including CSV null tokens ('NA')
@@ -3806,6 +3906,8 @@ def main() -> None:
                test_parse_group_fields_parses_unique_once,
                test_fill_spec_nulls_matches_groupwise_mode,
                test_csv_to_parquet_converter,
+               test_np_tolerance_interval_matches_pairwise_reference,
+               test_summary_modal_by_freq_matches_mode,
                test_parquet_source_loads_like_csv,
                test_named_band_step_is_frequency_only,
                test_spec_conflict_note,

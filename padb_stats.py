@@ -5,6 +5,7 @@ Primary use case: deriving datasheet specifications from n=15 instruments
 where data is not guaranteed to be Gaussian.
 """
 from __future__ import annotations
+import functools
 import math
 import warnings
 import numpy as np
@@ -71,25 +72,39 @@ def nonparam_tolerance_interval(
     sorted_data = np.sort(data)
     n_req = n_required_nonparam(proportion, confidence)
 
-    best_i, best_j = 0, n - 1
-    best_width = np.inf
-    found = False
-
-    for i in range(n):
-        for j in range(i + 1, n):
-            # P(at least `proportion` of population falls between X_(i+1) and X_(j))
-            coverage = 1 - stats.beta.cdf(proportion, j - i, n - j + i + 1)
-            if coverage >= confidence:
-                width = sorted_data[j] - sorted_data[i]
-                if width < best_width:
-                    best_width = width
-                    best_i, best_j = i, j
-                    found = True
-
-    if not found:
+    # Coverage of the interval (X_(i+1), X_(j)) depends only on n and the gap
+    # k = j - i, so it is computed once per (n, P, C) for every k (cached) instead
+    # of once per (i, j) pair -- O(n) scipy calls total, not O(n^2) per call.
+    ok_k = _valid_gaps(n, float(proportion), float(confidence))
+    if not ok_k.any():
         return sorted_data[0], sorted_data[-1], True
 
-    return sorted_data[best_i], sorted_data[best_j], n < n_req
+    # Narrowest valid interval.  Per gap k the widths are sorted[k:] - sorted[:-k];
+    # ties resolve to the smallest i, then the smallest k -- exactly the first
+    # strictly-narrower pair of the old i-major / j-minor double loop.
+    best = None                       # (width, i, k)
+    for k in np.nonzero(ok_k)[0]:
+        k = int(k)
+        w = sorted_data[k:] - sorted_data[:n - k]
+        i = int(np.argmin(w))
+        cand = (float(w[i]), i, k)
+        if best is None or cand < best:
+            best = cand
+    _, best_i, k = best
+    return sorted_data[best_i], sorted_data[best_i + k], n < n_req
+
+
+@functools.lru_cache(maxsize=512)
+def _valid_gaps(n: int, proportion: float, confidence: float) -> np.ndarray:
+    """Boolean array over gaps k = 1..n-1 (index k; index 0 unused/False) -- True where
+    an interval spanning k order-statistic steps meets the coverage/confidence bar:
+    1 - BetaCDF(proportion; k, n - k + 1) >= confidence."""
+    ks = np.arange(1, n, dtype=float)
+    cov = 1.0 - stats.beta.cdf(proportion, ks, n - ks + 1.0)
+    out = np.zeros(n, dtype=bool)
+    out[1:] = cov >= confidence
+    out.setflags(write=False)
+    return out
 
 
 def onesided_tolerance_bound(

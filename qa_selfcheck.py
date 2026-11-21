@@ -56,6 +56,7 @@ _COMPILE_TARGETS = [
     "qa_crossview.py",
     "padb_csv_to_parquet.py", "qa_csv_to_parquet.py",
     "padb_loader_adapter.py", "qa_loader_adapter.py",
+    "padb_compress.py", "qa_compress.py",
     "webapp/padb_web.py",
 ]
 
@@ -111,6 +112,7 @@ def run_suites() -> list[dict]:
         _suite("qa_sentinel", ["qa_sentinel.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_csv_to_parquet", ["qa_csv_to_parquet.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_loader_adapter", ["qa_loader_adapter.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
+        _suite("qa_compress", ["qa_compress.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
     ]
 
 

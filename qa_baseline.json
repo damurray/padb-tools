@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 25,
+      "passed": 27,
       "failed": 0
     },
     "qa_padb": {
@@ -25,7 +25,7 @@
       "failed": 0
     },
     "qa_regressions": {
-      "passed": 734,
+      "passed": 740,
       "failed": 0
     },
     "qa_subpop": {
@@ -46,6 +46,10 @@
     },
     "qa_loader_adapter": {
       "passed": 78,
+      "failed": 0
+    },
+    "qa_compress": {
+      "passed": 26,
       "failed": 0
     }
   }

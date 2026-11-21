@@ -8,6 +8,8 @@ You're looking at this because you've been handed a `.pod` file and need interac
 
 `padb-tools` drives PADB-R.exe (Keysight's RF characterisation database tool) headlessly: it runs your `.pod` file's analytics, collects the CSV output, and turns it into self-contained interactive HTML plots (Plotly embedded inline — no server, works straight off a network share). You configure a run with a `job.json` file; the tool does the rest.
 
+**Two ways to get data in.** Besides extracting through PADB-R.exe, padb-tools can build the same plots straight from **Parquet** files — including the ones written by **padbloader**, a separate tool that extracts directly from Oracle (much faster than PADB-R.exe, runs on your own PC, and will own scheduling). padbloader extracts; padb-tools analyses: drop the padbloader `.parquet` onto the web app's drop zone and it generates the plot jobs (see `PADB_Tools_Guide.md` → **Parquet input and padbloader**). padb-tools' own parquet files (the sidecar written for big datasets) are read in place the same way.
+
 ---
 
 ## Doc map — which file answers which question
@@ -27,6 +29,8 @@ You're looking at this because you've been handed a `.pod` file and need interac
 | "I just want a job.json generated from a pod, not written by hand" | `padb_make_job.py` (Simple/Legacy/Interactive extract job) — see `CLAUDE.md` → **`padb_make_job.py`** |
 | "I want the full Interactive/V2 job set generated from a pod, not hand-written" | `padb_make_v2_job.py` — see `CLAUDE.md` → **`padb_make_v2_job.py`** |
 | "I have the same test pulling from a different site's database (e.g. Santa Rosa vs. AMC2/Malaysia) and need a matching pod/job.json" | `padb_convert_site.py` — see `PADB_Tools_Guide.md` → **Converting Between Database Sites** |
+| "I have a **parquet file from padbloader** (or one padb-tools wrote) and want plots" | Drop it on the web app, or `padb_loader_adapter.py` — see `PADB_Tools_Guide.md` → **Parquet input and padbloader** |
+| "I have a big CSV and want it as a much smaller, faster parquet" | `padb_csv_to_parquet.py <file.csv> --verify` — see the same section |
 | "I'm using Claude Code and want the tool's architecture/gotchas loaded automatically" | `CLAUDE.md` (auto-loaded) or type `/padb-tools` |
 | "I'm new, where do I even start" | You're reading it |
 

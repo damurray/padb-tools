@@ -189,6 +189,13 @@ py qa_loader_adapter.py
 **padb-tools' own parquet:** a synthetic sidecar (incl. an all-null `Upper Limit (<=)` column, parquet type null, like the real EP5 file) is sniffed (`padb` / `padbloader` / junk -> None), described (usable rows exclude a value-less row), turned into a job that points at it in place (never copied; wide sweep -> scatter+summary; force/exists; env views dropped), loaded and built by `padb_v2`, listed by the CLI, accepted by the upload/generate routes (junk rejected with a clear message) and shown in the drop zone with one entry, no combine option and the wide-sweep warning.
 Baseline: **78 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
 
+### `qa_compress.py` — deflated embedded page data (`padb_compress.py`)
+**Rewrite rules:** only a large single-line `var NAME=<json>;` is rewritten; a payload containing `NaN`/`Infinity` (JS accepts, `JSON.parse` rejects), two statements on one line, a missing `;`, a constant under the size floor, and already-dense data are all left alone; CRLF line endings survive; a second pass changes nothing. **Hook:** `compress_data` false / auto (size floor) / true / `compress_data_auto_mb`; never raises. **Decoder (browser tier, honest SKIP):** the synchronous inflate decodes stored blocks, fixed Huffman, dynamic Huffman (levels 1 and 9), long back-references, unicode and a single byte to *exactly* the original JSON; a wrong declared length is rejected; and a rewritten page behaves like the original -- a later script still reads the constant at parse time and its `DOMContentLoaded` handler still fires. **Teeth:** a decoder with a wrong longest-match length (258 -> 257) is detected, and with the JSON guard disabled the NaN page *is* rewritten. (Start Playwright before importing `padb_v2` in one process -- the import makes the sync driver hang on Windows; the suite orders its tiers accordingly.)
+```bash
+py qa_compress.py
+```
+Beyond this suite, the speed work was verified by **byte-comparison of real pages**: old code == new code serial == new code parallel on four views of a 680k-row build; five views (incl. boxplot) identical on a 60-offset slice; and the five real 965k-row EP5 pages, after inflating the compressed constants, identical to the pages the old code built. Baseline: **26 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
+
 ### `padb_csv_check.py` — pre-flight one CSV (or one job)
 Inspects a single extracted CSV before you build plots: load success, x-axis/value
 auto-detection, serial/temperature/spec detection, Group cardinality, drop rate.

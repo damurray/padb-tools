@@ -63,9 +63,11 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -673,6 +675,19 @@ def render_env_coverage(
     output_html.write_text(html, encoding="utf-8")
 
 
+def _modal_by_freq(frame, col: str) -> dict:
+    """{frequency: modal value of `col`} over non-null rows.  Same result as
+    `frame[freq-mask][col].dropna().mode().iloc[0]` per frequency (ties -> smallest value),
+    in one groupby.  Frequencies with no value are absent."""
+    s = frame[["Frequency_MHz", col]].dropna()
+    if s.empty:
+        return {}
+    c = s.groupby(["Frequency_MHz", col]).size().rename("_n").reset_index()
+    c = c.sort_values(["Frequency_MHz", "_n", col], ascending=[True, False, True], kind="stable")
+    c = c.drop_duplicates("Frequency_MHz")
+    return dict(zip(c["Frequency_MHz"], c[col]))
+
+
 def render_summary(
     df: pd.DataFrame,
     cfg: dict,
@@ -762,21 +777,26 @@ def render_summary(
     for cond, cdf in df.groupby("_cond", sort=True):
         all_freqs = sorted(cdf["Frequency_MHz"].dropna().unique())
 
+        # One groupby per condition instead of a boolean row filter per frequency (the
+        # filters dominated wide-sweep builds: 7,662 x values -> 7,662 full-frame scans).
+        # Row order within each frequency is preserved, so every numpy reduction below
+        # sums in the same order as before.
+        _cf = cdf[["Frequency_MHz", "Value"]].dropna()
+        _vals_by_f = {f: g.to_numpy() for f, g in _cf.groupby("Frequency_MHz", sort=False)["Value"]}
+        _empty = np.empty(0)
+
         # Spec per freq (modal Upper/Lower_Limit)
-        spec_hi_list, spec_lo_list = [], []
-        for freq in all_freqs:
-            fd = cdf[cdf["Frequency_MHz"] == freq]
-            hi_v = fd["Upper_Limit"].dropna()
-            lo_v = fd["Lower_Limit"].dropna()
-            spec_hi_list.append(float(hi_v.mode().iloc[0]) if len(hi_v) else None)
-            spec_lo_list.append(float(lo_v.mode().iloc[0]) if len(lo_v) else None)
+        _mode_hi = _modal_by_freq(cdf, "Upper_Limit")
+        _mode_lo = _modal_by_freq(cdf, "Lower_Limit")
+        spec_hi_list = [float(_mode_hi[f]) if f in _mode_hi else None for f in all_freqs]
+        spec_lo_list = [float(_mode_lo[f]) if f in _mode_lo else None for f in all_freqs]
 
         g_hi = next((v for v in spec_hi_list if v is not None), None)
         g_lo = next((v for v in spec_lo_list if v is not None), None)
 
         means, mins, maxs, uttl_list, lttl_list = [], [], [], [], []
         for freq in all_freqs:
-            vals = cdf[cdf["Frequency_MHz"] == freq]["Value"].dropna().values
+            vals = _vals_by_f.get(freq, _empty)
             if len(vals) == 0:
                 for lst in (means, mins, maxs, uttl_list, lttl_list):
                     lst.append(None)
@@ -795,11 +815,15 @@ def render_summary(
         # Per-temperature breakdown for JS temperature filter and stat controls
         temps_in_cond = sorted(str(t) for t in cdf["Temperature"].dropna().unique())
         by_temp: dict = {}
+        _tv_by: dict = {}
+        _tv = cdf[["Temperature", "Frequency_MHz", "Value"]].dropna()
+        for (_t, _f), _g in _tv.groupby(["Temperature", "Frequency_MHz"], sort=False)["Value"]:
+            _tv_by.setdefault(str(_t), {})[_f] = _g.to_numpy()
         for temp in temps_in_cond:
-            tdf = cdf[cdf["Temperature"] == temp]
+            _tvt = _tv_by.get(temp, {})
             t_ns, t_means_t, t_stds, t_mins_t, t_maxs_t = [], [], [], [], []
             for freq in all_freqs:
-                vals_t = tdf[tdf["Frequency_MHz"] == freq]["Value"].dropna().values
+                vals_t = _tvt.get(freq, _empty)
                 if len(vals_t) == 0:
                     t_ns.append(0); t_means_t.append(None); t_stds.append(None)
                     t_mins_t.append(None); t_maxs_t.append(None)
@@ -1280,6 +1304,139 @@ def _finish_report(output_dir, prefix, generated, cfg, is_room_only=False):
     return generated
 
 
+COMPRESS_AUTO_MB = 20             # pages at least this big get their data constants deflated
+
+
+def _maybe_compress_page(out_html: Path, cfg: dict) -> None:
+    """Deflate the very large embedded JSON constants of a built page (padb_compress).
+
+    Job key `compress_data`: "auto" (default: only pages >= `compress_data_auto_mb`, 20 MB)
+    | true (always) | false.  Plot-transparent -- the decoded text is byte-identical -- and
+    never fatal: any failure leaves the page exactly as rendered."""
+    mode = cfg.get("compress_data", "auto")
+    if mode in (False, 0, "off", "false", "no"):
+        return
+    try:
+        size = out_html.stat().st_size
+        if mode == "auto" and size < float(cfg.get("compress_data_auto_mb", COMPRESS_AUTO_MB)) * 1e6:
+            return
+        import padb_compress
+        r = padb_compress.compress_html(out_html)
+        if r["changed"]:
+            print(f"    Compressed embedded data: {r['before'] / 1e6:.0f} MB -> {r['after'] / 1e6:.0f} MB "
+                  f"({r['n']} constants; set \"compress_data\": false to disable)", flush=True)
+    except Exception as exc:                      # never fail a build over a size optimisation
+        print(f"    NOTE: data compression skipped ({exc})", flush=True)
+
+
+# Heaviest first, so the slowest view starts immediately and the cheap ones fill the
+# remaining worker slots (total time ~ the slowest single view, not the sum).
+_PARALLEL_VIEW_ORDER = ["boxplot", "stat_summary", "summary", "reference",
+                        "env_coverage", "distribution", "scatter"]
+PARALLEL_AUTO_ROWS = 200_000      # below this a worker's re-load costs more than it saves
+
+
+def _parallel_worker_count(cfg: dict, views: list, rows: int) -> int:
+    """How many worker processes to render the views with (1 = the serial loop).
+
+    Job key `parallel_views`: "auto" (default) | true | false.  Auto turns it on only for
+    big data (>= `parallel_views_auto_rows`, default 200k usable rows) with 2+ views, so
+    small jobs and the QA suite keep the exact old single-process path.  `parallel_workers`
+    caps the processes (default min(3, cpus // 4) -- each worker holds its own copy of the
+    dataset, so memory, not CPU count, is the real limit)."""
+    mode = cfg.get("parallel_views", "auto")
+    if mode in (False, 0, "off", "false", "no"):
+        return 1
+    known = [v for v in views if v in _VIEW_FN]
+    if len(known) < 2:
+        return 1
+    if mode == "auto" and rows < int(cfg.get("parallel_views_auto_rows", PARALLEL_AUTO_ROWS)):
+        return 1
+    cap = int(cfg.get("parallel_workers", min(3, max(1, (os.cpu_count() or 1) // 4))))
+    return max(1, min(cap, len(known)))
+
+
+def _render_views_parallel(views, cfg, csv_path, output_dir, prefix, n_workers, view_label_fn):
+    """Render each view in its own worker process (`padb_v2.py --worker-view V`), at most
+    `n_workers` at a time.  Every worker re-loads the same data and runs the SAME view
+    function as the serial loop, so the pages are byte-identical to a serial build; only
+    wall-clock changes.  Returns (generated, gen_pairs) in the requested view order.  A
+    worker that fails gets the same placeholder page the serial path writes."""
+    import subprocess, threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    wcfg = {k: v for k, v in cfg.items() if not k.startswith("_")}
+    wcfg.update({"csv_path": str(csv_path), "publish_to": "", "build_pdf_report": False,
+                 "parallel_views": False})
+    wcfg.pop("parquet_path", None)
+    job_file = output_dir / ".padb_worker_job.json"
+    job_file.write_text(json.dumps(wcfg, default=str), encoding="utf-8")
+
+    known = [v for v in views if v in _VIEW_FN]
+    for v in views:
+        if v not in _VIEW_FN:
+            print(f"  [SKIP] Unknown view '{v}'", flush=True)
+    start_order = sorted(known, key=lambda v: (_PARALLEL_VIEW_ORDER.index(v)
+                                               if v in _PARALLEL_VIEW_ORDER else 99))
+    print(f"  Rendering {len(known)} views in parallel ({n_workers} worker processes): "
+          f"{', '.join(start_order)}", flush=True)
+
+    lock = threading.Lock()
+    me = Path(__file__).resolve()
+    env = dict(os.environ, PYTHONUNBUFFERED="1", PYTHONIOENCODING="utf-8")
+
+    def run_one(view):
+        status = output_dir / f".worker_{re.sub(r'[^\w]+', '_', view)}.json"
+        try:
+            status.unlink()
+        except OSError:
+            pass
+        t0 = time.time()
+        cmd = [sys.executable, str(me), str(job_file), "--csv", str(csv_path),
+               "--out", str(output_dir), "--no-publish", "--worker-view", view]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, encoding="utf-8", errors="replace", env=env)
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line.strip() and not line.lstrip().startswith(("=", "PADB Analytics")):
+                with lock:
+                    print(f"    [{view}] {line.strip()}", flush=True)
+        rc = proc.wait()
+        ok = False
+        try:
+            ok = bool(json.loads(status.read_text(encoding="utf-8")).get("ok"))
+        except (OSError, ValueError):
+            pass
+        with lock:
+            print(f"  {view_label_fn(view)} finished in {time.time() - t0:.0f}s "
+                  f"({'ok' if ok and rc == 0 else 'FAILED rc=%s' % rc})", flush=True)
+        return view, ok and rc == 0
+
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        results = dict(ex.map(run_one, start_order))
+
+    generated, gen_pairs = [], []
+    for v in known:
+        html = output_dir / (re.sub(r"[^\w]+", "_", prefix) + "_" + re.sub(r"[^\w]+", "_", v) + ".html")
+        if results.get(v) and html.exists():
+            generated.append(html)
+            gen_pairs.append((v, html))
+        else:
+            title = f"{prefix} — {view_label_fn(v)}"
+            print(f"    [ERROR] {v} view failed in its worker process", flush=True)
+            _write_placeholder(html, title, "Error: this view failed to build (see the run log)")
+    for v in known:
+        try:
+            (output_dir / f".worker_{re.sub(r'[^\w]+', '_', v)}.json").unlink()
+        except OSError:
+            pass
+    try:
+        job_file.unlink()
+    except OSError:
+        pass
+    return generated, gen_pairs
+
+
 def generate_report(
     csv_path: Path,
     cfg: dict,
@@ -1338,7 +1495,12 @@ def generate_report(
     print(f"    Rows: {len(df):,}  |  Temps: {sorted(df['Temperature'].unique())}",
           flush=True)
     _maybe_auto_binary_encode(cfg, csv_path, df)
-    _maybe_export_parquet(cfg, csv_path, output_dir, df)
+    # A parallel-view WORKER (cfg["_worker_view"]) re-does the cheap load/prep above so its
+    # view renders from byte-identical data, but must not repeat the parent's one-time
+    # side effects (parquet sidecar write, starter band-file creation) or race on them.
+    _is_worker = bool(cfg.get("_worker_view"))
+    if not _is_worker:
+        _maybe_export_parquet(cfg, csv_path, output_dir, df)
 
     # Load alternate env_coverage CSV if specified
     ec_csv_raw = cfg.get("env_coverage_csv", "")
@@ -1371,6 +1533,8 @@ def generate_report(
     if "_named_bands" not in cfg:
         try:
             _allow_auto = bool(cfg.get("auto_bands", True))
+            if _is_worker:                    # the parent already created/loaded the band file
+                _allow_auto = False
             _bands, _bpath, _bcreated = padb_bands.find_or_create_bands(
                 df["Frequency_MHz"].dropna().tolist(), cfg.get("x_unit", "MHz"),
                 [output_dir, csv_path.parent], allow_create=_allow_auto,
@@ -1439,6 +1603,15 @@ def generate_report(
             return _VIEW_LABELS[view].replace("(All Temps)", "(Room)")
         return _VIEW_LABELS[view]
 
+    if _is_worker:
+        views = [cfg["_worker_view"]]          # a worker renders exactly one view
+
+    n_par = 1 if _is_worker else _parallel_worker_count(cfg, views, len(df))
+    if n_par > 1:
+        generated, gen_pairs = _render_views_parallel(
+            views, cfg, csv_path, output_dir, prefix, n_par, _view_label)
+        views = []                             # all rendered; skip the serial loop
+
     for view in views:
         fn = _VIEW_FN.get(view)
         if fn is None:
@@ -1463,9 +1636,20 @@ def generate_report(
             generated.append(out_html)
             gen_pairs.append((view, out_html))
             _warn_if_view_too_large(out_html, view, cfg, output_dir)
+            _maybe_compress_page(out_html, cfg)
         except Exception as exc:
             print(f"    [ERROR] {exc}", flush=True)
             _write_placeholder(out_html, view_cfg["title"], f"Error: {exc}")
+
+    if _is_worker:
+        # Tell the parent whether this view actually rendered (the except above swallows
+        # errors into a placeholder page, which the exit code alone cannot reveal).
+        try:
+            (output_dir / f".worker_{re.sub(r'[^\w]+', '_', cfg['_worker_view'])}.json").write_text(
+                json.dumps({"ok": bool(generated)}), encoding="utf-8")
+        except OSError:
+            pass
+        return generated                       # parent writes the index / PDF / publish
 
     if cfg.get("build_pdf_report", False) and gen_pairs:
         _maybe_build_pdf_report(df, cfg, prefix, csv_path, output_dir, gen_pairs, _view_label)
@@ -2067,6 +2251,8 @@ def main(argv: list[str] | None = None) -> None:
              "(primary=reference/SR default, onboarding, both). Implies "
              "--pdf-apply-filter.",
     )
+    parser.add_argument(
+        "--worker-view", metavar="VIEW", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
 
     job_path = Path(args.job).resolve()
@@ -2088,6 +2274,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.publish and not cfg.get("publish_to"):
         cfg.pop("publish_to", None)
 
+    if args.worker_view:
+        cfg["_worker_view"] = args.worker_view      # internal: parallel-view worker process
     if args.auto_bands:
         cfg["auto_bands"] = True
     if args.no_auto_bands:

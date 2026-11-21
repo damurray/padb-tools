@@ -7687,12 +7687,15 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
 
         # Spec limits from data
         spec_by_freq: dict[float, tuple] = {}
+        # groupby().first() == the first NON-NULL value per frequency in row order, i.e.
+        # exactly `cdf[freq-mask][col].dropna().iloc[0]`, without a full-frame scan per x.
+        _first_up = cdf.groupby("Frequency_MHz", sort=False)["Upper_Limit"].first().to_dict()
+        _first_lo = cdf.groupby("Frequency_MHz", sort=False)["Lower_Limit"].first().to_dict()
         for freq in all_freqs:
-            fd = cdf[cdf["Frequency_MHz"] == freq]
-            up_vals = fd["Upper_Limit"].dropna()
-            lo_vals = fd["Lower_Limit"].dropna()
-            su = float(up_vals.iloc[0]) if len(up_vals) else None
-            sl = float(lo_vals.iloc[0]) if len(lo_vals) else None
+            _u = _first_up.get(freq)
+            _l = _first_lo.get(freq)
+            su = float(_u) if _u is not None and not pd.isna(_u) else None
+            sl = float(_l) if _l is not None and not pd.isna(_l) else None
             cfg_spec = cfg.get("spec_limits")
             if cfg_spec and len(cfg_spec) == 2:
                 if cfg_spec[0] is not None:
@@ -7707,12 +7710,23 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         def _rn(v):
             return None if pd.isna(v) else round(float(v), 6)
 
+        # Split once instead of one boolean filter per frequency (row order preserved).
+        _room_by_f = {f: g for f, g in
+                      room_dut.dropna(subset=["Value"]).groupby("Frequency_MHz", sort=False)}
+        _temp_vals = {
+            _tn: {f: g.to_numpy() for f, g in
+                  _tdt.dropna(subset=["Value"]).groupby("Frequency_MHz", sort=False)["Value"]}
+            for _tn, _tdt in temp_dut.items()}
+        _no_rows = room_dut.iloc[0:0]
         for freq in all_freqs:
-            _fdf = room_dut[room_dut["Frequency_MHz"] == freq].dropna(subset=["Value"])
+            _fdf = _room_by_f.get(freq, _no_rows)
             dut_vals  = _fdf["Value"].values
             dut_sers  = _fdf["_serial_id"].values if "_serial_id" in _fdf.columns else ["unknown"] * len(_fdf)
             dut_ports = _fdf["_port"].values if "_port" in _fdf.columns else [""] * len(_fdf)
-            dut_spec_rows = _fdf[_spec_cols].to_dict("records") if _spec_cols else [{}] * len(_fdf)
+            # column lists + zip instead of DataFrame.to_dict("records") (a dict per row; it was
+            # >50% of this view's build time on a 7,662-x sweep). Same values, same key order.
+            dut_spec_rows = (list(zip(*[_fdf[c].tolist() for c in _spec_cols]))
+                             if _spec_cols else [()] * len(_fdf))
             n = len(dut_vals)
             if n == 0:
                 continue
@@ -7744,8 +7758,8 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
             denv_lo = 0.0
             denv_by_temp: dict = {}
             for temp_name, tdt in temp_dut.items():
-                t_dut_vals = tdt[tdt["Frequency_MHz"] == freq]["Value"].dropna().values
-                if len(t_dut_vals) == 0:
+                t_dut_vals = _temp_vals[temp_name].get(freq)
+                if t_dut_vals is None or len(t_dut_vals) == 0:
                     continue
                 deltas = t_dut_vals - dut_vals if len(t_dut_vals) == n else t_dut_vals - mean_v
                 n_env = len(deltas)
@@ -7765,7 +7779,7 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
             outliers = [d["v"] for d in outlier_det]
             dut_detail = [
                 {"s": str(ser), "p": str(prt), "v": round(float(v), 6),
-                 **{c.lower(): _rn(row.get(c)) for c in _spec_cols}}
+                 **{c.lower(): _rn(x) for c, x in zip(_spec_cols, row)}}
                 for ser, prt, v, row in zip(dut_sers, dut_ports, dut_vals, dut_spec_rows)
             ]
             spec_lo, spec_up = spec_by_freq[freq]
@@ -17961,21 +17975,32 @@ def _aggregate_box_data_by_temp(
     for cond, cdf in df.groupby("_cond", sort=True):
         for temp, tdf in cdf.groupby("Temperature"):
             freq_stats = []
+            cols = ["Value"] + (["_serial_id"] if has_ser else []) + (["_port"] if has_port else []) + spec_cols
+            # One split per (condition, temperature) instead of a boolean row filter per
+            # frequency -- that filter + dropna dominated wide-sweep builds (7,662 x values).
+            # Row order inside each frequency is preserved, so every number is unchanged.
+            _by_f = {f: g[cols] for f, g in tdf.groupby("Frequency_MHz", sort=False)}
             for freq in sorted_freqs:
-                cols = ["Value"] + (["_serial_id"] if has_ser else []) + (["_port"] if has_port else []) + spec_cols
-                _fdf = tdf.loc[tdf["Frequency_MHz"] == freq, cols].dropna(subset=["Value"])
+                _g = _by_f.get(freq)
+                if _g is None:
+                    continue
+                _fdf = _g.dropna(subset=["Value"])
                 vals = _fdf["Value"].tolist()
-                vals_detail = [
-                    {
-                        "s": str(row["_serial_id"]) if has_ser else "unknown",
-                        "p": str(row["_port"]) if has_port else "",
-                        "v": round(float(row["Value"]), 6),
-                        **{c.lower(): _rn(row[c]) for c in spec_cols},
-                    }
-                    for _, row in _fdf.iterrows()
-                ]
                 if not vals:
                     continue
+                # column lists instead of iterrows() (a Series per row); same keys, same order
+                _sv = _fdf["_serial_id"].tolist() if has_ser else None
+                _pv = _fdf["_port"].tolist() if has_port else None
+                _spv = {c: _fdf[c].tolist() for c in spec_cols}
+                vals_detail = [
+                    {
+                        "s": str(_sv[i]) if has_ser else "unknown",
+                        "p": str(_pv[i]) if has_port else "",
+                        "v": round(float(vals[i]), 6),
+                        **{c.lower(): _rn(_spv[c][i]) for c in spec_cols},
+                    }
+                    for i in range(len(vals))
+                ]
                 s = _box_stats(vals)
                 iq = s["q3"] - s["q1"]
                 lf, hf = s["q1"] - 1.5 * iq, s["q3"] + 1.5 * iq
