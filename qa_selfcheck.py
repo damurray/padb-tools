@@ -53,7 +53,7 @@ _COMPILE_TARGETS = [
     "qa_regressions.py", "qa_filters.py", "padb_subpop.py", "qa_subpop.py",
     "padb_testpoint_reduce.py", "qa_testpoint_reduce.py",
     "padb_sentinel.py", "qa_sentinel.py",
-    "qa_crossview.py", "qa_filter_equiv.py",
+    "qa_crossview.py", "qa_filter_equiv.py", "qa_viewer_ui.py",
     "padb_csv_to_parquet.py", "qa_csv_to_parquet.py",
     "padb_loader_adapter.py", "qa_loader_adapter.py",
     "padb_compress.py", "qa_compress.py",

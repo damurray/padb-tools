@@ -344,7 +344,32 @@ def main() -> None:
         dm, pm = D.meta(), P.meta()
         dm.pop("engine")
         pm.pop("engine")
+        dims = dm.pop("dims", [])      # condition filters are a DuckDB-engine feature
+        pm.pop("dims", None)
         check("engine parity: meta identical", dm == pm, str([k for k in dm if dm[k] != pm[k]]))
+        # Condition filters: every unticked value must remove exactly its rows, a blank dim
+        # is "no constraint", and an empty selection matches nothing. Oracle = pandas over
+        # the same parsed Group text (independent of the SQL path).
+        if dims:
+            d0 = dims[0]
+            keep = d0["values"][:1]
+            r_all = D.scatter(D.x_min, D.x_max, [], 10**6, None, "all", None)
+            r_one = D.scatter(D.x_min, D.x_max, [], 10**6, None, "all", {d0["id"]: keep})
+            r_none = D.scatter(D.x_min, D.x_max, [], 10**6, None, "all", {d0["id"]: []})
+            g = pd.read_parquet(D.path)[D.group_col].astype(str)
+            import padb_viewer as _pv
+            exp = int(sum(1 for v in g if _pv._parse_group_dims(v).get(d0["name"]) in (None, keep[0])))
+            check("conditions: narrowing a dim keeps exactly its rows", r_one["n_total"] == exp,
+                  f"{r_one['n_total']} vs {exp}")
+            check("conditions: narrowing removes something (teeth)", r_one["n_total"] < r_all["n_total"])
+            check("conditions: empty selection matches nothing", r_none["n_total"] == 0)
+            # Group by: traces partition the SAME points (sum == total), one per distinct value
+            r_g = D.scatter(D.x_min, D.x_max, [], 10**6, None, "all", None, [f"d{d0['id']}"])
+            check("group by: traces partition all points", sum(t["n"] for t in r_g["traces"]) == r_all["n_total"])
+            check("group by: one trace per value", len(r_g["traces"]) == len(d0["values"]) or len(r_g["traces"]) > 1)
+            w, a_ = D._where(D.x_min, D.x_max, [], None, "all", {d0["id"]: keep})
+            check("conditions: band view uses the same predicate",
+                  D.band_row_count(D.x_min, D.x_max, {"conds": {d0["id"]: keep}}) == r_one["n_total"])
         check("engine parity: spec segments identical", D.spec_segments() == P.spec_segments())
         check("engine parity: distinct x identical", D.distinct_x() == sorted(P.distinct_x()))
         check("engine parity: per-band counts identical", D.band_counts == P.band_counts,

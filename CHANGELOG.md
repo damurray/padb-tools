@@ -4,7 +4,11 @@ Pulled directly from git history. Newest summary first; the full day-by-day log 
 
 ---
 
-### 2026-11-21 -- filter equivalence + band-step persistence QA (`qa_filter_equiv.py`)
+### 2026-11-22
+
+- **padb_viewer: condition filters, live checkboxes, hover conditions.** (1) A **Conditions** panel lists every `Key: value` dimension in Group (2-40 values; serial/temp/site keys excluded); unticking narrows the overview plot AND the band views (`/view` now carries sites/temps/pass-fail/conditions; DuckDB engine only -- the pandas fallback has no condition filters). Blank dim = no constraint; all-unticked = nothing. (2) Site/Temp checkboxes now apply on change (they used to need the Update button). (3) Hover shows Serial, Temp and the point's full condition text. (4) `update()` drops stale responses and keeps its relayout guard until Plotly settles, so fast Next/Prev clicks cannot leave an old window drawn. The overview is a min/max envelope per x bucket, so narrowing a condition changes the picture only where the extremes move; the status line shows the true point count. (5) **Group by** (Site / Serial / Temp / any condition, max 60 groups) and a **Show limits** checkbox (dashed upper/lower limit steps from the data). (6) New browser harness `qa_viewer_ui.py` (20/0) drives the overview page: conditions vs a pandas oracle, group-by partition, segment stepping + rapid clicks, hover, limits. (7) Summary view: legend selector **Inside / Right / Below / Hidden** (default inside the plot). Pinned in `qa_viewer` (91/0; oracle = pandas over the parsed Group text; teeth: narrowing must remove rows).
+
+## 2026-11-21 -- filter equivalence + band-step persistence QA (`qa_filter_equiv.py`)
 
 New browser-tier harness driving the real controls on all six views (adversarial sweep with non-round frequencies, three named bands). Asserts: plot zoom == frequency filter (outward, same rows as typing the range), checkbox == plot content, Next/Prev band steps change ONLY the frequency window (bands and spec basis), and a reload restores every setting and the exact frequency window; plus no uncaught page errors. First run: 13 failures across 5 views, all fixed:
 

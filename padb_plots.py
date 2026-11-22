@@ -19572,14 +19572,23 @@ function buildLayout(){
     range=log?[Math.log10(Math.max(lo,1e-9)),Math.log10(Math.max(hi,1e-9))]:[lo,hi];
   }
   var curY=Y_LIM||_liveAxisRange('yaxis');
+  /* Legend placement is user-selectable (Inside / Right / Below / Hidden) so the plot area
+     can be maximised when the legend isn't needed -- or kept off the data when it is. */
+  var _lp=(document.getElementById('sum_legend_pos')||{}).value||'inside';
+  var _lg={bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1};
+  var _mg={l:60,r:30,t:60,b:60}, _ht=520;
+  if(_lp==='right'){ Object.assign(_lg,{orientation:'v',x:1.01,xanchor:'left',y:1,yanchor:'top'}); _mg.r=210; }
+  else if(_lp==='below'){ Object.assign(_lg,{orientation:'h',x:0,xanchor:'left',y:-0.16,yanchor:'top'}); _mg.b=150; _ht=580; }
+  else { Object.assign(_lg,{orientation:'v',x:0.99,xanchor:'right',y:0.99,yanchor:'top'}); }
   return {
     title:{text:TITLE,x:0.5,font:{size:15}},
     template:'plotly_white',
     xaxis:{title:{text:X_LABEL},type:log?'log':'linear',range:range,autorange:false},
     yaxis:Object.assign({title:{text:Y_LABEL}},curY?{range:curY,autorange:false}:{}),
-    height:520,
-    legend:{bgcolor:'rgba(255,255,255,0.8)',bordercolor:'#ccc',borderwidth:1},
-    margin:{l:60,r:30,t:60,b:60}
+    height:_ht,
+    showlegend:(_lp!=='off'),
+    legend:_lg,
+    margin:_mg
   };
 }
 
@@ -21644,6 +21653,10 @@ def _build_summary_html(
         + '  <label title="Show non-selected conditions as dim gray bands">'
         + '<input type="checkbox" id="sum_show_excl_chk" onchange="update()">'
         + '&nbsp;Show&nbsp;excluded</label>\n'
+        + '  <label title="Where the legend goes. Inside / Right / Below keep it visible; Hidden gives the plot the whole area. Display only.">'
+        + 'Legend:<select id="sum_legend_pos" onchange="update()">'
+        + '<option value="inside">inside plot</option><option value="right">right of plot</option>'
+        + '<option value="below">below plot</option><option value="off">hidden</option></select></label>\n'
         + '  <label><input type="checkbox" id="sum_hide_spec_chk" onchange="toggleSumHideSpec()">'
         + '&nbsp;Hide&nbsp;spec&nbsp;lines</label>\n'
         + '  <label title="Apply global exclusion filter from boxplot (excludes whole DUTs)">'

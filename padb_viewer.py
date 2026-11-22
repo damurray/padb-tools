@@ -168,6 +168,27 @@ def _spec_segments_from(rows, x_max):
     return segs
 
 
+def _parse_group_dims(g: str) -> dict:
+    """Group text -> {key: value}. Fragments split on 2+ spaces; a fragment with no ':'
+    is PADB's value-padding ("Frequency (MHz):  10") and is merged into the previous value."""
+    out, last = {}, None
+    for frag in re.split(r"\s{2,}", g or ""):
+        frag = frag.strip()
+        if not frag:
+            continue
+        if ":" in frag:
+            k, v = frag.split(":", 1)
+            last = k.strip()
+            if last:
+                out[last] = v.strip()
+        elif last is not None:
+            out[last] = (out[last] + " " + frag).strip()
+    return out
+
+
+MAX_DIM_VALUES = 40   # a condition dimension with more distinct values isn't a usable filter
+
+
 class PandasDataSet:
     """Loads the needed columns once, keeps them in memory (parquet is tiny;
     the in-memory frame is a few numeric/category columns) and answers
@@ -291,6 +312,7 @@ class PandasDataSet:
             "slow_band_warn": self.max_band_rows > SLOW_BAND_ROWS,
             "is_room_only": bool(self.is_room_only),
             "has_limits": bool(self.has_limits),
+            "dims": getattr(self, "dims", []),
         }
 
     def spec_segments(self):
@@ -304,7 +326,7 @@ class PandasDataSet:
                .agg(yhi=("yhi", "first"), ylo=("ylo", "first")).reset_index().sort_values("x"))
         return _spec_segments_from(per.itertuples(index=False), self.x_max)
 
-    def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all"):
+    def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all", conds=None, by=None):
         d = self.df
         m = (d["x"] >= flo) & (d["x"] <= fhi)
         if sites:
@@ -403,6 +425,8 @@ class DuckDataSet:
         # Group -> site / serial (python regexes over distinct groups only)
         site_expr, serial_expr = "'(all)'", "'?'"
         gjoin = ""
+        self.dims: list = []
+        gid_expr = "CAST(NULL AS BIGINT)"
         if self.group_col:
             vals, _ = self._distinct_map(self.group_col, lambda v: v, None)
             site_re = re.compile(r"Site:\s*([^\s]+)")
@@ -422,8 +446,31 @@ class DuckDataSet:
                     sers.append(m.group(1) if m else None)
             else:
                 sers = sers1
-            gdf = pd.DataFrame({"g": vals, "g_site": sites,
-                                "g_serial": [x if x is not None else "?" for x in sers]})
+            gdict = {"g": vals, "g_site": sites,
+                     "g_serial": [x if x is not None else "?" for x in sers]}
+            # Condition dimensions (every "Key: value" in Group with 2..MAX_DIM_VALUES values):
+            # parsed over DISTINCT groups only, served as filter checkboxes.
+            kvs = [_parse_group_dims(v) for v in vals]
+            seen: dict = {}
+            for kv in kvs:
+                for k, v in kv.items():
+                    seen.setdefault(k, set()).add(v)
+            ser_pat = re.compile(r"^[A-Z]{2,3}\d{5,}$")
+            for k in sorted(seen):
+                kl = k.lower()
+                vs = seen[k]
+                xb = self.x_col.lower().split("(")[0].strip()
+                if (kl == "site" or "temp" in kl or "frequency" in kl
+                        or kl.split("(")[0].strip() == xb
+                        or any(t in kl for t in ("serial", "unit id", "dut id", "s/n"))
+                        or len(vs) < 2 or len(vs) > MAX_DIM_VALUES
+                        or sum(1 for x in vs if ser_pat.match(x)) * 2 > len(vs)):
+                    continue
+                i = len(self.dims)
+                self.dims.append({"id": i, "name": k, "values": sorted(vs)})
+                gdict[f"d{i}"] = [kv.get(k) for kv in kvs]
+            gdict["gid"] = list(range(len(vals)))
+            gdf = pd.DataFrame(gdict)
             con.register("gmap_df", gdf)
             con.execute("CREATE TABLE gmap AS SELECT * FROM gmap_df")
             con.unregister("gmap_df")
@@ -431,6 +478,10 @@ class DuckDataSet:
                      f"AS VARCHAR), 'nan')")
             site_expr = "gmap.g_site"
             serial_expr = "gmap.g_serial"
+            gid_expr = "gmap.gid"
+        dsel = "".join(f", gmap.d{d['id']} AS d{d['id']}" for d in self.dims)
+        dout = "".join(f", d{d['id']}" for d in self.dims) + ", gid"
+        dsel += f", {gid_expr} AS gid"
         if self.serial_col:
             serial_expr = f"CAST(r.{_qi(self.serial_col)} AS VARCHAR)"
         tjoin, temp_expr = "", "'Room'"
@@ -453,14 +504,14 @@ class DuckDataSet:
             if self.lo_col else "CAST(NULL AS DOUBLE)"
         con.execute(f"""
             CREATE TABLE pts AS
-            SELECT x, y, site, serial, temp, yhi, ylo,
+            SELECT x, y, site, serial, temp, yhi, ylo{dout},
                    (yhi IS NOT NULL OR ylo IS NOT NULL) AS scored,
                    COALESCE((yhi IS NOT NULL AND y > yhi) OR (ylo IS NOT NULL AND y < ylo), false) AS fail,
                    rid
             FROM (
               SELECT {num(self.x_col)} AS x, {num(self.value_col)} AS y,
                      {site_expr} AS site, {serial_expr} AS serial, {temp_expr} AS temp,
-                     {hi} AS yhi, {lo} AS ylo, r.file_row_number AS rid
+                     {hi} AS yhi, {lo} AS ylo, r.file_row_number AS rid{dsel}
               FROM read_parquet('{str(self.path).replace(chr(92), '/').replace("'", "''")}',
                                 file_row_number=true) r
               {gjoin} {tjoin}
@@ -507,7 +558,7 @@ class DuckDataSet:
         R = collections.namedtuple("R", "x yhi ylo")
         return _spec_segments_from((R(*r) for r in rows), self.x_max)
 
-    def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all"):
+    def _where(self, flo, fhi, sites, temps, pf, conds):
         where, args = ["x >= ?", "x <= ?"], [flo, fhi]
         if sites:
             where.append("site IN (" + ",".join("?" * len(sites)) + ")")
@@ -519,8 +570,38 @@ class DuckDataSet:
             where.append("fail")
         elif pf == "pass":
             where.append("NOT fail")
-        w = " AND ".join(where)
-        counts = self._all(f"SELECT site, count(*) FROM pts WHERE {w} GROUP BY site ORDER BY site", args)
+        ok = {d["id"] for d in self.dims}
+        for k, vals in (conds or {}).items():
+            k = int(k)
+            if k not in ok:
+                continue
+            if not vals:
+                where.append("false")      # every value of this dim unticked -> nothing
+                continue
+            # blank/absent value for a dim = not applicable = no constraint (never excluded)
+            where.append(f"(d{k} IS NULL OR d{k} IN (" + ",".join("?" * len(vals)) + "))")
+            args += list(vals)
+        return " AND ".join(where), args
+
+    def _group_expr(self, by):
+        """SQL expression naming each point's group: the chosen keys joined by ' / '.
+        Keys: site, serial, temp, d<i> (condition dim). Empty/unknown -> site."""
+        ok = {"site": "site", "serial": "serial", "temp": "temp"}
+        ok.update({f"d{d['id']}": f"COALESCE(d{d['id']}, '-')" for d in self.dims})
+        cols = [ok[k] for k in (by or []) if k in ok]
+        if not cols:
+            return "site"
+        return " || ' / ' || ".join(f"CAST({c} AS VARCHAR)" for c in cols)
+
+    MAX_GROUPS = 60
+
+    def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all", conds=None, by=None):
+        w, args = self._where(flo, fhi, sites, temps, pf, conds)
+        g = self._group_expr(by)
+        counts = self._all(f"SELECT {g}, count(*) FROM pts WHERE {w} GROUP BY 1 ORDER BY 1", args)
+        if len(counts) > self.MAX_GROUPS:
+            return {"traces": [], "n_total": int(sum(c for _, c in counts)), "n_returned": 0,
+                    "groups": {}, "too_many": len(counts)}
         n_total = int(sum(c for _, c in counts))
         nb = max(1, maxpts // 2)
         span = (fhi - flo) or 1.0
@@ -529,41 +610,70 @@ class DuckDataSet:
             if n == 0:
                 continue
             if n <= maxpts:
-                rows = self._all(f"SELECT x, y FROM pts WHERE {w} AND site = ? ORDER BY x, rid",
+                rows = self._all(f"SELECT x, y, gid, serial, temp FROM pts WHERE {w} AND ({g}) = ? ORDER BY x, rid",
                                  args + [site])
             else:
                 rows = self._all(f"""
                     WITH b AS (
-                      SELECT x, y, rid,
+                      SELECT x, y, rid, gid, serial, temp,
                              LEAST({nb - 1}, GREATEST(0, CAST(floor((x - ?) / ? * {nb}) AS BIGINT))) AS bk
-                      FROM pts WHERE {w} AND site = ?),
+                      FROM pts WHERE {w} AND ({g}) = ?),
                     m AS (SELECT arg_min(rid, y) AS r1, arg_max(rid, y) AS r2 FROM b GROUP BY bk)
-                    SELECT x, y FROM b
+                    SELECT x, y, gid, serial, temp FROM b
                     WHERE rid IN (SELECT r1 FROM m UNION SELECT r2 FROM m)
                     ORDER BY x, rid""", [flo, span] + args + [site])
             xs = [r[0] for r in rows]
             ys = [r[1] for r in rows]
-            traces.append({"site": str(site), "x": xs, "y": ys, "n": int(n)})
+            # hover: serial + temp + the point's condition (Group) text; the long Group
+            # strings are sent once in `groups` and referenced by id per point.
+            traces.append({"site": str(site), "x": xs, "y": ys, "n": int(n),
+                           "gi": [r[2] for r in rows], "sn": [r[3] for r in rows],
+                           "tp": [r[4] for r in rows]})
+        used = sorted({g for t in traces for g in t["gi"] if g is not None})
+        groups = {}
+        if used:
+            for i in range(0, len(used), 5000):
+                part = used[i:i + 5000]
+                for gid, txt in self._all(
+                        "SELECT gid, g FROM gmap WHERE gid IN (" + ",".join("?" * len(part)) + ")", part):
+                    groups[int(gid)] = re.sub(r"\s{2,}", " | ", str(txt).strip())
         n_ret = sum(len(t["x"]) for t in traces)
-        return {"traces": traces, "n_total": n_total, "n_returned": n_ret}
+        return {"traces": traces, "n_total": n_total, "n_returned": n_ret, "groups": groups}
 
     # -- band slices of the RAW parquet (for the padb_v2 band views) ---------------
     def _band_pred(self):
         return f"TRY_CAST({_qi(self.x_col)} AS DOUBLE) BETWEEN ? AND ?"
 
-    def band_row_count(self, flo, fhi):
+    def _filt_where(self, flo, fhi, filt):
+        return self._where(flo, fhi, filt.get("sites"), filt.get("temps"),
+                           filt.get("pf", "all"), filt.get("conds"))
+
+    def band_row_count(self, flo, fhi, filt=None):
+        if filt:
+            w, args = self._filt_where(flo, fhi, filt)
+            return int(self._all(f"SELECT count(*) FROM pts WHERE {w}", args)[0][0])
         return int(self._all(f"SELECT count(*) FROM {self._src} WHERE {self._band_pred()}",
                              [flo, fhi])[0][0])
 
-    def band_table(self, flo, fhi):
-        """Raw rows (all original columns) with x in [flo,fhi], as a pyarrow Table."""
-        q = f"SELECT * FROM {self._src} WHERE {self._band_pred()}"
+    def band_table(self, flo, fhi, filt=None):
+        """Raw rows (all original columns) with x in [flo,fhi], as a pyarrow Table.
+        With a filter, rows are chosen by source row id from the SAME predicate the
+        overview plot uses, so a band view shows exactly what the plot shows."""
+        if filt:
+            w, qargs = self._filt_where(flo, fhi, filt)
+            pth = str(self.path).replace(chr(92), "/").replace("'", "''")
+            q = (f"SELECT r.* EXCLUDE (file_row_number) FROM read_parquet('{pth}', "
+                 f"file_row_number=true) r WHERE r.file_row_number IN "
+                 f"(SELECT rid FROM pts WHERE {w})")
+        else:
+            q = f"SELECT * FROM {self._src} WHERE {self._band_pred()}"
+            qargs = [flo, fhi]
         cur = self.con.cursor()
         try:
-            rel = cur.sql(q, params=[flo, fhi])      # relation API: no extra row copy
+            rel = cur.sql(q, params=qargs)           # relation API: no extra row copy
             t = rel.to_arrow_table()
         except Exception:
-            cur = cur.execute(q, [flo, fhi])
+            cur = cur.execute(q, qargs)
             for name in ("to_arrow_table", "fetch_arrow_table", "arrow"):  # API differs by version
                 fn = getattr(cur, name, None)
                 if fn:
@@ -645,6 +755,11 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span>max points <input type="number" id="maxpts" value="4000" step="500"></span>
   <span class="sitebox" id="sites"></span>
   <span class="sitebox" id="temps"></span>
+  <label id="limbox" style="display:none" title="Draw the spec/limit line(s) from the data's Upper/Lower Limit columns (a step where the limit changes along x). Display only -- the limit shown is the first one in file order at each x."><input type="checkbox" id="showlim" onchange="update()"> Show limits</label>
+  <button id="grpbtn" onclick="toggleGrp()"
+    title="Colour/split the overview points by Site, Serial Number, Temperature or any condition. Display only -- does not filter.">Group by &#9662;</button>
+  <button id="condbtn" onclick="toggleConds()" style="display:none"
+    title="Filter by condition (every Key: value in the Group text). Unticking a value hides those points in the plot AND in the band views.">Conditions &#9662;</button>
   <span class="sitebox" id="pfbox" title="Filter the overview points by pass/fail against each point's own limit. Failing = crosses a present limit; Passing = everything else (pass + no-limit). Needs a limit column in the data.">
     Show:
     <label><input type="radio" name="pf" value="all" checked onchange="update()">All</label>
@@ -654,6 +769,8 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <button onclick="resetView()">Reset</button>
   <span id="status"></span>
 </div>
+<div id="grppanel" style="display:none;padding:6px 14px;background:#f2fff2;border-bottom:1px solid #ddd;font-size:12px"></div>
+<div id="condpanel" style="display:none;padding:6px 14px;background:#fffaf0;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="segbar" style="padding:6px 14px;background:#f6f6ff;border-bottom:1px solid #ddd;font-size:12px">
   <b title="Step the frequency window through segments to minimize the data shown -- by named band, or by each spec/limit 'stair' (contiguous frequencies with a constant limit).">Segment step:</b>
   <select id="segbasis" onchange="_segLoad(true)">
@@ -710,7 +827,7 @@ async function boot(){
   META.sites.forEach(s=>{
     const id='site_'+s;
     sb.insertAdjacentHTML('beforeend',
-      '<label><input type="checkbox" checked value="'+s+'" class="sitechk"> '+s+'</label>');
+      '<label><input type="checkbox" checked value="'+s+'" class="sitechk" onchange="update()"> '+s+'</label>');
   });
   // Temperature filter (only meaningful with >1 temp) -- read from the real Test Step
   // column in the parquet, so it's reliable.
@@ -719,9 +836,11 @@ async function boot(){
     tb.insertAdjacentHTML('beforeend','<b style="margin-left:8px">Temp:</b> ');
     META.temps.forEach(function(tp){
       tb.insertAdjacentHTML('beforeend',
-        '<label><input type="checkbox" checked value="'+tp+'" class="tempchk"> '+tp+'</label>');
+        '<label><input type="checkbox" checked value="'+tp+'" class="tempchk" onchange="update()"> '+tp+'</label>');
     });
   }
+  buildConds(); buildGrp();
+  if(META.has_limits){ document.getElementById('limbox').style.display=''; }
   // Band-view buttons render the full interactive view for the current x-range.
   // scatter/boxplot/stat_summary/summary always; env_coverage/distribution only for
   // multi-temp data (they need a Room baseline + non-Room) -- matches the html build's
@@ -796,6 +915,49 @@ async function _segStep(d){
     _segSpecStr(s);
   update();
 }
+// --- Condition filters (every Key: value dimension in Group). Only NARROWED dims are sent. ---
+function buildConds(){
+  var dims=(META&&META.dims)||[]; if(!dims.length) return;
+  var p=document.getElementById('condpanel'), h='';
+  dims.forEach(function(d){
+    h+='<div style="margin:3px 0"><b>'+d.name+':</b> ';
+    d.values.forEach(function(v){
+      h+='<label style="margin-right:8px"><input type="checkbox" checked class="condchk" data-dim="'+d.id+
+         '" value="'+String(v).replace(/"/g,'&quot;')+'" onchange="update()"> '+v+'</label>';
+    });
+    h+=' <a href="#" onclick="condAll('+d.id+',true);return false">all</a> / <a href="#" onclick="condAll('+d.id+',false);return false">none</a></div>';
+  });
+  h+='<div style="margin-top:4px"><a href="#" onclick="condReset();return false">Reset condition filters</a></div>';
+  p.innerHTML=h;
+  document.getElementById('condbtn').style.display='';
+}
+function buildGrp(){
+  var h='<b>Group by:</b> ', opts=[['site','Site'],['serial','Serial Number'],['temp','Temperature']];
+  ((META&&META.dims)||[]).forEach(function(d){ opts.push(['d'+d.id,d.name]); });
+  opts.forEach(function(o){
+    h+='<label style="margin-right:10px"><input type="checkbox" class="grpchk" value="'+o[0]+'"'+(o[0]==='site'?' checked':'')+
+       ' onchange="update()"> '+o[1]+'</label>'; });
+  h+=' <span style="color:#888">(none checked = one colour; more than '+60+' groups is refused -- pick fewer keys)</span>';
+  document.getElementById('grppanel').innerHTML=h;
+}
+function toggleGrp(){ var p=document.getElementById('grppanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
+function selectedBy(){ return [...document.querySelectorAll('.grpchk:checked')].map(function(c){return c.value;}); }
+function toggleConds(){ var p=document.getElementById('condpanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
+function condAll(id,on){ document.querySelectorAll('.condchk[data-dim="'+id+'"]').forEach(function(c){c.checked=on;}); update(); }
+function condReset(){ document.querySelectorAll('.condchk').forEach(function(c){c.checked=true;}); update(); }
+function selectedConds(){
+  var by={}, tot={};
+  document.querySelectorAll('.condchk').forEach(function(c){
+    var k=c.getAttribute('data-dim'); tot[k]=(tot[k]||0)+1; if(!by[k]) by[k]=[]; if(c.checked) by[k].push(c.value); });
+  var out={}; Object.keys(by).forEach(function(k){ if(by[k].length<tot[k]) out[k]=by[k]; });
+  return out;
+}
+function filterQS(){
+  var q='&sites='+encodeURIComponent(selectedSites().join(','))+'&temps='+encodeURIComponent(selectedTemps().join('|'))+
+        '&pf='+((document.querySelector('input[name="pf"]:checked')||{}).value||'all');
+  var c=selectedConds(); if(Object.keys(c).length) q+='&conds='+encodeURIComponent(JSON.stringify(c));
+  return q;
+}
 function selectedSites(){return [...document.querySelectorAll('.sitechk:checked')].map(c=>c.value);}
 function selectedTemps(){return [...document.querySelectorAll('.tempchk:checked')].map(c=>c.value);}
 function resetView(){document.getElementById('flo').value=META.x_min;document.getElementById('fhi').value=META.x_max;update();}
@@ -803,7 +965,7 @@ function resetView(){document.getElementById('flo').value=META.x_min;document.ge
 // drag-zoom / Autoscale / Reset-axes must drive the frequency filter (and re-query)
 // rather than just re-viewport the already-drawn points. Mirrors the html views'
 // _onPlotRelayout. _syncing swallows the react-induced relayout so it can't loop.
-let _relayoutHooked=false, _syncing=false, _curView=null, _vRefreshTimer=null;
+let _specCache=null, _updSeq=0, _relayoutHooked=false, _syncing=false, _curView=null, _vRefreshTimer=null;
 function _onRelayout(ed){
   if(_syncing||!ed) return;
   // Modebar Autoscale / Reset axes -> return the frequency filter to the full range.
@@ -839,7 +1001,7 @@ function openView(v){
   const f=document.getElementById('vframe');
   f.onload=()=>{document.getElementById('vstatus').textContent='rendered ('+(full?'full: all points, Site check':'lite: exact boxes/stats, no overlay')+').';
     var _vb=document.getElementById('vbusy'); if(_vb) _vb.style.display='none';};
-  f.src='/view?view='+encodeURIComponent(v)+'&flo='+flo+'&fhi='+fhi+'&full='+full;
+  f.src='/view?view='+encodeURIComponent(v)+'&flo='+flo+'&fhi='+fhi+'&full='+full+filterQS();
   wrap.scrollIntoView({behavior:'smooth'});
 }
 async function update(){
@@ -849,24 +1011,48 @@ async function update(){
   const maxpts=document.getElementById('maxpts').value;
   const sites=selectedSites().join(',');
   const temps=selectedTemps().join('|');
-  const pf=(document.querySelector('input[name="pf"]:checked')||{}).value||'all';
   document.getElementById('status').textContent='querying...';
   const t0=performance.now();
-  const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&sites=${encodeURIComponent(sites)}&temps=${encodeURIComponent(temps)}&pf=${pf}`)).json();
+  const seq=++_updSeq;
+  const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&by=${encodeURIComponent(selectedBy().join(','))}`+filterQS())).json();
+  if(seq!==_updSeq) return;   // a newer update() (e.g. a fast Next click) owns the plot now
+  if(r.too_many){
+    document.getElementById('status').textContent='Group by gives '+r.too_many+' groups (max 60) -- untick Serial Number or another high-cardinality key.';
+    return;
+  }
+  const G=r.groups||{};
   const traces=r.traces.map(t=>({x:t.x,y:t.y,mode:'markers',type:'scattergl',
-      name:t.site+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55}}));
+      name:t.site+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55},
+      text:t.x.map(function(_,i){
+        var gtxt=(t.gi&&t.gi[i]!=null&&G[t.gi[i]])?G[t.gi[i]]:'';
+        return (t.sn&&t.sn[i]&&t.sn[i]!=='?'?('Serial: '+t.sn[i]+'<br>'):'')+
+               (t.tp&&t.tp[i]?('Temp: '+t.tp[i]+'<br>'):'')+gtxt.split(' | ').join('<br>');}),
+      hovertemplate:'%{text}<br><b>'+META.x_label+'</b>: %{x}<br><b>Value</b>: %{y}<extra>'+t.site+'</extra>'}));
+  if(META.has_limits && document.getElementById('showlim').checked){
+    if(!_specCache){ try{ _specCache=(await (await fetch('/api/segments')).json()).spec||[]; }catch(e){ _specCache=[]; } }
+    ['hi','lo'].forEach(function(k){
+      var xs=[],ys=[];
+      _specCache.forEach(function(sg){ var v=sg[k+'_val']; if(v==null) return;
+        xs.push(sg.lo,sg.hi); ys.push(v,v); });
+      if(xs.length) traces.push({x:xs,y:ys,mode:'lines',type:'scatter',
+        name:(k==='hi'?'Upper limit':'Lower limit'),line:{color:'#d00',width:1.6,dash:'dash'},
+        hovertemplate:(k==='hi'?'Upper':'Lower')+' limit: %{y}<extra></extra>'});
+    });
+  }
   _syncing=true;
   // Pin x to the queried band so react() doesn't autorange-fire a spurious relayout
   // that _onRelayout would read as a Reset. Modebar Autoscale/Reset still emit
   // xaxis.autorange and are handled above.
-  Plotly.react('plot',traces,{margin:{t:10,r:10},
+  await Plotly.react('plot',traces,{margin:{t:10,r:10},
       xaxis:{title:{text:META.x_label},range:[flo,fhi]},
       yaxis:{title:{text:META.value_label}},legend:{orientation:'h'}},{responsive:true});
   if(!_relayoutHooked){ document.getElementById('plot').on('plotly_relayout',_onRelayout); _relayoutHooked=true; }
-  setTimeout(()=>{_syncing=false;},0);
+  // Keep the guard up until Plotly has settled: a late react-induced relayout (slow WebGL on
+  // big pages) must not be read as a user Reset/zoom and overwrite the stepped window.
+  setTimeout(()=>{ if(seq===_updSeq) _syncing=false; },150);
   document.getElementById('status').textContent =
      r.n_total.toLocaleString()+' pts in view -> '+r.n_returned.toLocaleString()+
-     ' drawn ('+Math.round(performance.now()-t0)+' ms)';
+     ' drawn ('+Math.round(performance.now()-t0)+' ms)'+(r.n_total===0?'  -- NO POINTS in this window with the current filters':'');
   // If a band view is open, refresh it for the NEW band (debounced, so a drag-zoom that
   // fires many updates only re-renders once it settles) -- otherwise the open view would
   // stay stale/showing the old band's guard message after you zoom (David 2026-09-24).
@@ -896,6 +1082,31 @@ def api_meta():
     return jsonify(DS.meta())
 
 
+def _conds_arg():
+    """Condition filters from the query string: conds = JSON {dimId: [values]} holding
+    only the dimensions the user has NARROWED (an open dim never constrains)."""
+    raw = request.args.get("conds", "")
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw)
+        return {int(k): [str(x) for x in v] for k, v in d.items()} if isinstance(d, dict) else None
+    except Exception:
+        return None
+
+
+def _filt_arg():
+    """The full filter set (sites/temps/pass-fail/conditions) the band views must honour."""
+    sites = [s for s in (request.args.get("sites", "") or "").split(",") if s]
+    temps = [t for t in (request.args.get("temps", "") or "").split("|") if t]
+    pf = request.args.get("pf", "all")
+    conds = _conds_arg()
+    if not conds and not sites and not temps and pf == "all":
+        return None
+    return {"sites": sites, "temps": temps, "pf": pf if pf in ("pass", "fail") else "all",
+            "conds": conds}
+
+
 @app.route("/api/scatter")
 def api_scatter():
     flo = float(request.args.get("flo", DS.x_min))
@@ -906,7 +1117,8 @@ def api_scatter():
     pf = request.args.get("pf", "all")
     if pf not in ("all", "pass", "fail"):
         pf = "all"
-    return jsonify(DS.scatter(flo, fhi, sites, maxpts, temps, pf))
+    by = [b for b in (request.args.get("by", "") or "").split(",") if b]
+    return jsonify(DS.scatter(flo, fhi, sites, maxpts, temps, pf, _conds_arg(), by))
 
 
 @app.route("/api/segments")
@@ -964,7 +1176,8 @@ def _band_guard_html(view: str, n: int, flo: float, fhi: float) -> str:
     )
 
 
-def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> tuple[str, int]:
+def _render_view_band(view: str, flo: float, fhi: float, full: bool = False,
+                      filt=None) -> tuple[str, int]:
     """Render `view` (e.g. 'boxplot') for the frequency band [flo,fhi] via the
     real padb_v2 pipeline on a parquet slice. Returns (html_path, n_rows).
     Cached per (view, band, full).
@@ -978,14 +1191,17 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
     import pyarrow.compute as pc
     import pyarrow.csv as pacsv
 
-    key = (view, round(flo, 6), round(fhi, 6), bool(full))
+    if not hasattr(DS, "band_row_count"):
+        filt = None            # pandas engine: band views are unfiltered
+    key = (view, round(flo, 6), round(fhi, 6), bool(full),
+           json.dumps(filt, sort_keys=True, default=str) if filt else "")
     cached = _band_cache.get(key)
     if cached and os.path.exists(cached[0]):
         return cached
 
     if hasattr(DS, "band_row_count"):
         # DuckDB engine: count in-engine; only materialise the slice if it will be rendered.
-        n = DS.band_row_count(flo, fhi)
+        n = DS.band_row_count(flo, fhi, filt)
         t2 = None
     else:
         # Read the raw parquet once and reuse it across band requests (was re-read every call).
@@ -1010,7 +1226,7 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False) -> 
         _band_cache[key] = (out, n)
         return out, n
     if t2 is None:
-        t2 = DS.band_table(flo, fhi)
+        t2 = DS.band_table(flo, fhi, filt)
 
     tmp = Path(tempfile.mkdtemp(prefix="padbview_"))
     band_csv = tmp / "band.csv"
@@ -1062,7 +1278,7 @@ def api_view():
             f"readings) -- this dataset is Room-only, so it isn't available (same as the "
             f"html build, which omits it for Room-only data).</pre>", mimetype="text/html")
     try:
-        path, n = _render_view_band(view, flo, fhi, full=full)
+        path, n = _render_view_band(view, flo, fhi, full=full, filt=_filt_arg())
     except Exception as exc:  # surface the real error in the iframe
         return Response(f"<pre>render error: {exc}</pre>", mimetype="text/html", status=500)
     if not path or not os.path.exists(path):

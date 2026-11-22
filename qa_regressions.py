@@ -2084,6 +2084,20 @@ def test_spec_conflict_note() -> None:
           n_calls == 2, f"count={n_calls}")
 
 
+def test_summary_legend_inside_plot() -> None:
+    """Summary legend: selectable Inside / Right / Below / Hidden (default inside the plot)."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    seg = src[src.index("_SUMPLOT_JS = r"):]
+    k = seg.index("var _lp=")
+    blk = seg[k:k + 1400]
+    check("summary legend default is anchored inside the plot",
+          "x:0.99,xanchor:'right',y:0.99" in blk)
+    check("summary legend has right, below and hidden placements",
+          "_lp==='right'" in blk and "_lp==='below'" in blk and "showlegend:(_lp!=='off')" in blk)
+    check("summary legend selector exists in the control bar",
+          'id="sum_legend_pos"' in src and 'value="below"' in src)
+
+
 def test_filter_equiv_and_persistence_fixes() -> None:
     """Pins the 2026-11-21 qa_filter_equiv fixes (plot-vs-control equivalence + band-step
     persistence). The BEHAVIOURAL guard is qa_filter_equiv.py (real browser); these pins keep
@@ -4016,6 +4030,7 @@ def main() -> None:
                test_parquet_source_loads_like_csv,
                test_named_band_step_is_frequency_only,
                test_spec_conflict_note,
+               test_summary_legend_inside_plot,
                test_filter_equiv_and_persistence_fixes,
                test_setfreqband_rounds_outward,
                test_passfail_note_when_no_spec_basis,
