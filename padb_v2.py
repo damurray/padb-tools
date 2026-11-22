@@ -675,6 +675,51 @@ def render_env_coverage(
     output_html.write_text(html, encoding="utf-8")
 
 
+def _dut_minmax_rows(fi, si, vals, n_f, n_s, use_min):
+    """[freq_idx][dut_idx] matrix of the per-(freq, DUT) min (or max) of `vals`, as nested
+    python lists of round(v, 6)/None.  Same result as
+    `frame.dropna(subset=[col]).groupby([freq, serial])[col].agg(min|max).unstack().reindex(...)`
+    but from precomputed integer codes (fi/si, -1 = no such freq/serial), so the Arrow-string
+    Serial column is NOT re-taken/re-factorised for every column.  min/max are exact."""
+    ok = (fi >= 0) & (si >= 0) & ~np.isnan(vals)
+    fi, si, vals = fi[ok], si[ok], vals[ok]
+    flat = fi * n_s + si
+    cnt = np.bincount(flat, minlength=n_f * n_s)
+    arr = np.full(n_f * n_s, np.inf if use_min else -np.inf)
+    (np.minimum if use_min else np.maximum).at(arr, flat, vals)
+    arr[cnt == 0] = np.nan
+    arr = arr.reshape(n_f, n_s)
+    return [[round(float(v), 6) if v == v else None for v in row] for row in arr]
+
+
+def _split_sorted(keys, vals):
+    """{key: values of that key, in original row order} -- same as
+    `dict((k, g.to_numpy()) for k, g in groupby(keys)[vals])` but one stable argsort + split
+    instead of iterating pandas groups.  Stable => each key's values keep their row order,
+    so every downstream numpy reduction sums in the same order."""
+    if len(keys) == 0:
+        return {}
+    uniq, inv = np.unique(keys, return_inverse=True)
+    order = np.argsort(inv, kind="stable")
+    parts = np.split(vals[order], np.cumsum(np.bincount(inv, minlength=len(uniq)))[:-1])
+    return dict(zip(uniq, parts))
+
+
+def _dut_mean_rows(fi, si, vals, n_f, n_s):
+    """[freq_idx][dut_idx] matrix of the per-(freq, DUT) mean of `vals` as nested lists of
+    round(v, 4)/None.  Same pandas groupby-mean kernel as before (so the float result is
+    bit-identical), but keyed on precomputed integer codes instead of the Arrow string
+    Serial column."""
+    ok = (fi >= 0) & (si >= 0) & ~np.isnan(vals)
+    if not ok.any():
+        return [[None] * n_s for _ in range(n_f)]
+    g = pd.DataFrame({"f": fi[ok], "s": si[ok], "v": vals[ok]}).groupby(
+        ["f", "s"], sort=False)["v"].mean()
+    arr = np.full((n_f, n_s), np.nan)
+    arr[g.index.get_level_values(0).to_numpy(), g.index.get_level_values(1).to_numpy()] = g.to_numpy()
+    return [[round(float(v), 4) if v == v else None for v in row] for row in arr]
+
+
 def _modal_by_freq(frame, col: str) -> dict:
     """{frequency: modal value of `col`} over non-null rows.  Same result as
     `frame[freq-mask][col].dropna().mode().iloc[0]` per frequency (ties -> smallest value),
@@ -682,6 +727,31 @@ def _modal_by_freq(frame, col: str) -> dict:
     s = frame[["Frequency_MHz", col]].dropna()
     if s.empty:
         return {}
+    if s[col].dtype.kind == "f" and s["Frequency_MHz"].dtype.kind == "f":
+        # numpy path: sort by (freq, value); count each distinct (freq, value) run; per freq
+        # take the FIRST run (= smallest value) with the largest count.  Identical result to
+        # the groupby/sort below (ties -> smallest value).
+        f = s["Frequency_MHz"].to_numpy()
+        v = s[col].to_numpy()
+        o = np.lexsort((v, f))
+        f, v = f[o], v[o]
+        new = np.empty(len(f), dtype=bool)
+        new[0] = True
+        new[1:] = (f[1:] != f[:-1]) | (v[1:] != v[:-1])
+        st = np.flatnonzero(new)
+        cnt = np.diff(np.append(st, len(f)))
+        pf, pv = f[st], v[st]
+        fnew = np.empty(len(pf), dtype=bool)
+        fnew[0] = True
+        fnew[1:] = pf[1:] != pf[:-1]
+        fst = np.flatnonzero(fnew)
+        gmax = np.maximum.reduceat(cnt, fst)
+        grp = np.cumsum(fnew) - 1
+        is_max = cnt == gmax[grp]
+        idxs = np.flatnonzero(is_max)
+        _, first_pos = np.unique(grp[idxs], return_index=True)   # first max-count run per freq
+        sel = idxs[first_pos]
+        return dict(zip(pf[sel], pv[sel]))
     c = s.groupby(["Frequency_MHz", col]).size().rename("_n").reset_index()
     c = c.sort_values(["Frequency_MHz", "_n", col], ascending=[True, False, True], kind="stable")
     c = c.drop_duplicates("Frequency_MHz")
@@ -742,7 +812,15 @@ def render_summary(
         return "  ".join(parts) if parts else "All"
 
     df = df.copy()
-    df["_cond"] = df.apply(_cond_label, axis=1)
+    if cond_cols:
+        # Label each DISTINCT combination of condition values once, then map it back
+        # (was a row-wise apply over every row).
+        _gid = df.groupby(cond_cols, sort=False, dropna=False).ngroup()
+        _first = ~_gid.duplicated()
+        _lab = {int(g): _cond_label(r) for g, (_, r) in zip(_gid[_first], df.loc[_first].iterrows())}
+        df["_cond"] = _gid.map(_lab)
+    else:
+        df["_cond"] = df.apply(_cond_label, axis=1)
 
     # Build cond_dims for filter panels
     cond_dims = []
@@ -782,7 +860,7 @@ def render_summary(
         # Row order within each frequency is preserved, so every numpy reduction below
         # sums in the same order as before.
         _cf = cdf[["Frequency_MHz", "Value"]].dropna()
-        _vals_by_f = {f: g.to_numpy() for f, g in _cf.groupby("Frequency_MHz", sort=False)["Value"]}
+        _vals_by_f = _split_sorted(_cf["Frequency_MHz"].to_numpy(), _cf["Value"].to_numpy())
         _empty = np.empty(0)
 
         # Spec per freq (modal Upper/Lower_Limit)
@@ -817,8 +895,12 @@ def render_summary(
         by_temp: dict = {}
         _tv_by: dict = {}
         _tv = cdf[["Temperature", "Frequency_MHz", "Value"]].dropna()
-        for (_t, _f), _g in _tv.groupby(["Temperature", "Frequency_MHz"], sort=False)["Value"]:
-            _tv_by.setdefault(str(_t), {})[_f] = _g.to_numpy()
+        if len(_tv):
+            _tcodes, _tuniq = pd.factorize(_tv["Temperature"])
+            _fu, _finv = np.unique(_tv["Frequency_MHz"].to_numpy(), return_inverse=True)
+            _comb = _tcodes.astype(np.int64) * len(_fu) + _finv
+            for _ck, _arr in _split_sorted(_comb, _tv["Value"].to_numpy()).items():
+                _tv_by.setdefault(str(_tuniq[int(_ck) // len(_fu)]), {})[_fu[int(_ck) % len(_fu)]] = _arr
         for temp in temps_in_cond:
             _tvt = _tv_by.get(temp, {})
             t_ns, t_means_t, t_stds, t_mins_t, t_maxs_t = [], [], [], [], []
@@ -845,21 +927,12 @@ def render_summary(
         if _ser_col:
             dut_serials = sorted(str(s) for s in cdf[_ser_col].dropna().unique())
             dut_info = [{"s": s} for s in dut_serials]
-            # Single groupby instead of nested per-freq per-DUT filter loops
-            _sfm = (
-                cdf[["Frequency_MHz", _ser_col, "Value"]]
-                .dropna(subset=["Value"])
-                .groupby(["Frequency_MHz", _ser_col], sort=False)["Value"]
-                .mean()
-                .unstack(level=_ser_col)
-                .reindex(index=all_freqs, columns=dut_serials)
-            )
-            for freq in all_freqs:
-                row_s = _sfm.loc[freq]
-                dut_vals.append([
-                    round(float(v), 4) if pd.notna(v) else None
-                    for v in row_s
-                ])
+            # Integer codes once per condition; one groupby-mean on them (same kernel => same bits).
+            _mean_codes = (pd.Index(all_freqs).get_indexer(cdf["Frequency_MHz"]),
+                           pd.Index(dut_serials).get_indexer(cdf[_ser_col]))
+            _val_arr = pd.to_numeric(cdf["Value"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+            dut_vals = _dut_mean_rows(_mean_codes[0], _mean_codes[1], _val_arr,
+                                      len(all_freqs), len(dut_serials))
 
         # Per-DUT mean per (temperature, freq) -- lets the per-point table honor the
         # temperature filter. dut_vals above is the cross-temperature POOLED mean; the
@@ -871,19 +944,10 @@ def render_summary(
         dut_vals_by_temp: dict[str, list] = {}
         if _ser_col and len(temps_in_cond) > 1:
             for temp in temps_in_cond:
-                tdf2 = cdf[cdf["Temperature"] == temp]
-                _sfm_t = (
-                    tdf2[["Frequency_MHz", _ser_col, "Value"]]
-                    .dropna(subset=["Value"])
-                    .groupby(["Frequency_MHz", _ser_col], sort=False)["Value"]
-                    .mean()
-                    .unstack(level=_ser_col)
-                    .reindex(index=all_freqs, columns=dut_serials)
-                )
-                dut_vals_by_temp[temp] = [
-                    [round(float(v), 4) if pd.notna(v) else None for v in _sfm_t.loc[freq]]
-                    for freq in all_freqs
-                ]
+                _tm2 = (cdf["Temperature"] == temp).to_numpy(dtype=bool)
+                dut_vals_by_temp[temp] = _dut_mean_rows(
+                    _mean_codes[0][_tm2], _mean_codes[1][_tm2], _val_arr[_tm2],
+                    len(all_freqs), len(dut_serials))
 
         # Per-DUT Limit/Spec/Uncertainty per frequency, same [freq_idx][dut_idx]
         # shape as dut_vals, so client-side segment detection can respect GF's
@@ -895,23 +959,19 @@ def render_summary(
         # datapak error recording two different spec values for the same
         # DUT/frequency) into a meaningless number.
         dut_spec_vals: dict[str, list] = {}
+        _spec_codes = None
         if _ser_col:
+            # Integer codes once per condition (not once per spec column).
+            _spec_codes = (pd.Index(all_freqs).get_indexer(cdf["Frequency_MHz"]),
+                           pd.Index(dut_serials).get_indexer(cdf[_ser_col]))
             for _col in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"):
                 if _col not in cdf.columns:
                     continue
                 _agg = "min" if _col in ("Upper_Limit", "Spec_Hi", "Unc_Hi") else "max"
-                _sfm_spec = (
-                    cdf[["Frequency_MHz", _ser_col, _col]]
-                    .dropna(subset=[_col])
-                    .groupby(["Frequency_MHz", _ser_col], sort=False)[_col]
-                    .agg(_agg)
-                    .unstack(level=_ser_col)
-                    .reindex(index=all_freqs, columns=dut_serials)
-                )
-                dut_spec_vals[_col.lower()] = [
-                    [round(float(v), 6) if pd.notna(v) else None for v in _sfm_spec.loc[freq]]
-                    for freq in all_freqs
-                ]
+                dut_spec_vals[_col.lower()] = _dut_minmax_rows(
+                    _spec_codes[0], _spec_codes[1],
+                    pd.to_numeric(cdf[_col], errors="coerce").to_numpy(dtype=float, na_value=np.nan),
+                    len(all_freqs), len(dut_serials), _agg == "min")
 
         # Per-temperature per-DUT limits, so the per-point table scores each DUT's
         # temp-scoped VALUE against the SAME temp's LIMIT. Some pods carry a
@@ -923,24 +983,16 @@ def render_summary(
         dut_spec_vals_by_temp: dict[str, dict] = {}
         if _ser_col and len(temps_in_cond) > 1:
             for temp in temps_in_cond:
-                tdf3 = cdf[cdf["Temperature"] == temp]
+                _tm = (cdf["Temperature"] == temp).to_numpy(dtype=bool)
                 _tsv: dict[str, list] = {}
                 for _col in ("Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"):
-                    if _col not in tdf3.columns:
+                    if _col not in cdf.columns:
                         continue
                     _agg = "min" if _col in ("Upper_Limit", "Spec_Hi", "Unc_Hi") else "max"
-                    _sfm_s = (
-                        tdf3[["Frequency_MHz", _ser_col, _col]]
-                        .dropna(subset=[_col])
-                        .groupby(["Frequency_MHz", _ser_col], sort=False)[_col]
-                        .agg(_agg)
-                        .unstack(level=_ser_col)
-                        .reindex(index=all_freqs, columns=dut_serials)
-                    )
-                    _tsv[_col.lower()] = [
-                        [round(float(v), 6) if pd.notna(v) else None for v in _sfm_s.loc[freq]]
-                        for freq in all_freqs
-                    ]
+                    _tsv[_col.lower()] = _dut_minmax_rows(
+                        _spec_codes[0][_tm], _spec_codes[1][_tm],
+                        pd.to_numeric(cdf[_col], errors="coerce").to_numpy(dtype=float, na_value=np.nan)[_tm],
+                        len(all_freqs), len(dut_serials), _agg == "min")
                 dut_spec_vals_by_temp[temp] = _tsv
 
         # cond_keys: label -> value for each condition dimension

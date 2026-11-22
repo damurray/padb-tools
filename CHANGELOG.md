@@ -4,7 +4,22 @@ Pulled directly from git history. Newest summary first; the full day-by-day log 
 
 ---
 
+### 2026-11-21 -- filter equivalence + band-step persistence QA (`qa_filter_equiv.py`)
+
+New browser-tier harness driving the real controls on all six views (adversarial sweep with non-round frequencies, three named bands). Asserts: plot zoom == frequency filter (outward, same rows as typing the range), checkbox == plot content, Next/Prev band steps change ONLY the frequency window (bands and spec basis), and a reload restores every setting and the exact frequency window; plus no uncaught page errors. First run: 13 failures across 5 views, all fixed:
+
+- scatter drag-zoom wrote the freq filter with round-to-nearest, so it could be narrower than the visible axis (40 of 120 points hidden). Now outward.
+- every view saved the range SLIDER (step-snapped), so reload moved a band [300,400] to [300.16,399.61]. Text boxes now saved/restored verbatim (scatter/stat_summary/summary/env_coverage/distribution).
+- group-by, sort, auto-filter basis/level, P/C, boxplot group-by and the Segment-by basis did not persist; they now do (Reset clears them).
+- distribution: "Hide spec lines" then any Segment Next/Prev threw (`_extremes`) and the step never completed; toggle now uses `Plotly.react`.
+
+Open, reported as WARN not FAIL: legend-click hides a trace without narrowing filter/table/`n_points`; `summary` has no zoom->filter sync; auto-filter panel open state not restored on reload. Pinned by `test_filter_equiv_and_persistence_fixes` (qa_regressions 759/0). Existing built HTML must be rebuilt.
+
 ## 2026-11-20 — v2.0: padbloader parquet integration and build speed
+
+### `summary` render: 3x faster, output byte-identical
+
+Profiled a 38k-row, ~500-condition Closed Loop band (133 s). Cost was per-condition pandas overhead on Arrow-string columns: six `dut_spec_vals` groupby/unstack passes (plus per-temperature twins), a string-keyed per-DUT mean, per-frequency group iteration, a Python modal-limit groupby and a row-wise condition-label apply. Replaced with integer codes computed once per condition and numpy (`_dut_minmax_rows`, `_dut_mean_rows`, `_split_sorted`, numpy `_modal_by_freq`, label per distinct condition). **133 s -> 44 s**; page byte-identical to the old build (Room-only band and a 3-temperature Harmonics set across summary/stat_summary/boxplot). Pinned by `test_summary_vectorised_helpers_match_pandas_reference` (with teeth). Remaining time is spread per-condition pandas calls; next lever would be restructuring around all conditions at once.
 
 ### Large-dataset viewer: DuckDB query engine
 

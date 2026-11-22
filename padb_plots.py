@@ -1295,6 +1295,8 @@ function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k
 function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var e=document.getElementById(i);if(e)_stSet(i,e.value);});
+  document.querySelectorAll('select[id]').forEach(function(s){if(!/^(segKeySel|padb_)/.test(s.id))_stSet('sel_'+s.id,s.value);});
   _stSet('hide_spec',document.getElementById('hide_spec_chk').checked?'1':'0');
   _stSet('spec_shape',_specLineShape);
   /* Persist the display/analysis controls too (not just filters), so flipping between
@@ -1313,6 +1315,8 @@ function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var v=_stGet(i),e=document.getElementById(i);if(v!==null&&e)e.value=v;});
+  document.querySelectorAll('select[id]').forEach(function(s){var v=_stGet('sel_'+s.id);if(v!==null&&!/^(segKeySel|padb_)/.test(s.id)){for(var i=0;i<s.options.length;i++){if(s.options[i].value===v){s.value=v;break;}}}});
   var hs=_stGet('hide_spec');if(hs!==null)document.getElementById('hide_spec_chk').checked=(hs==='1');
   var sshp=_stGet('spec_shape');if(sshp&&_SPEC_SHAPES[sshp])_specLineShape=sshp;
   /* Reveal the Spec-line shape control only when the spec is a frequency-varying
@@ -1380,6 +1384,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  try{_stSet('seg_key',_segKey);}catch(e){}
   _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
@@ -1499,7 +1504,7 @@ function segTab(dir){
 function _recomputeSpecSegments(){
   if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
-    _segKey=_defaultSegKey();
+    _segKey=(function(dv){var v=null;try{v=_stGet('seg_key');}catch(e){}var se=document.getElementById('segKeySel');return(v&&se&&Array.prototype.some.call(se.options,function(o){return o.value===v;}))?v:dv;})(_defaultSegKey());   /* persisted Segment-by basis (survives reload; Reset clears it) */
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
@@ -1587,8 +1592,8 @@ function _zoomSyncFreq(lo,hi){
   var s1=document.getElementById('freq_lo'),s2=document.getElementById('freq_hi');
   var loV=Math.max(parseFloat(s1.min),lo),hiV=Math.min(parseFloat(s2.max),hi);
   s1.value=loV;s2.value=hiV;
-  document.getElementById('freq_lo_txt').value=loV.toFixed(3);
-  document.getElementById('freq_hi_txt').value=hiV.toFixed(3);
+  document.getElementById('freq_lo_txt').value=(Math.floor(loV*1000)/1000).toFixed(3);   /* outward: the filter must CONTAIN the visible zoom (a nearest-3dp round hid points inside the axis) */
+  document.getElementById('freq_hi_txt').value=(Math.ceil(hiV*1000)/1000).toFixed(3);
   update();
 }
 function _onPlotRelayout(ed){
@@ -3680,6 +3685,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  try{_stSet('seg_key',_segKey);}catch(e){}
   _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
@@ -3703,7 +3709,7 @@ function segTab(dir){
 function _recomputeSpecSegments(){
   if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
-    _segKey=_defaultSegKey();
+    _segKey=(function(dv){var v=null;try{v=_stGet('seg_key');}catch(e){}var se=document.getElementById('segKeySel');return(v&&se&&Array.prototype.some.call(se.options,function(o){return o.value===v;}))?v:dv;})(_defaultSegKey());   /* persisted Segment-by basis (survives reload; Reset clears it) */
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
@@ -3861,12 +3867,16 @@ function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k
 function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var e=document.getElementById(i);if(e)_stSet(i,e.value);});
+  document.querySelectorAll('select[id]').forEach(function(s){if(!/^(segKeySel|padb_)/.test(s.id))_stSet('sel_'+s.id,s.value);});
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
 }
 function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var v=_stGet(i),e=document.getElementById(i);if(v!==null&&e)e.value=v;});
+  document.querySelectorAll('select[id]').forEach(function(s){var v=_stGet('sel_'+s.id);if(v!==null&&!/^(segKeySel|padb_)/.test(s.id)){for(var i=0;i<s.options.length;i++){if(s.options[i].value===v){s.value=v;break;}}}});
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
 }
 loadState();
@@ -5862,6 +5872,8 @@ function saveState(){
   if(vm)_stSet('dist_view',vm.value);
   var lo=document.getElementById('dist_freq_lo'),hi=document.getElementById('dist_freq_hi');
   if(lo)_stSet('dist_freq_lo',lo.value);if(hi)_stSet('dist_freq_hi',hi.value);
+  ['dist_freq_lo_txt','dist_freq_hi_txt'].forEach(function(i){var e=document.getElementById(i);if(e)_stSet(i,e.value);});
+  document.querySelectorAll('select[id]').forEach(function(s){if(!/^(segKeySel|padb_)/.test(s.id))_stSet('sel_'+s.id,s.value);});
   var hs=document.getElementById('dist_hide_spec_chk');if(hs)_stSet('dist_hide_spec',hs.checked?'1':'0');
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.dist_spur_chk').forEach(function(c){_stSet('dist_spur_'+c.value,c.checked?'1':'0');});
@@ -5876,6 +5888,8 @@ function loadState(){
   if(lo!=null){var sl=document.getElementById('dist_freq_lo');if(sl){sl.value=lo;var lt=document.getElementById('dist_freq_lo_txt');if(lt)lt.value=parseFloat(lo).toFixed(3);}}
   var hi=_stGet('dist_freq_hi');
   if(hi!=null){var sh=document.getElementById('dist_freq_hi');if(sh){sh.value=hi;var ht=document.getElementById('dist_freq_hi_txt');if(ht)ht.value=parseFloat(hi).toFixed(3);}}
+  ['dist_freq_lo_txt','dist_freq_hi_txt'].forEach(function(i){var v=_stGet(i),e=document.getElementById(i);if(v!==null&&e)e.value=v;});
+  document.querySelectorAll('select[id]').forEach(function(s){var v=_stGet('sel_'+s.id);if(v!==null&&!/^(segKeySel|padb_)/.test(s.id)){for(var i=0;i<s.options.length;i++){if(s.options[i].value===v){s.value=v;break;}}}});
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   document.querySelectorAll('.dist_spur_chk').forEach(function(c){var s=_stGet('dist_spur_'+c.value);if(s!==null)c.checked=(s==='1');});
   /* If all spur checkboxes ended up deselected (stale saved state), restore all */
@@ -6294,6 +6308,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  try{_stSet('seg_key',_segKey);}catch(e){}
   _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
@@ -6380,7 +6395,7 @@ function _segFilterCondDims(seg){
 function _recomputeSpecSegments(){
   if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
-    _segKey=_defaultSegKey();
+    _segKey=(function(dv){var v=null;try{v=_stGet('seg_key');}catch(e){}var se=document.getElementById('segKeySel');return(v&&se&&Array.prototype.some.call(se.options,function(o){return o.value===v;}))?v:dv;})(_defaultSegKey());   /* persisted Segment-by basis (survives reload; Reset clears it) */
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
@@ -6913,7 +6928,12 @@ var _lastDistSpecShapes=[];
 function toggleDistHideSpec(){
   var hideSpec=document.getElementById('dist_hide_spec_chk').checked;
   _stSet('dist_hide_spec',hideSpec?'1':'0');
-  Plotly.relayout('kde_plot',{shapes:hideSpec?[]:_lastDistSpecShapes});
+  /* Plotly.react, NOT relayout({shapes:[]}): after relayout empties the shapes array a LATER
+     relayout({'yaxis.autorange':true}) (every Segment-by Next/Prev does one) throws
+     "Cannot read properties of undefined (reading '_extremes')" and the step never completes
+     (found by qa_filter_equiv 2026-11-21). react() re-derives the axis bookkeeping. */
+  var gd=document.getElementById('kde_plot');
+  Plotly.react(gd,gd.data,Object.assign({},gd.layout,{shapes:hideSpec?[]:_lastDistSpecShapes}),{responsive:true});
 }
 function resetView(){
   document.querySelectorAll('.env_chk').forEach(function(c){c.checked=true;});
@@ -9504,6 +9524,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  try{_stSet('seg_key',_segKey);}catch(e){}
   _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
@@ -9641,7 +9662,7 @@ function _segFilterCondDims(seg){
 function _recomputeSpecSegments(){
   if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
-    _segKey=_defaultSegKey();
+    _segKey=(function(dv){var v=null;try{v=_stGet('seg_key');}catch(e){}var se=document.getElementById('segKeySel');return(v&&se&&Array.prototype.some.call(se.options,function(o){return o.value===v;}))?v:dv;})(_defaultSegKey());   /* persisted Segment-by basis (survives reload; Reset clears it) */
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
@@ -9924,6 +9945,8 @@ function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k
 function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var e=document.getElementById(i);if(e)_stSet(i,e.value);});
+  document.querySelectorAll('select[id]').forEach(function(s){if(!/^(segKeySel|padb_)/.test(s.id))_stSet('sel_'+s.id,s.value);});
   document.querySelectorAll('.env_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     var col='cond_'+dim.col_id;
@@ -9951,6 +9974,8 @@ function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl)sl.value=lo;var txlo=document.getElementById('freq_lo_txt');if(txlo)txlo.value=parseFloat(lo).toFixed(3);}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh)sh.value=hi;var txhi=document.getElementById('freq_hi_txt');if(txhi)txhi.value=parseFloat(hi).toFixed(3);}
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var v=_stGet(i),e=document.getElementById(i);if(v!==null&&e)e.value=v;});
+  document.querySelectorAll('select[id]').forEach(function(s){var v=_stGet('sel_'+s.id);if(v!==null&&!/^(segKeySel|padb_)/.test(s.id)){for(var i=0;i<s.options.length;i++){if(s.options[i].value===v){s.value=v;break;}}}});
   document.querySelectorAll('.env_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
     var col='cond_'+dim.col_id;
@@ -12083,6 +12108,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  try{_stSet('seg_key',_segKey);}catch(e){}
   _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
@@ -12202,7 +12228,7 @@ function _segFilterCondDims(seg){
 function _recomputeSpecSegments(){
   if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
-    _segKey=_defaultSegKey();
+    _segKey=(function(dv){var v=null;try{v=_stGet('seg_key');}catch(e){}var se=document.getElementById('segKeySel');return(v&&se&&Array.prototype.some.call(se.options,function(o){return o.value===v;}))?v:dv;})(_defaultSegKey());   /* persisted Segment-by basis (survives reload; Reset clears it) */
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
@@ -12360,6 +12386,8 @@ function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k
 function saveState(){
   _stSet('freq_lo',document.getElementById('ec_freq_lo')?document.getElementById('ec_freq_lo').value:'');
   _stSet('freq_hi',document.getElementById('ec_freq_hi')?document.getElementById('ec_freq_hi').value:'');
+  ['ec_freq_lo_txt','ec_freq_hi_txt'].forEach(function(i){var e=document.getElementById(i);if(e)_stSet(i,e.value);});
+  document.querySelectorAll('select[id]').forEach(function(s){if(!/^(segKeySel|padb_)/.test(s.id))_stSet('sel_'+s.id,s.value);});
   document.querySelectorAll('.ec_temp_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.ec_ser_chk').forEach(function(c){_stSet('ser_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.ec_port_chk').forEach(function(c){_stSet('port_'+c.value,c.checked?'1':'0');});
@@ -12378,6 +12406,8 @@ function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
   if(lo!==null){var sl=document.getElementById('ec_freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('ec_freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('ec_freq_hi');if(sh){sh.value=hi;var th=document.getElementById('ec_freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  ['ec_freq_lo_txt','ec_freq_hi_txt'].forEach(function(i){var v=_stGet(i),e=document.getElementById(i);if(v!==null&&e)e.value=v;});
+  document.querySelectorAll('select[id]').forEach(function(s){var v=_stGet('sel_'+s.id);if(v!==null&&!/^(segKeySel|padb_)/.test(s.id)){for(var i=0;i<s.options.length;i++){if(s.options[i].value===v){s.value=v;break;}}}});
   document.querySelectorAll('.ec_temp_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   document.querySelectorAll('.ec_ser_chk').forEach(function(c){var s=_stGet('ser_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   document.querySelectorAll('.ec_port_chk').forEach(function(c){var s=_stGet('port_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
@@ -17451,6 +17481,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  try{_stSet('seg_key',_segKey);}catch(e){}
   _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
@@ -17613,7 +17644,7 @@ function segTab(dir){
 function _recomputeSpecSegments(){
   if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
-    _segKey=_defaultSegKey();
+    _segKey=(function(dv){var v=null;try{v=_stGet('seg_key');}catch(e){}var se=document.getElementById('segKeySel');return(v&&se&&Array.prototype.some.call(se.options,function(o){return o.value===v;}))?v:dv;})(_defaultSegKey());   /* persisted Segment-by basis (survives reload; Reset clears it) */
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
@@ -17828,8 +17859,10 @@ function saveState(){
      flipping views and back keeps the same table view (David 2026-09-27). */
   var tmEl=document.getElementById('box_table_mode');if(tmEl)_stSet('box_table_mode',tmEl.value);
   var bspnl=document.getElementById('box_stat_panel');if(bspnl)_stSet('box_stat_open',(bspnl.style.display!=='none')?'1':'0');
+  document.querySelectorAll('select[id]').forEach(function(s){if(!/^(segKeySel|padb_)/.test(s.id))_stSet('sel_'+s.id,s.value);});
 }
 function loadState(){
+  document.querySelectorAll('select[id]').forEach(function(s){var v=_stGet('sel_'+s.id);if(v!==null&&!/^(segKeySel|padb_)/.test(s.id)){for(var i=0;i<s.options.length;i++){if(s.options[i].value===v){s.value=v;break;}}}});
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
   if(lo!==null){var sl=document.getElementById('box_freq_lo');if(sl)sl.value=lo;}
   if(hi!==null){var sh=document.getElementById('box_freq_hi');if(sh)sh.value=hi;}
@@ -20753,6 +20786,7 @@ function _defaultSegKey(){
 }
 function segKeyChange(){
   _segKey=document.getElementById('segKeySel').value;
+  try{_stSet('seg_key',_segKey);}catch(e){}
   _segBaseColSel=null;   /* re-capture the dim baseline when the segment basis changes (avoids compounding auto-narrowing across steps -- David 2026-09-27) */
   _recomputeSpecSegments();
 }
@@ -20895,7 +20929,7 @@ function _sumInclDutIdxs(cd){
 function _recomputeSpecSegments(){
   if(typeof PADB_ensureBandOption==='function') PADB_ensureBandOption();
   if(_segKey===null){
-    _segKey=_defaultSegKey();
+    _segKey=(function(dv){var v=null;try{v=_stGet('seg_key');}catch(e){}var se=document.getElementById('segKeySel');return(v&&se&&Array.prototype.some.call(se.options,function(o){return o.value===v;}))?v:dv;})(_defaultSegKey());   /* persisted Segment-by basis (survives reload; Reset clears it) */
     var sel=document.getElementById('segKeySel');
     if(sel) sel.value=_segKey;
   }
@@ -21017,6 +21051,8 @@ function _stClear(){try{var keys=[];for(var i=0;i<localStorage.length;i++){var k
 function saveState(){
   _stSet('freq_lo',document.getElementById('freq_lo').value);
   _stSet('freq_hi',document.getElementById('freq_hi').value);
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var e=document.getElementById(i);if(e)_stSet(i,e.value);});
+  document.querySelectorAll('select[id]').forEach(function(s){if(!/^(segKeySel|padb_)/.test(s.id))_stSet('sel_'+s.id,s.value);});
   document.querySelectorAll('.sum_temp_chk').forEach(function(c){_stSet('temp_'+c.value,c.checked?'1':'0');});
   document.querySelectorAll('.sum_ser_chk').forEach(function(c){_stSet('ser_'+c.value,c.checked?'1':'0');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){
@@ -21042,6 +21078,8 @@ function loadState(){
   var lo=_stGet('freq_lo'),hi=_stGet('freq_hi');
   if(lo!==null){var sl=document.getElementById('freq_lo');if(sl){sl.value=lo;var tx=document.getElementById('freq_lo_txt');if(tx)tx.value=parseFloat(lo).toFixed(3);}}
   if(hi!==null){var sh=document.getElementById('freq_hi');if(sh){sh.value=hi;var th=document.getElementById('freq_hi_txt');if(th)th.value=parseFloat(hi).toFixed(3);}}
+  ['freq_lo_txt','freq_hi_txt'].forEach(function(i){var v=_stGet(i),e=document.getElementById(i);if(v!==null&&e)e.value=v;});
+  document.querySelectorAll('select[id]').forEach(function(s){var v=_stGet('sel_'+s.id);if(v!==null&&!/^(segKeySel|padb_)/.test(s.id)){for(var i=0;i<s.options.length;i++){if(s.options[i].value===v){s.value=v;break;}}}});
   document.querySelectorAll('.sum_temp_chk').forEach(function(c){var s=_stGet('temp_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   document.querySelectorAll('.sum_ser_chk').forEach(function(c){var s=_stGet('ser_'+c.value);if(s!==null&&!c.disabled)c.checked=(s==='1');});
   if(typeof COND_DIMS!=='undefined') COND_DIMS.forEach(function(dim){

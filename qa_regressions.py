@@ -1896,6 +1896,70 @@ def test_summary_modal_by_freq_matches_mode() -> None:
         pd.DataFrame({"Frequency_MHz": [1.0], "Upper_Limit": [np.nan]}), "Upper_Limit") == {})
 
 
+def test_summary_vectorised_helpers_match_pandas_reference() -> None:
+    """render_summary's per-DUT matrices / per-frequency splits were rebuilt from integer
+    codes + numpy (the Arrow-string groupby/unstack/take per column dominated a 38k-row,
+    ~500-condition band: 133 s -> 44 s).  Each helper must equal the ORIGINAL pandas
+    expression exactly (min/max exact; mean via the same groupby kernel; per-frequency
+    value order preserved so np.mean sums identically)."""
+    import numpy as np
+    import padb_v2 as _v2
+    rng = np.random.default_rng(11)
+    n = 3000
+    freqs = np.round(np.arange(1.0, 31.0) * 1.37, 6)
+    sers = np.array(["US%05d" % i for i in range(1, 9)])
+    df = pd.DataFrame({
+        "Frequency_MHz": rng.choice(freqs, n),
+        "Serial": rng.choice(sers, n),
+        "Value": np.round(rng.normal(-60, 3, n), 4),
+        "Lim": np.where(rng.random(n) < .6, rng.choice([-50.0, -52.5, -48.0], n), np.nan),
+    })
+    df.loc[df["Frequency_MHz"] == freqs[5], "Lim"] = np.nan          # freq with no limit
+    all_f = sorted(df["Frequency_MHz"].unique())
+    dut = sorted(df["Serial"].unique()) + ["US99999"]                # a serial absent from data
+    fi = pd.Index(all_f).get_indexer(df["Frequency_MHz"])
+    si = pd.Index(dut).get_indexer(df["Serial"])
+
+    def ref(col, agg, nd):
+        m = (df[["Frequency_MHz", "Serial", col]].dropna(subset=[col])
+             .groupby(["Frequency_MHz", "Serial"], sort=False)[col].agg(agg)
+             .unstack(level="Serial").reindex(index=all_f, columns=dut))
+        return [[round(float(v), nd) if pd.notna(v) else None for v in m.loc[f]] for f in all_f]
+    lim = df["Lim"].to_numpy(dtype=float)
+    val = df["Value"].to_numpy(dtype=float)
+    check("summary helpers: per-(freq,DUT) min == pandas groupby/unstack",
+          _v2._dut_minmax_rows(fi, si, lim, len(all_f), len(dut), True) == ref("Lim", "min", 6))
+    check("summary helpers: per-(freq,DUT) max == pandas groupby/unstack",
+          _v2._dut_minmax_rows(fi, si, lim, len(all_f), len(dut), False) == ref("Lim", "max", 6))
+    check("summary helpers: per-(freq,DUT) mean == pandas groupby/unstack (bit-identical)",
+          _v2._dut_mean_rows(fi, si, val, len(all_f), len(dut)) == ref("Value", "mean", 4))
+    # temp-style row mask
+    msk = rng.random(n) < .4
+    sub = df[msk]
+    m2 = (sub[["Frequency_MHz", "Serial", "Value"]].dropna(subset=["Value"])
+          .groupby(["Frequency_MHz", "Serial"], sort=False)["Value"].mean()
+          .unstack(level="Serial").reindex(index=all_f, columns=dut))
+    want2 = [[round(float(v), 4) if pd.notna(v) else None for v in m2.loc[f]] for f in all_f]
+    check("summary helpers: masked (per-temperature) mean identical",
+          _v2._dut_mean_rows(fi[msk], si[msk], val[msk], len(all_f), len(dut)) == want2)
+    # split by key keeps row order per key
+    sp = _v2._split_sorted(df["Frequency_MHz"].to_numpy(), val)
+    want = {f: g.to_numpy() for f, g in df.groupby("Frequency_MHz", sort=False)["Value"]}
+    check("summary helpers: _split_sorted == groupby values, same order",
+          set(sp) == set(want) and all(np.array_equal(sp[k], want[k]) for k in want))
+    # modal: the numpy path vs the groupby path (force groupby by object dtype)
+    got = _v2._modal_by_freq(df.rename(columns={"Lim": "Upper_Limit"}), "Upper_Limit")
+    alt = df.rename(columns={"Lim": "Upper_Limit"}).copy()
+    alt["Upper_Limit"] = alt["Upper_Limit"].astype(object)
+    exp = _v2._modal_by_freq(alt, "Upper_Limit")
+    check("summary helpers: numpy _modal_by_freq == groupby path (ties -> smallest)",
+          {float(k): float(v) for k, v in got.items()} == {float(k): float(v) for k, v in exp.items()}
+          and len(got) > 0)
+    # TEETH: swapping min/max must be caught by the same comparison
+    check("summary helpers: teeth -- a swapped min/max would FAIL the reference check",
+          _v2._dut_minmax_rows(fi, si, lim, len(all_f), len(dut), False) != ref("Lim", "min", 6))
+
+
 def test_parquet_source_loads_like_csv() -> None:
     """A .parquet with the CSV's columns (padb-tools' own sidecar / padb_csv_to_parquet)
     must load IDENTICALLY to the CSV it came from -- including CSV null tokens ('NA')
@@ -2018,6 +2082,46 @@ def test_spec_conflict_note() -> None:
     n_calls = src.count("if(typeof _specConflictNote==='function') _specConflictNote();")
     check("note is invoked from update() AND the initial newPlot path (2 call sites)",
           n_calls == 2, f"count={n_calls}")
+
+
+def test_filter_equiv_and_persistence_fixes() -> None:
+    """Pins the 2026-11-21 qa_filter_equiv fixes (plot-vs-control equivalence + band-step
+    persistence). The BEHAVIOURAL guard is qa_filter_equiv.py (real browser); these pins keep
+    the three source-level causes from regressing without it:
+      (1) scatter _zoomSyncFreq wrote the freq TEXT boxes with toFixed (round-to-nearest) so a
+          drag-zoom filter could be NARROWER than the visible axis (hid points on screen). Must
+          round outward like setFreqBand.
+      (2) every view's saveState persisted only the range SLIDER value, which the browser snaps
+          to `step` -- reload moved a stepped band [300,400] to [300.16,399.61]. The text boxes
+          (what filtering reads) must be saved and restored verbatim.
+      (3) group-by / sort / auto-filter basis / P / C selects and the Segment-by basis were not
+          persisted, so they reset on reload (and after band stepping + reload).
+      (4) distribution toggleDistHideSpec used relayout({shapes:[]}), after which the next
+          relayout({'yaxis.autorange':true}) -- done by every Segment Next/Prev -- threw
+          '_extremes' and the step never completed. Must use Plotly.react."""
+    src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
+    zi = src.find("function _zoomSyncFreq(lo,hi){")
+    zb = src[zi: src.find("\nfunction ", zi + 10)]
+    check("scatter _zoomSyncFreq rounds the freq text OUTWARD (floor lo / ceil hi)",
+          "Math.floor(loV*1000)/1000" in zb and "Math.ceil(hiV*1000)/1000" in zb
+          and "loV.toFixed(3);" not in zb.replace("(Math.floor(loV*1000)/1000).toFixed(3)", ""))
+    for ids in ("'freq_lo_txt','freq_hi_txt'", "'ec_freq_lo_txt','ec_freq_hi_txt'",
+                "'dist_freq_lo_txt','dist_freq_hi_txt'"):
+        sv = ("[" + ids + "].forEach(function(i){var e=document.getElementById(i);if(e)_stSet(i,e.value);});")
+        ld = ("[" + ids + "].forEach(function(i){var v=_stGet(i),e=document.getElementById(i);if(v!==null&&e)e.value=v;});")
+        check(f"freq text boxes {ids} are saved verbatim", sv in src)
+        check(f"freq text boxes {ids} are restored verbatim", ld in src)
+    check("selects (group-by/sort/auto basis/P/C) are persisted by saveState",
+          src.count("_stSet('sel_'+s.id,s.value)") >= 6, f"count={src.count(chr(39).join(['_stSet(', 'sel_', '+s.id,s.value)']))}")
+    check("selects are restored by loadState", src.count("var v=_stGet('sel_'+s.id)") >= 6)
+    check("Segment-by basis persisted on change (all 7 copies)",
+          src.count("try{_stSet('seg_key',_segKey);}catch(e){}") == 7)
+    check("Segment-by basis restored when valid (all 7 copies)",
+          src.count("v=_stGet('seg_key')") == 7)
+    hi = src.find("function toggleDistHideSpec(){")
+    hb = src[hi: src.find("\nfunction resetView", hi)]
+    check("distribution hide-spec uses Plotly.react (not relayout shapes:[])",
+          "Plotly.react(gd,gd.data" in hb and "relayout('kde_plot',{shapes" not in hb)
 
 
 def test_setfreqband_rounds_outward() -> None:
@@ -3908,9 +4012,11 @@ def main() -> None:
                test_csv_to_parquet_converter,
                test_np_tolerance_interval_matches_pairwise_reference,
                test_summary_modal_by_freq_matches_mode,
+               test_summary_vectorised_helpers_match_pandas_reference,
                test_parquet_source_loads_like_csv,
                test_named_band_step_is_frequency_only,
                test_spec_conflict_note,
+               test_filter_equiv_and_persistence_fixes,
                test_setfreqband_rounds_outward,
                test_passfail_note_when_no_spec_basis,
                test_segment_hint_when_no_bands_on_key,
