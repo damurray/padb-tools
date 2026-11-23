@@ -43,6 +43,7 @@ import pandas as pd
 from flask import Flask, Response, jsonify, request
 
 import padb_bands
+import padb_limits
 
 try:
     import plotly.offline as _plo
@@ -259,7 +260,10 @@ class PandasDataSet:
         df["scored"] = _hi.notna() | _lo.notna()
         df["fail"] = ((_hi.notna() & (df["y"] > _hi)) | (_lo.notna() & (df["y"] < _lo)))
         self.has_limits = bool(df["scored"].any())
-        self.df = df[["x", "y", "site", "serial", "temp", "yhi", "ylo", "scored", "fail"]] \
+        df["yhi0"] = df["yhi"]
+        df["ylo0"] = df["ylo"]
+        self.limits: list = []
+        self.df = df[["x", "y", "site", "serial", "temp", "yhi", "ylo", "yhi0", "ylo0", "scored", "fail"]] \
             .sort_values("x", kind="stable").reset_index(drop=True)
         self.x_min = float(self.df["x"].min())
         self.x_max = float(self.df["x"].max())
@@ -279,6 +283,20 @@ class PandasDataSet:
 
     def distinct_x(self):
         return self.df["x"].unique().tolist()
+
+    def set_limits(self, limits):
+        """Apply (or, with [], remove) limit overrides over the data's own limits. One
+        semantic definition: padb_limits.effective. Recomputes scored / fail / has_limits."""
+        hi, lo = padb_limits.effective(self.df["x"].to_numpy(), self.df["yhi0"].to_numpy(dtype=float),
+                                       self.df["ylo0"].to_numpy(dtype=float), limits)
+        d = self.df
+        d["yhi"], d["ylo"] = hi, lo
+        hi_ok, lo_ok = ~np.isnan(hi), ~np.isnan(lo)
+        y = d["y"].to_numpy()
+        d["scored"] = hi_ok | lo_ok
+        d["fail"] = (hi_ok & (y > hi)) | (lo_ok & (y < lo))
+        self.has_limits = bool(d["scored"].any())
+        self.limits = list(limits)
 
     def compute_band_counts(self):
         """Row count inside each named band, and the largest (drives the band-view load
@@ -313,6 +331,7 @@ class PandasDataSet:
             "slow_band_warn": self.max_band_rows > SLOW_BAND_ROWS,
             "is_room_only": bool(self.is_room_only),
             "has_limits": bool(self.has_limits),
+            "limits": getattr(self, "limits", []),
             "dims": getattr(self, "dims", []),
         }
 
@@ -400,6 +419,7 @@ class DuckDataSet:
         self.con = duckdb.connect(str(self._tmpdir / "viewer.duckdb"))
         self.con.execute("SET temp_directory = ?", [str(self._tmpdir / "spill")])
         self._src = "read_parquet('" + str(parquet_path).replace("\\", "/").replace("'", "''") + "')"
+        self._limits_lock = threading.Lock()
         self._build()
         self.engine = "duckdb"
         self.value_label = self.value_col
@@ -505,7 +525,7 @@ class DuckDataSet:
             if self.lo_col else "CAST(NULL AS DOUBLE)"
         con.execute(f"""
             CREATE TABLE pts AS
-            SELECT x, y, site, serial, temp, yhi, ylo{dout},
+            SELECT x, y, site, serial, temp, yhi, ylo, yhi AS yhi0, ylo AS ylo0{dout},
                    (yhi IS NOT NULL OR ylo IS NOT NULL) AS scored,
                    COALESCE((yhi IS NOT NULL AND y > yhi) OR (ylo IS NOT NULL AND y < ylo), false) AS fail,
                    rid
@@ -522,6 +542,7 @@ class DuckDataSet:
                         "bool_or(scored) FROM pts").fetchone()
         self.n_rows, self.x_min, self.x_max, self.n_serials = int(r[0]), r[1], r[2], int(r[3])
         self.has_limits = bool(r[4])
+        self.limits: list = []
         if self.n_rows == 0:
             sys.exit(f"No usable (x, value) rows in {self.path.name}")
         self.x_min, self.x_max = float(self.x_min), float(self.x_max)
@@ -539,6 +560,19 @@ class DuckDataSet:
 
     def distinct_x(self):
         return [r[0] for r in self._all("SELECT DISTINCT x FROM pts ORDER BY x")]
+
+    def set_limits(self, limits):
+        """Apply (or, with [], remove) limit overrides over the data's own limits, in place on
+        the derived table. SQL mirror of padb_limits.effective (QA compares them)."""
+        hi = padb_limits.sql_case(limits, "x", "upper", "yhi0")
+        lo = padb_limits.sql_case(limits, "x", "lower", "ylo0")
+        with self._limits_lock:
+            self.con.execute(f"UPDATE pts SET yhi = {hi}, ylo = {lo}")
+            self.con.execute(
+                "UPDATE pts SET scored = (yhi IS NOT NULL OR ylo IS NOT NULL), "
+                "fail = COALESCE((yhi IS NOT NULL AND y > yhi) OR (ylo IS NOT NULL AND y < ylo), false)")
+            self.has_limits = bool(self._all("SELECT coalesce(bool_or(scored), false) FROM pts")[0][0])
+            self.limits = list(limits)
 
     def compute_band_counts(self):
         self.band_counts, self.max_band_rows = [], 0
@@ -757,6 +791,8 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span class="sitebox" id="sites"></span>
   <span class="sitebox" id="temps"></span>
   <label id="limbox" style="display:none" title="Draw the spec/limit line(s) from the data's Upper/Lower Limit columns (a step where the limit changes along x). Display only -- the limit shown is the first one in file order at each x."><input type="checkbox" id="showlim" onchange="update()"> Show limits</label>
+  <button id="limbtn" onclick="toggleLimEdit()" title="Override the data's Upper/Lower Limit over x-ranges. Changes the limit line, Passing/Failing and every band view; never the parquet. Saved to a limits file beside the data.">Edit limits</button>
+  <span id="limflag" style="display:none;color:#b26a00;font-weight:600" title="The limits shown and used for pass/fail come from your override file, not (only) from the data."></span>
   <button id="grpbtn" onclick="toggleGrp()"
     title="Colour/split the overview points by Site, Serial Number, Temperature or any condition. Display only -- does not filter.">Group by &#9662;</button>
   <button id="condbtn" onclick="toggleConds()" style="display:none"
@@ -772,6 +808,7 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span id="status"></span>
 </div>
 <div id="grppanel" style="display:none;padding:6px 14px;background:#f2fff2;border-bottom:1px solid #ddd;font-size:12px"></div>
+<div id="limedit" style="display:none;padding:6px 14px;background:#fff6f0;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="condpanel" style="display:none;padding:6px 14px;background:#fffaf0;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="segbar" style="padding:6px 14px;background:#f6f6ff;border-bottom:1px solid #ddd;font-size:12px">
   <b title="Step the frequency window through segments to minimize the data shown -- by named band, or by each spec/limit 'stair' (contiguous frequencies with a constant limit).">Segment step:</b>
@@ -856,6 +893,7 @@ async function boot(){
   vbtns.forEach(function(v){ var b=document.createElement('button'); b.textContent=v[1];
     b.style.marginRight='6px'; b.onclick=function(){openView(v[0]);}; vb.appendChild(b); });
   buildBands();
+  refreshLimitUI();
   update();
 }
 // --- State persistence (browser localStorage, per dataset). Saves what the user narrowed
@@ -975,6 +1013,72 @@ async function beApply(){
   renderBandEdit(META.bands);
   var m2=document.getElementById('bemsg'); m2.style.color='#060'; m2.textContent='saved '+META.bands.length+' band(s) -> '+j.path;
 }
+// --- Live limit-override editor. Rows = x-range + upper and/or lower limit. A blank side keeps
+//     the DATA's own value for that side; rows outside every range keep the data's limits; where
+//     ranges overlap or share an edge the LATER row wins (per side). Display + pass/fail + band
+//     views follow on Apply; the parquet is never modified. -------------------------------------
+function refreshLimitUI(){
+  var has=!!META.has_limits, n=(META.limits||[]).length;
+  document.getElementById('limbox').style.display=has?'':'none';
+  document.querySelectorAll('input[name="pf"]').forEach(function(r){ r.disabled=!has&&r.value!=='all'; });
+  var pfb=document.getElementById('pfbox'); if(pfb){ pfb.style.opacity=has?'1':'0.5'; }
+  var so=document.getElementById('segbasis').querySelector('option[value="spec"]'); if(so) so.disabled=!has;
+  var f=document.getElementById('limflag');
+  f.style.display=n?'':'none'; f.textContent=n?('limit overrides ACTIVE ('+n+' range'+(n>1?'s':'')+')'):'';
+}
+function toggleLimEdit(){
+  var p=document.getElementById('limedit');
+  if(p.style.display==='none'||!p.style.display){ renderLimEdit(META.limits||[]); p.style.display='block'; }
+  else p.style.display='none';
+}
+function _leRow(e){
+  var v=function(x){ return x==null?'':x; };
+  return '<tr class="lerow"><td><input class="le_lo" type="number" step="any" value="'+v(e.lo)+'"></td>'+
+    '<td><input class="le_hi" type="number" step="any" value="'+v(e.hi)+'"></td>'+
+    '<td><input class="le_up" type="number" step="any" value="'+v(e.upper)+'" placeholder="(data)"></td>'+
+    '<td><input class="le_lw" type="number" step="any" value="'+v(e.lower)+'" placeholder="(data)"></td>'+
+    '<td><input class="le_note" type="text" value="'+String(e.note||'').replace(/"/g,'&quot;')+'" style="width:150px"></td>'+
+    '<td><a href="#" onclick="this.closest(\'tr\').remove();return false" title="Remove this range">delete</a></td></tr>';
+}
+function renderLimEdit(list){
+  var p=document.getElementById('limedit');
+  p.innerHTML='<b>Limit overrides</b> <span style="color:#666">(x in '+(META.x_unit||'data units')+'; edges inclusive; '+
+    'a blank limit keeps the data\'s own value on that side; later row wins where ranges overlap; '+
+    'overrides the limit line, Passing/Failing and the band views &mdash; never the parquet)</span>'+
+    '<table id="letbl" style="margin:4px 0"><tr><th align="left">'+(META.x_label||'x')+' min</th><th align="left">max</th>'+
+    '<th align="left">Upper limit</th><th align="left">Lower limit</th><th align="left">Note</th><th></th></tr>'+
+    list.map(_leRow).join('')+'</table>'+
+    '<button onclick="leAdd()">Add range</button> <button onclick="leApply()" style="font-weight:600">Apply</button> '+
+    '<button onclick="renderLimEdit(META.limits||[])">Revert</button> '+
+    '<button onclick="leClear()" title="Remove every override: back to the data\'s own limits">Clear all</button> '+
+    '<button onclick="toggleLimEdit()">Close</button> <span id="lemsg" style="margin-left:8px"></span>';
+}
+function leAdd(){ document.getElementById('letbl').insertAdjacentHTML('beforeend',_leRow({lo:META.x_min,hi:META.x_max,upper:'',lower:''})); }
+function leRead(){
+  return [...document.querySelectorAll('#letbl .lerow')].map(function(r){
+    return {lo:r.querySelector('.le_lo').value, hi:r.querySelector('.le_hi').value,
+            upper:r.querySelector('.le_up').value, lower:r.querySelector('.le_lw').value,
+            note:r.querySelector('.le_note').value}; });
+}
+async function _lePost(list){
+  var msg=document.getElementById('lemsg'); msg.style.color='#666'; msg.textContent='saving...';
+  var j;
+  try{
+    var r=await fetch('/api/limits',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({limits:list})});
+    j=await r.json();
+  }catch(e){ msg.style.color='#c00'; msg.textContent='could not reach the server'; return; }
+  if(!j.ok){ msg.style.color='#c00'; msg.textContent=j.error||'rejected'; return; }
+  META.limits=j.limits; META.has_limits=j.has_limits;
+  _specCache=null; refreshLimitUI();
+  if(document.getElementById('segbasis').value==='spec'){ _segIdx=-1; await _segLoad(true); }
+  update();
+  if(_curView && document.getElementById('viewwrap').style.display!=='none') openView(_curView);
+  renderLimEdit(META.limits);
+  var m2=document.getElementById('lemsg'); m2.style.color='#060';
+  m2.textContent=(META.limits.length?('saved '+META.limits.length+' range(s)'):'overrides cleared')+' -> '+j.path;
+}
+function leApply(){ return _lePost(leRead()); }
+function leClear(){ return _lePost([]); }
 function setBand(lo,hi){
   document.getElementById('flo').value=lo;
   document.getElementById('fhi').value=hi;
@@ -1299,6 +1403,37 @@ def api_bands():
     return jsonify({"ok": True, **_bands_payload()})
 
 
+# --- Live-editable LIMIT overrides ---------------------------------------------------------
+# Same pattern as the bands: validate, write the shared file atomically, then update the live
+# DataSet so the overview (limit line, Passing/Failing, spec-stair stepper) and every band view
+# built from here on follow without a restart. Overrides never touch the parquet.
+LIMITS_PATH: Path | None = None
+
+
+def _limits_payload():
+    m = DS.meta()
+    return {"limits": m["limits"], "has_limits": m["has_limits"], "x_unit": m["x_unit"],
+            "path": str(LIMITS_PATH or (DS.path.parent / padb_limits.DEFAULT_NAME))}
+
+
+@app.route("/api/limits", methods=["GET", "POST"])
+def api_limits():
+    if request.method == "GET":
+        return jsonify(_limits_payload())
+    body = request.get_json(silent=True) or {}
+    clean, err = padb_limits.validate(body.get("limits"))
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    path = LIMITS_PATH or (DS.path.parent / padb_limits.DEFAULT_NAME)
+    with _bands_lock:
+        try:
+            padb_limits.save_file(path, clean, DS.x_unit)
+        except OSError as exc:
+            return jsonify({"ok": False, "error": "could not save %s: %s" % (path, exc)}), 500
+        DS.set_limits(clean)
+    return jsonify({"ok": True, **_limits_payload()})
+
+
 # --- Band-windowed rendering of the EXISTING interactive views (option B) -----
 # The heavy giant HTML is unopenable only because it embeds the whole dataset.
 # Here we slice the parquet to one frequency band, write it back out as a CSV
@@ -1367,7 +1502,8 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False,
     if not hasattr(DS, "band_row_count"):
         filt = None            # pandas engine: band views are unfiltered
     key = (view, round(flo, 6), round(fhi, 6), bool(full),
-           json.dumps(filt, sort_keys=True, default=str) if filt else "")
+           json.dumps(filt, sort_keys=True, default=str) if filt else "",
+           json.dumps(getattr(DS, "limits", []), sort_keys=True))
     cached = _band_cache.get(key)
     if cached and os.path.exists(cached[0]):
         return cached
@@ -1416,6 +1552,8 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False,
         cfg["box_drop_points"] = True   # lite: exact stats, no per-point overlay
     if len(DS.sites) >= 2:
         cfg["primary_site"] = DS.sites[0]
+    if getattr(DS, "limits", None):
+        cfg["limit_overrides"] = DS.limits      # data x-units; padb_v2 applies them before any view
     padb_v2.generate_report(band_csv, cfg, tmp)
     cands = sorted(tmp.glob(f"*_{view}.html"))
     out = str(cands[0]) if cands else ""
@@ -1477,6 +1615,8 @@ def main(argv=None):
                          "env PADB_VIEWER_ENGINE also works)")
     ap.add_argument("--bands", help="JSON file of named frequency bands "
                     "(default: bands.json / padb_viewer_bands.json next to the parquet)")
+    ap.add_argument("--limits", help="JSON file of limit overrides "
+                    "(default: padb_viewer_limits.json / limits.json next to the parquet)")
     ap.add_argument("--auto-bands", dest="auto_bands", action="store_true", default=True,
                     help="If no band file is found, auto-generate an editable starter "
                          "from the swept data (ON by default; an existing file always loads)")
@@ -1484,7 +1624,7 @@ def main(argv=None):
                     help="Do NOT auto-generate a band file (an existing one still loads)")
     args = ap.parse_args(argv)
 
-    global DS, BANDS_PATH
+    global DS, BANDS_PATH, LIMITS_PATH
     target = Path(args.target).resolve() if args.target else _default_target()
     pqpath = _find_parquet(target)
     print(f"Loading {pqpath} ...", flush=True)
@@ -1510,6 +1650,15 @@ def main(argv=None):
             print(f"  [bands] loaded {len(DS.bands)} band(s) from {Path(bpath).name} "
                   f"(data unit {DS.x_unit or '?'})", flush=True)
     DS.compute_band_counts()
+    lpath = Path(args.limits).resolve() if args.limits else padb_limits.find_file([pqpath.parent])
+    LIMITS_PATH = lpath if lpath else None
+    if lpath:
+        lims, lerr = padb_limits.load_file(lpath, DS.x_unit)
+        if lerr:
+            print(f"  [limits] {lerr} -- ignored", flush=True)
+        elif lims:
+            DS.set_limits(lims)
+            print(f"  [limits] {len(lims)} limit override range(s) from {lpath.name} applied", flush=True)
     m = DS.meta()
     print(f"  {m['rows']:,} rows | x={m['x_label']} [{m['x_min']:.4g}..{m['x_max']:.4g}] "
           f"| value={m['value_label']} | sites={m['sites']}", flush=True)

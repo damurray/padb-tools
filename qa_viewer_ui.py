@@ -12,6 +12,9 @@ checked against an independent pandas oracle over the same parquet:
   INV-RAPID  3 back-to-back Next clicks end on the LAST window (no stale response wins)
   INV-HOVER  hover text carries Serial + the condition text
   INV-NOERR  no uncaught page errors
+  INV-LIMEDIT live limit-override editor: bad input 400 + nothing changed; an override changes
+             Failing totals == oracle, the drawn limit line, and the band views the viewer builds
+             (no stale cache); Clear all restores the data's own limits
   INV-BANDEDIT live band editor: bad input rejected (400, nothing changed), good edit saves the
              shared band file, recounts == oracle, buttons + Named-bands stepper follow
   INV-PERSIST window/conds/group-by/limits/max-pts/segment index survive a reload; Reset all
@@ -520,6 +523,113 @@ def main() -> int:
         check("INV-BANDEDIT: deleting a band saves (3 left)", len(json.loads(bfile.read_text())["bands"]) == 3)
         reload_page()
         check("INV-BANDEDIT: edited bands survive a reload", page.evaluate("META.bands.length") == 3)
+
+        # ---- Live limit-override editor ---------------------------------------------------
+        lfile = tmp / "padb_viewer_limits.json"
+        yv = df["SpurPower (dBc)"].astype(float)
+        xv = df["Frequency (MHz)"].astype(float)
+        data_hi = df["Upper Limit"].astype(float)
+
+        def post_limits(payload):
+            req = urllib.request.Request(base + "/api/limits", data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                r = urllib.request.urlopen(req, timeout=60)
+                return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+
+        for label, payload in {"min above max": [{"lo": 9, "hi": 1, "upper": -80}],
+                               "no limit on either side": [{"lo": 0, "hi": 400}],
+                               "lower above upper": [{"lo": 0, "hi": 400, "upper": -90, "lower": -80}],
+                               "non-numeric": [{"lo": 0, "hi": 400, "upper": "abc"}],
+                               "not a list": {"lo": 0}}.items():
+            code, body = post_limits({"limits": payload})
+            check("INV-LIMEDIT: invalid input rejected with 400 (%s)" % label,
+                  code == 400 and body.get("ok") is False and body.get("error"), (code, body))
+        check("INV-LIMEDIT: rejected edits changed nothing (no file, no live overrides)",
+              not lfile.exists() and api("/api/limits")["limits"] == [])
+
+        def fails_in_view():
+            page.check('input[name="pf"][value="fail"]')
+            n = total()
+            page.check('input[name="pf"][value="all"]')
+            total()
+            return n
+
+        page.evaluate("resetView()")
+        total()
+        want_data = int((yv > data_hi).sum())
+        check("INV-LIMEDIT baseline: Failing total == oracle on the data's own limits",
+              fails_in_view() == want_data and want_data > 0, (want_data,))
+
+        # apply a blanket override through the real UI
+        if not page.is_visible("#limedit"):
+            page.click("#limbtn")
+        page.click("#limedit button:has-text('Add range')")
+        row = page.query_selector_all("#letbl .lerow")[-1]
+        row.query_selector(".le_lo").fill("0")
+        row.query_selector(".le_hi").fill("400")
+        row.query_selector(".le_up").fill("-90")
+        page.click("#limedit button:has-text('Apply')")
+        page.wait_for_function("document.getElementById('lemsg').textContent.indexOf('saved')===0", timeout=30000)
+        want_ov = int((yv > -90.0).sum())
+        got = fails_in_view()
+        check("INV-LIMEDIT: Failing total follows the override (== oracle, differs from the data's)",
+              got == want_ov and want_ov != want_data, (got, want_ov, want_data))
+        check("INV-LIMEDIT: the saved file holds the range",
+              [(e["lo"], e["hi"], e["upper"]) for e in json.loads(lfile.read_text())["limits"]] == [(0.0, 400.0, -90.0)])
+        flag = page.inner_text("#limflag")
+        check("INV-LIMEDIT: an ACTIVE-overrides flag is shown", "ACTIVE" in flag and "1 range" in flag, flag)
+        page.check("#showlim")
+        page.wait_for_timeout(1500)
+        lim = page.evaluate("document.getElementById('plot').data.filter(t=>/limit/i.test(t.name)).map(t=>[t.name,Array.from(new Set(t.y))])")
+        check("INV-LIMEDIT: the drawn limit line is the override (-90), not the data's stair",
+              lim == [["Upper limit", [-90.0]]], lim)
+        page.uncheck("#showlim")
+        page.wait_for_timeout(600)
+
+        # band view built by the viewer carries the override (and is not a stale cached page)
+        bp2 = browser.new_page()
+
+        def band_probe(lo, hi):
+            bp2.goto(view_url("scatter", lo, hi), timeout=600000)
+            bp2.wait_for_selector("#plot .main-svg", timeout=180000)
+            bp2.wait_for_timeout(600)
+            return bp2.evaluate("""() => { try {
+              var u={}; DATA.forEach(function(r){ u[String(r.Upper_Limit)]=1; });
+              var fr=document.querySelector('input[name="scat_flt"][value="failing"]'); if(fr) fr.checked=true;
+              if(typeof update==='function') update();
+              return {uniq:Object.keys(u).sort(), nfail:applyFilters(DATA).length};
+            } catch(e){ return {error:String(e)}; } }""")
+
+        r = band_probe(0, 150)
+        want_b = int(((yv > -90.0) & (xv <= 150)).sum())
+        check("INV-LIMEDIT: band view limits == the override, Failing count == oracle",
+              r.get("uniq") == ["-90"] and r.get("nfail") == want_b, (r, want_b))
+        code, body = post_limits({"limits": [{"lo": 0, "hi": 400, "upper": -95}]})
+        r = band_probe(0, 150)
+        want_b2 = int(((yv > -95.0) & (xv <= 150)).sum())
+        check("INV-LIMEDIT: editing again rebuilds the band view (no stale cached page)",
+              code == 200 and r.get("uniq") == ["-95"] and r.get("nfail") == want_b2, (code, r, want_b2))
+
+        # reload keeps the overrides (server-side file + startup load), flag still shown
+        reload_page()
+        check("INV-LIMEDIT: overrides survive a reload (flag + META)",
+              "ACTIVE" in page.inner_text("#limflag") and page.evaluate("META.limits.length") == 1)
+
+        # Clear all restores the data's own limits everywhere
+        if not page.is_visible("#limedit"):
+            page.click("#limbtn")
+        page.click("#limedit button:has-text('Clear all')")
+        page.wait_for_function("document.getElementById('lemsg').textContent.indexOf('cleared')>=0", timeout=30000)
+        check("INV-LIMEDIT: Clear all -> Failing total back to the data's own", fails_in_view() == want_data)
+        check("INV-LIMEDIT: Clear all -> flag hidden, file has no ranges",
+              not page.is_visible("#limflag") and json.loads(lfile.read_text())["limits"] == [])
+        r = band_probe(0, 150)
+        check("INV-LIMEDIT: Clear all -> band view back on the data's stair (-76/-74)",
+              r.get("uniq") == ["-74", "-76"], r)
+        bp2.close()
         check("INV-NOERR: no uncaught page errors", not errs, errs)
     finally:
         srv.terminate()

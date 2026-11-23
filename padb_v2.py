@@ -63,6 +63,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import html as _html
 import os
 import re
 import shutil
@@ -1489,6 +1490,46 @@ def _render_views_parallel(views, cfg, csv_path, output_dir, prefix, n_workers, 
     return generated, gen_pairs
 
 
+def _apply_limit_overrides(df, cfg: dict) -> int:
+    """Job keys `limit_overrides` (inline list, already in the data's x unit -- what the viewer
+    passes) or `limits_file` (path, relative to the job file; its x-range is converted to the
+    data unit). Replaces the data's Upper/Lower Limit for rows in each x-range BEFORE any view
+    is built, so every view's pass/fail, spec line and tables agree. See padb_limits.py for the
+    exact semantics. Never fails the build; records a note for the index page."""
+    try:
+        import padb_limits
+        lims, src = None, ""
+        if cfg.get("limit_overrides"):
+            lims, err = padb_limits.validate(cfg["limit_overrides"])
+            src = "inline overrides"
+            if err:
+                print(f"  [WARN] limit_overrides ignored: {err}", flush=True)
+                return 0
+        elif cfg.get("limits_file"):
+            lf = Path(cfg["limits_file"])
+            if not lf.is_absolute():
+                lf = Path(cfg.get("_job_dir") or ".") / lf
+            lims, err = padb_limits.load_file(lf, cfg.get("x_unit", "MHz"))
+            src = lf.name
+            if err:
+                print(f"  [WARN] limits_file ignored: {err}", flush=True)
+                return 0
+            if not lf.is_file():
+                print(f"  [WARN] limits_file not found: {lf}", flush=True)
+                return 0
+        if not lims:
+            return 0
+        n = padb_limits.apply_df(df, lims, "Frequency_MHz")
+        cfg["_limits_note"] = (f"Limit overrides applied from {src}: {len(lims)} range(s), "
+                               f"{n:,} of {len(df):,} rows. Pass/fail and the limit line follow "
+                               f"the override, not the data's own limits.")
+        print("  " + cfg["_limits_note"], flush=True)
+        return n
+    except Exception as exc:  # noqa: BLE001 -- never fail a build over an override
+        print(f"  [WARN] limit overrides skipped: {exc}", flush=True)
+        return 0
+
+
 def generate_report(
     csv_path: Path,
     cfg: dict,
@@ -1534,6 +1575,7 @@ def generate_report(
 
     print(f"  Loading scatter CSV: {csv_path.name}", flush=True)
     df = load_scatter(csv_path, cfg)
+    _apply_limit_overrides(df, cfg)
     if df.empty:
         msg = (
             f"No usable rows loaded from {csv_path.name} -- the x-axis/value column "
@@ -1973,6 +2015,9 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
     title = cfg.get("index_title", prefix)
     # Suppress per-job description when multiple jobs share the same output dir
     desc = cfg.get("description", "") if not existing else ""
+    _ln = cfg.get("_limits_note")
+    lim_note_html = ("<p style='background:#fff3cd;border:1px solid #e0b84a;padding:6px 10px;border-radius:4px'>"
+                     "<b>Limit overrides active.</b> " + _html.escape(_ln) + "</p>") if _ln else ""
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset='utf-8'><title>{title}</title>
@@ -1987,6 +2032,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
 <body>
 <h1>{title}</h1>
 {"<p>"+desc+"</p>" if desc else ""}
+{lim_note_html}
 {items_html}
 {parquet_html}
 </body></html>"""
@@ -2343,6 +2389,7 @@ def main(argv: list[str] | None = None) -> None:
         cfg["pdf_report_filter_site"] = args.pdf_filter_site
 
     job_dir = job_path.parent
+    cfg.setdefault("_job_dir", str(job_dir))
 
     # Resolve output directory
     results_rel = cfg.get("results_dir", "v2_results")
