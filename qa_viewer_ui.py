@@ -12,6 +12,9 @@ checked against an independent pandas oracle over the same parquet:
   INV-RAPID  3 back-to-back Next clicks end on the LAST window (no stale response wins)
   INV-HOVER  hover text carries Serial + the condition text
   INV-NOERR  no uncaught page errors
+  INV-DDROW  condition filters as a ROW of dropdowns (same state as the checkbox list):
+             one button per dimension, tick panel narrows == oracle, list <-> row stay in sync both
+             ways, n/total badge, Select all, survives a reload, closes on an outside click
   INV-LIMEDIT live limit-override editor: bad input 400 + nothing changed; an override changes
              Failing totals == oracle, the drawn limit line, and the band views the viewer builds
              (no stale cache); Clear all restores the data's own limits
@@ -370,6 +373,68 @@ def main() -> int:
               state()["win"] == [10.0, 350.0] and page.evaluate("document.getElementById('plot').data.length") > 0)
         page.evaluate("localStorage.clear()")
         reload_page()
+
+
+        # ---- Step: condition filters as a row of dropdowns (same state as the list) -----------
+        page.evaluate("condReset()")
+        total()
+        names = page.evaluate("[...document.querySelectorAll('#condrow .dd-btn')].map(b=>b.textContent.replace(/[^A-Za-z]/g,''))")
+        import re as _re
+        want_names = {_re.sub("[^A-Za-z]", "", k) for k in dims}
+        check("INV-DDROW: exactly one dropdown button per condition dimension",
+              len(names) == len(dims) and set(names) == want_names, (names, want_names))
+        aid, pid = a["id"], dims["Port"]["id"]
+        page.click("#ddbtn_%d" % aid)
+        check("INV-DDROW: clicking a button opens its tick panel",
+              page.evaluate("document.getElementById('ddp_%d').classList.contains('open')" % aid))
+        page.uncheck('.ddchk[data-dim="%d"][value="FALSE"]' % aid)
+        got = total()
+        check("INV-DDROW: unticking in the dropdown narrows the plot == oracle",
+              got == want_n(0, 1e9, "TRUE"), (got, want_n(0, 1e9, "TRUE")))
+        check("INV-DDROW: the dropdown's change reached the checkbox list (same state)",
+              page.evaluate("document.querySelector('.condchk[data-dim=\"%d\"][value=\"FALSE\"]').checked" % aid) is False)
+        check("INV-DDROW: badge shows n/total and the button is highlighted when narrowed",
+              page.inner_text("#ddb_%d" % aid) == "1/2" and page.evaluate("document.getElementById('ddbtn_%d').classList.contains('narrowed')" % aid))
+        check("INV-DDROW: an un-narrowed dimension shows no badge",
+              page.inner_text("#ddb_%d" % pid) == "")
+        # reverse direction: change the list, the row follows
+        if not page.is_visible("#condpanel"):
+            page.click("#condbtn")
+        page.check('.condchk[data-dim="%d"][value="FALSE"]' % aid)
+        total()
+        check("INV-DDROW: ticking in the checkbox LIST updates the row (box ticked, badge cleared)",
+              page.evaluate("document.querySelector('.ddchk[data-dim=\"%d\"][value=\"FALSE\"]').checked" % aid)
+              and page.inner_text("#ddb_%d" % aid) == "")
+        page.uncheck('.condchk[data-dim="%d"][value="TRUE"]' % aid)
+        total()
+        check("INV-DDROW: unticking in the LIST updates the row too (1/2)",
+              page.inner_text("#ddb_%d" % aid) == "1/2"
+              and page.evaluate("document.querySelector('.ddchk[data-dim=\"%d\"][value=\"TRUE\"]').checked" % aid) is False)
+        # Select all
+        if not page.evaluate("document.getElementById('ddp_%d').classList.contains('open')" % aid):
+            page.click("#ddbtn_%d" % aid)
+        page.check('.ddall[data-dim="%d"]' % aid)
+        check("INV-DDROW: Select all restores every value (== full count, badge cleared)",
+              total() == full and page.inner_text("#ddb_%d" % aid) == "")
+        # none ticked shows nothing (same rule as the list)
+        page.uncheck('.ddall[data-dim="%d"]' % aid)
+        check("INV-DDROW: Select all OFF shows nothing (all values unticked)", total() == 0)
+        page.check('.ddall[data-dim="%d"]' % aid)
+        total()
+        # outside click closes the panel
+        page.click("#status")
+        check("INV-DDROW: an outside click closes the open panel",
+              page.evaluate("document.querySelectorAll('.dd-panel.open').length") == 0)
+        # survives a reload (state is the saved .condchk selection, mirrored into the row)
+        page.click("#ddbtn_%d" % pid)
+        page.uncheck('.ddchk[data-dim="%d"][value="RF2"]' % pid)
+        total()
+        reload_page()
+        check("INV-DDROW: a reload restores the dropdown row (RF2 unticked, badge 1/2)",
+              page.inner_text("#ddb_%d" % pid) == "1/2"
+              and page.evaluate("document.querySelector('.ddchk[data-dim=\"%d\"][value=\"RF2\"]').checked" % pid) is False)
+        page.evaluate("condReset()")
+        total()
 
         # ---- Step 3: band views BUILT BY THE VIEWER honour window + filters ---------------
         def view_url(view, lo, hi, conds=None):

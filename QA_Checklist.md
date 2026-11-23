@@ -23,6 +23,7 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 Automated: `py qa_viewer_ui.py`, `py qa_viewer_scale.py`, `py qa_limits.py` (all in `qa_selfcheck.py`). Before handing a new exe to users, eyeball once on a real results folder:
 
 - [ ] Start it on a results folder: the header shows the file, row count and engine (**duckdb**), and the plot draws.
+- [ ] The **Conditions:** row shows one dropdown button per condition; open one, untick a value -- the badge shows `1/2`, the count drops, and the same box is unticked in the full list under **Conditions**; tick it in the list and the row clears.
 - [ ] Untick a **Condition** value -- the status line's point count drops; untick Site/Temp -- the plot updates without pressing Update.
 - [ ] **Group by** a condition -- one colour per value, legend count matches; hover shows serial + conditions.
 - [ ] **Segment step** Next/Prev through *Named bands* -- the window and the plot follow each step; **Edit bands**: change a band edge, **Apply** -- the band button counts and the stepper follow, the band file on disk changed; an invalid edit (min above max) is refused with a message and nothing changes.

@@ -782,6 +782,17 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
  #status{margin-left:auto;color:#666;font-size:12px}
  #plot{height:calc(100vh - 96px)}
  .sitebox{display:inline-flex;gap:8px;align-items:center}
+ #condrow{display:none;padding:5px 14px;background:#fffdf7;border-bottom:1px solid #ddd;font-size:12px;align-items:center;flex-wrap:wrap;gap:6px}
+ .dd-wrap{position:relative;display:inline-block}
+ .dd-btn{font-size:13px;padding:3px 10px;border:1px solid #bbb;border-radius:3px;cursor:pointer;background:#fff;white-space:nowrap}
+ .dd-btn:hover{background:#e8e8e8}
+ .dd-btn.narrowed{border-color:#0066cc;background:#eaf3ff}
+ .dd-panel{display:none;position:absolute;top:calc(100% + 3px);left:0;z-index:200;background:#fff;border:1px solid #ccc;border-radius:4px;box-shadow:0 4px 12px rgba(0,0,0,.15);min-width:160px;max-height:280px;overflow-y:auto;padding:6px 8px}
+ .dd-panel.open{display:block}
+ .dd-item{display:block;padding:2px 0;cursor:pointer;white-space:nowrap;font-size:13px}
+ .dd-div{margin:4px 0;border:none;border-top:1px solid #eee}
+ .dd-badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;padding:1px 6px;margin-right:2px;display:none}
+ .dd-badge.active{display:inline}
 </style></head><body>
 <header>PADB Viewer <span id="ttl" style="font-weight:400"></span></header>
 <div id="bar">
@@ -809,6 +820,7 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
 </div>
 <div id="grppanel" style="display:none;padding:6px 14px;background:#f2fff2;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="limedit" style="display:none;padding:6px 14px;background:#fff6f0;border-bottom:1px solid #ddd;font-size:12px"></div>
+<div id="condrow"></div>
 <div id="condpanel" style="display:none;padding:6px 14px;background:#fffaf0;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="segbar" style="padding:6px 14px;background:#f6f6ff;border-bottom:1px solid #ddd;font-size:12px">
   <b title="Step the frequency window through segments to minimize the data shown -- by named band, or by each spec/limit 'stair' (contiguous frequencies with a constant limit).">Segment step:</b>
@@ -929,6 +941,7 @@ async function loadState(){
     document.querySelectorAll('.tempchk').forEach(function(c){ c.checked=!has(o.temps_off,c.value); });
     document.querySelectorAll('.condchk').forEach(function(c){
       c.checked=!has((o.conds_off||{})[c.getAttribute('data-dim')], c.value); });
+    syncCondRow();
     if(o.by){ document.querySelectorAll('.grpchk').forEach(function(c){ c.checked=has(o.by,c.value); }); }
     if(META.has_limits){ document.getElementById('showlim').checked=!!o.lim;
       var r=document.querySelector('input[name="pf"][value="'+o.pf+'"]'); if(r&&!r.disabled) r.checked=true; }
@@ -1128,13 +1141,14 @@ function buildConds(){
     h+='<div style="margin:3px 0"><b>'+d.name+':</b> ';
     d.values.forEach(function(v){
       h+='<label style="margin-right:8px"><input type="checkbox" checked class="condchk" data-dim="'+d.id+
-         '" value="'+String(v).replace(/"/g,'&quot;')+'" onchange="update()"> '+v+'</label>';
+         '" value="'+String(v).replace(/"/g,'&quot;')+'" onchange="syncCondRow();update()"> '+v+'</label>';
     });
     h+=' <a href="#" onclick="condAll('+d.id+',true);return false">all</a> / <a href="#" onclick="condAll('+d.id+',false);return false">none</a></div>';
   });
   h+='<div style="margin-top:4px"><a href="#" onclick="condReset();return false">Reset condition filters</a></div>';
   p.innerHTML=h;
   document.getElementById('condbtn').style.display='';
+  buildCondRow();
 }
 function buildGrp(){
   var h='<b>Group by:</b> ', opts=[['site','Site'],['serial','Serial Number'],['temp','Temperature']];
@@ -1145,11 +1159,65 @@ function buildGrp(){
   h+=' <span style="color:#888">(none checked = one colour; more than '+60+' groups is refused -- pick fewer keys)</span>';
   document.getElementById('grppanel').innerHTML=h;
 }
+// --- Condition filters as a ROW of dropdowns (same look/behaviour as the HTML views' filter
+//     buttons: a button per dimension, a tick panel with "Select all", a n/total badge when
+//     narrowed). The full checkbox list (Conditions button) stays; BOTH are views of the same
+//     .condchk state, so selectedConds()/saveState()/the server query never see two truths. ----
+function buildCondRow(){
+  var dims=(META&&META.dims)||[], row=document.getElementById('condrow'); if(!dims.length||!row) return;
+  var h='<b style="margin-right:4px" title="Filter by condition. Same state as the full list under the Conditions button.">Conditions:</b>';
+  dims.forEach(function(d){
+    h+='<span class="dd-wrap"><button class="dd-btn" id="ddbtn_'+d.id+'" onclick="ddToggle('+d.id+',event)">'+
+       String(d.name).replace(/</g,'&lt;')+' <span class="dd-badge" id="ddb_'+d.id+'"></span>&#9662;</button>'+
+       '<div class="dd-panel" id="ddp_'+d.id+'" onclick="event.stopPropagation()">'+
+       '<label class="dd-item"><input type="checkbox" class="ddall" data-dim="'+d.id+'" checked onchange="ddAll('+d.id+',this.checked)"><b>Select&nbsp;all</b></label><hr class="dd-div">';
+    d.values.forEach(function(v){
+      h+='<label class="dd-item"><input type="checkbox" class="ddchk" data-dim="'+d.id+'" value="'+String(v).replace(/"/g,'&quot;')+
+         '" checked onchange="ddChanged('+d.id+')">'+String(v).replace(/</g,'&lt;')+'</label>'; });
+    h+='</div></span>';
+  });
+  h+=' <a href="#" onclick="condReset();return false" title="Tick every value of every condition">reset</a>';
+  row.innerHTML=h; row.style.display='flex';
+  document.addEventListener('click',function(){ document.querySelectorAll('.dd-panel.open').forEach(function(p){p.classList.remove('open');}); });
+  syncCondRow();
+}
+function ddToggle(id,ev){
+  if(ev) ev.stopPropagation();
+  var p=document.getElementById('ddp_'+id); if(!p) return;
+  document.querySelectorAll('.dd-panel.open').forEach(function(el){ if(el!==p) el.classList.remove('open'); });
+  p.classList.toggle('open');
+}
+function _condBox(id,val){
+  var a=document.querySelectorAll('.condchk[data-dim="'+id+'"]');
+  for(var i=0;i<a.length;i++) if(a[i].value===val) return a[i];
+  return null;
+}
+function ddChanged(id){
+  document.querySelectorAll('.ddchk[data-dim="'+id+'"]').forEach(function(c){ var t=_condBox(id,c.value); if(t) t.checked=c.checked; });
+  syncCondRow(); update();
+}
+function ddAll(id,on){
+  document.querySelectorAll('.condchk[data-dim="'+id+'"]').forEach(function(c){c.checked=on;});
+  syncCondRow(); update();
+}
+// .condchk (the state) -> the dropdown row: tick boxes, n/total badge, highlight when narrowed.
+function syncCondRow(){
+  var dims=(META&&META.dims)||[];
+  dims.forEach(function(d){
+    var tot=0, on=0;
+    document.querySelectorAll('.ddchk[data-dim="'+d.id+'"]').forEach(function(c){
+      var t=_condBox(d.id,c.value); var v=t?t.checked:true; c.checked=v; tot++; if(v) on++; });
+    var all=document.querySelector('.ddall[data-dim="'+d.id+'"]'); if(all) all.checked=(on===tot);
+    var b=document.getElementById('ddb_'+d.id), btn=document.getElementById('ddbtn_'+d.id);
+    if(b){ if(on<tot){ b.textContent=on+'/'+tot; b.classList.add('active'); } else { b.textContent=''; b.classList.remove('active'); } }
+    if(btn) btn.classList.toggle('narrowed', on<tot);
+  });
+}
 function toggleGrp(){ var p=document.getElementById('grppanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
 function selectedBy(){ return [...document.querySelectorAll('.grpchk:checked')].map(function(c){return c.value;}); }
 function toggleConds(){ var p=document.getElementById('condpanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
-function condAll(id,on){ document.querySelectorAll('.condchk[data-dim="'+id+'"]').forEach(function(c){c.checked=on;}); update(); }
-function condReset(){ document.querySelectorAll('.condchk').forEach(function(c){c.checked=true;}); update(); }
+function condAll(id,on){ document.querySelectorAll('.condchk[data-dim="'+id+'"]').forEach(function(c){c.checked=on;}); syncCondRow(); update(); }
+function condReset(){ document.querySelectorAll('.condchk').forEach(function(c){c.checked=true;}); syncCondRow(); update(); }
 function selectedConds(){
   var by={}, tot={};
   document.querySelectorAll('.condchk').forEach(function(c){
