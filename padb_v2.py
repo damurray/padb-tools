@@ -91,8 +91,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
-import padb_run
 import padb_bands
+from padb_names import filename_stem_variants
 
 # ---------------------------------------------------------------------------
 # Reuse V1.0 internals — same directory
@@ -2083,7 +2083,7 @@ def _resolve_csv_path(csv_path: Path) -> Path:
     """
     If the configured/predicted csv_path doesn't exist, look for the real
     CSV PADB actually wrote in the same directory, using the identical
-    filename-normalization rules find_csvs() applies in padb_run.py (PADB
+    filename-normalization rules find_csvs() applies in padb_run.py (via padb_names) (PADB
     replaces spaces with underscores and can normalize hyphens/dots too).
     A predicted csv_path (e.g. from padb_make_v2_job.py) can drift from
     reality -- this gives it one more chance before failing outright.
@@ -2115,7 +2115,7 @@ def _resolve_csv_path(csv_path: Path) -> Path:
         return csv_path
 
     all_stems = {p.stem: p for p in parent.glob("*.csv")}
-    for stem in padb_run.filename_stem_variants(csv_path.stem):
+    for stem in filename_stem_variants(csv_path.stem):
         if stem in all_stems:
             found = all_stems[stem]
             print(f"  CSV  : predicted '{csv_path.name}' not found -- using "
@@ -2263,18 +2263,9 @@ def _build_compare_csv(compare_csv: dict, job_dir: Path, output_dir: Path, x_col
     return out_path, no_swept_x
 
 
-def _run_padb_for_csv(cfg: dict, job_dir: Path) -> Path:
-    """
-    Run PADB to produce the scatter CSV if not already available.
-
-    TODO V2.0: Replace with a direct call to padb_run.py run_padb() once
-               the runner is refactored to accept a single-analytic job config.
-               For now, raises NotImplementedError so callers fall back to --csv.
-    """
-    raise NotImplementedError(
-        "Automatic PADB execution not yet implemented in V2.0.  "
-        "Supply the scatter CSV directly with --csv."
-    )
+# NOTE (v3.0 separation): padb_v2 is the ANALYSIS layer. It never runs PADB-R or any extraction -- the data
+# arrives as a CSV / parquet (--csv, or csv_path / parquet_path in the job). Extraction and scheduling
+# (padb_run, padb_batch, padb_scheduler, or padbloader) are separate tools that produce that file.
 
 
 # ===========================================================================
@@ -2431,11 +2422,9 @@ def main(argv: list[str] | None = None) -> None:
             csv_path = candidate
             print(f"  CSV  : {csv_path.name} (existing)")
         else:
-            try:
-                csv_path = _run_padb_for_csv(cfg, job_dir)
-            except NotImplementedError as e:
-                print(f"\n  [ERROR] {e}")
-                sys.exit(1)
+            print("\n  [ERROR] No data source: give --csv, or csv_path / parquet_path in the job. "
+                  "Extraction is a separate step (padb_run, padbloader) -- the analysis layer never runs it.")
+            sys.exit(1)
 
     if not csv_path.exists():
         _log_build_failure(output_dir, cfg, csv_path,

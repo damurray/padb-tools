@@ -639,6 +639,21 @@ The override is applied **right after the data is loaded and before any view is 
 
 ---
 
+## Using the analysis on its own -- `padb_analyze.py` (v3.0)
+
+The analysis layer (jobs + plots) is independent of extraction and scheduling, so another tool -- padbloader -- can use it directly: **data in, artifacts out**, no PADB-R, no Oracle, no scheduler.
+
+```
+py padb_analyze.py request.json --result result.json
+py padb_analyze.py --input extract.parquet --out results --views scatter,summary --limits-file limits.json
+```
+
+Request (`padb-analysis-request/1`; only `input` and `out` are required): `input` = a **padbloader parquet**, a **padb-tools parquet** or a **PADB scatter .csv**; `out` = the output folder (jobs under `<out>/jobs`, each analysis under `<out>/results/<name>`); optional `views`, `algorithms` (padbloader results to analyse), `x_col`, `limits_file` (see **Editable limit overrides**), `publish_to` (default `""` = nothing is published), `pdf_report`. Result (`padb-analysis-result/1`): `ok`, and per analysis the job (the analysis object), the results folder, `index.html`, the views built, the files, `status`/`error`. Progress text goes to stderr; stdout is one JSON document. Exit code 0 = all ok, 1 = an analysis failed, 2 = a malformed request.
+
+`py make_analysis_bundle.py <folder> [--zip]` packages exactly what that needs (the entry point, `padb_core`, the plot builders, the viewer -- found by walking the imports) with a requirements list, a manifest and a README; it **refuses to build if the closure reaches extraction/scheduling code**. `qa_separation.py` proves the separation by running real analyses from a freshly built bundle in another folder with no extraction code present. Design: `V3_PLAN.md`.
+
+---
+
 ## Large-dataset viewer (parquet + `padb_viewer.py`)
 
 Self-contained HTML embeds every point, so a genuinely huge analytic (wide phase-noise offset sweeps, big cross-site compares, millions of points) can exceed what a browser can open. For those cases the pipeline writes a compact **parquet sidecar** next to the results and offers a small **local-server viewer** that serves only the slice being viewed.

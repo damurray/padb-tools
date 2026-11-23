@@ -325,7 +325,8 @@ def main() -> int:
     ANALYSIS = (sorted(str(p.relative_to(HERE)).replace("\\", "/") for p in (HERE / "padb_core").glob("*.py"))
                 + ["padb_v2.py", "padb_plots.py", "padb_refstats.py", "padb_pdf_report.py", "padb_compress.py",
                    "padb_bands.py", "padb_limits.py", "padb_loader_adapter.py", "padb_viewer.py",
-                   "padb_csv_to_parquet.py", "padb_make_bands.py", "padb_csv_check.py"])
+                   "padb_csv_to_parquet.py", "padb_make_bands.py", "padb_csv_check.py",
+                   "padb_names.py", "padb_stats.py", "padb_analyze.py", "make_analysis_bundle.py"])
 
     def imports_of(src):
         found = set()
@@ -343,11 +344,9 @@ def main() -> int:
         hit = imports_of((HERE / rel).read_text(encoding="utf-8")) & EXTRACTION
         if hit:
             coupled[rel] = sorted(hit)
-    # The ONE known coupling (padb_v2 -> padb_run: filename_stem_variants + the optional PADB-R runner,
-    # both to move out in the separation stage). Anything NEW fails; padb_core must have none.
-    allowed = {"padb_v2.py": ["padb_run"]}
-    check("CORE-BOUNDARY: analysis modules import NO extraction/scheduling module beyond the pinned exception",
-          all(rel in allowed and hit == allowed[rel] for rel, hit in coupled.items()), coupled)
+    # Stage 2b removed the last coupling (padb_v2 -> padb_run): NO exceptions remain.
+    check("CORE-BOUNDARY: NO analysis module imports an extraction/scheduling module (stage 2b: zero exceptions)",
+          not coupled, coupled)
     check("CORE-BOUNDARY: padb_core is strictly independent of extraction/scheduling (and of the webapp)",
           not any(r.startswith("padb_core/") for r in coupled), coupled)
 

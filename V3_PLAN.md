@@ -35,7 +35,7 @@ v2.5 (tag `v2.5`, branch `develop`) is the last release of the v2 line. v3.0 (br
 |---|---|---|
 | **1 -- core** | `padb_core`: canonical group parser + typed condition index; `FilterSpec` (the one filter state, canonical SQL); limits-as-data with an effective-limit view and recorded reason; a DuckDB `Dataset` engine (query, envelope, counts, bands, spec stairs). `qa_core.py` proves parity with the v2 viewer engine and parsers | **done on this branch** |
 | 2 -- viewer on the core | `padb_viewer.py` drops its private copies (parser, `_where`, column detection, limits UPDATE; ~270 lines gone) and its DuckDB engine IS a `padb_core.Dataset`; `/api/scatter` and `/view` take ONE `spec` (a FilterSpec; legacy params still accepted; junk -> 400); the UI sends one spec. `qa_core` now uses the released **v2.5 tag** as its oracle (loaded via `git show`) and pins the adoption (`CORE-ADOPT`) | **done on this branch** |
-| 2b -- separate analysis from extraction | See **Separation** below. Boundary pinned by `qa_core` (`CORE-BOUNDARY`); the package split and a stable entry point follow | boundary pinned; split next |
+| 2b -- separate analysis from extraction | The last analysis->extraction import is gone (`padb_v2 -> padb_run`: the filename rules moved to `padb_names`, the dead PADB-R runner stub removed). New stable entry point **`padb_analyze.py`** (versioned request/result JSON; padbloader parquet / padb-tools parquet / PADB CSV in, jobs + HTML views + index [+ PDF] out) and **`make_analysis_bundle.py`** (the import closure of the analysis layer; REFUSES to build if it reaches extraction). `qa_separation` runs real analyses from a freshly built bundle in another working directory with no extraction code present; `qa_core` `CORE-BOUNDARY` now allows zero exceptions | **done on this branch** |
 | 3 -- one filter state across views | Lock bar / Global Filter / segment bands / persistence collapse into FilterSpec (+ excluded-unit list); export/import is that file | |
 | 4 -- precomputed view payloads | `padb_core` produces per-view aggregates (boxplot stats, stat_summary TI, summary min/max, scatter envelope) once, from the engine; HTML views render payloads and no longer recompute verdicts in JS; static pages apply a limits table in-page for free | |
 | 5 -- size tiers | Envelope-first pages with raw points on demand; Arrow/columnar binary instead of JSON text; giants auto-routed to the server; build-time visibility by default | |
@@ -63,12 +63,17 @@ order of how soon: (1) a CLI -- `py padb_loader_adapter.py <parquet> --out <dir>
 parquet; v3.0 gives it a stable, documented, versioned request/response; (2) the viewer's local HTTP API
 (`/api/scatter?spec=`, `/view?spec=`) for interactive use; (3) importing `padb_core` from Python.
 
-**Current coupling (measured 2026-11-23, pinned by `qa_core` `CORE-BOUNDARY`):** only ONE analysis->extraction
-import exists -- `padb_v2` imports `padb_run` (the CSV filename-matching helper `filename_stem_variants` and the
-optional "run PADB-R from padb_v2" path). `padb_core`, `padb_plots`, `padb_refstats`, `padb_viewer`,
-`padb_loader_adapter` and `padb_pdf_report` import no extraction code. The pin allows exactly that one exception
-and fails on any new one. Removing it = move `filename_stem_variants` into analysis (or `padb_core`) and delete the
-PADB-R runner path from `padb_v2`.
+**Coupling (stage 2b, 2026-11-23): none.** The one analysis->extraction import (`padb_v2 -> padb_run`) is gone: the
+PADB filename-normalisation rules now live in `padb_names.py` (analysis layer; `padb_run` imports them and re-exports
+the names, so every caller still works) and the never-implemented PADB-R runner stub in `padb_v2` was deleted (with no
+data source `padb_v2` now says extraction is a separate step). `qa_core` `CORE-BOUNDARY` allows zero exceptions;
+`make_analysis_bundle.py` re-checks it at packaging time over the real import closure (lazy imports included).
+
+**The entry point and the bundle (stage 2b):** `padb_analyze.py request.json --result result.json` -- schemas
+`padb-analysis-request/1` / `padb-analysis-result/1` (documented in its docstring; malformed requests exit 2 with a message,
+progress goes to stderr, stdout is one JSON document). `py make_analysis_bundle.py <dir>` writes the closure (18 files today: the
+entry point, `padb_core`, the plot builders, the viewer), a requirements list, a manifest with sha256s and a README.
+Open idea: a request flag for "generate the jobs only, do not build" (the adapter CLI already does this).
 
 **Still entangled (job generation):** `padb_make_v2_job.py` generates plot jobs FROM A POD (extraction-side) and
 imports `padb_run`/`padb_config`; the analysis-side equivalent is `padb_loader_adapter` (jobs from a parquet).
