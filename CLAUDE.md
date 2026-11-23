@@ -4,6 +4,8 @@ Read automatically at session start. Captures non-obvious decisions, layout, and
 
 ---
 
+> **Branch note (2026-11-23):** `develop` = the v2.5 line (tag `v2.5`). **`v3.0`** is the redesign branch -- see `V3_PLAN.md` and `padb_core/` (stage 1: condition index, FilterSpec, limits-as-data view, DuckDB `Dataset`, proven against the v2 code by `qa_core.py`). Nothing in v2 depends on `padb_core` yet; consumers move onto it stage by stage.
+
 ## What this repo is
 
 `padb-tools` automates PADB-R.exe — Keysight's RF characterisation database tool — to run headlessly, collect CSV outputs, and generate self-contained interactive HTML plots for SG6311A signal-generator data. It replaces the internal PADB::Simple tool with a modern, reproducible, publishable pipeline.
