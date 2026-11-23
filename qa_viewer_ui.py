@@ -12,6 +12,8 @@ checked against an independent pandas oracle over the same parquet:
   INV-RAPID  3 back-to-back Next clicks end on the LAST window (no stale response wins)
   INV-HOVER  hover text carries Serial + the condition text
   INV-NOERR  no uncaught page errors
+  INV-BANDEDIT live band editor: bad input rejected (400, nothing changed), good edit saves the
+             shared band file, recounts == oracle, buttons + Named-bands stepper follow
   INV-PERSIST window/conds/group-by/limits/max-pts/segment index survive a reload; Reset all
              clears them; corrupt storage never breaks the page
   INV-ORA-*  independent oracle: band counts, limit stairs, envelope keeps real points + the
@@ -435,6 +437,89 @@ def main() -> int:
         check("INV-BAND-PART teeth: the band has real passes AND fails", len(P) > 0 and len(F) > 0, (len(P), len(F)))
         check("INV-BAND-NOERR: no page errors in any rendered band view", not berrs, berrs[:3])
         bp.close()
+
+        # ---- Live band editor ------------------------------------------------------------
+        bfile = tmp / "padb_viewer_bands.json"
+        before = json.loads(bfile.read_text())
+
+        def post_bands(payload):
+            req = urllib.request.Request(base + "/api/bands", data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                r = urllib.request.urlopen(req, timeout=30)
+                return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+
+        bad_cases = {
+            "lo >= hi": [{"name": "X", "lo": 10, "hi": 10}],
+            "non-numeric": [{"name": "X", "lo": "abc", "hi": 5}],
+            "empty name": [{"name": " ", "lo": 1, "hi": 5}],
+            "duplicate name": [{"name": "A", "lo": 1, "hi": 5}, {"name": "A", "lo": 6, "hi": 9}],
+            "not a list": {"name": "A"},
+        }
+        for label, payload in bad_cases.items():
+            code, body = post_bands({"bands": payload})
+            check("INV-BANDEDIT: invalid input rejected with 400 (%s)" % label,
+                  code == 400 and body.get("ok") is False and body.get("error"), (code, body))
+        check("INV-BANDEDIT: rejected edits changed neither the file nor the live bands",
+              json.loads(bfile.read_text()) == before and api("/api/bands")["bands"] == meta["bands"])
+
+        # UI: edit Mid's upper edge 320 -> 250, rename it, add a new band, apply
+        page.click("text=Edit bands")
+        page.wait_for_selector("#betbl .berow")
+        rows = page.query_selector_all("#betbl .berow")
+        check("INV-BANDEDIT: editor lists the 3 current bands", len(rows) == 3, len(rows))
+        rows[1].query_selector(".be_name").fill("Mid-narrow")
+        rows[1].query_selector(".be_hi").fill("250")
+        page.click("text=Add band")
+        new = page.query_selector_all("#betbl .berow")[-1]
+        new.query_selector(".be_name").fill("Top")
+        new.query_selector(".be_lo").fill("250")
+        new.query_selector(".be_hi").fill("360")
+        page.click("#bandedit button:has-text('Apply')")
+        page.wait_for_function("document.getElementById('bemsg').textContent.indexOf('saved')===0", timeout=15000)
+        want = [("Low", 0.0, 150.0), ("Mid-narrow", 150.0, 250.0), ("Top", 250.0, 360.0), ("High", 320.0, 400.0)]
+        saved = json.loads(bfile.read_text())
+        check("INV-BANDEDIT: the shared band file was rewritten (sorted by lo)",
+              [(b["name"], b["lo"], b["hi"]) for b in saved["bands"]]
+              == [("Low", 0.0, 150.0), ("Mid-narrow", 150.0, 250.0), ("Top", 250.0, 360.0), ("High", 320.0, 400.0)]
+              or [(b["name"], b["lo"], b["hi"]) for b in saved["bands"]] == sorted(want, key=lambda t: t[1]),
+              saved)
+        live = api("/api/bands")
+        oracle = [int(((fcol >= b["lo"]) & (fcol <= b["hi"])).sum()) for b in live["bands"]]
+        check("INV-BANDEDIT: live band counts == oracle for the NEW edges", live["band_counts"] == oracle,
+              (live["band_counts"], oracle))
+        check("INV-BANDEDIT teeth: the edit really changed the Mid count",
+              live["band_counts"][1] != meta["band_counts"][1], (live["band_counts"], meta["band_counts"]))
+        btns = page.evaluate("[...document.querySelectorAll('#bands button')].map(b=>b.textContent)")
+        check("INV-BANDEDIT: band buttons rebuilt live with the new names and counts",
+              len(btns) == 4 and btns[1].startswith("Mid-narrow (%d" % live["band_counts"][1]) and any("Top" in b for b in btns), btns)
+        # the Named-bands stepper walks the NEW bands, window by window
+        page.select_option("#segbasis", "band")
+        page.evaluate("_segIdx=-1")
+        seen = []
+        for _ in range(4):
+            page.evaluate("_segStep(1)")
+            page.wait_for_timeout(900)
+            seen.append(page.evaluate("[parseFloat(flo.value), parseFloat(fhi.value)]"))
+        check("INV-BANDEDIT: the stepper visits the edited bands in order",
+              seen == [[b["lo"], b["hi"]] for b in live["bands"]], (seen, live["bands"]))
+        # invalid edit in the UI: error shown, nothing saved
+        page.fill("#betbl .berow:nth-child(2) .be_lo", "999")
+        page.click("#bandedit button:has-text('Apply')")
+        page.wait_for_timeout(800)
+        msg = page.inner_text("#bemsg")
+        check("INV-BANDEDIT: an invalid UI edit shows the error and saves nothing",
+              "lo must be below hi" in msg and json.loads(bfile.read_text()) == saved, msg)
+        # delete a band + persist through a reload
+        page.click("text=Revert")
+        page.click("#betbl .berow:nth-child(2) >> text=delete")
+        page.click("#bandedit button:has-text('Apply')")
+        page.wait_for_function("document.getElementById('bemsg').textContent.indexOf('saved')===0", timeout=15000)
+        check("INV-BANDEDIT: deleting a band saves (3 left)", len(json.loads(bfile.read_text())["bands"]) == 3)
+        reload_page()
+        check("INV-BANDEDIT: edited bands survive a reload", page.evaluate("META.bands.length") == 3)
         check("INV-NOERR: no uncaught page errors", not errs, errs)
     finally:
         srv.terminate()

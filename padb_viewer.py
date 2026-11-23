@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import socket
@@ -781,8 +782,10 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <button onclick="_segStep(-1)">&#9664;&nbsp;Prev</button>
   <button onclick="_segStep(1)">Next&nbsp;&#9654;</button>
   <button onclick="resetView()" title="Return to the full x-range">Full range</button>
+  <button onclick="toggleBandEdit()" title="Add / rename / re-range the named bands live. Saved to the band file shared with the HTML builds.">Edit bands</button>
   <span id="seginfo" style="color:#888"></span>
 </div>
+<div id="bandedit" style="display:none;padding:6px 14px;background:#f6fff6;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="viewbar" style="padding:6px 14px;background:#eef4ff;border-bottom:1px solid #ddd;font-size:12px">
   <b>Band view</b> <span style="color:#888">(the full interactive plot, with all filters, for the current x-range):</span>
   <span id="viewbtns"></span>
@@ -852,28 +855,7 @@ async function boot(){
   var vb=document.getElementById('viewbtns');
   vbtns.forEach(function(v){ var b=document.createElement('button'); b.textContent=v[1];
     b.style.marginRight='6px'; b.onclick=function(){openView(v[0]);}; vb.appendChild(b); });
-  if(META.bands && META.bands.length){
-    const bb=document.getElementById('bands');
-    const slow=META.slow_band_rows||25000;
-    META.bands.forEach((b,i)=>{
-      const btn=document.createElement('button');
-      const n=(META.band_counts&&META.band_counts[i])||b.count||0;
-      const heavy=n>slow;
-      btn.textContent=b.name+(n?(' ('+n.toLocaleString()+(heavy?' ⚠':'')+')'):'');
-      btn.title='Set range to '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'')+
-        (n?('  ('+n.toLocaleString()+' points'+(heavy?' -- band views may load slowly':'')+')'):'');
-      if(heavy) btn.style.color='#b26a00';
-      btn.style.marginRight='6px';
-      btn.onclick=()=>setBand(b.lo,b.hi);
-      bb.appendChild(btn);
-    });
-    if(META.slow_band_warn){
-      bb.insertAdjacentHTML('beforeend',
-        '<span style="color:#b26a00;font-size:12px;margin-left:8px">⚠ largest band ~'+
-        (META.max_band_rows||0).toLocaleString()+' points; band views may load slowly</span>');
-    }
-    document.getElementById('bandbar').style.display='block';
-  }
+  buildBands();
   update();
 }
 // --- State persistence (browser localStorage, per dataset). Saves what the user narrowed
@@ -924,6 +906,75 @@ async function loadState(){
   }catch(e){}
 }
 function resetAll(){ try{ localStorage.removeItem(_stKey()); }catch(e){} location.reload(); }
+function buildBands(){
+  const bb=document.getElementById('bands'); bb.innerHTML='';
+  const bar=document.getElementById('bandbar');
+  if(!(META.bands && META.bands.length)){ bar.style.display='none'; return; }
+  const slow=META.slow_band_rows||25000;
+  META.bands.forEach((b,i)=>{
+    const btn=document.createElement('button');
+    const n=(META.band_counts&&META.band_counts[i])||b.count||0;
+    const heavy=n>slow;
+    btn.textContent=b.name+(n?(' ('+n.toLocaleString()+(heavy?' ⚠':'')+')'):'');
+    btn.title='Set range to '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'')+
+      (n?('  ('+n.toLocaleString()+' points'+(heavy?' -- band views may load slowly':'')+')'):'');
+    if(heavy) btn.style.color='#b26a00';
+    btn.style.marginRight='6px';
+    btn.onclick=()=>setBand(b.lo,b.hi);
+    bb.appendChild(btn);
+  });
+  if(META.slow_band_warn){
+    bb.insertAdjacentHTML('beforeend',
+      '<span style="color:#b26a00;font-size:12px;margin-left:8px">⚠ largest band ~'+
+      (META.max_band_rows||0).toLocaleString()+' points; band views may load slowly</span>');
+  }
+  bar.style.display='block';
+}
+// --- Live band editor: edit name / lo / hi, Apply saves the shared band file and everything
+//     (buttons, counts, the Named-bands stepper) follows without a restart. -----------------
+function toggleBandEdit(){
+  var p=document.getElementById('bandedit');
+  if(p.style.display==='none'||!p.style.display){ renderBandEdit(META.bands||[]); p.style.display='block'; }
+  else p.style.display='none';
+}
+function _beRow(b){
+  var nm=String(b.name==null?'':b.name).replace(/"/g,'&quot;');
+  return '<tr class="berow"><td><input class="be_name" type="text" value="'+nm+'" style="width:190px"></td>'+
+    '<td><input class="be_lo" type="number" step="any" value="'+(b.lo==null?'':b.lo)+'"></td>'+
+    '<td><input class="be_hi" type="number" step="any" value="'+(b.hi==null?'':b.hi)+'"></td>'+
+    '<td><a href="#" onclick="this.closest(\'tr\').remove();return false" title="Remove this band">delete</a></td></tr>';
+}
+function renderBandEdit(bands){
+  var p=document.getElementById('bandedit');
+  p.innerHTML='<b>Named bands</b> <span style="color:#666">(x in '+(META.x_unit||'data units')+'; edges are inclusive. '+
+    'Apply saves <code>'+'the band file'+'</code> used by the HTML builds too)</span>'+
+    '<table id="betbl" style="margin:4px 0"><tr><th align="left">Name</th><th align="left">'+(META.x_label||'x')+' min</th><th align="left">max</th><th></th></tr>'+
+    bands.map(_beRow).join('')+'</table>'+
+    '<button onclick="beAdd()">Add band</button> <button onclick="beApply()" style="font-weight:600">Apply</button> '+
+    '<button onclick="renderBandEdit(META.bands||[])">Revert</button> <button onclick="toggleBandEdit()">Close</button> '+
+    '<span id="bemsg" style="margin-left:8px"></span>';
+}
+function beAdd(){
+  var t=document.getElementById('betbl'); t.insertAdjacentHTML('beforeend',_beRow({name:'New band',lo:META.x_min,hi:META.x_max}));
+}
+function beRead(){
+  return [...document.querySelectorAll('#betbl .berow')].map(function(r){
+    return {name:r.querySelector('.be_name').value, lo:r.querySelector('.be_lo').value, hi:r.querySelector('.be_hi').value}; });
+}
+async function beApply(){
+  var msg=document.getElementById('bemsg'); msg.style.color='#666'; msg.textContent='saving...';
+  var r, j;
+  try{
+    r=await fetch('/api/bands',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bands:beRead()})});
+    j=await r.json();
+  }catch(e){ msg.style.color='#c00'; msg.textContent='could not reach the server'; return; }
+  if(!j.ok){ msg.style.color='#c00'; msg.textContent=j.error||'rejected'; return; }
+  ['bands','band_counts','max_band_rows','band_cap','slow_band_warn'].forEach(function(k){ META[k]=j[k]; });
+  buildBands();
+  _segIdx=-1; await _segLoad(true);
+  renderBandEdit(META.bands);
+  var m2=document.getElementById('bemsg'); m2.style.color='#060'; m2.textContent='saved '+META.bands.length+' band(s) -> '+j.path;
+}
 function setBand(lo,hi){
   document.getElementById('flo').value=lo;
   document.getElementById('fhi').value=hi;
@@ -1177,6 +1228,77 @@ def api_segments():
     return jsonify({"spec": DS.spec_segments(), "bands": DS.bands})
 
 
+# --- Live-editable named bands --------------------------------------------------------
+# The band file (padb_viewer_bands.json / bands.json) is the single source of truth shared
+# with the HTML views. The overview's editor POSTs the full list; we validate, write the
+# file atomically (so the next load, the HTML builds and this server all agree), then
+# update the live DataSet so buttons / counts / the stepper / the band-view cap follow
+# without a restart. A failed write changes NOTHING in memory.
+BANDS_PATH: Path | None = None
+_bands_lock = threading.Lock()
+MAX_BANDS = 64
+
+
+def _validate_bands(raw):
+    """-> (clean sorted band list, None) or (None, human-readable error)."""
+    if not isinstance(raw, list):
+        return None, "bands must be a list"
+    if len(raw) > MAX_BANDS:
+        return None, "at most %d bands" % MAX_BANDS
+    out, names = [], set()
+    for i, b in enumerate(raw, 1):
+        if not isinstance(b, dict):
+            return None, "band %d: not an object" % i
+        name = str(b.get("name", "")).strip()
+        if not name:
+            return None, "band %d: the name is empty" % i
+        if len(name) > 60:
+            return None, "band %d: name longer than 60 characters" % i
+        try:
+            lo, hi = float(b["lo"]), float(b["hi"])
+        except (KeyError, TypeError, ValueError):
+            return None, "band %d (%s): lo and hi must be numbers" % (i, name)
+        if not (math.isfinite(lo) and math.isfinite(hi)):
+            return None, "band %d (%s): lo and hi must be finite" % (i, name)
+        if not lo < hi:
+            return None, "band %d (%s): lo must be below hi" % (i, name)
+        if name in names:
+            return None, "band %d: duplicate name '%s'" % (i, name)
+        names.add(name)
+        out.append({"name": name, "lo": lo, "hi": hi})
+    out.sort(key=lambda d: d["lo"])
+    return out, None
+
+
+def _bands_payload():
+    m = DS.meta()
+    return {"bands": m["bands"], "band_counts": m["band_counts"], "max_band_rows": m["max_band_rows"],
+            "band_cap": m["band_cap"], "slow_band_rows": m["slow_band_rows"],
+            "slow_band_warn": m["slow_band_warn"], "x_unit": m["x_unit"],
+            "path": str(BANDS_PATH or (DS.path.parent / "padb_viewer_bands.json"))}
+
+
+@app.route("/api/bands", methods=["GET", "POST"])
+def api_bands():
+    if request.method == "GET":
+        return jsonify(_bands_payload())
+    body = request.get_json(silent=True) or {}
+    clean, err = _validate_bands(body.get("bands"))
+    if err:
+        return jsonify({"ok": False, "error": err}), 400
+    path = BANDS_PATH or (DS.path.parent / "padb_viewer_bands.json")
+    with _bands_lock:
+        try:
+            tmp = Path(str(path) + ".part")
+            tmp.write_text(json.dumps({"unit": DS.x_unit or "", "bands": clean}, indent=2), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError as exc:
+            return jsonify({"ok": False, "error": "could not save %s: %s" % (path, exc)}), 500
+        DS.bands = clean
+        DS.compute_band_counts()
+    return jsonify({"ok": True, **_bands_payload()})
+
+
 # --- Band-windowed rendering of the EXISTING interactive views (option B) -----
 # The heavy giant HTML is unopenable only because it embeds the whole dataset.
 # Here we slice the parquet to one frequency band, write it back out as a CSV
@@ -1362,7 +1484,7 @@ def main(argv=None):
                     help="Do NOT auto-generate a band file (an existing one still loads)")
     args = ap.parse_args(argv)
 
-    global DS
+    global DS, BANDS_PATH
     target = Path(args.target).resolve() if args.target else _default_target()
     pqpath = _find_parquet(target)
     print(f"Loading {pqpath} ...", flush=True)
@@ -1371,13 +1493,15 @@ def main(argv=None):
     print(f"  [engine] {DS.engine}: ready in {time.time() - t0:.1f}s", flush=True)
 
     if args.bands:
-        DS.bands = _load_bands(Path(args.bands).resolve(), DS.x_unit)
+        BANDS_PATH = Path(args.bands).resolve()
+        DS.bands = _load_bands(BANDS_PATH, DS.x_unit)
     else:
         # Shared discovery: existing sidecar wins; otherwise auto-generate an editable
         # starter from the actual swept data (David 2026-09-24) and invite edits.
         DS.bands, bpath, created = padb_bands.find_or_create_bands(
             DS.distinct_x(), DS.x_unit, [pqpath.parent], allow_create=args.auto_bands,
             x_label=DS.x_label)
+        BANDS_PATH = Path(bpath) if bpath else None
         if created and bpath:
             print(f"  [bands] no band file found -- auto-generated {len(DS.bands)} starter "
                   f"band(s) -> {Path(bpath).name}. Edit it to rename/re-range, then reload.",
