@@ -103,6 +103,7 @@ def run_suites() -> list[dict]:
         _suite_compile(),
         _suite("qa_padb", ["qa_padb.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_viewer", ["qa_viewer.py"], r"PASS=(\d+)\s+FAIL=(\d+)"),
+        _suite("qa_viewer_ui", ["qa_viewer_ui.py"], r"PASS=(\d+)\s+FAIL=(\d+)", timeout=900),
         _suite("qa_js_segments", ["qa_js_segments.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_stats_recompute", ["qa_stats_recompute.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),
         _suite("qa_webapp", ["qa_webapp.py"], r"PASS:\s*(\d+)\s+FAIL:\s*(\d+)"),

@@ -12,6 +12,10 @@
       "passed": 91,
       "failed": 0
     },
+    "qa_viewer_ui": {
+      "passed": 37,
+      "failed": 0
+    },
     "qa_js_segments": {
       "passed": 10,
       "failed": 0
