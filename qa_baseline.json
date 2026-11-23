@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 29,
+      "passed": 30,
       "failed": 0
     },
     "qa_padb": {
@@ -13,7 +13,11 @@
       "failed": 0
     },
     "qa_viewer_ui": {
-      "passed": 37,
+      "passed": 57,
+      "failed": 0
+    },
+    "qa_viewer_scale": {
+      "passed": 11,
       "failed": 0
     },
     "qa_js_segments": {

@@ -12,6 +12,10 @@ checked against an independent pandas oracle over the same parquet:
   INV-RAPID  3 back-to-back Next clicks end on the LAST window (no stale response wins)
   INV-HOVER  hover text carries Serial + the condition text
   INV-NOERR  no uncaught page errors
+  INV-PERSIST window/conds/group-by/limits/max-pts/segment index survive a reload; Reset all
+             clears them; corrupt storage never breaks the page
+  INV-ORA-*  independent oracle: band counts, limit stairs, envelope keeps real points + the
+             global extremes (and ALL points when the cap allows), Room-only message
   INV-EQ-*   zoom == typed window == oracle; conds+window == oracle; Next keeps conds
   INV-BAND-* band views BUILT BY THE VIEWER: scatter n == oracle (window + conds), only
              selected conditions on every view, Passing+Failing partition == All
@@ -36,7 +40,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"  # never proxy the local server
 PASS = FAIL = 0
-LIMIT = -76.0   # some freq-10 TRUE rows exceed it -> the fixture has real fails
+LIMIT = -76.0   # freq<=100; some freq-10 TRUE rows exceed it -> the fixture has real fails
+LIMIT2 = -74.0  # freq>100 -> a limit STAIR along x (tests segments + the drawn limit line)
 
 
 def check(desc, cond, detail=""):
@@ -52,7 +57,7 @@ def check(desc, cond, detail=""):
 def make_fixture(d: Path):
     import pandas as pd
     rows = []
-    freqs = [10.0, 50.0, 100.0, 200.0, 300.0, 350.0]
+    freqs = [10.0, 50.0, 100.0, 150.0, 200.0, 300.0, 350.0]   # 150 sits exactly ON the Low/Mid band edge
     for alc in ("TRUE", "FALSE"):
         for port in ("RF1", "RF2"):
             for ser in ("US65080001", "US65080002", "US65080003"):
@@ -62,7 +67,7 @@ def make_fixture(d: Path):
                         g = (f"AlcState: {alc}  Port: {port}  Serial Number: {ser}  "
                              f"Frequency (MHz): {f:g}")
                         rows.append({"Group": g, "Frequency (MHz)": f,
-                                     "SpurPower (dBc)": v, "Upper Limit": LIMIT,
+                                     "SpurPower (dBc)": v, "Upper Limit": LIMIT if f <= 100 else LIMIT2,
                                      "Test Step": "Room"})
     pd.DataFrame(rows).to_parquet(d / "fixture.parquet")
     (d / "padb_viewer_bands.json").write_text(json.dumps({
@@ -113,6 +118,54 @@ def main() -> int:
                 code = e.code
             check("INV-VIEWARGS: /view?%s -> %s (not 500)" % (qs, ok[0]), code in ok, code)
 
+
+        # ---- Step 4: independent oracle checks of the API numbers --------------------------
+        def api(path):
+            return json.loads(urllib.request.urlopen(base + path, timeout=60).read())
+
+        check("INV-ORA-META: rows / serials == oracle",
+              meta["rows"] == len(df) and meta["n_serials"] == 3, (meta["rows"], meta["n_serials"]))
+        xs_all = sorted(df["Frequency (MHz)"].unique())
+        want_bands = []
+        for b in meta["bands"]:
+            m = (df["Frequency (MHz)"] >= b["lo"]) & (df["Frequency (MHz)"] <= b["hi"])   # edges inclusive both ends (same as the window)
+            want_bands.append(int(m.sum()))
+        check("INV-ORA-BANDS: per-band counts == oracle (edge row counted in both bands)", meta["band_counts"] == want_bands,
+              (meta["band_counts"], want_bands))
+        check("INV-ORA-BANDS teeth: bands are not all equal", len(set(want_bands)) > 1)
+        # limit stairs: first limit in file order at each x, contiguous runs along x
+        per_x = df.groupby("Frequency (MHz)", sort=True)["Upper Limit"].first()
+        runs = []
+        for x, v in per_x.items():
+            if not runs or runs[-1][2] != v:
+                runs.append([x, None, v])
+        for i, r in enumerate(runs):
+            r[1] = runs[i + 1][0] if i + 1 < len(runs) else xs_all[-1]
+        got = [(sg["lo"], sg["hi"], sg["hi_val"]) for sg in api("/api/segments")["spec"]]
+        check("INV-ORA-LIMITS: spec stairs == oracle runs", got == [tuple(r) for r in runs], (got, runs))
+        check("INV-ORA-LIMITS teeth: the fixture really has >1 stair", len(runs) > 1)
+        # envelope: capped query returns REAL points, keeps the global extremes; uncapped returns all
+        allpts = set(zip(df["Frequency (MHz)"].astype(float), df["SpurPower (dBc)"].astype(float)))
+        lo_y, hi_y = float(df["SpurPower (dBc)"].min()), float(df["SpurPower (dBc)"].max())
+        small = api("/api/scatter?flo=0&fhi=400&maxpts=100&by=site")
+        pts = [(float(x), float(y)) for t in small["traces"] for x, y in zip(t["x"], t["y"])]
+        check("INV-ORA-ENV: capped query (100 = the API's minimum cap, 168 rows -> decimated) returns only real rows", len(pts) > 0 and all(q in allpts for q in pts),
+              [q for q in pts if q not in allpts][:3])
+        check("INV-ORA-ENV: capped query keeps the global min and max",
+              min(y for _, y in pts) == lo_y and max(y for _, y in pts) == hi_y, (lo_y, hi_y))
+        check("INV-ORA-ENV: capped query respects the cap and reports the true total",
+              0 < len(pts) <= 100 and small["n_total"] == len(df) and small["n_returned"] == len(pts),
+              (len(pts), small["n_total"], small["n_returned"]))
+        big = api("/api/scatter?flo=0&fhi=400&maxpts=4000&by=site")
+        pb = sorted((float(x), float(y)) for t in big["traces"] for x, y in zip(t["x"], t["y"]))
+        want = sorted(zip(df["Frequency (MHz)"].astype(float), df["SpurPower (dBc)"].astype(float)))
+        check("INV-ORA-ENV: a cap above the row count returns EVERY row", pb == want, (len(pb), len(want)))
+        try:
+            body = urllib.request.urlopen(base + "/view?view=env_coverage&flo=0&fhi=400&full=0", timeout=60).read().decode()
+        except urllib.error.HTTPError as e:
+            body = "HTTP %s" % e.code
+        check("INV-ORA-ROOM: Room-only data says env_coverage is unavailable (not a crash)", "Room-only" in body, body[:120])
+
         page = browser.new_page()
         errs = []
         page.on("pageerror", lambda e: errs.append(str(e)))
@@ -160,7 +213,8 @@ def main() -> int:
         page.check("#showlim")
         page.wait_for_timeout(1500)
         lim = page.evaluate("document.getElementById('plot').data.filter(t=>/limit/i.test(t.name)).map(t=>[t.name,Array.from(new Set(t.y))])")
-        check("INV-LIMITS: upper limit line drawn at the data's limit", lim == [["Upper limit", [LIMIT]]], lim)
+        check("INV-LIMITS: upper limit line drawn at the data's limit stair (-76 then -74)",
+              len(lim) == 1 and lim[0][0] == "Upper limit" and sorted(lim[0][1]) == [LIMIT, LIMIT2], lim)
         n_on = page.evaluate("document.getElementById('plot').data.length")
         page.uncheck("#showlim")
         page.wait_for_timeout(1500)
@@ -237,6 +291,80 @@ def main() -> int:
         page.click("text=Reset condition filters")
         page.evaluate("resetView()")
         total()
+
+
+        # ---- Step 2: persistence across reloads ----------------------------------------------
+        def reload_page():
+            page.reload()
+            page.wait_for_selector("#plot .main-svg", timeout=30000)
+            page.wait_for_timeout(1500)
+
+        def state():
+            return page.evaluate("""() => ({
+              win:[parseFloat(flo.value), parseFloat(fhi.value)], maxpts:maxpts.value,
+              off:[...document.querySelectorAll('.condchk')].filter(c=>!c.checked).map(c=>c.value),
+              by:[...document.querySelectorAll('.grpchk:checked')].map(c=>c.value),
+              lim:showlim.checked, basis:segbasis.value, idx:_segIdx,
+              key:Object.keys(localStorage).filter(k=>k.indexOf('padb_viewer_state:')===0).length})""")
+
+        page.evaluate("localStorage.clear()")
+        reload_page()
+        d0 = state()
+        check("INV-PERSIST baseline: clean defaults", d0["off"] == [] and d0["by"] == ["site"] and not d0["lim"], d0)
+        if not page.is_visible("#condpanel"):
+            page.click("#condbtn")
+        page.uncheck('.condchk[data-dim="%d"][value="FALSE"]' % a["id"])
+        if not page.is_visible("#grppanel"):
+            page.click("#grpbtn")
+        page.uncheck('.grpchk[value="site"]')
+        page.check('.grpchk[value="d%d"]' % dims["Port"]["id"])
+        page.check("#showlim")
+        page.fill("#maxpts", "1234")
+        n_before = set_win(60.0, 210.0)
+        reload_page()
+        d1 = state()
+        n_after = total()
+        check("INV-PERSIST: window restored", d1["win"] == [60.0, 210.0], d1["win"])
+        check("INV-PERSIST: condition filter restored", d1["off"] == ["FALSE"], d1["off"])
+        check("INV-PERSIST: group-by, limits and max-points restored",
+              d1["by"] == ["d%d" % dims["Port"]["id"]] and d1["lim"] and d1["maxpts"] == "1234", d1)
+        check("INV-PERSIST: restored view shows the same population (== oracle)",
+              n_after == n_before == want_n(60, 210, "TRUE"), (n_before, n_after))
+        xr = page.evaluate("document.getElementById('plot').layout.xaxis.range")
+        check("INV-PERSIST: plot axis follows the restored window", [float(xr[0]), float(xr[1])] == [60.0, 210.0], xr)
+
+        # segment position survives, and Next continues from it
+        page.evaluate("resetView()")
+        page.select_option("#segbasis", "band")
+        page.evaluate("_segStep(1);")
+        page.wait_for_timeout(600)
+        page.evaluate("_segStep(1);")
+        page.wait_for_timeout(1200)
+        reload_page()
+        d2 = state()
+        check("INV-PERSIST: segment basis + position restored", d2["basis"] == "band" and d2["idx"] == 1, d2)
+        page.evaluate("_segStep(1)")
+        page.wait_for_timeout(1500)
+        w3 = page.evaluate("[parseFloat(flo.value), parseFloat(fhi.value)]")
+        check("INV-PERSIST: Next continues from the restored band (-> High)", w3 == [320.0, 400.0], w3)
+
+        # Reset all clears it
+        with page.expect_navigation():
+            page.click("text=Reset all")
+        page.wait_for_selector("#plot .main-svg", timeout=30000)
+        page.wait_for_timeout(1500)
+        d4 = state()
+        check("INV-PERSIST: Reset all restores every default",
+              d4["off"] == [] and d4["by"] == ["site"] and not d4["lim"] and d4["win"] == [10.0, 350.0]
+              and d4["maxpts"] == "4000", d4)
+        # corrupt / stale storage must never break the page
+        page.evaluate("(() => { var k=Object.keys(localStorage).find(k=>k.indexOf('padb_viewer_state:')===0) || ('padb_viewer_state:'+META.parquet+':'+META.rows);"
+                      " localStorage.setItem(k, '{not json'); })()")
+        reload_page()
+        check("INV-PERSIST: corrupt storage falls back to defaults (page still draws)",
+              state()["win"] == [10.0, 350.0] and page.evaluate("document.getElementById('plot').data.length") > 0)
+        page.evaluate("localStorage.clear()")
+        reload_page()
 
         # ---- Step 3: band views BUILT BY THE VIEWER honour window + filters ---------------
         def view_url(view, lo, hi, conds=None):

@@ -766,7 +766,8 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
     <label><input type="radio" name="pf" value="pass" onchange="update()">Passing</label>
     <label><input type="radio" name="pf" value="fail" onchange="update()">Failing</label></span>
   <button onclick="update()">Update</button>
-  <button onclick="resetView()">Reset</button>
+  <button onclick="resetView()" title="Return to the full x-range (filters kept)">Reset</button>
+  <button onclick="resetAll()" title="Clear every saved filter/window/group-by choice for this dataset and reload the defaults">Reset all</button>
   <span id="status"></span>
 </div>
 <div id="grppanel" style="display:none;padding:6px 14px;background:#f2fff2;border-bottom:1px solid #ddd;font-size:12px"></div>
@@ -841,6 +842,7 @@ async function boot(){
   }
   buildConds(); buildGrp();
   if(META.has_limits){ document.getElementById('limbox').style.display=''; }
+  await loadState();   // restore the last filters/window/group-by for THIS dataset (Reset all clears it)
   // Band-view buttons render the full interactive view for the current x-range.
   // scatter/boxplot/stat_summary/summary always; env_coverage/distribution only for
   // multi-temp data (they need a Room baseline + non-Room) -- matches the html build's
@@ -874,6 +876,54 @@ async function boot(){
   }
   update();
 }
+// --- State persistence (browser localStorage, per dataset). Saves what the user narrowed
+//     (window, sites/temps/conditions as the UNTICKED values so new values default on, group-by,
+//     pass/fail, limits, segment basis+index) so a reload / revisit shows the same slice.
+//     "Reset all" clears it. Every access is try/catch: private windows / blocked storage must
+//     never break the page. ----------------------------------------------------------------
+function _stKey(){ return 'padb_viewer_state:'+(META.parquet||'')+':'+META.rows; }
+function saveState(){
+  try{
+    var unc=function(sel){ return [...document.querySelectorAll(sel)].filter(function(c){return !c.checked;}).map(function(c){return c.value;}); };
+    var conds={};
+    document.querySelectorAll('.condchk').forEach(function(c){
+      if(!c.checked){ var k=c.getAttribute('data-dim'); (conds[k]=conds[k]||[]).push(c.value); } });
+    var o={flo:document.getElementById('flo').value, fhi:document.getElementById('fhi').value,
+      maxpts:document.getElementById('maxpts').value,
+      sites_off:unc('.sitechk'), temps_off:unc('.tempchk'), conds_off:conds,
+      by:selectedBy(), lim:document.getElementById('showlim').checked,
+      pf:(document.querySelector('input[name="pf"]:checked')||{}).value||'all',
+      segbasis:document.getElementById('segbasis').value, segIdx:_segIdx,
+      full:document.getElementById('fullrender').checked};
+    localStorage.setItem(_stKey(), JSON.stringify(o));
+  }catch(e){}
+}
+async function loadState(){
+  try{
+    var o=JSON.parse(localStorage.getItem(_stKey())||'null'); if(!o) return;
+    var has=function(a,v){ return (a||[]).indexOf(v)>=0; };
+    if(o.flo!==''&&o.flo!=null) document.getElementById('flo').value=o.flo;
+    if(o.fhi!==''&&o.fhi!=null) document.getElementById('fhi').value=o.fhi;
+    if(o.maxpts) document.getElementById('maxpts').value=o.maxpts;
+    document.querySelectorAll('.sitechk').forEach(function(c){ c.checked=!has(o.sites_off,c.value); });
+    document.querySelectorAll('.tempchk').forEach(function(c){ c.checked=!has(o.temps_off,c.value); });
+    document.querySelectorAll('.condchk').forEach(function(c){
+      c.checked=!has((o.conds_off||{})[c.getAttribute('data-dim')], c.value); });
+    if(o.by){ document.querySelectorAll('.grpchk').forEach(function(c){ c.checked=has(o.by,c.value); }); }
+    if(META.has_limits){ document.getElementById('showlim').checked=!!o.lim;
+      var r=document.querySelector('input[name="pf"][value="'+o.pf+'"]'); if(r&&!r.disabled) r.checked=true; }
+    document.getElementById('fullrender').checked=!!o.full;
+    var sb=document.getElementById('segbasis'), opt=sb.querySelector('option[value="'+o.segbasis+'"]');
+    if(opt&&!opt.disabled){ sb.value=o.segbasis; }
+    await _segLoad(true);
+    if(o.segIdx>=0 && o.segIdx<_segs.length){
+      _segIdx=o.segIdx; var s=_segs[_segIdx];
+      document.getElementById('seginfo').textContent='segment '+(_segIdx+1)+'/'+_segs.length+
+        (s.name?(' ('+s.name+')'):'')+': '+(+s.lo).toPrecision(5)+' .. '+(+s.hi).toPrecision(5)+' '+(META.x_unit||'')+_segSpecStr(s);
+    }
+  }catch(e){}
+}
+function resetAll(){ try{ localStorage.removeItem(_stKey()); }catch(e){} location.reload(); }
 function setBand(lo,hi){
   document.getElementById('flo').value=lo;
   document.getElementById('fhi').value=hi;
@@ -1012,6 +1062,7 @@ async function update(){
   const sites=selectedSites().join(',');
   const temps=selectedTemps().join('|');
   document.getElementById('status').textContent='querying...';
+  saveState();
   const t0=performance.now();
   const seq=++_updSeq;
   const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&by=${encodeURIComponent(selectedBy().join(','))}`+filterQS())).json();
