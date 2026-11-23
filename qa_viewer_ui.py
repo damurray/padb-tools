@@ -20,14 +20,17 @@ applied. Honest-exits 3 when Playwright/Chromium is unavailable.
     py qa_viewer_ui.py
 """
 import json
+import os
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
+os.environ["NO_PROXY"] = os.environ["no_proxy"] = "127.0.0.1,localhost"  # never proxy the local server
 PASS = FAIL = 0
 
 
@@ -77,23 +80,33 @@ def main() -> int:
     port = 8791
     srv = subprocess.Popen([sys.executable, str(HERE / "padb_viewer.py"), str(tmp),
                             "--port", str(port), "--no-open"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(HERE))
+                           stdout=open(str(tmp / "server.log"), "w"), stderr=subprocess.STDOUT,
+                           cwd=str(HERE))
     base = "http://127.0.0.1:%d" % port
     try:
         for _ in range(60):
             try:
-                urllib.request.urlopen(base + "/api/meta", timeout=2).read()
+                urllib.request.urlopen(base + "/api/meta", timeout=10).read()
                 break
-            except Exception:  # noqa: BLE001
+            except Exception as _e:  # noqa: BLE001
+                last = repr(_e)
                 time.sleep(0.5)
         else:
-            print("qa_viewer_ui: viewer server did not start")
+            print("qa_viewer_ui: viewer server did not start", locals().get("last"))
             return 1
         meta = json.loads(urllib.request.urlopen(base + "/api/meta").read())
         dims = {d["name"]: d for d in meta["dims"]}
         check("conditions detected (AlcState, Port)", "AlcState" in dims and "Port" in dims, list(dims))
         check("serial/frequency keys are not offered as filters",
               "Serial Number" not in dims and "Frequency (MHz)" not in dims, list(dims))
+
+        # INV-VIEWARGS: empty / junk window args never produce a bare 500
+        for qs, ok in (("flo=&fhi=", (200,)), ("flo=abc&fhi=1", (400,))):
+            try:
+                code = urllib.request.urlopen(base + "/view?view=scatter&full=0&" + qs, timeout=120).status
+            except urllib.error.HTTPError as e:
+                code = e.code
+            check("INV-VIEWARGS: /view?%s -> %s (not 500)" % (qs, ok[0]), code in ok, code)
 
         page = browser.new_page()
         errs = []

@@ -1269,8 +1269,11 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False,
 @app.route("/view")
 def api_view():
     view = request.args.get("view", "boxplot")
-    flo = float(request.args.get("flo", DS.x_min))
-    fhi = float(request.args.get("fhi", DS.x_max))
+    try:
+        flo = float(request.args.get("flo") or DS.x_min)
+        fhi = float(request.args.get("fhi") or DS.x_max)
+    except (TypeError, ValueError):
+        return Response("<pre>flo/fhi must be numbers</pre>", mimetype="text/html", status=400)
     full = request.args.get("full", "0") in ("1", "true", "True")
     if view in ("env_coverage", "distribution") and getattr(DS, "is_room_only", False):
         return Response(
