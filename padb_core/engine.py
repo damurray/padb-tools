@@ -180,7 +180,7 @@ class Dataset:
         w, a = self._spec(spec).to_sql(self.dim_ids())
         return int(self._all(f"SELECT count(*) FROM pts WHERE {w}", a)[0][0])
 
-    def band_counts(self, bands):
+    def count_in_bands(self, bands):
         return [int(self._all("SELECT count(*) FROM pts WHERE x >= ? AND x <= ?", [b["lo"], b["hi"]])[0][0])
                 for b in bands]
 

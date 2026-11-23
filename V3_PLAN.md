@@ -34,11 +34,46 @@ v2.5 (tag `v2.5`, branch `develop`) is the last release of the v2 line. v3.0 (br
 | Stage | Deliverable | Status |
 |---|---|---|
 | **1 -- core** | `padb_core`: canonical group parser + typed condition index; `FilterSpec` (the one filter state, canonical SQL); limits-as-data with an effective-limit view and recorded reason; a DuckDB `Dataset` engine (query, envelope, counts, bands, spec stairs). `qa_core.py` proves parity with the v2 viewer engine and parsers | **done on this branch** |
-| 2 -- viewer on the core | `padb_viewer.py` drops its private copies (parser, `_where`, limits UPDATE) and calls `padb_core`; `/api/*` takes a FilterSpec; filter state saved/shared as one JSON | next |
+| 2 -- viewer on the core | `padb_viewer.py` drops its private copies (parser, `_where`, column detection, limits UPDATE; ~270 lines gone) and its DuckDB engine IS a `padb_core.Dataset`; `/api/scatter` and `/view` take ONE `spec` (a FilterSpec; legacy params still accepted; junk -> 400); the UI sends one spec. `qa_core` now uses the released **v2.5 tag** as its oracle (loaded via `git show`) and pins the adoption (`CORE-ADOPT`) | **done on this branch** |
+| 2b -- separate analysis from extraction | See **Separation** below. Boundary pinned by `qa_core` (`CORE-BOUNDARY`); the package split and a stable entry point follow | boundary pinned; split next |
 | 3 -- one filter state across views | Lock bar / Global Filter / segment bands / persistence collapse into FilterSpec (+ excluded-unit list); export/import is that file | |
 | 4 -- precomputed view payloads | `padb_core` produces per-view aggregates (boxplot stats, stat_summary TI, summary min/max, scatter envelope) once, from the engine; HTML views render payloads and no longer recompute verdicts in JS; static pages apply a limits table in-page for free | |
 | 5 -- size tiers | Envelope-first pages with raw points on demand; Arrow/columnar binary instead of JSON text; giants auto-routed to the server; build-time visibility by default | |
 | 6 -- job schema | A job is one declarative, validated object (extract + analyse + publish); the web app edits the schema, not raw JSON | |
+
+## Separation: analysis is independent of extraction and scheduling (David, 2026-11-23)
+
+**Requirement:** analysis-object generation and plotting must be separate from padb-tools' extraction and
+scheduling, so that padbloader can use the analysis capability directly (padbloader owns extraction,
+scheduling and credentials; padb-tools owns analysis).
+
+**Three layers, one-way dependencies** (analysis never imports extraction):
+
+| Layer | Contents today | Rule |
+|---|---|---|
+| `padb_core` (engine) | parser, FilterSpec, limits view, DuckDB `Dataset` | imports nothing from the other layers |
+| analysis | `padb_v2`, `padb_plots`, `padb_refstats`, `padb_pdf_report`, `padb_compress`, `padb_bands`, `padb_limits`, `padb_loader_adapter`, `padb_viewer`, `padb_csv_to_parquet`, `padb_make_bands`, `padb_csv_check` | depends on `padb_core` and data files only |
+| extraction / scheduling | `padb_run`, `padb_batch` (PADB-R.exe), `padb_scheduler`, `padb_make_job`, `padb_make_v2_job` (pod-driven), `padb_convert_site`, `padb_config`, `webapp/` | may call analysis; analysis never calls it |
+
+**The contract padbloader (a .NET tool) uses:** *data in, artifacts out* -- no shared process, no Python import
+required. Input: a parquet (padbloader's own, or padb-tools' table) plus an optional analysis request (the same
+JSON the jobs use: views, FilterSpec, limits file, bands file, publish folder). Output: the plot job(s), the
+self-contained HTML views + index, the optional PDF report, and (stage 4+) per-view payloads. Entry points, in
+order of how soon: (1) a CLI -- `py padb_loader_adapter.py <parquet> --out <dir>` already does this for a
+parquet; v3.0 gives it a stable, documented, versioned request/response; (2) the viewer's local HTTP API
+(`/api/scatter?spec=`, `/view?spec=`) for interactive use; (3) importing `padb_core` from Python.
+
+**Current coupling (measured 2026-11-23, pinned by `qa_core` `CORE-BOUNDARY`):** only ONE analysis->extraction
+import exists -- `padb_v2` imports `padb_run` (the CSV filename-matching helper `filename_stem_variants` and the
+optional "run PADB-R from padb_v2" path). `padb_core`, `padb_plots`, `padb_refstats`, `padb_viewer`,
+`padb_loader_adapter` and `padb_pdf_report` import no extraction code. The pin allows exactly that one exception
+and fails on any new one. Removing it = move `filename_stem_variants` into analysis (or `padb_core`) and delete the
+PADB-R runner path from `padb_v2`.
+
+**Still entangled (job generation):** `padb_make_v2_job.py` generates plot jobs FROM A POD (extraction-side) and
+imports `padb_run`/`padb_config`; the analysis-side equivalent is `padb_loader_adapter` (jobs from a parquet).
+Separation means the plot job schema (stage 6) is owned by analysis and `padb_make_v2_job` becomes just one
+producer of it.
 
 ## Stage 1 contents (this branch)
 

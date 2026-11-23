@@ -1,7 +1,8 @@
 r"""qa_core.py -- the v3.0 core (padb_core) proven equivalent to the v2 code it replaces.
 
-The v2 implementation IS the oracle: nothing may depend on padb_core until it answers exactly like
-the code it will replace. Groups:
+The RELEASED v2.5 code IS the oracle (loaded from the `v2.5` git tag, so it cannot drift as the live
+viewer moves onto the core): nothing may depend on padb_core unless it answers exactly like the
+code it replaced. Groups:
 
   CORE-PARSE   parse_group == padb_plots._parse_group_kv on a corpus of real-world Group strings
                (PADB value padding, multi-word keys/values, no-double-space fallback, colons in
@@ -70,6 +71,26 @@ CORPUS = [
 ]
 
 
+def load_oracle():
+    """The v2.5 viewer, straight from the `v2.5` git tag: the released code is the oracle. (After stage 2
+    the live padb_viewer IS built on padb_core, so using it here would be circular.) Skips the suite
+    honestly (exit 3) when git or the tag is unavailable."""
+    import importlib.util
+    import subprocess
+    try:
+        src = subprocess.run(["git", "show", "v2.5:padb_viewer.py"], cwd=str(HERE), capture_output=True, check=True).stdout
+    except Exception as exc:  # noqa: BLE001
+        print("qa_core: cannot read the v2.5 oracle via git (%s) -- ENV-UNAVAILABLE, skipped" % exc)
+        sys.exit(3)
+    d = Path(tempfile.mkdtemp(prefix="qa_core_oracle_"))
+    (d / "padb_viewer_v25.py").write_bytes(src)
+    spec = importlib.util.spec_from_file_location("padb_viewer_v25", str(d / "padb_viewer_v25.py"))
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules["padb_viewer_v25"] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def main() -> int:
     try:
         import duckdb  # noqa: F401
@@ -79,7 +100,7 @@ def main() -> int:
     import pandas as pd
     import padb_limits as PL
     import padb_plots
-    import padb_viewer as pv
+    ov = load_oracle()
     from padb_core import Dataset, FilterSpec, GroupIndex, LimitTable, parse_group, site_of, serial_of
     import padb_core.conditions as C
     import qa_viewer_ui as fx
@@ -91,7 +112,7 @@ def main() -> int:
     check("CORE-PARSE: PADB value padding re-merged ('Frequency (MHz):  10' keeps its 10)",
           parse_group("Frequency (MHz):  10  Port: RF1") == {"Frequency (MHz)": "10", "Port": "RF1"})
     check("CORE-PARSE: a colon inside a value is kept ('12:30:45')", parse_group("Note: time 12:30:45")["Note"] == "time 12:30:45")
-    vdiff = [g for g in CORPUS if pv._parse_group_dims(g) != parse_group(g)]
+    vdiff = [g for g in CORPUS if ov._parse_group_dims(g) != parse_group(g)]
     check("CORE-PARSE: the v2 viewer parser differs ONLY where a fragment has an empty value (pinned)",
           all(any(f.strip().endswith(":") for f in __import__("re").split(r"\s{2,}", g)) or not parse_group(g) for g in vdiff),
           vdiff)
@@ -139,7 +160,7 @@ def main() -> int:
             ("fixture", fxq, None, None, None, None),
             ("synthetic", bigq, xs, y, hi_data, lo_data)):
         core = Dataset(pq_path)
-        old = pv.DataSet(pq_path, engine="duckdb")
+        old = ov.DataSet(pq_path, engine="duckdb")
 
         # ---------------- CORE-INDEX ----------------
         og = pd.DataFrame(old._all("SELECT g, gid, g_site, g_serial" + "".join(", d%d" % d["id"] for d in old.dims) + " FROM gmap ORDER BY g"),
@@ -206,12 +227,12 @@ def main() -> int:
         full_spec = FilterSpec(lo=core.x_min, hi=core.x_max)
         check("CORE-QUERY[%s]: counts() and band_counts() == the viewer / numpy" % label,
               core.counts(full_spec) == core.n_rows
-              and core.band_counts([{"lo": 0, "hi": 150}, {"lo": 150, "hi": 320}, {"lo": 320, "hi": 400}])
+              and core.count_in_bands([{"lo": 0, "hi": 150}, {"lo": 150, "hi": 320}, {"lo": 320, "hi": 400}])
               == [int(old._all("SELECT count(*) FROM pts WHERE x >= ? AND x <= ?", [a, b])[0][0])
                   for a, b in ((0, 150), (150, 320), (320, 400))], label)
 
     # ---------------- CORE-LIMITS (synthetic) ----------------
-    core, old = Dataset(bigq), pv.DataSet(bigq, engine="duckdb")
+    core, old = Dataset(bigq), ov.DataSet(bigq, engine="duckdb")
     sets = {
         "stair": [{"lo": 0, "hi": 150, "upper": -85}, {"lo": 150, "hi": 400, "upper": -78}],
         "lower only": [{"lo": 200, "hi": 400, "lower": -88}],
@@ -281,6 +302,54 @@ def main() -> int:
           core.counts(FilterSpec(lo=0, hi=1e9, conds={core.dims[0]["id"]: []})) == 0)
     check("CORE-SPEC: an unknown dimension id is ignored (not an error)",
           core.counts(FilterSpec(lo=0, hi=1e9, conds={999: ["x"]})) == core.n_rows)
+
+    # ---------------- CORE-ADOPT: the viewer really runs on the core (no second copy) ----------------
+    vsrc = (HERE / "padb_viewer.py").read_text(encoding="utf-8")
+    import padb_viewer as live
+    check("CORE-ADOPT: the viewer's DuckDB engine IS a padb_core.Dataset subclass",
+          issubclass(live.DuckDataSet, Dataset), live.DuckDataSet.__mro__)
+    check("CORE-ADOPT: the viewer no longer builds WHERE SQL itself (one builder: FilterSpec.to_sql)",
+          '"site IN ("' not in vsrc and "IS NULL OR d" not in vsrc, "viewer still builds filter SQL")
+    check("CORE-ADOPT: the viewer has no private Group parser / dimension rules (one parser: padb_core)",
+          "def _parse_group_dims" not in vsrc and "ser_pat" not in vsrc and "len(vs) < 2" not in vsrc)
+    check("CORE-ADOPT: the viewer does not rewrite limit rows (limits are a view: no UPDATE pts)",
+          "UPDATE pts" not in vsrc)
+    check("CORE-ADOPT: viewer parser == core parser (the empty-value difference from v2.5 is now unified)",
+          live._parse_group_dims("Key:  Other: x") == parse_group("Key:  Other: x") == {"Other": "x"})
+
+    # ---------------- CORE-BOUNDARY: analysis must not depend on extraction / scheduling ----------------
+    import ast
+
+    EXTRACTION = {"padb_run", "padb_batch", "padb_scheduler", "padb_make_job", "padb_make_v2_job",
+                  "padb_convert_site", "padb_config", "padb_sites", "webapp"}
+    ANALYSIS = (sorted(str(p.relative_to(HERE)).replace("\\", "/") for p in (HERE / "padb_core").glob("*.py"))
+                + ["padb_v2.py", "padb_plots.py", "padb_refstats.py", "padb_pdf_report.py", "padb_compress.py",
+                   "padb_bands.py", "padb_limits.py", "padb_loader_adapter.py", "padb_viewer.py",
+                   "padb_csv_to_parquet.py", "padb_make_bands.py", "padb_csv_check.py"])
+
+    def imports_of(src):
+        found = set()
+        for node in ast.walk(ast.parse(src)):
+            if isinstance(node, ast.Import):
+                found |= {a.name.split(".")[0] for a in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+                found.add(node.module.split(".")[0])
+        return found
+
+    check("CORE-BOUNDARY teeth: the scanner finds an extraction import (positive control)",
+          imports_of("def f():\n    import padb_run\nfrom padb_batch import x") & EXTRACTION == {"padb_run", "padb_batch"})
+    coupled = {}
+    for rel in ANALYSIS:
+        hit = imports_of((HERE / rel).read_text(encoding="utf-8")) & EXTRACTION
+        if hit:
+            coupled[rel] = sorted(hit)
+    # The ONE known coupling (padb_v2 -> padb_run: filename_stem_variants + the optional PADB-R runner,
+    # both to move out in the separation stage). Anything NEW fails; padb_core must have none.
+    allowed = {"padb_v2.py": ["padb_run"]}
+    check("CORE-BOUNDARY: analysis modules import NO extraction/scheduling module beyond the pinned exception",
+          all(rel in allowed and hit == allowed[rel] for rel, hit in coupled.items()), coupled)
+    check("CORE-BOUNDARY: padb_core is strictly independent of extraction/scheduling (and of the webapp)",
+          not any(r.startswith("padb_core/") for r in coupled), coupled)
 
     print("\nqa_core: PASS=%d FAIL=%d" % (PASS, FAIL))
     return 1 if FAIL else 0

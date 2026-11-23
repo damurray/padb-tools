@@ -12,6 +12,8 @@ checked against an independent pandas oracle over the same parquet:
   INV-RAPID  3 back-to-back Next clicks end on the LAST window (no stale response wins)
   INV-HOVER  hover text carries Serial + the condition text
   INV-NOERR  no uncaught page errors
+  INV-SPEC   the API takes ONE FilterSpec (`spec` JSON): == the legacy params, window defaults to the
+             x-range, junk -> 400 (scatter AND view), and the band page honours it
   INV-DDROW  condition filters as a ROW of dropdowns (same state as the checkbox list):
              one button per dimension, tick panel narrows == oracle, list <-> row stay in sync both
              ways, n/total badge, Select all, survives a reload, closes on an outside click
@@ -436,6 +438,38 @@ def main() -> int:
         page.evaluate("condReset()")
         total()
 
+
+        # ---- Stage 2: the API takes ONE FilterSpec (legacy params still accepted) ---------------
+        import urllib.parse as _up
+        aidx = str(dims["AlcState"]["id"])
+        sp = {"lo": 60, "hi": 330, "conds": {aidx: ["TRUE"]}}
+        via_spec = api("/api/scatter?maxpts=4000&by=site&spec=" + _up.quote(json.dumps(sp)))
+        via_legacy = api("/api/scatter?flo=60&fhi=330&maxpts=4000&by=site&conds=" + _up.quote(json.dumps({aidx: ["TRUE"]})))
+        check("INV-SPEC: /api/scatter?spec= == the legacy params (traces, totals, groups)",
+              via_spec == via_legacy and via_spec["n_total"] == want_n(60, 330, "TRUE") > 0,
+              (via_spec["n_total"], via_legacy["n_total"], want_n(60, 330, "TRUE")))
+        no_win = api("/api/scatter?maxpts=4000&spec=" + _up.quote(json.dumps({"conds": {aidx: ["TRUE"]}})))
+        check("INV-SPEC: a spec without a window defaults to the full x-range",
+              no_win["n_total"] == want_n(0, 1e9, "TRUE"), (no_win["n_total"], want_n(0, 1e9, "TRUE")))
+        for label, junk in {"not JSON": "{bad", "lo above hi": json.dumps({"lo": 9, "hi": 1}),
+                            "bad pf": json.dumps({"pf": "maybe"}), "not an object": "[1,2]"}.items():
+            body = {}
+            try:
+                code = urllib.request.urlopen(base + "/api/scatter?spec=" + _up.quote(junk), timeout=30).status
+            except urllib.error.HTTPError as e:
+                code = e.code
+                try:
+                    body = json.loads(e.read())
+                except ValueError:
+                    body = {}          # a 500 HTML page: fall through to a clean FAIL below
+            check("INV-SPEC: a junk spec (%s) -> 400 with a message, not a 500" % label,
+                  code == 400 and body.get("ok") is False and "bad filter spec" in body.get("error", ""), (code,))
+        try:
+            code = urllib.request.urlopen(base + "/view?view=scatter&spec=" + _up.quote("{bad"), timeout=30).status
+        except urllib.error.HTTPError as e:
+            code = e.code
+        check("INV-SPEC: /view with a junk spec -> 400 (not a 500)", code == 400, code)
+
         # ---- Step 3: band views BUILT BY THE VIEWER honour window + filters ---------------
         def view_url(view, lo, hi, conds=None):
             q = "view=%s&flo=%s&fhi=%s&full=0" % (view, lo, hi)
@@ -465,6 +499,15 @@ def main() -> int:
         open_view("scatter", 150, 320, conds)
         r = bp.evaluate("() => { try { return {n:applyFilters(DATA).length}; } catch(e){ return {error:String(e)}; } }")
         check("INV-BAND-COND: scatter band view honours the condition filter (n == oracle)",
+              r.get("n") == want_n(150, 320, "TRUE"), r)
+
+        # the same band through the ONE-spec form (what the UI now sends)
+        bp.goto(base + "/view?view=scatter&full=0&spec=" + urllib.parse.quote(json.dumps(
+            {"lo": 150, "hi": 320, "conds": {aid: ["TRUE"]}})), timeout=600000)
+        bp.wait_for_selector("#plot .main-svg", timeout=180000)
+        bp.wait_for_timeout(600)
+        r = bp.evaluate("() => { try { return {n:applyFilters(DATA).length}; } catch(e){ return {error:String(e)}; } }")
+        check("INV-SPEC: the band page built from ?spec= honours window + conditions (n == oracle)",
               r.get("n") == want_n(150, 320, "TRUE"), r)
         check("INV-BAND-COND teeth: filter removes rows the window alone keeps",
               want_n(150, 320, "TRUE") < want_n(150, 320))

@@ -44,18 +44,15 @@ from flask import Flask, Response, jsonify, request
 
 import padb_bands
 import padb_limits
+from padb_core import Dataset as _CoreDataset, FilterSpec
+from padb_core.columns import detect_columns as _detect_columns, qi as _qi
+from padb_core.conditions import MAX_DIM_VALUES, parse_group as _parse_group_dims
 
 try:
     import plotly.offline as _plo
     _PLOTLY = _plo.get_plotlyjs()
 except Exception:  # pragma: no cover
     _PLOTLY = "console.error('plotly.js not available');"
-
-_META_COLS = {
-    "analysis type", "model(s)", "algorithm -> result", "units", "group",
-    "station", "test step",
-}
-
 
 def _free_port(start: int, tries: int = 50) -> int:
     """First bindable localhost port at/after `start`. Lets several folders'
@@ -110,37 +107,6 @@ def _find_parquet(target: Path) -> Path:
     sys.exit(f"Not a parquet file or folder: {target}")
 
 
-def _detect_columns(schema_names, x_override=None, value_override=None):
-    """Pick x / value / serial / group columns from the parquet schema, using
-    the same keyword rules padb_plots' scatter loader uses."""
-    lower = {n.lower(): n for n in schema_names}
-
-    def first(pred):
-        for n in schema_names:
-            if pred(n.lower()):
-                return n
-        return None
-
-    x_col = x_override or first(lambda l: "frequency" in l or "x value" in l)
-    serial_col = first(lambda l: "serial num" in l or "serial no" in l
-                       or l == "serial number" or l == "serial")
-    group_col = lower.get("group")
-    # Temperature is a real column (PADB writes it as "Test Step"; some pods use a
-    # "temp"-named key) -- reading it is reliable, unlike parsing it out of Group.
-    temp_col = first(lambda l: l == "test step" or "temp" in l)
-    value_col = value_override
-    if not value_col:
-        skip = _META_COLS | {"", (x_col or "").lower(), (serial_col or "").lower(),
-                             (temp_col or "").lower()}
-        for n in schema_names:
-            l = n.lower()
-            if l in skip or "limit" in l:
-                continue
-            value_col = n  # first plausible non-meta, non-limit column
-            break
-    return x_col, value_col, serial_col, group_col, temp_col
-
-
 def _spec_segments_from(rows, x_max):
     """Contiguous x-bands of constant (yhi, ylo). `rows` yields objects/tuples with
     .x/.yhi/.ylo (None or NaN = no limit), ordered by x. Shared by both engines."""
@@ -170,25 +136,13 @@ def _spec_segments_from(rows, x_max):
     return segs
 
 
-def _parse_group_dims(g: str) -> dict:
-    """Group text -> {key: value}. Fragments split on 2+ spaces; a fragment with no ':'
-    is PADB's value-padding ("Frequency (MHz):  10") and is merged into the previous value."""
-    out, last = {}, None
-    for frag in re.split(r"\s{2,}", g or ""):
-        frag = frag.strip()
-        if not frag:
-            continue
-        if ":" in frag:
-            k, v = frag.split(":", 1)
-            last = k.strip()
-            if last:
-                out[last] = v.strip()
-        elif last is not None:
-            out[last] = (out[last] + " " + frag).strip()
-    return out
-
-
-MAX_DIM_VALUES = 40   # a condition dimension with more distinct values isn't a usable filter
+def _limits_list(ds):
+    """The dataset's limit overrides as a plain list (the pandas engine keeps a list, the core
+    engine a LimitTable)."""
+    lim = getattr(ds, "limits", None)
+    if lim is None:
+        return []
+    return lim.to_list() if hasattr(lim, "to_list") else list(lim)
 
 
 class PandasDataSet:
@@ -331,7 +285,7 @@ class PandasDataSet:
             "slow_band_warn": self.max_band_rows > SLOW_BAND_ROWS,
             "is_room_only": bool(self.is_room_only),
             "has_limits": bool(self.has_limits),
-            "limits": getattr(self, "limits", []),
+            "limits": _limits_list(self),
             "dims": getattr(self, "dims", []),
         }
 
@@ -373,313 +327,55 @@ class PandasDataSet:
         return {"traces": traces, "n_total": n_total, "n_returned": n_ret}
 
 
-def _qi(name: str) -> str:
-    """Quote a column name for DuckDB SQL."""
-    return '"' + str(name).replace('"', '""') + '"'
-
-
-class DuckDataSet:
-    """DuckDB-backed twin of PandasDataSet (same public interface).
-
-    The parquet is read ONCE by DuckDB (streamed, parallel, bigger-than-RAM capable) into
-    a small derived columnar table in a temp database file -- x, y, site, serial, temp,
-    limits, fail flag, plus the source row number -- sorted by x so range filters prune
-    on zone maps. Every query (filter + min/max-envelope decimation, per-band counts,
-    spec segments, band slices) then runs in SQL inside the engine; nothing but the
-    decimated result is ever materialised in Python, so a multi-million-row analytic
-    needs neither a big pandas frame nor the whole raw table held in memory.
-
-    Group/Test Step parsing (Site/Serial/Temp) is done in Python over the DISTINCT
-    values only (tens of thousands, not millions) with the SAME regexes as the pandas
-    path, then joined in -- so the two engines classify every row identically."""
+class DuckDataSet(_CoreDataset):
+    """The viewer's DuckDB engine = padb_core.Dataset (v3 core: one condition parser, FilterSpec,
+    limits as a query-time view) plus the few viewer-only parts: named-band bookkeeping, band slices
+    of the RAW parquet for the padb_v2 band views, and the PandasDataSet-shaped scatter()/_where()
+    wrappers. Everything else (build, filters, envelope decimation, spec stairs, limit overrides) is
+    the core -- there is no second copy in this file."""
 
     def __init__(self, parquet_path: Path, x_override=None, value_override=None):
-        import duckdb
-        self.path = parquet_path
-        names = pq.ParquetFile(parquet_path).schema.names
-        self.x_col, self.value_col, self.serial_col, self.group_col, self.temp_col = \
-            _detect_columns(names, x_override, value_override)
-        if not self.x_col or not self.value_col:
-            sys.exit(f"Could not detect x/value columns in {parquet_path.name} "
-                     f"(cols: {names}). Use --x / --value to set them.")
-        _low = {n.lower(): n for n in names}
-
-        def _find(*subs):
-            for k, orig in _low.items():
-                if all(s in k for s in subs):
-                    return orig
-            return None
-        self.hi_col = _find("upper", "limit") or _find("upper", "spec")
-        self.lo_col = _find("lower", "limit") or _find("lower", "spec")
-
-        self._tmpdir = Path(tempfile.mkdtemp(prefix="padb_duck_"))
-        import atexit
-        import shutil
-        atexit.register(shutil.rmtree, str(self._tmpdir), True)
-        self.con = duckdb.connect(str(self._tmpdir / "viewer.duckdb"))
-        self.con.execute("SET temp_directory = ?", [str(self._tmpdir / "spill")])
+        try:
+            super().__init__(parquet_path, x_override, value_override)
+        except ValueError as exc:
+            sys.exit(str(exc))
         self._src = "read_parquet('" + str(parquet_path).replace("\\", "/").replace("'", "''") + "')"
-        self._limits_lock = threading.Lock()
-        self._build()
         self.engine = "duckdb"
-        self.value_label = self.value_col
-        self.x_label = self.x_col
-        m = re.search(r"\(([^)]+)\)", self.x_label)
-        self.x_unit = m.group(1) if m else ""
         self.bands: list[dict] = []
         self.band_counts: list[int] = []
         self.max_band_rows: int = 0
 
-    # -- build ------------------------------------------------------------------
-    def _distinct_map(self, col, fn, out_cols):
-        """DISTINCT values of `col` (null -> 'nan', as pandas astype(str) does) mapped
-        through python fn -> tuple, registered as a join table. Returns table name."""
-        rows = self.con.execute(
-            f"SELECT DISTINCT COALESCE(CAST({_qi(col)} AS VARCHAR), 'nan') FROM {self._src}"
-        ).fetchall()
-        vals = [r[0] for r in rows]
-        mapped = [fn(v) for v in vals]
-        return vals, mapped
-
-    def _build(self):
-        con = self.con
-        # Group -> site / serial (python regexes over distinct groups only)
-        site_expr, serial_expr = "'(all)'", "'?'"
-        gjoin = ""
-        self.dims: list = []
-        gid_expr = "CAST(NULL AS BIGINT)"
-        if self.group_col:
-            vals, _ = self._distinct_map(self.group_col, lambda v: v, None)
-            site_re = re.compile(r"Site:\s*([^\s]+)")
-            ser_re1 = re.compile(r"Serial\s*(?:Number|No|Num)?\s*:\s*([^\s|]+)")
-            ser_re2 = re.compile(r"\b([A-Za-z]{2,3}\d{5,})\b")
-            sites = []
-            sers1 = []
-            for v in vals:
-                m = site_re.search(v)
-                sites.append(m.group(1) if m else "(all)")
-                m = ser_re1.search(v)
-                sers1.append(m.group(1) if m else None)
-            if all(x is None for x in sers1):
-                sers = []
-                for v in vals:
-                    m = ser_re2.search(v)
-                    sers.append(m.group(1) if m else None)
-            else:
-                sers = sers1
-            gdict = {"g": vals, "g_site": sites,
-                     "g_serial": [x if x is not None else "?" for x in sers]}
-            # Condition dimensions (every "Key: value" in Group with 2..MAX_DIM_VALUES values):
-            # parsed over DISTINCT groups only, served as filter checkboxes.
-            kvs = [_parse_group_dims(v) for v in vals]
-            seen: dict = {}
-            for kv in kvs:
-                for k, v in kv.items():
-                    seen.setdefault(k, set()).add(v)
-            ser_pat = re.compile(r"^[A-Z]{2,3}\d{5,}$")
-            for k in sorted(seen):
-                kl = k.lower()
-                vs = seen[k]
-                xb = self.x_col.lower().split("(")[0].strip()
-                if (kl == "site" or "temp" in kl or "frequency" in kl
-                        or kl.split("(")[0].strip() == xb
-                        or any(t in kl for t in ("serial", "unit id", "dut id", "s/n"))
-                        or len(vs) < 2 or len(vs) > MAX_DIM_VALUES
-                        or sum(1 for x in vs if ser_pat.match(x)) * 2 > len(vs)):
-                    continue
-                i = len(self.dims)
-                self.dims.append({"id": i, "name": k, "values": sorted(vs)})
-                gdict[f"d{i}"] = [kv.get(k) for kv in kvs]
-            gdict["gid"] = list(range(len(vals)))
-            gdf = pd.DataFrame(gdict)
-            con.register("gmap_df", gdf)
-            con.execute("CREATE TABLE gmap AS SELECT * FROM gmap_df")
-            con.unregister("gmap_df")
-            gjoin = (f"LEFT JOIN gmap ON gmap.g = COALESCE(CAST(r.{_qi(self.group_col)} "
-                     f"AS VARCHAR), 'nan')")
-            site_expr = "gmap.g_site"
-            serial_expr = "gmap.g_serial"
-            gid_expr = "gmap.gid"
-        dsel = "".join(f", gmap.d{d['id']} AS d{d['id']}" for d in self.dims)
-        dout = "".join(f", d{d['id']}" for d in self.dims) + ", gid"
-        dsel += f", {gid_expr} AS gid"
-        if self.serial_col:
-            serial_expr = f"CAST(r.{_qi(self.serial_col)} AS VARCHAR)"
-        tjoin, temp_expr = "", "'Room'"
-        if self.temp_col:
-            vals, _ = self._distinct_map(self.temp_col, lambda v: v, None)
-            tdf = pd.DataFrame({"t": vals,
-                                "t_temp": [(v.strip() or "Room") for v in vals]})
-            con.register("tmap_df", tdf)
-            con.execute("CREATE TABLE tmap AS SELECT * FROM tmap_df")
-            con.unregister("tmap_df")
-            tjoin = (f"LEFT JOIN tmap ON tmap.t = COALESCE(CAST(r.{_qi(self.temp_col)} "
-                     f"AS VARCHAR), 'nan')")
-            temp_expr = "tmap.t_temp"
-
-        def num(col):
-            return f"TRY_CAST(r.{_qi(col)} AS DOUBLE)"
-        hi = f"CASE WHEN isnan({num(self.hi_col)}) THEN NULL ELSE {num(self.hi_col)} END" \
-            if self.hi_col else "CAST(NULL AS DOUBLE)"
-        lo = f"CASE WHEN isnan({num(self.lo_col)}) THEN NULL ELSE {num(self.lo_col)} END" \
-            if self.lo_col else "CAST(NULL AS DOUBLE)"
-        con.execute(f"""
-            CREATE TABLE pts AS
-            SELECT x, y, site, serial, temp, yhi, ylo, yhi AS yhi0, ylo AS ylo0{dout},
-                   (yhi IS NOT NULL OR ylo IS NOT NULL) AS scored,
-                   COALESCE((yhi IS NOT NULL AND y > yhi) OR (ylo IS NOT NULL AND y < ylo), false) AS fail,
-                   rid
-            FROM (
-              SELECT {num(self.x_col)} AS x, {num(self.value_col)} AS y,
-                     {site_expr} AS site, {serial_expr} AS serial, {temp_expr} AS temp,
-                     {hi} AS yhi, {lo} AS ylo, r.file_row_number AS rid{dsel}
-              FROM read_parquet('{str(self.path).replace(chr(92), '/').replace("'", "''")}',
-                                file_row_number=true) r
-              {gjoin} {tjoin}
-            ) WHERE x IS NOT NULL AND y IS NOT NULL AND NOT isnan(x) AND NOT isnan(y)
-            ORDER BY x, rid""")
-        r = con.execute("SELECT count(*), min(x), max(x), count(DISTINCT serial), "
-                        "bool_or(scored) FROM pts").fetchone()
-        self.n_rows, self.x_min, self.x_max, self.n_serials = int(r[0]), r[1], r[2], int(r[3])
-        self.has_limits = bool(r[4])
-        self.limits: list = []
-        if self.n_rows == 0:
-            sys.exit(f"No usable (x, value) rows in {self.path.name}")
-        self.x_min, self.x_max = float(self.x_min), float(self.x_max)
-        self.sites = [str(v[0]) for v in con.execute(
-            "SELECT DISTINCT site FROM pts ORDER BY site").fetchall() if v[0] is not None]
-        self.temps = [str(v[0]) for v in con.execute(
-            "SELECT DISTINCT temp FROM pts ORDER BY temp").fetchall() if v[0] is not None]
-        self.is_room_only = len(self.temps) < 2
-
-    def _all(self, sql, params=None):
-        return self.con.cursor().execute(sql, params or []).fetchall()
-
-    # -- interface shared with PandasDataSet --------------------------------------
     meta = PandasDataSet.meta
 
-    def distinct_x(self):
-        return [r[0] for r in self._all("SELECT DISTINCT x FROM pts ORDER BY x")]
-
-    def set_limits(self, limits):
-        """Apply (or, with [], remove) limit overrides over the data's own limits, in place on
-        the derived table. SQL mirror of padb_limits.effective (QA compares them)."""
-        hi = padb_limits.sql_case(limits, "x", "upper", "yhi0")
-        lo = padb_limits.sql_case(limits, "x", "lower", "ylo0")
-        with self._limits_lock:
-            self.con.execute(f"UPDATE pts SET yhi = {hi}, ylo = {lo}")
-            self.con.execute(
-                "UPDATE pts SET scored = (yhi IS NOT NULL OR ylo IS NOT NULL), "
-                "fail = COALESCE((yhi IS NOT NULL AND y > yhi) OR (ylo IS NOT NULL AND y < ylo), false)")
-            self.has_limits = bool(self._all("SELECT coalesce(bool_or(scored), false) FROM pts")[0][0])
-            self.limits = list(limits)
-
     def compute_band_counts(self):
-        self.band_counts, self.max_band_rows = [], 0
-        for b in self.bands:
-            n = int(self._all("SELECT count(*) FROM pts WHERE x >= ? AND x <= ?",
-                              [b["lo"], b["hi"]])[0][0])
-            self.band_counts.append(n)
+        self.band_counts = self.count_in_bands(self.bands)
+        for b, n in zip(self.bands, self.band_counts):
             b["count"] = n
         self.max_band_rows = max(self.band_counts) if self.band_counts else 0
 
-    def spec_segments(self):
-        if not self.has_limits:
-            return []
-        rows = self._all(
-            "SELECT x, arg_min(yhi, rid) FILTER (WHERE yhi IS NOT NULL), "
-            "arg_min(ylo, rid) FILTER (WHERE ylo IS NOT NULL) FROM pts GROUP BY x ORDER BY x")
-        import collections
-        R = collections.namedtuple("R", "x yhi ylo")
-        return _spec_segments_from((R(*r) for r in rows), self.x_max)
+    # -- PandasDataSet-shaped wrappers over the core's FilterSpec ---------------------------------
+    @staticmethod
+    def _as_spec(flo, fhi, sites, temps, pf, conds):
+        return FilterSpec(lo=flo, hi=fhi, sites=list(sites or []), temps=list(temps or []), pf=pf or "all",
+                          conds={int(k): [str(x) for x in v] for k, v in (conds or {}).items()})
 
     def _where(self, flo, fhi, sites, temps, pf, conds):
-        where, args = ["x >= ?", "x <= ?"], [flo, fhi]
-        if sites:
-            where.append("site IN (" + ",".join("?" * len(sites)) + ")")
-            args += list(sites)
-        if temps:
-            where.append("temp IN (" + ",".join("?" * len(temps)) + ")")
-            args += list(temps)
-        if pf == "fail":
-            where.append("fail")
-        elif pf == "pass":
-            where.append("NOT fail")
-        ok = {d["id"] for d in self.dims}
-        for k, vals in (conds or {}).items():
-            k = int(k)
-            if k not in ok:
-                continue
-            if not vals:
-                where.append("false")      # every value of this dim unticked -> nothing
-                continue
-            # blank/absent value for a dim = not applicable = no constraint (never excluded)
-            where.append(f"(d{k} IS NULL OR d{k} IN (" + ",".join("?" * len(vals)) + "))")
-            args += list(vals)
-        return " AND ".join(where), args
-
-    def _group_expr(self, by):
-        """SQL expression naming each point's group: the chosen keys joined by ' / '.
-        Keys: site, serial, temp, d<i> (condition dim). Empty/unknown -> site."""
-        ok = {"site": "site", "serial": "serial", "temp": "temp"}
-        ok.update({f"d{d['id']}": f"COALESCE(d{d['id']}, '-')" for d in self.dims})
-        cols = [ok[k] for k in (by or []) if k in ok]
-        if not cols:
-            return "site"
-        return " || ' / ' || ".join(f"CAST({c} AS VARCHAR)" for c in cols)
-
-    MAX_GROUPS = 60
+        return self._as_spec(flo, fhi, sites, temps, pf, conds).to_sql(self.dim_ids())
 
     def scatter(self, flo, fhi, sites, maxpts, temps=None, pf="all", conds=None, by=None):
-        w, args = self._where(flo, fhi, sites, temps, pf, conds)
-        g = self._group_expr(by)
-        counts = self._all(f"SELECT {g}, count(*) FROM pts WHERE {w} GROUP BY 1 ORDER BY 1", args)
-        if len(counts) > self.MAX_GROUPS:
-            return {"traces": [], "n_total": int(sum(c for _, c in counts)), "n_returned": 0,
-                    "groups": {}, "too_many": len(counts)}
-        n_total = int(sum(c for _, c in counts))
-        nb = max(1, maxpts // 2)
-        span = (fhi - flo) or 1.0
-        traces = []
-        for site, n in counts:
-            if n == 0:
-                continue
-            if n <= maxpts:
-                rows = self._all(f"SELECT x, y, gid, serial, temp FROM pts WHERE {w} AND ({g}) = ? ORDER BY x, rid",
-                                 args + [site])
-            else:
-                rows = self._all(f"""
-                    WITH b AS (
-                      SELECT x, y, rid, gid, serial, temp,
-                             LEAST({nb - 1}, GREATEST(0, CAST(floor((x - ?) / ? * {nb}) AS BIGINT))) AS bk
-                      FROM pts WHERE {w} AND ({g}) = ?),
-                    m AS (SELECT arg_min(rid, y) AS r1, arg_max(rid, y) AS r2 FROM b GROUP BY bk)
-                    SELECT x, y, gid, serial, temp FROM b
-                    WHERE rid IN (SELECT r1 FROM m UNION SELECT r2 FROM m)
-                    ORDER BY x, rid""", [flo, span] + args + [site])
-            xs = [r[0] for r in rows]
-            ys = [r[1] for r in rows]
-            # hover: serial + temp + the point's condition (Group) text; the long Group
-            # strings are sent once in `groups` and referenced by id per point.
-            traces.append({"site": str(site), "x": xs, "y": ys, "n": int(n),
-                           "gi": [r[2] for r in rows], "sn": [r[3] for r in rows],
-                           "tp": [r[4] for r in rows]})
-        used = sorted({g for t in traces for g in t["gi"] if g is not None})
-        groups = {}
-        if used:
-            for i in range(0, len(used), 5000):
-                part = used[i:i + 5000]
-                for gid, txt in self._all(
-                        "SELECT gid, g FROM gmap WHERE gid IN (" + ",".join("?" * len(part)) + ")", part):
-                    groups[int(gid)] = re.sub(r"\s{2,}", " | ", str(txt).strip())
-        n_ret = sum(len(t["x"]) for t in traces)
-        return {"traces": traces, "n_total": n_total, "n_returned": n_ret, "groups": groups}
+        return self.query(self._as_spec(flo, fhi, sites, temps, pf, conds), maxpts, by)
 
-    # -- band slices of the RAW parquet (for the padb_v2 band views) ---------------
+    # -- band slices of the RAW parquet (for the padb_v2 band views) ------------------------------
+    MAX_GROUPS = 60
+
     def _band_pred(self):
         return f"TRY_CAST({_qi(self.x_col)} AS DOUBLE) BETWEEN ? AND ?"
 
     def _filt_where(self, flo, fhi, filt):
+        """filt = a FilterSpec (window ignored) or a legacy dict {sites,temps,pf,conds}."""
+        if isinstance(filt, FilterSpec):
+            import dataclasses
+            return dataclasses.replace(filt, lo=flo, hi=fhi).to_sql(self.dim_ids())
         return self._where(flo, fhi, filt.get("sites"), filt.get("temps"),
                            filt.get("pf", "all"), filt.get("conds"))
 
@@ -1225,12 +921,16 @@ function selectedConds(){
   var out={}; Object.keys(by).forEach(function(k){ if(by[k].length<tot[k]) out[k]=by[k]; });
   return out;
 }
-function filterQS(){
-  var q='&sites='+encodeURIComponent(selectedSites().join(','))+'&temps='+encodeURIComponent(selectedTemps().join('|'))+
-        '&pf='+((document.querySelector('input[name="pf"]:checked')||{}).value||'all');
-  var c=selectedConds(); if(Object.keys(c).length) q+='&conds='+encodeURIComponent(JSON.stringify(c));
-  return q;
+// ONE filter state: the same FilterSpec JSON the server turns into SQL (padb_core.filterspec).
+function currentSpec(flo,fhi){
+  var o={lo:flo,hi:fhi}, s=selectedSites(), tp=selectedTemps();
+  if(s.length) o.sites=s;
+  if(tp.length) o.temps=tp;
+  var pf=(document.querySelector('input[name="pf"]:checked')||{}).value||'all'; if(pf!=='all') o.pf=pf;
+  var c=selectedConds(); if(Object.keys(c).length) o.conds=c;
+  return o;
 }
+function specQS(flo,fhi){ return '&spec='+encodeURIComponent(JSON.stringify(currentSpec(+flo,+fhi))); }
 function selectedSites(){return [...document.querySelectorAll('.sitechk:checked')].map(c=>c.value);}
 function selectedTemps(){return [...document.querySelectorAll('.tempchk:checked')].map(c=>c.value);}
 function resetView(){document.getElementById('flo').value=META.x_min;document.getElementById('fhi').value=META.x_max;update();}
@@ -1274,7 +974,7 @@ function openView(v){
   const f=document.getElementById('vframe');
   f.onload=()=>{document.getElementById('vstatus').textContent='rendered ('+(full?'full: all points, Site check':'lite: exact boxes/stats, no overlay')+').';
     var _vb=document.getElementById('vbusy'); if(_vb) _vb.style.display='none';};
-  f.src='/view?view='+encodeURIComponent(v)+'&flo='+flo+'&fhi='+fhi+'&full='+full+filterQS();
+  f.src='/view?view='+encodeURIComponent(v)+'&full='+full+specQS(flo,fhi);
   wrap.scrollIntoView({behavior:'smooth'});
 }
 async function update(){
@@ -1288,7 +988,7 @@ async function update(){
   saveState();
   const t0=performance.now();
   const seq=++_updSeq;
-  const r=await (await fetch(`/api/scatter?flo=${flo}&fhi=${fhi}&maxpts=${maxpts}&by=${encodeURIComponent(selectedBy().join(','))}`+filterQS())).json();
+  const r=await (await fetch(`/api/scatter?maxpts=${maxpts}&by=${encodeURIComponent(selectedBy().join(','))}`+specQS(flo,fhi))).json();
   if(seq!==_updSeq) return;   // a newer update() (e.g. a fast Next click) owns the plot now
   if(r.too_many){
     document.getElementById('status').textContent='Group by gives '+r.too_many+' groups (max 60) -- untick Serial Number or another high-cardinality key.';
@@ -1357,8 +1057,7 @@ def api_meta():
 
 
 def _conds_arg():
-    """Condition filters from the query string: conds = JSON {dimId: [values]} holding
-    only the dimensions the user has NARROWED (an open dim never constrains)."""
+    """Legacy `conds` query param: JSON {dimId: [values]} of only the NARROWED dimensions."""
     raw = request.args.get("conds", "")
     if not raw:
         return None
@@ -1369,30 +1068,55 @@ def _conds_arg():
         return None
 
 
-def _filt_arg():
-    """The full filter set (sites/temps/pass-fail/conditions) the band views must honour."""
-    sites = [s for s in (request.args.get("sites", "") or "").split(",") if s]
-    temps = [t for t in (request.args.get("temps", "") or "").split("|") if t]
-    pf = request.args.get("pf", "all")
-    conds = _conds_arg()
-    if not conds and not sites and not temps and pf == "all":
-        return None
-    return {"sites": sites, "temps": temps, "pf": pf if pf in ("pass", "fail") else "all",
-            "conds": conds}
+class _BadSpec(ValueError):
+    pass
+
+
+def _spec_from_request() -> FilterSpec:
+    """THE filter state of a request: a single `spec` JSON (a FilterSpec) -- or, for older callers, the
+    legacy flo/fhi/sites/temps/pf/conds params. Raises _BadSpec (-> 400) on junk. The window defaults to
+    the dataset's x-range."""
+    raw = request.args.get("spec")
+    try:
+        if raw:
+            spec = FilterSpec.from_dict(json.loads(raw))
+        else:
+            spec = FilterSpec.from_dict({
+                "lo": float(request.args.get("flo") or DS.x_min),
+                "hi": float(request.args.get("fhi") or DS.x_max),
+                "sites": [s for s in (request.args.get("sites", "") or "").split(",") if s],
+                "temps": [x for x in (request.args.get("temps", "") or "").split("|") if x],
+                "pf": request.args.get("pf", "all") if request.args.get("pf", "all") in ("all", "pass", "fail") else "all",
+                "conds": _conds_arg() or {}})
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise _BadSpec(str(exc))
+    import dataclasses
+    return dataclasses.replace(spec, lo=DS.x_min if spec.lo == -float("inf") else spec.lo,
+                               hi=DS.x_max if spec.hi == float("inf") else spec.hi)
+
+
+def _filt_of(spec: FilterSpec):
+    """The part of a spec the band views must honour (everything except the window), or None when it
+    constrains nothing."""
+    import dataclasses
+    f = dataclasses.replace(spec, lo=-float("inf"), hi=float("inf"))
+    return f if (f.sites or f.temps or f.conds or f.pf != "all") else None
+
+
+@app.errorhandler(_BadSpec)
+def _bad_spec(exc):
+    return jsonify({"ok": False, "error": "bad filter spec: %s" % exc}), 400
 
 
 @app.route("/api/scatter")
 def api_scatter():
-    flo = float(request.args.get("flo", DS.x_min))
-    fhi = float(request.args.get("fhi", DS.x_max))
+    spec = _spec_from_request()
     maxpts = max(100, min(50000, int(float(request.args.get("maxpts", 4000)))))
-    sites = [s for s in (request.args.get("sites", "") or "").split(",") if s]
-    temps = [t for t in (request.args.get("temps", "") or "").split("|") if t]
-    pf = request.args.get("pf", "all")
-    if pf not in ("all", "pass", "fail"):
-        pf = "all"
     by = [b for b in (request.args.get("by", "") or "").split(",") if b]
-    return jsonify(DS.scatter(flo, fhi, sites, maxpts, temps, pf, _conds_arg(), by))
+    if hasattr(DS, "query"):
+        return jsonify(DS.query(spec, maxpts, by))
+    return jsonify(DS.scatter(spec.lo, spec.hi, spec.sites, maxpts, spec.temps, spec.pf,
+                              {k: v for k, v in spec.conds.items()} or None, by))
 
 
 @app.route("/api/segments")
@@ -1570,8 +1294,8 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False,
     if not hasattr(DS, "band_row_count"):
         filt = None            # pandas engine: band views are unfiltered
     key = (view, round(flo, 6), round(fhi, 6), bool(full),
-           json.dumps(filt, sort_keys=True, default=str) if filt else "",
-           json.dumps(getattr(DS, "limits", []), sort_keys=True))
+           (filt.key() if isinstance(filt, FilterSpec) else json.dumps(filt, sort_keys=True, default=str)) if filt else "",
+           json.dumps(_limits_list(DS), sort_keys=True))
     cached = _band_cache.get(key)
     if cached and os.path.exists(cached[0]):
         return cached
@@ -1620,8 +1344,8 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False,
         cfg["box_drop_points"] = True   # lite: exact stats, no per-point overlay
     if len(DS.sites) >= 2:
         cfg["primary_site"] = DS.sites[0]
-    if getattr(DS, "limits", None):
-        cfg["limit_overrides"] = DS.limits      # data x-units; padb_v2 applies them before any view
+    if _limits_list(DS):
+        cfg["limit_overrides"] = _limits_list(DS)   # data x-units; padb_v2 applies them before any view
     padb_v2.generate_report(band_csv, cfg, tmp)
     cands = sorted(tmp.glob(f"*_{view}.html"))
     out = str(cands[0]) if cands else ""
@@ -1649,10 +1373,10 @@ def _render_view_band(view: str, flo: float, fhi: float, full: bool = False,
 def api_view():
     view = request.args.get("view", "boxplot")
     try:
-        flo = float(request.args.get("flo") or DS.x_min)
-        fhi = float(request.args.get("fhi") or DS.x_max)
-    except (TypeError, ValueError):
-        return Response("<pre>flo/fhi must be numbers</pre>", mimetype="text/html", status=400)
+        spec = _spec_from_request()
+    except _BadSpec as exc:
+        return Response("<pre>bad filter spec: %s</pre>" % exc, mimetype="text/html", status=400)
+    flo, fhi = spec.lo, spec.hi
     full = request.args.get("full", "0") in ("1", "true", "True")
     if view in ("env_coverage", "distribution") and getattr(DS, "is_room_only", False):
         return Response(
@@ -1660,7 +1384,7 @@ def api_view():
             f"readings) -- this dataset is Room-only, so it isn't available (same as the "
             f"html build, which omits it for Room-only data).</pre>", mimetype="text/html")
     try:
-        path, n = _render_view_band(view, flo, fhi, full=full, filt=_filt_arg())
+        path, n = _render_view_band(view, flo, fhi, full=full, filt=_filt_of(spec))
     except Exception as exc:  # surface the real error in the iframe
         return Response(f"<pre>render error: {exc}</pre>", mimetype="text/html", status=500)
     if not path or not os.path.exists(path):
