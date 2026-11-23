@@ -15,8 +15,9 @@ Most of the QA is synthetic and needs zero real data.
 ```bash
 py qa_selfcheck.py
 ```
-This umbrella runs compile + `qa_padb` + `qa_viewer` + `qa_js_segments` +
-`qa_stats_recompute`, all on internally-generated synthetic datasets, and prints a
+This umbrella runs compile + `qa_padb` + `qa_viewer` + `qa_viewer_ui` + `qa_limits` +
+`qa_viewer_scale` + `qa_js_segments` + `qa_stats_recompute` + the other suites listed below, all on
+internally-generated synthetic datasets (the browser-tier ones honest-exit when Chromium is unavailable), and prints a
 GREEN/RED/AMBER verdict against a saved baseline. A brand-new user with an empty
 results folder still gets a real verdict covering the pipeline, every statistical
 aggregation, and per-view JS drift. This is ~80% of self-QA and needs nothing
@@ -189,6 +190,18 @@ py qa_loader_adapter.py
 **padb-tools' own parquet:** a synthetic sidecar (incl. an all-null `Upper Limit (<=)` column, parquet type null, like the real EP5 file) is sniffed (`padb` / `padbloader` / junk -> None), described (usable rows exclude a value-less row), turned into a job that points at it in place (never copied; wide sweep -> scatter+summary; force/exists; env views dropped), loaded and built by `padb_v2`, listed by the CLI, accepted by the upload/generate routes (junk rejected with a clear message) and shown in the drop zone with one entry, no combine option and the wide-sweep warning.
 Baseline: **78 PASS / 0 FAIL**. Part of `qa_selfcheck.py`'s core suite.
 
+### `qa_viewer.py` — parquet viewer data/API parity
+**What it pins:** the DuckDB engine and the pandas engine return the same envelope, counts, spec stairs and band slices (byte-identical band CSV); condition filters and group-by are compared to an independent oracle (pandas over the parsed Group text); `padb_bands` / `padb_make_bands`. **Teeth:** narrowing must remove rows; the engines are cross-checked, not assumed. `py qa_viewer.py` -> **91 PASS / 0 FAIL**. Part of `qa_selfcheck.py`.
+
+### `qa_viewer_ui.py` — a real browser drives the viewer (added 2026-11-22/23)
+Starts the real `padb_viewer.py` on a generated fixture parquet (a limit **stair**, a row exactly **on a band edge**, real fails) and drives its overview page and the band-view pages it builds with Playwright, checking every number against an independent pandas oracle. Invariants: **INV-COND / INV-SITE / INV-GROUP** (filters, live checkboxes, group-by partition), **INV-SEG / INV-RAPID** (each Next lands on the band; three rapid clicks end on the last window), **INV-HOVER**, **INV-LIMITS**, **INV-EQ-\*** (drag-zoom == typed window == oracle; conditions + window; Next changes only the window), **INV-PERSIST** (a reload restores window/filters/group-by/segment position; Next continues from it; Reset all; corrupt storage), **INV-ORA-\*** (row/serial counts, per-band counts with the edge row counted in both bands, limit stairs, envelope keeps real points and the global min/max, uncapped returns every row), **INV-BAND-\*** (the pages the viewer builds honour window + conditions; Passing U Failing == All), **INV-VIEWARGS** (empty window args never give a bare 500), **INV-BANDEDIT** (invalid bands rejected with nothing changed; edit/add/delete through the real UI; file rewritten; counts == oracle; stepper walks the new bands) and **INV-LIMEDIT** (invalid limits rejected; an override changes Failing totals == oracle, the drawn line and the band views with no stale cache; reload; Clear all). **Teeth proven by mutation** (each break fails at least one check): saveState no-op (7), loadState ignoring conditions (2), envelope losing the max, band count off at the edge, band views ignoring filters (4), zoom not driving the window (2), no band recount / no file write / invalid band accepted, fail flag not recomputed, band cache ignoring limits, limits not passed to the band build. Honest-exits **3** (`ENV-UNAVAILABLE`) without Playwright/Chromium. `py qa_viewer_ui.py` -> **89 PASS / 0 FAIL**. A `qa_selfcheck.py` suite.
+
+### `qa_viewer_scale.py` — time / memory limits on a large file (added 2026-11-23)
+Generates a ~2M-row synthetic parquet (thousands of distinct x, ~100k distinct Group strings, a limit stair), starts the real viewer and asserts: ready within 90 s and under 2 GB (measured **3.3 s / ~210 MB**), band counts and totals == a numpy oracle, full-range / windowed / condition-filtered queries within 8 s (measured **0.16-0.26 s**), the envelope still keeps the global min/max, and a huge band returns the "Band too large" card quickly instead of a render attempt. The budgets are deliberately generous (shared machines); they catch order-of-magnitude regressions such as a query reverting to a full pandas scan. **Teeth:** the pandas engine on the big file fails the condition check; a changed guard text fails; an envelope that loses the max fails. `py qa_viewer_scale.py [--rows N]` -> **11 PASS / 0 FAIL** (~10 s). A `qa_selfcheck.py` suite.
+
+### `qa_limits.py` — editable limit overrides (added 2026-11-23)
+No browser. **LIM-VALID** (bad ranges, non-numbers, lower > upper, empty rows, >200 ranges rejected with a message); **LIM-ORACLE** (`padb_limits.effective` == an independent scalar re-implementation on edge cases and 40 random sets: edges inclusive, **later wins at a shared edge/overlap, per side**, a blank side keeps the data's value, rows outside every range untouched); **LIM-SQL** (the DuckDB `CASE` == numpy on 25 random sets); **LIM-ENGINES** (pandas and DuckDB DataSets give Failing/Passing totals == an oracle recomputed from the raw data on 4 windows x 3 limit sets, identical spec stairs, and limit-less data gains/loses a pass/fail basis); **LIM-REVERSIBLE** (`set_limits([])` restores the data's own verdicts exactly); **LIM-FILE** (round trip, unit conversion, corrupt/invalid/missing file never raises); **LIM-V2** (`padb_v2._apply_limit_overrides`: Upper_Limit **and** Spec_Hi follow the override because the classifier prefers Spec, uncertainty zeroed, columns created, relative `limits_file`, a bad file never fails a build). **Teeth proven:** lower>upper accepted (1 FAIL), earlier-wins (3), exclusive edges (11), Spec_Hi not set (1). `py qa_limits.py` -> **51 PASS / 0 FAIL**. A `qa_selfcheck.py` suite.
+
 ### `qa_compress.py` — deflated embedded page data (`padb_compress.py`)
 **Rewrite rules:** only a large single-line `var NAME=<json>;` is rewritten; a payload containing `NaN`/`Infinity` (JS accepts, `JSON.parse` rejects), two statements on one line, a missing `;`, a constant under the size floor, and already-dense data are all left alone; CRLF line endings survive; a second pass changes nothing. **Hook:** `compress_data` false / auto (size floor) / true / `compress_data_auto_mb`; never raises. **Decoder (browser tier, honest SKIP):** the synchronous inflate decodes stored blocks, fixed Huffman, dynamic Huffman (levels 1 and 9), long back-references, unicode and a single byte to *exactly* the original JSON; a wrong declared length is rejected; and a rewritten page behaves like the original -- a later script still reads the constant at parse time and its `DOMContentLoaded` handler still fires. **Teeth:** a decoder with a wrong longest-match length (258 -> 257) is detected, and with the JSON guard disabled the NaN page *is* rewritten. (Start Playwright before importing `padb_v2` in one process -- the import makes the sync driver hang on Windows; the suite orders its tiers accordingly.)
 ```bash
@@ -262,8 +275,8 @@ py qa_view_sweep.py
 ## Running a full QA pass
 
 ```bash
-py qa_selfcheck.py       # Gate 1 : umbrella — compile + qa_padb + qa_viewer +
-                         #          qa_js_segments + qa_stats_recompute vs baseline
+py qa_selfcheck.py       # Gate 1 : umbrella — compile + every suite above vs baseline
+                         #          (qa_viewer / _ui / _scale, qa_limits, qa_js_segments, ...)
 py qa_padb.py            # Gate 1a: regression baseline (expect 37/4)
 py qa_js_segments.py     # Gate 1b: per-view JS drift guard
 py qa_stats_recompute.py # Gate 1c: independent stats recompute (expect 43/0)

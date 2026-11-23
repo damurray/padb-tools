@@ -1,4 +1,4 @@
-# Changelog — 2026-08-17 to 2026-11-20
+# Changelog — 2026-08-17 to 2026-11-23
 
 Pulled directly from git history. Newest summary first; the full day-by-day log follows.
 

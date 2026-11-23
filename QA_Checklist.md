@@ -18,6 +18,20 @@ python "C:\apps\padb\tools\qa_padb.py" --keep
 
 ---
 
+## Parquet viewer (`padb_viewer.py` / `PADB_Viewer.exe`) -- manual spot check
+
+Automated: `py qa_viewer_ui.py`, `py qa_viewer_scale.py`, `py qa_limits.py` (all in `qa_selfcheck.py`). Before handing a new exe to users, eyeball once on a real results folder:
+
+- [ ] Start it on a results folder: the header shows the file, row count and engine (**duckdb**), and the plot draws.
+- [ ] Untick a **Condition** value -- the status line's point count drops; untick Site/Temp -- the plot updates without pressing Update.
+- [ ] **Group by** a condition -- one colour per value, legend count matches; hover shows serial + conditions.
+- [ ] **Segment step** Next/Prev through *Named bands* -- the window and the plot follow each step; **Edit bands**: change a band edge, **Apply** -- the band button counts and the stepper follow, the band file on disk changed; an invalid edit (min above max) is refused with a message and nothing changes.
+- [ ] **Edit limits**: add a range with an upper limit, **Apply** -- the amber *limit overrides ACTIVE* flag appears, Failing total changes, **Show limits** draws the override; open a **Stat Summary** band view -- it uses the override; **Clear all** -- everything returns to the data's own limits.
+- [ ] Reload the page -- window, filters, Group by and the segment position come back; **Reset all** returns the defaults.
+- [ ] A very large window on a big dataset returns the **"Band too large"** card, not a hang.
+
+---
+
 ## Pre-flight CSV check (before building V2 plots)
 
 Run `padb_csv_check.py` against the extracted Scatter CSV **before** trusting any of the V2 HTML below — it catches orphaned numeric columns, inverted spec rows, and high-cardinality Group data as a fast command-line check rather than a confusing plot:

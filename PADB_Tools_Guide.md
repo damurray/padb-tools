@@ -603,6 +603,42 @@ py padb_csv_to_parquet.py <file.csv|folder> [--out] [--force] [--verify]
 
 ---
 
+## Editable limit overrides (`limits_file` / `limit_overrides`) -- added 2026-11-23
+
+Sometimes the limit that matters is not the one the data carries: a datasheet value that was set after the measurements, a tighter customer limit, or data that has no limits at all. A **limit override** replaces the data's own Upper / Lower Limit over x-ranges you choose -- for the limit line, for Passing / Failing, and for every view -- **without touching the CSV or parquet**.
+
+**The file** (JSON; the viewer writes `padb_viewer_limits.json` next to the data, `limits.json` is also found, or point a job at any path):
+
+```json
+{"unit": "MHz",
+ "limits": [ {"lo": 0.009, "hi": 100, "upper": -76, "note": "dBc spec, low"},
+             {"lo": 100,   "hi": 350, "upper": -74},
+             {"lo": 200,   "hi": 400, "lower": -98} ]}
+```
+
+**Rules (one definition, shared by the viewer, the numpy/DuckDB code and the HTML builds):**
+- A range applies to rows with `lo <= x <= hi` -- **both edges inclusive**.
+- `upper` and `lower` are each optional. **A blank / missing side keeps the data's own value for that side**, so you can override only the upper limit. A range needs at least one of them; `lower` may not be above `upper`.
+- Rows outside every range keep the data's own limits.
+- Ranges are sorted by `lo`; where they **overlap or share an edge the later one wins**, separately for each side (so the example above gives -74 at x = 100, and a lower limit of -98 for x in 200-400 on top of the -74 upper).
+- Pass / fail is then the usual one: fail = value above a present upper limit or below a present lower limit.
+- Up to 200 ranges; numbers must be finite.
+
+**In a plot job** (`*_v2_job.json`):
+
+| Key | Meaning |
+|---|---|
+| `limits_file` | Path to the limits file, **relative to the job file** (or absolute). Its `unit` is converted to the data's x-unit. A missing or invalid file is skipped with a `[WARN]` -- it never fails the build. |
+| `limit_overrides` | The same list written inline (already in the data's x-unit). Takes precedence over `limits_file`. This is what the viewer passes to its band views. |
+
+The override is applied **right after the data is loaded and before any view is built**, so scatter, boxplot, stat_summary, summary and the rest all classify against the same effective limit. It sets both `Upper_Limit` and `Spec_Hi` (and the lower pair) -- the views prefer Spec over Limit -- and zeroes the uncertainty on overridden rows so the limit the views use *is* the override. The results `index.html` shows a yellow **"Limit overrides active"** banner with the file name, how many ranges and how many rows were overridden, so nobody mistakes an overridden verdict for the data's own. Re-plot with `py padb_v2.py <job> --csv <csv>` (or **Run** in the web app); no re-extraction is needed.
+
+**Live editing in the parquet viewer:** the viewer's **Edit limits** panel edits this same file (see **Large-dataset viewer** below). Static HTML pages cannot be edited live -- they have no server -- so for those you edit the file and re-plot (seconds).
+
+**Limits and the limit-less case:** if the data carries **no** limits, an override *creates* a pass / fail basis in the viewer; in a static HTML build the views that hide their Passing/Failing control for limit-less data may still hide it -- set the override and check the plot, or use the viewer.
+
+---
+
 ## Large-dataset viewer (parquet + `padb_viewer.py`)
 
 Self-contained HTML embeds every point, so a genuinely huge analytic (wide phase-noise offset sweeps, big cross-site compares, millions of points) can exceed what a browser can open. For those cases the pipeline writes a compact **parquet sidecar** next to the results and offers a small **local-server viewer** that serves only the slice being viewed.
@@ -612,7 +648,13 @@ Self-contained HTML embeds every point, so a genuinely huge analytic (wide phase
 - **DuckDB engine (v2.0)** — when the `duckdb` package is installed (`py -m pip install duckdb`) the viewer runs every query inside DuckDB instead of holding the data in a pandas frame. A 3.78M-row Closed Loop analytic loads in about 1 s using ~100 MB (the pandas engine: ~5 s and ~2.6 GB), and each pan/zoom/filter query takes tens of milliseconds, so datasets larger than RAM work. The plotted results are identical to the pandas engine (parity-tested). Without `duckdb` the viewer falls back to pandas automatically; force an engine with `--engine pandas|duckdb`. The band-view buttons still render the real interactive pages, so their time depends on the band's row count, not the engine.
 - **`PADB_Viewer.exe`** — `py build_viewer.py` freezes the viewer to a single `.exe` (PyInstaller) so users without Python can drop it into a results folder and double-click it. The `.exe`/`.parquet`/build dirs are git-ignored — rebuild, never commit the binary.
 - **The results `index.html` links it** — an "Open in viewer" / "Open folder" section plus an `Open_in_viewer.bat`. `_publish()` copies the parquet, exe, and bat to the share so the link works there too.
-- **Keep the self-contained HTML for normal small/medium analytics** — it needs nothing. The viewer + parquet are only for the giants a browser can't open; the HTML plots carry all the same analysis.
+- **Overview controls (v2.0+)** -- frequency/x window and max points; **Site** and **temperature** checkboxes (they apply on change -- no Update click); **Conditions** (every `Key: value` in the Group text with 2-40 values becomes a checklist; serial, site, temperature and the x key are excluded; a blank value is "not applicable" = never excluded; unticking every value shows nothing); **Group by** (Site / Serial / Temperature / any condition, at most 60 groups -- colouring only, it does not filter); **Show: All / Passing / Failing** (against each point's own limit); **Show limits** (dashed upper/lower limit steps drawn from the data's limit columns -- display only; the limit at each x is the first one in file order); **hover** shows the serial, temperature and the point's full condition text. The overview plot is a min/max envelope per x bucket (the status line shows the true point count and how many are drawn), so narrowing a condition may not visibly change the picture where the extremes don't move -- read the count.
+- **Segment step and Edit bands** -- *Segment step* (Prev / Next) walks the window through **Spec/limit stairs** (each run of constant limit) or **Named bands**. **Edit bands** opens a table (name, min, max; edges inclusive; overlaps allowed; up to 64 bands; names unique): **Apply** validates, writes the shared band file (`padb_viewer_bands.json` / `bands.json` -- the same file the HTML builds read) atomically, and the band buttons, per-band counts, the "slow band" warning, the band-view row cap and the stepper all follow immediately. Invalid input or a failed save changes nothing and shows the reason. (The band *views* -- the iframe pages -- still derive their own named bands, so stepping *inside* one of those pages uses those, not your edited set.)
+- **Edit limits** -- the live editor for **limit overrides** (see the section above). Rows are x-range + upper and/or lower; **Apply** saves the limits file, and the limit line, Passing/Failing, the spec-stair stepper and every band view built from then on follow; **Clear all** returns to the data's own limits exactly. An amber **limit overrides ACTIVE (n ranges)** flag is shown while any are in force.
+- **Remembered state** -- the window, max points, site/temperature/condition filters, Group by, Passing/Failing, Show limits, Full render and the segment basis + position are saved in the browser (per dataset) and restored on reload. **Reset all** clears them and reloads the defaults. Blocked or corrupt browser storage falls back to defaults -- it never breaks the page.
+- **Band views honour everything** -- the Scatter / Boxplot / Stat Summary / Summary buttons build the *real* interactive page for the current window **with** the site / temperature / condition / Passing-Failing filters and any limit overrides applied. A window with more points than the band cap (the cap never drops below your largest named band) returns a **"Band too large"** card instead of attempting a render -- narrow the window or pick a band.
+- **How it was checked** -- `qa_viewer.py` (engine parity), `qa_viewer_ui.py` (a real browser drives the overview and the pages it builds, against independent oracles), `qa_viewer_scale.py` (2M rows: ready in about 3 s, ~210 MB, queries in 0.2-0.3 s) and `qa_limits.py` (the override semantics). See `QA_GUIDE.md`.
+- **Choosing HTML vs the viewer** -- choose by **data size, not file format**. A parquet is just an encoding of the same table: `parquet_path` jobs build the same self-contained HTML as a CSV. Keep the HTML for normal-sized analytics -- it needs no server, opens straight from the share, can be emailed or archived as a fixed snapshot, and carries the full feature set (Global Filter, locked filters, Site Population Check, auto-filter, PDF report). Use the viewer for the giants a browser can't open; its band views are the same `padb_v2` HTML renders, so features belong in `padb_v2` once and the viewer passes them in as parameters (that is how limit overrides reach the band views).
 
 ---
 
@@ -1110,6 +1152,8 @@ All three tables respect the plot's current frequency window (`box_freq_lo`/`box
 Two opt-in job.json keys for pods large enough to produce an impractically large HTML file — a genuinely dense continuous sweep (e.g. thousands of raw phase-noise offset points per DUT/condition) can otherwise embed a multi-hundred-MB page no browser renders well.
 
 **`scatter_decimate`** (`"auto"` | `"always"` | `"off"`, default `"auto"`) — reduces each independent (DUT × condition) series above `scatter_decimate_threshold` (default 2000 points) down to `scatter_decimate_target` (default 3000) via min/max-envelope bucketing along the x-axis: both the highest and lowest value in every bucket are always kept, so a narrow spike or glitch is never silently dropped, only the "boring middle" between the two extremes. Each series' true first/last x sample is also always kept, so the visible frequency range can never shrink. A visible on-page banner discloses when decimation actually ran (series affected, raw vs. embedded row count) — this is disclosed up front, not tucked into the Help panel, since a viewer comparing this page against the raw CSV or a native PADB render needs to know it isn't every raw point. Real result: an 8.5M-row DCFM CSV's scatter view dropped from ~400MB to 99MB.
+
+**`limits_file`** / **`limit_overrides`** -- editable limit overrides (x-range -> upper/lower, never touches the data); see **Editable limit overrides** above.
 
 **`binary_encode`** (`true`/`false`; **auto-enabled** when the CSV is ≥ 25 MB or ≥ 250k rows — `binary_encode_auto_mb`/`_rows` override, an explicit `true`/`false` always wins; plain `false` output is byte-identical when disabled) — encodes the numeric columns that dominate file size as raw float32 bytes (base64'd into a plain string) instead of JSON text, decoded client-side straight into a typed array with no per-value text parsing. Output is byte-identical to the unencoded page when the key is `false`.
 - **`scatter`**: encodes `Value` only. **`Frequency_MHz` is deliberately kept at full precision** — it is the band/segment axis, and float32 rounding of an edge frequency could move a point into a different named band than the box plot places it (a real per-band fail-count mismatch).
