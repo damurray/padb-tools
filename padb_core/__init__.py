@@ -15,3 +15,4 @@ from .conditions import GroupIndex, parse_group, serial_of, site_of      # noqa:
 from .filterspec import FilterSpec                                       # noqa: F401
 from .limits import LimitTable                                           # noqa: F401
 from .engine import Dataset                                              # noqa: F401
+from . import lockio                                                     # noqa: F401

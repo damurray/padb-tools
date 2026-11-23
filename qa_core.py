@@ -317,6 +317,58 @@ def main() -> int:
     check("CORE-ADOPT: viewer parser == core parser (the empty-value difference from v2.5 is now unified)",
           live._parse_group_dims("Key:  Other: x") == parse_group("Key:  Other: x") == {"Other": "x"})
 
+    # ---------------- CORE-LOCK: one filter file across tools (FilterSpec <-> the HTML lock JSON) ----------------
+    from padb_core import lockio
+    mctx = {"dims": core.dims, "sites": ["SR", "AMC2"], "temps": ["Room", "45.0 Deg C"],
+            "x_min": core.x_min, "x_max": core.x_max}
+    aid = core.dims[0]["id"]
+    sp = FilterSpec(lo=60, hi=330, sites=["SR"], temps=["Room"], pf="fail", conds={aid: [core.dims[0]["values"][0]]})
+    lk = lockio.to_lock(sp, mctx, "t")
+    check("CORE-LOCK: to_lock maps conditions by LABEL, sites -> 'Site', temps -> 'Temperature', window -> freq, pf -> passfail",
+          lk["dims"] == {core.dims[0]["name"]: [core.dims[0]["values"][0]], "Site": ["SR"], "Temperature": ["Room"]}
+          and lk["freq"] == {"lo": 60, "hi": 330} and lk["passfail"] == "failing" and lk["v"] == 1, lk)
+    full = FilterSpec(lo=core.x_min, hi=core.x_max, sites=["SR", "AMC2"], temps=["Room", "45.0 Deg C"],
+                      conds={aid: list(core.dims[0]["values"])})
+    lkf = lockio.to_lock(full, mctx)
+    check("CORE-LOCK: a fully-open dimension / full window / pf=all export NOTHING (it must not constrain another view)",
+          lkf["dims"] == {} and "freq" not in lkf and lkf["passfail"] == "all", lkf)
+    back, applied, skipped = lockio.from_lock(lk, mctx)
+    check("CORE-LOCK: round trip to_lock -> from_lock restores the spec",
+          back.to_dict() == sp.to_dict() and not skipped, (back.to_dict(), sp.to_dict(), skipped))
+    rr = random.Random(77)
+    ok = True
+    for _ in range(300):
+        d0 = core.dims[0]
+        s2 = FilterSpec(lo=round(rr.uniform(core.x_min, core.x_max), 2), hi=core.x_max,
+                        sites=rr.sample(["SR", "AMC2"], rr.randint(1, 2)), temps=rr.sample(["Room", "45.0 Deg C"], rr.randint(1, 2)),
+                        pf=rr.choice(["all", "pass", "fail"]),
+                        conds={d0["id"]: rr.sample(d0["values"], rr.randint(1, len(d0["values"])))})
+        b2, _a, sk = lockio.from_lock(lockio.to_lock(s2, mctx), mctx)
+        # narrowing-equivalence: a fully-open dim is (correctly) not exported, so compare effective selections
+        eq = (b2.pf == s2.pf and sorted(b2.sites or mctx["sites"]) == sorted(s2.sites)
+              and sorted(b2.temps or mctx["temps"]) == sorted(s2.temps)
+              and sorted(b2.conds.get(d0["id"], d0["values"])) == sorted(s2.conds[d0["id"]])
+              and abs(b2.lo - max(s2.lo, core.x_min)) < 1e-9 and not sk)
+        ok &= eq
+    check("CORE-LOCK: 300 random specs survive to_lock -> from_lock (effective selection identical)", ok)
+    sp2, ap2, sk2 = lockio.from_lock({"dims": {"Nope": ["x"], "Serial Number": ["a"], core.dims[0]["name"]: ["ZZ"],
+                                               "temperature step": ["45.0 Deg C"], "Site": ["SR", "GONE"]},
+                                      "freq": {"lo": -5, "hi": 1e9}, "passfail": "passing"}, mctx)
+    check("CORE-LOCK: import is BEST-EFFORT -- unknown label / value / serial skipped AND reported, never empties the view",
+          {x[0] for x in sk2} == {"Nope", "Serial Number", core.dims[0]["name"]}
+          and sp2.temps == ["45.0 Deg C"] and sp2.sites == ["SR"] and sp2.pf == "pass"
+          and sp2.lo == core.x_min and sp2.hi == core.x_max and core.dims[0]["id"] not in sp2.conds, (sp2, sk2))
+    for label, bad in {"not an object": [1], "dims not an object": {"dims": [1]}}.items():
+        try:
+            lockio.from_lock(bad, mctx)
+            raised = False
+        except ValueError:
+            raised = True
+        check("CORE-LOCK: rejects %s" % label, raised)
+    sp3, _a3, sk3 = lockio.from_lock({"passfail": "maybe"}, mctx)
+    check("CORE-LOCK: an unknown passfail value is skipped and reported (filter stays 'all')",
+          sp3.pf == "all" and [x[0] for x in sk3] == ["passfail"])
+
     # ---------------- CORE-BOUNDARY: analysis must not depend on extraction / scheduling ----------------
     import ast
 

@@ -44,7 +44,7 @@ from flask import Flask, Response, jsonify, request
 
 import padb_bands
 import padb_limits
-from padb_core import Dataset as _CoreDataset, FilterSpec
+from padb_core import Dataset as _CoreDataset, FilterSpec, lockio
 from padb_core.columns import detect_columns as _detect_columns, qi as _qi
 from padb_core.conditions import MAX_DIM_VALUES, parse_group as _parse_group_dims
 
@@ -511,6 +511,9 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
     <label><input type="radio" name="pf" value="fail" onchange="update()">Failing</label></span>
   <button onclick="update()">Update</button>
   <button onclick="resetView()" title="Return to the full x-range (filters kept)">Reset</button>
+  <button onclick="exportFilter()" title="Save the current filter (conditions, sites, temperatures, window, pass/fail) as a file the HTML pages can import (their lock bar -> Import), or another viewer.">Export filter</button>
+  <button onclick="document.getElementById('filein').click()" title="Apply a filter file exported from an HTML page's lock bar or from another viewer. Conditions or values that do not exist in this dataset are skipped (and listed).">Import filter</button>
+  <input type="file" id="filein" accept=".json,application/json" style="display:none" onchange="importFilter(this.files[0]);this.value=''">
   <button onclick="resetAll()" title="Clear every saved filter/window/group-by choice for this dataset and reload the defaults">Reset all</button>
   <span id="status"></span>
 </div>
@@ -909,6 +912,41 @@ function syncCondRow(){
     if(btn) btn.classList.toggle('narrowed', on<tot);
   });
 }
+// --- Export / import the filter as the shared lock file (mapping done server-side, once) -------
+async function exportFilter(){
+  var flo=parseFloat(document.getElementById('flo').value), fhi=parseFloat(document.getElementById('fhi').value);
+  var r=await (await fetch('/api/filter/export',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({spec:currentSpec(isFinite(flo)?flo:META.x_min,isFinite(fhi)?fhi:META.x_max)})})).json();
+  if(!r.ok){ document.getElementById('status').textContent='export failed: '+(r.error||''); return; }
+  var blob=new Blob([JSON.stringify(r.lock,null,2)],{type:'application/json'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='padb_filter.json';
+  document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },500);
+  window.__lastExportedLock=r.lock;
+}
+function applySpecToUI(sp){
+  var has=function(a,v){ return !a||!a.length||a.indexOf(v)>=0; };
+  document.getElementById('flo').value=(sp.lo!=null)?sp.lo:META.x_min;
+  document.getElementById('fhi').value=(sp.hi!=null)?sp.hi:META.x_max;
+  document.querySelectorAll('.sitechk').forEach(function(c){ c.checked=has(sp.sites,c.value); });
+  document.querySelectorAll('.tempchk').forEach(function(c){ c.checked=has(sp.temps,c.value); });
+  var pf=document.querySelector('input[name="pf"][value="'+(sp.pf||'all')+'"]'); if(pf&&!pf.disabled) pf.checked=true;
+  document.querySelectorAll('.condchk').forEach(function(c){
+    var k=c.getAttribute('data-dim'); var allowed=(sp.conds||{})[k]; c.checked=!allowed||allowed.indexOf(c.value)>=0; });
+  syncCondRow(); update();
+}
+async function importFilter(file){
+  if(!file) return;
+  var st=document.getElementById('status'), txt=await file.text(), lock;
+  try{ lock=JSON.parse(txt); }catch(e){ st.textContent='import failed: not a JSON file'; return; }
+  var r=await (await fetch('/api/filter/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lock:lock})})).json();
+  if(!r.ok){ st.textContent='import failed: '+(r.error||''); return; }
+  applySpecToUI(r.spec);
+  window.__lastImport={applied:r.applied,skipped:r.skipped};
+  setTimeout(function(){
+    var m='filter imported ('+r.applied.join(', ')+')';
+    if(r.skipped.length) m+=' -- skipped: '+r.skipped.map(function(s){return s.label+' ('+s.reason+')';}).join('; ');
+    st.textContent=m+'  |  '+st.textContent; },300);
+}
 function toggleGrp(){ var p=document.getElementById('grppanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
 function selectedBy(){ return [...document.querySelectorAll('.grpchk:checked')].map(function(c){return c.value;}); }
 function toggleConds(){ var p=document.getElementById('condpanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
@@ -1117,6 +1155,39 @@ def api_scatter():
         return jsonify(DS.query(spec, maxpts, by))
     return jsonify(DS.scatter(spec.lo, spec.hi, spec.sites, maxpts, spec.temps, spec.pf,
                               {k: v for k, v in spec.conds.items()} or None, by))
+
+
+# --- One filter file across tools (padb_core.lockio) ---------------------------------------------
+# Export the current filter as the HTML pages' "lock" JSON, or import one (from a page or another
+# viewer). The mapping lives ONCE in padb_core.lockio; the page just posts and applies the result.
+def _lock_ctx():
+    m = DS.meta()
+    return {"dims": m.get("dims", []), "sites": m["sites"], "temps": m["temps"],
+            "x_min": m["x_min"], "x_max": m["x_max"]}
+
+
+@app.route("/api/filter/export", methods=["POST"])
+def api_filter_export():
+    body = request.get_json(silent=True) or {}
+    try:
+        spec = FilterSpec.from_dict(body.get("spec") or {})
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        return jsonify({"ok": False, "error": "bad filter spec: %s" % exc}), 400
+    return jsonify({"ok": True, "lock": lockio.to_lock(spec, _lock_ctx(), title=DS.path.stem)})
+
+
+@app.route("/api/filter/import", methods=["POST"])
+def api_filter_import():
+    body = request.get_json(silent=True) or {}
+    try:
+        spec, applied, skipped = lockio.from_lock(body.get("lock"), _lock_ctx())
+    except (ValueError, TypeError, AttributeError) as exc:
+        return jsonify({"ok": False, "error": "not a usable filter file: %s" % exc}), 400
+    import dataclasses
+    spec = dataclasses.replace(spec, lo=DS.x_min if spec.lo == -float("inf") else spec.lo,
+                               hi=DS.x_max if spec.hi == float("inf") else spec.hi)
+    return jsonify({"ok": True, "spec": spec.to_dict(), "applied": applied,
+                    "skipped": [{"label": a, "reason": b} for a, b in skipped]})
 
 
 @app.route("/api/segments")
