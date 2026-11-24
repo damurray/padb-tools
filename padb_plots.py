@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import padb_limits as _padb_limits
 import math
 import re
 from pathlib import Path
@@ -3295,6 +3296,7 @@ def accuracy_vs_freq(csv_path: Path, cfg: dict, output_html: Path) -> None:
     """
     df = _load_scatter_csv(csv_path)
     df = _parse_group_fields(df)
+    _padb_limits.apply_from_cfg(df, cfg)     # the temp-CSV round trip dropped the override on Spec/Unc (Group text)
     title = cfg.get("title", output_html.stem)
     html = _build_av_freq_html(df, cfg, title)
     output_html.parent.mkdir(parents=True, exist_ok=True)
@@ -13572,6 +13574,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         return
     df = _load_scatter_for_stats(csv_path)
     df = _parse_group_fields(df)
+    _padb_limits.apply_from_cfg(df, cfg)     # the temp-CSV round trip dropped the override on Spec/Unc (Group text)
     title = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
     y_lim = cfg.get("y_lim")
@@ -18651,6 +18654,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     """Fully interactive box plot — condition/temperature/Y-range filter controls."""
     df = _load_scatter_for_stats(csv_path)
     df = _parse_group_fields(df)
+    _padb_limits.apply_from_cfg(df, cfg)     # the temp-CSV round trip dropped the override on Spec/Unc (Group text)
     title = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
     x_unit = cfg.get("x_unit", "MHz")

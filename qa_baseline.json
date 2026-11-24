@@ -63,6 +63,10 @@
     "qa_compress": {
       "passed": 26,
       "failed": 0
+    },
+    "qa_limits_groupspec": {
+      "passed": 4,
+      "failed": 0
     }
   }
 }

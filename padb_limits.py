@@ -164,6 +164,36 @@ def sql_case(limits, xcol: str, key: str, base: str) -> str:
     return "CASE " + " ".join(parts) + " ELSE " + base + " END"
 
 
+def resolve_from_cfg(cfg):
+    """The override a plot job asks for: inline `limit_overrides` (already in the data's x unit), else
+    `limits_file` (relative to the job file via cfg["_job_dir"]; its unit converted to cfg["x_unit"]).
+    -> (limits, source label, error). No key -> ([], "", None)."""
+    cfg = cfg or {}
+    if cfg.get("limit_overrides"):
+        lims, err = validate(cfg["limit_overrides"])
+        return (lims or []), "inline overrides", err
+    if cfg.get("limits_file"):
+        lf = Path(cfg["limits_file"])
+        if not lf.is_absolute():
+            lf = Path(cfg.get("_job_dir") or ".") / lf
+        if not lf.is_file():
+            return [], lf.name, "limits_file not found: %s" % lf
+        lims, err = load_file(lf, cfg.get("x_unit", "MHz"))
+        return lims, lf.name, err
+    return [], "", None
+
+
+def apply_from_cfg(df, cfg, xcol: str = "Frequency_MHz") -> int:
+    """Apply a job's override to `df` in place (silently; padb_v2 owns the log line / index note).
+    Safe to call twice (idempotent). Used by builders that RELOAD the data from a temporary CSV -- that
+    round trip carries only Upper/Lower Limit, so the spec / uncertainty columns come back from the Group
+    text and must be overridden again. -> rows overridden."""
+    lims, _src, err = resolve_from_cfg(cfg)
+    if err or not lims:
+        return 0
+    return apply_df(df, lims, xcol)
+
+
 def apply_df(df, limits, xcol: str = "Frequency_MHz") -> int:
     """Apply overrides IN PLACE to a padb_v2 scatter frame: Upper_Limit/Spec_Hi (and
     Lower_Limit/Spec_Lo) where they apply, uncertainty zeroed on those rows so the effective
