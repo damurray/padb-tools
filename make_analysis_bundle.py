@@ -10,7 +10,7 @@ separation is enforced at packaging time, not just by convention.
     py make_analysis_bundle.py <dest-folder> [--no-viewer] [--zip]
 
 Writes the files, `requirements-analysis.txt`, `BUNDLE_MANIFEST.json` (version + sha256 of every file) and
-`README_BUNDLE.txt` (how to call it). qa_separation.py runs real analyses FROM a freshly built bundle in a
+`README_BUNDLE.txt` (how to call it). qa/qa_separation.py runs real analyses FROM a freshly built bundle in a
 different working directory, so a missing file or a hidden extraction dependency fails the gate.
 """
 from __future__ import annotations
@@ -88,7 +88,7 @@ def closure(entries, root: Path = HERE) -> list:
         for n in _local_imports(p, root):
             if n in EXTRACTION:
                 raise BoundaryError("%s imports the extraction/scheduling module %r -- the analysis layer must not "
-                                    "depend on it (V3_PLAN.md, Separation)" % (rel, n))
+                                    "depend on it (docs/V3_PLAN.md, Separation)" % (rel, n))
             if (root / n / "__init__.py").is_file():
                 for q in sorted((root / n).glob("*.py")):
                     todo.append(str(q.relative_to(root)).replace("\\", "/"))

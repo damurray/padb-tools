@@ -1,6 +1,6 @@
 """padb_names.py -- PADB output-filename normalisation (pure functions, no dependencies).
 
-Lives in the ANALYSIS layer (v3.0 separation, V3_PLAN.md): the plot builder (`padb_v2`) needs these rules to
+Lives in the ANALYSIS layer (v3.0 separation, docs/V3_PLAN.md): the plot builder (`padb_v2`) needs these rules to
 find the CSV a PADB extraction actually wrote, and the extraction layer (`padb_run`) needs the very same
 rules to collect its outputs. Extraction may import analysis; analysis must never import extraction -- so
 the shared rules are defined here and `padb_run` imports them (it still re-exports the names, so every

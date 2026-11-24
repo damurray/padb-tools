@@ -12,7 +12,7 @@ Usage:
     py padb_make_v2_job.py MyPod.pod --no-publish
     py padb_make_v2_job.py MyPod.pod --module MyModule --force
 
-Design notes (see also PADB_Tools_Guide.md):
+Design notes (see also docs/PADB_Tools_Guide.md):
 - "views" is deliberately omitted from every generated plot job -- padb_v2.py
   already auto-detects Room-only (scatter+boxplot) vs multi-temp (all six
   views, including env_coverage/distribution when non-Room/Environmental

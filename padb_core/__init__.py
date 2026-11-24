@@ -1,4 +1,4 @@
-"""padb_core -- the v3.0 analysis core (see V3_PLAN.md).
+"""padb_core -- the v3.0 analysis core (see docs/V3_PLAN.md).
 
 One place for what v2 re-implemented in every view and engine:
   conditions  parse the Group text ONCE into typed condition columns
@@ -6,7 +6,7 @@ One place for what v2 re-implemented in every view and engine:
   limits      limits as DATA applied at query time (effective limit + its reason)
   engine      a DuckDB Dataset answering every query
 
-Stage 1 (this package) is proven equivalent to the v2 implementation by qa_core.py before any
+Stage 1 (this package) is proven equivalent to the v2 implementation by qa/qa_core.py before any
 consumer depends on it.
 """
 __version__ = "3.0.0-dev1"

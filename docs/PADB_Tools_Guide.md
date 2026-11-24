@@ -1,0 +1,1243 @@
+# PADB Modern Analysis Tools — User Guide
+
+**Tools:** `padb_run.py`, `padb_v2.py`, `padb_plots.py`, `padb_simple.py`, `padb_stats.py`, `padb_batch.py`, `padb_scheduler.py`, `padb_make_job.py`, `padb_make_v2_job.py`, `padb_convert_site.py`, `padb_csv_check.py`, `webapp/padb_web.py`  
+**Location:** `C:\apps\padb\tools\`  
+**Purpose:** Automate PADB extraction from a `.pod` file, generate interactive self-contained HTML plots, and publish results to a shared drive.
+
+---
+
+## Prerequisites
+
+### Python
+
+Python 3.10 or later. Install packages once:
+
+```
+py -m pip install pandas numpy matplotlib scipy plotly flask
+```
+
+`flask` is only needed for the web app (`webapp/padb_web.py`, see **Web App** below) — every other script in this guide works without it.
+
+### PADB-R.exe
+
+Must be installed at:
+```
+C:\Program Files\KEYSIGHT\PADB-R.NET\PADB-R.exe
+```
+
+Override the path in `job.json` with `"padb_exe"` if yours differs.
+
+---
+
+## How It Works
+
+```
+job.json  →  padb_run.py  →  PADB-R.exe  →  results\padb\  (CSVs, PDFs)
+                          →  padb_plots.py →  results\plots\ (interactive HTML)
+                          →  index.html   (gallery page)
+                          →  copy to publish destination (network share)
+```
+
+1. `padb_run.py` reads `job.json` and the `.pod` file.
+2. It creates `_run.pod` — a copy of your pod with `subex` overrides applied. This is what PADB actually processes.
+3. PADB-R.exe runs all analytics, writing CSVs and PDFs to `results\padb\`.
+4. For each entry in `secondary_plots`, the matching function in `padb_plots.py` generates a self-contained interactive HTML in `results\plots\`.
+5. `results\index.html` is written — a gallery page with embedded plots, PDF links, and CSV downloads.
+6. `results\` is copied to the publish destination.
+
+**PADB-R.exe is a WinForms application** (GUI subsystem). It runs headlessly but requires a Windows desktop session — do not run from a service or SSH session without a virtual desktop.
+
+**Three tiers.** Everything above describes the default (**legacy**) pipeline. A `"mode"` key in job.json selects one of three tiers — see **PADB Simple Mode** below for the third:
+
+| `mode` | What runs |
+|---|---|
+| *(omitted)* or `"legacy"` | This pipeline — `padb_plots.py` custom plots via `secondary_plots`, as described in this section. Default; every job.json without a `mode` key is unaffected by anything below. |
+| `"simple"` | No custom plotting at all — PADB-R.exe's own native PNG/PDF renders, wrapped in a bare gallery. See **PADB Simple Mode**. |
+| `"interactive"` | Label only, documenting that this job feeds the V2 two-command flow (`padb_run.py` extract, then `padb_v2.py` plot — see **V2 Pipeline** below). Does not change what this step does. |
+
+---
+
+## Folder Structure
+
+Each analysis is independent. Everything is contained in the analysis folder.
+
+```
+MyAnalysis\
+  MyMeasurement.pod          ← PADB pod file
+  job.json                   ← run configuration (the only file you edit)
+  results\
+    index.html               ← main results gallery (open this)
+    _run.pod                 ← pod submitted to PADB (auditable)
+    padb_switches.txt        ← PADB-R switch file
+    run.log                  ← PADB-R stdout/stderr
+    padb_run_YYYYMMDD_HHMMSS.log ← full stdout log (auto-generated each run)
+    padb\
+      Scatter_CSV_name.csv   ← PADB CSV outputs
+      Environmental_*.csv
+      *.pdf                  ← PADB PDF reports
+    plots\
+      My_Plot_Title.html     ← interactive Plotly plots
+      ...
+```
+
+---
+
+## Running the Tool
+
+### CLI
+
+```
+py "C:\apps\padb\tools\padb_run.py" path\to\job.json [options]
+```
+
+### Options
+
+| Option | Effect |
+|---|---|
+| *(none)* | Full run: PADB + plots + publish |
+| `--dry-run` | Build switch file only; do not call PADB-R.exe |
+| `--no-publish` | PADB + plots; skip copy to share |
+| `--plots-only` | Skip PADB entirely; regenerate plots from existing CSVs |
+
+`--plots-only` is fast (seconds). Use it whenever you tweak `secondary_plots` entries without needing to re-extract data.
+
+---
+
+## Inspecting a Pod File
+
+Open the `.pod` file in any text editor. Each analytic block looks like:
+
+```
+[Analytic_1]
+AnalyticName=Amplitude Accuracy Ref Scatter Order by Test Step
+AnalyticType=80
+OutputConfig_OutputFile=Amplitude_Accuracy_Ref_Scatter_Order_by_Test_Step
+OutputConfig_OutputCSV=True
+...
+```
+
+Key fields:
+
+| Field | Used for |
+|---|---|
+| `AnalyticName` | Value of `csv` key in job.json (substring match) |
+| `AnalyticType` | Determines which secondary_plot type to use |
+| `OutputConfig_OutputFile` | Base filename in `results\padb\` (used for `csv_file` key) |
+| `OutputConfig_OutputCSV` | Must be `True` for a CSV to be written |
+
+### Analytic type → plot type
+
+| AnalyticType | Data shape | Plot types available |
+|---|---|---|
+| **80** Scatter | One row per measurement (per DUT per frequency) | `accuracy_vs_freq`, `distribution`, `population_envelope`, `empirical_cdf`, `spec_derivation`, `stat_summary`, `stat_boxplot` |
+| **60** Environmental | Pre-aggregated: one row per condition × frequency | `de_summary` |
+| **90** SummaryPlot | Summary stats per frequency (if CSV written) | `accuracy_vs_freq` only — SummaryPlot CSVs are pre-aggregated and cannot be used with `stat_summary` (which needs raw per-DUT rows). Use the corresponding Scatter analytic's CSV for `stat_summary`. |
+| **20** BoxPlot | No CSV output | *(none — use scatter analytic instead)* |
+
+---
+
+## The job.json File
+
+All configuration for a run lives in `job.json`.
+
+```json
+{
+    "description": "Human-readable label for this run",
+
+    "pod": "MyMeasurement.pod",
+
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+
+    "results_dir": "results",
+
+    "padb_timeout": 7200,
+
+    "run_datetimes": [
+        "06/22/2026 04:38:01 PM",
+        "06/23/2026 02:33:43 AM"
+    ],
+
+    "serial_nums": ["US65080415", "US65080423", "US65080431"],
+
+    "subex": {
+        "Device_MinDate": "2026-06-01",
+        "Device_MaxDate": "2026-06-30"
+    },
+
+    "run_analytics": true,
+
+    "secondary_plots": [ ... ],
+
+    "publish": {
+        "destination": "\\\\srsnas01.srs.is.keysight.com\\prod\\MIDRF3\\SG6311A\\MyAnalysis"
+    }
+}
+```
+
+### Top-level keys
+
+| Key | Description |
+|---|---|
+| `description` | Free text, shown in index.html run info card. |
+| `pod` | Path to the `.pod` file, relative to `job.json`. |
+| `padb_exe` | Full path to PADB-R.exe. |
+| `results_dir` | Output folder, relative to `job.json`. Default: `results`. |
+| `padb_timeout` | Seconds before PADB-R.exe is killed. Default: `600`. Large datasets need 7200+. |
+| `run_datetimes` | List of specific test run timestamps to extract. Overrides `TestRun_RunDateTime` in the pod. |
+| `serial_nums` | List of DUT serial numbers. Overrides `TestRun_SerialNum` in the pod. |
+| `run_labels` | List of run label strings. Overrides `TestRun_RunLabel` in the pod. |
+| `subex` | Raw key=value overrides for any `[Extract]` field. Use for fields not covered by the list keys above. |
+| `run_analytics` | `true` to run PADB analytics. Default: `true`. |
+| `mode` | `"legacy"` (default), `"simple"`, or `"interactive"` — see **Three tiers** above and **PADB Simple Mode** below. |
+| `secondary_plots` | List of plot configurations (see below). Ignored when `mode` is `"simple"`. |
+| `publish.destination` | UNC or local path to copy `results\` to. Omit to skip publish. |
+
+### Selecting specific test runs
+
+Use `run_datetimes` to restrict extraction to specific test runs identified by their Oracle timestamp. Copy the timestamps exactly as PADB records them (MM/DD/YYYY HH:MM:SS AM/PM):
+
+```json
+"run_datetimes": [
+    "06/22/2026 04:38:01 PM",
+    "06/23/2026 02:33:43 AM",
+    "06/23/2026 12:33:33 PM"
+]
+```
+
+Use `serial_nums` and `run_labels` the same way — plain JSON lists, no manual quoting required:
+
+```json
+"serial_nums": ["US65080415", "US65080423", "US65080431"],
+"run_labels":  ["DDS Harmonics", "Spectral YTO Mode 0 ALC ON"]
+```
+
+Omit any of these keys (or set to `[]`) to use whatever is baked into the pod.
+
+### subex — raw Extract overrides
+
+Use `subex` for `[Extract]` fields not covered by the list keys above. Values must match PADB's expected format exactly:
+
+```json
+"subex": {
+    "Device_MinDate":    "2026-06-13",
+    "Device_MaxDate":    "2026-06-30",
+    "TestRun_RunStatus": "{All}"
+}
+```
+
+`TestRun_RunStatus: "{All}"` is required when a pod is configured to filter to passing runs only (the PADB default). Without it, PADB may return no data for pods that have a RunStatus filter.
+
+If a `subex` key duplicates a list field (`run_datetimes`, `serial_nums`, `run_labels`), the explicit `subex` entry wins.
+
+The original `.pod` is never modified. A `_run.pod` copy is written to `results\` with all substitutions applied.
+
+#### Relative-date values
+
+Any `subex` value can be a placeholder instead of a literal date, resolved to PADB's `YYYY-MM-DD` format at the moment the job actually runs — this was a capability the old PADB::Simple tool had that this replacement was missing:
+
+```json
+"subex": {
+    "Device_MinDate": "8 weeks ago",
+    "Device_MaxDate": "today"
+}
+```
+
+Supported forms (case-insensitive): `"today"`, and `"N day(s) ago"` / `"N week(s) ago"` / `"N month(s) ago"` / `"N year(s) ago"` for any whole number N. Month/year math uses real calendar arithmetic, not a 30/365-day approximation. Anything that doesn't match one of these forms (a literal date, `"{All}"`, a quoted list) is left exactly as written — this is safe to use in any `subex` block unconditionally.
+
+This is most useful for recurring or scheduled jobs (see **Scheduling Overnight Runs** below) that should always cover "the last N weeks" rather than a fixed range that goes stale the day after you write the job.json.
+
+---
+
+## Secondary Plots
+
+Each entry in `secondary_plots` produces one self-contained HTML file.
+
+### Common keys
+
+| Key | Description |
+|---|---|
+| `type` | Plot function name (see below). |
+| `csv` | Analytic name substring match against the value of `AnalyticName=` in the pod. Case-sensitive. |
+| `csv_file` | Exact filename (with extension) in `results\padb\`. Use this when `csv` is ambiguous or two analytics share the same output filename. `csv_file` takes precedence over `csv`. |
+| `title` | Plot title shown in the HTML and the index gallery. |
+| `y_label` | Y-axis label string. |
+| `y_lim` | `[min, max]` to pin the Y axis. Omit for auto-scale. |
+| `log_x` | `true` to default to log X. Auto-detected when freq_max / freq_min ≥ 100. A toggle is always shown in the plot. |
+| `proportion` | Tolerance interval proportion. Default: `0.90`. |
+| `confidence` | Tolerance interval confidence. Default: `0.90`. |
+
+---
+
+## Plot Types
+
+### `accuracy_vs_freq` (V1) / `scatter` (V2)
+
+**Source:** Type=80 Scatter CSV. The V2 `scatter` view is this same function called via `render_scatter`.
+**What it shows:** Individual measurement values vs frequency, one trace per serial number or condition. Spec limit line rendering **auto-detects constant vs. frequency-varying specs**: a genuinely constant spec (≤3 distinct rounded values, e.g. small MU-adjustment noise) draws full-width horizontal dashed lines as before; a frequency-varying spec (PADB `Limits_YLimit=Line` — a phase-noise mask, a frequency-banded dBc spec) draws a proper per-frequency step line (`line:{shape:'hv'}`) following the real (frequency, limit) pairs instead. No job.json key controls this — it's re-detected from the currently-filtered data on every render.
+
+**Interactive controls:**
+- **Group by** — display by serial number, test step, or any condition dimension parsed from the Group field. Defaults to whichever candidate dimension has the smallest cardinality (added 2026-08-21, so the legend starts as small as possible), not just the first one detected.
+- **Sort** — traces by name, worst-first, or median value
+- **Condition filter dropdowns** — one per dimension (OA State, AlcState, etc.)
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jumps the frequency-range filter to each contiguous band of a frequency-varying spec, sourced from whichever limit-key pair (`Upper/Lower Limit`, `Upper/Lower Uncertainty`, or `Upper/Lower Spec`) the pod's extraction actually selected as a grouping item. Respects the current condition/serial/port filters. See **Segment-by Tab-Through** below.
+- **Frequency sliders** — min/max zoom on the X axis
+- **Log X toggle**
+- **Autoscale Y** (added 2026-08-31) — rescales only the Y axis to fit the currently-visible data, without disturbing the frequency (X) zoom.
+- **Reset button**
+- **Help (ⓘ) panel** — explains the filter/segment controls and flags rows where Upper/Lower Limit or Spec is inverted (backwards) — see **In-Page Help Panel** below.
+- **Hover** — shows frequency (labelled with `x_unit`, default `"MHz"`), group label, and value
+
+**Axis labeling:** x-axis title comes from `x_label` (default `"Frequency (MHz)"`); hover/CSV-export text uses the shorter `x_unit` (default `"MHz"`). Set both explicitly for a non-MHz x-axis (e.g. a phase-noise pod's `"Frequency Offset (Hz)"` / `"Hz"`).
+
+**Best for:** Initial sanity check. Spotting outlier DUTs. Confirming which units are out of spec and at which frequencies.
+
+---
+
+### `distribution`
+
+**Source:** Type=80 Scatter CSV  
+**What it shows:** Histogram of all measurement values + kernel density estimate + best-fit parametric PDF (normal, lognormal, Weibull, or gamma — selected by AIC). Spec limits as vertical lines.
+
+**Best for:** Confirming or ruling out normality. Understanding distribution shape before choosing whether Gaussian TI or non-parametric TI is more appropriate.
+
+---
+
+### `population_envelope`
+
+**Source:** Type=80 Scatter CSV  
+**What it shows:** Per-frequency population statistics across all units: min/max, P5–P95 band, median, and non-parametric tolerance interval bounds. No normality assumption.
+
+**Best for:** Population-level summary with statistically defensible bounds when individual traces are too noisy to read.
+
+---
+
+### `empirical_cdf`
+
+**Source:** Type=80 Scatter CSV  
+**What it shows:** Empirical CDF — sorted measurement fraction vs value — one trace per serial. Spec limits as vertical lines. Read off the fraction of measurements within spec directly from the Y axis.
+
+**Best for:** Yield estimation. Does not require any distributional assumption.
+
+---
+
+### `spec_derivation`
+
+**Source:** Type=80 Scatter CSV  
+**What it shows:** Per frequency-band analysis: n, median, P5/P95, non-parametric tolerance interval, and margin to the spec limit. Includes a sample-size adequacy warning.
+
+**Extra key required:**
+```json
+"freq_bands": [
+    ["8-100 MHz",     8,    100],
+    ["100 MHz-1 GHz", 100,  1000],
+    ["1-6 GHz",       1000, 6000],
+    ["6-20 GHz",      6000, 20000]
+]
+```
+
+**Best for:** Deriving or validating a proposed datasheet spec from measured production data. The margin bar shows how far the TI is from the spec — green = comfortable margin, red = spec is violated or tight.
+
+---
+
+### `stat_summary`
+
+**Source:** Type=80 Scatter CSV  
+**What it shows:** Per-frequency statistical summary: mean ± 1σ, parametric TI band, non-parametric TI bounds, pass/fail markers vs spec. One panel per condition group.
+
+**Interactive controls:**
+- **Condition filter dropdowns** — one per condition dimension (OA State, AlcState, mode, etc.)
+- **Group by** — collapse the full condition combination down to a single dimension (e.g. just SpurType) when a pod's grouping items (Upper Spec/Uncertainty, etc.) fragment "condition" into many near-duplicate entries. Mean/std/quantiles/outliers recompute exactly from pooled per-DUT data; Shapiro normality is not recomputed for a pooled group and renders as "Non-normal" (a visible cue it's approximate) rather than a real result. See **Group By** below.
+- **Serial number filter** — uncheck individual DUTs to exclude them; statistics recompute live
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band; respects the current condition/serial/Group-by selection. See **Segment-by Tab-Through** below.
+- **TI toggle** — show/hide parametric tolerance interval band
+- **NP TI toggle** — show/hide non-parametric tolerance interval bounds (requires server-side scipy; displayed when data is sufficient)
+- **Show points** — overlay individual per-DUT measurement points on each trace. Points for serials currently excluded by the serial filter are shown in grey rather than hidden, so the full population remains visible while the statistics reflect only the selected DUTs.
+- **Show excluded** — display conditions currently excluded by the condition filter as dim grey traces in the background, so you can compare filtered and unfiltered populations without switching the filter off.
+- **Frequency sliders** — min/max zoom on the X axis
+- **Log X toggle**
+- **Autoscale Y** (added 2026-08-31) — rescales only the Y axis to fit the currently-visible data, without disturbing the frequency (X) zoom.
+- **Help (ⓘ) panel** — see **In-Page Help Panel** below.
+- **Statistics Table toggle** — opens a scrollable table below the plot showing per-condition, per-frequency: n, mean, σ, Q1, Q2, Q3, normality (Shapiro-Wilk W), NP TI bounds, outliers with serial numbers. Wrapped in try/catch — if it ever fails to build, the panel shows the actual JS error message instead of staying empty. **If the table looks stale/unresponsive to filter changes, hard-reload the browser tab (Ctrl+Shift+R) before assuming it's a bug** — a stale cached copy of an older version of this same file is the most common cause, confirmed twice in practice.
+- **CSV export** — downloads a CSV of all visible data
+
+**Best for:** Primary statistical deliverable for a measurement characterisation. Captures both the population spread and the statistical confidence bounds.
+
+**Key parameters:**
+- `proportion` — fraction of the population the TI must capture (default 0.90)
+- `confidence` — confidence level that the stated proportion is captured (default 0.90)
+- `spec_direction` — which spec line(s) to show: `"lo"`, `"hi"`, `"both"`, `"none"`, or `"auto"` (default). Auto-detects from whether the CSV's `Lower Limit`/`Upper Limit` columns are populated — and a real detected limit always wins over this key regardless of what it's set to. Only sets the *default* selection when the CSV has no limit at all; e.g. the 4 `MaxPower3_*_v2_job.json` jobs use `"spec_direction": "lo"` because max output power is a guaranteed-minimum (lower-spec-only) measurement with no limits in the pod itself. `stat_summary` still only exposes this via the manual spec_lo/spec_hi number-entry fallback (no live radio selector) — see `summary` and `stat_boxplot` below for the selector-based version of this same rule.
+- **Statistics Table's "Spec Spt" / "Margin" columns show both sides when direction is undetermined** (fixed 2026-08-30). When neither a real CSV spec nor `spec_direction` picks a side (`SPEC_DIRECTION="none"` — no spec at all, e.g. a Tutorial/example pod), the table used to silently default to showing the upper value only, even though the plot's own spec-supportable traces are drawn on both sides regardless of direction. Now shows `↓lo / ↑hi` in that case too, matching the plot.
+- `x_label` / `x_unit` — axis title / short unit suffix for a non-MHz x-axis (default `"Frequency (MHz)"` / `"MHz"`); see the `accuracy_vs_freq` section above.
+- Required n: 29 for P90/C90, 59 for P95/C90, 299 for P99/C95
+
+---
+
+### `stat_boxplot`
+
+**Source:** Type=80 Scatter CSV  
+**What it shows:** Box-and-whisker plots per condition, grouped by temperature condition. Box = Q1–Q3, whisker = 1.5×IQR, dots = outliers. Normality colour coding (green = Shapiro-Wilk p ≥ 0.05, red = non-normal).
+
+**Interactive controls:**
+- **Condition filter dropdowns** — one per non-temperature condition dimension. Works correctly regardless of the current **Group by** mode (fixed 2026-08-21 — previously ignored entirely when Group by was set to Serial Number/Port).
+- **Group by: Condition / Temperature Step / Port / Serial Number / any condition dimension** — defaults to Condition, except auto-switches to Serial Number once the pod has more than 150 raw (fragmented) conditions, since a Condition-grouped legend that large is bigger than the plot itself (added 2026-08-21).
+- **Temperature filter** — show/hide individual temperature conditions
+- **Serial number filter** — uncheck individual DUTs; box statistics recompute live
+- **TLL display: Both / Upper only / Lower only** — same rule as the `summary` plot (see above): shown as a live selector only when the CSV has no `Upper_Limit`/`Lower_Limit` at all, defaulting from job.json's `spec_direction`. A detected CSV limit always wins with no selector.
+- **Data filter: All data / Passing only / Upper limit / Lower limit** — "Upper limit"/"Lower limit" are two independent radios (added 2026-08-04, replacing a single relabeled "range" radio that couldn't represent both bounds when direction is "Both"), each shown only when relevant to the current TLL direction. Unlike `summary`'s filter (which hides whole condition traces), this one trims individual raw sample points *before* Q1/Q2/Q3/whiskers are computed — "Upper limit" removes samples above the typed-in value, "Lower limit" removes samples below it. "Passing only" does the same per-point trim, but the bound comes from the effective Spec Hi/Lo (a typed TLL↑/↓ override, if set, otherwise the real CSV spec) instead of a typed value. **If the relevant side has neither a real spec nor a typed override, "Passing only" correctly has nothing to filter against and leaves the data unchanged** — a live warning next to the radio now says so explicitly (added 2026-08-30), since that previously looked identical to "the filter is broken" with no visible cue why nothing happened.
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band. See **Segment-by Tab-Through** below.
+- **Show points** — overlay individual per-DUT measurement points on each box trace (size 5, semi-transparent). Points for serials excluded by the serial filter are shown in grey; outliers remain as open-circle markers for visual distinction. Hovering a scatter point shows the serial number and value.
+- **Collapse dup runs** (added 2026-08-24) — off by default. When checked, a DUT's exact-identity repeat measurements (same DUT, same condition, same port, same temperature, same frequency) are averaged into one point *before* Q1/Q2/Q3/whiskers/outliers are computed, instead of each raw row counting separately toward `n`. Off means the box reflects true raw-measurement variability (including repeat-run noise); on means "one DUT, one vote." See **Duplicate Test Runs** below for the full picture.
+- **Global Filter (GF) buttons** — "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" each *add* to the current GF (they don't replace it — use "Clear global filter" first to start over). **Export GF CSV** / **Import GF CSV** round-trip the current GF through a human-readable CSV; import re-merges (adds to) the current filter, same as the "Set ... as GF" buttons. **Copy PADB Filter** is a **three-mode dropdown** (rewritten 2026-09-01) that builds a real PADB filter expression (`'Field' = "value"` / `!=` / `IN {...}` / `NOT ( ... )`, joined with `AND`; `'Serial Number'` is a global unprefixed field, every other field carries the `Name-->Name (unit)` prefix — verified against hand-provided real pod filter expressions): **Plot view** (reproduces the current view's own active filters — condition dims, Serial, Port, Frequency range, Temperature), **Global Filter only** (reproduces the GF's full captured scope — harmonic/condition, frequency range, and serials — not just a bare serial exclusion; fixed 2026-09-01), and **Plot + GF** (both combined). See **Global Filter (GF)** below for what GF actually does across views.
+- **Log X toggle**
+- **Autoscale Y** (added 2026-08-31) — rescales only the Y axis to fit the currently-visible data, without disturbing the frequency (X) zoom.
+- **Help (ⓘ) panel** — see **In-Page Help Panel** below.
+- **Statistics Table toggle** — scrollable table below the plot showing per-condition, per-frequency: n, **Dup runs** (added 2026-08-24 — how many *extra* raw rows exist beyond one-per-DUT in that row's own population; informational only, included in `n` above unless "Collapse dup runs" is also checked), mean, σ, Q1, Q2, Q3, normality, NP TI bounds, outliers with serial numbers, plus `Max +Δ`/`Max -Δ` columns splitting outliers by sign relative to the median. No spec/TLL columns, so it has no direction-dependent columns to toggle.
+- **Site Population Check** (only rendered on a `compare_csv` page — see **Cross-Site Comparison** below) — tests each non-primary-site DUT's value at each frequency/temperature against the k×IQR fence built from the primary site's own population at that same point. Includes a per-DUT rollup (with **Dup runs** and **Genuinely repeated freqs** columns, added 2026-08-24 — see **Duplicate Test Runs** below) and a per-frequency "multiple DUTs affected" cluster table to help distinguish a bad DUT from a station/calibration issue — see **Cross-Site Comparison** for the full triage logic. **Export CSV (All)** / **Export CSV (Outside only)** buttons (added 2026-08-24) download the per-point detail table exactly as shown.
+- **CSV export**
+- **Outlier hover** — shows value and serial number of each outlier point
+
+A plot drag-zoom syncs `box_freq_lo`/`box_freq_hi` (and therefore the Statistics Table, Site Population Check, and CSV export) to the zoomed range automatically; double-click / "Reset axes" restores the full range. On page load, a restored filter selection (from a prior visit) now correctly narrows the *initial* render too (fixed 2026-08-30) — this used to only take effect after the next filter change, so a saved narrow selection looked right in the checkboxes but the plot itself briefly showed everything on refresh.
+
+**Best for:** Comparing spread across temperature conditions. Identifying which condition drives the worst-case. Outlier identification with serial traceability.
+
+**Axis labeling:** the frequency filter label, stats table header, and CSV export headers follow `x_unit` (default `"MHz"`) — set alongside `x_label` for a non-MHz x-axis. Note the plot's own x-axis title stays a generic `"Frequency"` (no unit suffix), since it's categorical (one box per discretized frequency label), not a continuous numeric axis.
+
+---
+
+## Global Filter (GF)
+
+A cross-view DUT exclusion set, created in `stat_boxplot`/boxplot and automatically respected by `summary` and `env_coverage` (both V2). Stored in the browser's `localStorage` (`padb_v2_excluded`), so it persists across page reloads for the same results folder but is not shared between different machines/browsers.
+
+- **Additive, not replacing.** "Set filter as GF" / "Set outliers as GF" / "Set delta outliers as GF" all *add* to whatever's already in the GF — none of them start from empty. Use **Clear global filter** first if you want to start over.
+- **"Set outliers as GF" is not Room-only.** It checks IQR outliers independently at *each currently-selected Temperature checkbox* — with the default (all temps checked), it adds outliers found at every temperature, not just Room. Narrow the Temperature checkboxes to just Room first if you want Room-only outliers. "Set delta outliers as GF" is the genuinely different, inherently non-Room-only metric (temperature-sensitivity outliers relative to each DUT's own Room baseline) — the two aren't a clean Room/non-Room pair despite the similar names.
+- **Export GF CSV / Import GF CSV** round-trip the GF through a human-readable CSV (`Serial,Condition,Temperature,Start_Freq_<unit>,Stop_Freq_<unit>,N_Points`). The frequency columns are **display-only context** — the actual runtime exclusion check matches only on (serial, condition, temperature), not frequency, so importing doesn't reconstruct an exact frequency-by-frequency exclusion, just the same (serial, condition, temperature) match the original exclusion produced. Import merges into (adds to) the current GF, same as the "Set ... as GF" buttons.
+- **Copy PADB Filter** (three-mode dropdown, rewritten 2026-09-01) — **Plot view** / **Global Filter only** / **Plot + GF**, for pasting into PADB's own filter box. The generated syntax was rewritten to match real PADB filter expressions (`'Field' = "value"` / `!=` / `IN {...}` / `NOT ( ... )`; `'Serial Number'` unprefixed, all other fields prefixed) and verified against hand-provided reference expressions — no longer flagged "under development". **"Global Filter only" reproduces the GF's full captured scope** (the harmonic/condition, frequency range, and serials it was built from), not just a bare `'Serial Number' NOT IN {...}` — its output stays fixed to what the GF captured, so changing other plot controls afterward doesn't alter it (fixed 2026-09-01).
+- **Display modes: Exclude vs. Inspect.** The GF has a browser-wide display mode (`padb_v2_gf_mode`): **Exclude** (excluded points hidden — the normal mode) and **Inspect**/Focus (shows *only* the excluded points). Inspect mode is **reset to Exclude on every page load** and, while active, a prominent amber "⚠ INSPECT MODE" banner is shown above the plot (added 2026-09-01) — previously it was a browser-global setting that could stay stuck on across unrelated result pages, making a near-empty Inspect-mode plot look like broken filtering or missing data.
+- **Where it applies:** `summary` visually flags (Focus/Inspect mode: shows only; Exclude mode: dims) conditions whose pre-aggregated data includes a GF-flagged DUT. `env_coverage` recomputes Room and ΔEnv tolerance-interval stats directly from the GF-filtered DUT population (see **Real bugs found on a real complex multi-analytic pod** in `CLAUDE.md` — Room and delta now always share the same DUT population when Serial/GF filtering is active; port selection alone never shrinks either).
+
+---
+
+## Segment-by Tab-Through
+
+Present in all 6 V2-relevant views (`scatter`, `boxplot`/`stat_boxplot`, `stat_summary`, `summary`, `env_coverage`, and the real `distribution` view) **when the dataset actually has something to segment by**. A **"Segment by: Spec / Limit / Uncertainty"** selector plus **Prev / Next** buttons jump the frequency-range filter to each contiguous band of a frequency-varying spec — e.g. a datasheet spec that steps -100 → -94 → -88 dBc as frequency increases.
+
+- **As of 2026-08-21, the entire control is omitted (not just the Prev/Next bar) when none of Spec/Limit/Uncertainty has more than one distinct value across the whole dataset.** Previously the selector always rendered even when every option would find zero segments. If a plot has no "Segment by" control at all, that's expected for a genuinely flat/constant spec — nothing to check or configure.
+- PADB extraction has three separate limit-key pairs a pod's Type=80 analytic can select as grouping items: **Upper/Lower Limit** (selected by default), **Upper/Lower Uncertainty**, and **Upper/Lower Spec**. `Upper Limit ≈ Upper Spec − Upper Uncertainty` — Limit is the *derived*, per-unit value PADB shows by default, so it often isn't piecewise-constant across frequency; **Spec is the raw nominal value and is the one that's actually piecewise-constant**.
+- **For "Segment by: Spec" or "Segment by: Uncertainty" to find anything, the pod's extraction needs `Upper Spec`/`Lower Spec` and/or `Upper Uncertainty`/`Lower Uncertainty` added as grouping items** (open the pod in PADB-R.exe, add them to the analytic's grouping, re-save). Most existing pods only have the default `Upper Limit`/`Lower Limit` — without the extra grouping items, those two selector options simply find zero segments and the Prev/Next bar stays hidden (but the selector itself still shows, since `Upper_Limit`/`Lower_Limit` still has real variation). "Segment by: Limit" always works off the always-present `Upper_Limit`/`Lower_Limit` columns.
+- Segments respect whatever condition/serial/port/Global Filter/Group-by selection is currently active in that view.
+- **As of 2026-08-31, tabbing to a segment also narrows the condition filters to match that segment** — so the plot shows only the conditions belonging to the band you tabbed to, not every condition with the frequency window merely zoomed. Tabbing back out (or reaching the ends) restores the prior selection.
+- **Fixed 2026-09-02 (stat_summary only):** stepping a segment updated the spec lines but left the frequency axis pinned to an earlier segment/zoom range. `stat_summary`'s `segTab()` now relayouts the x-axis to the new band before rebuilding (mirroring `env_coverage`, which already did), so the axis follows the step.
+- Asymmetric two-sided specs (Upper and Lower stepping at genuinely different frequencies) are handled correctly — segments break wherever *either* side changes, and each segment reports both sides' values separately (`upper: X` / `lower: Y`) rather than one ambiguous value.
+
+---
+
+## Group By
+
+Present in `stat_summary`, `summary` (V2), and `env_coverage` (V2). "Condition" in these views is the *full combination* of every Group key — including per-unit-noisy keys like Limit/Uncertainty when a pod's extraction includes them as grouping items (for Segment-by, above). A pod with 5 real SpurTypes but per-unit Limit variation can fragment into 150+ near-duplicate legend entries that differ only in Limit/Uncertainty digits.
+
+**Group by** collapses on a single chosen dimension (e.g. "SpurType" alone) instead of the full combination — confirmed on real data: 151 fragmented conditions → 5 real SpurTypes, with matching, correctly-pooled statistics.
+
+- **Exact aggregates** (mean, min, max) are always exact when grouped, since a given DUT's data falls under exactly one constituent condition per single dimension. `env_coverage` is fully exact even for UDE/LDE/TTU/TTL, since it recomputes those directly from pooled raw per-DUT data every time.
+- **Approximate aggregates** (NP-TI/spec/Shapiro normality) use a worst-case (tightest) value across the constituent conditions' own pre-computed values rather than a true recompute — `stat_summary`'s Shapiro result renders as "Non-normal" for a pooled group as a visible cue that it's not a real Shapiro test.
+- `env_coverage`'s "Show excluded" checkbox has no effect while Group By is active (it compares by object identity, which doesn't apply to synthetic pooled conditions).
+
+---
+
+## In-Page Help Panel
+
+A collapsible ⓘ **Help** button is available on all 6 main views (`scatter`, `boxplot`, `stat_summary`, the real `distribution` view, `env_coverage`, `summary`). It has two parts:
+
+1. A static explanation of what the Filter dropdowns / Group by / Segment by controls actually do, and how an unfiltered dimension can pool into extra segments/legend entries.
+2. A **dynamic check** that flags rows where `Upper_Limit < Lower_Limit` or `Spec_Hi < Spec_Lo` (backwards from the usual convention) and names which filter-dimension value(s) the inverted rows are concentrated in. This is the fastest way to explain an unexpectedly high segment/condition count — a real case found this way: a "14 segments where ~7 were expected" report traced to a single Serial Number with inverted spec rows across its entire dataset, a pod data-entry issue, not a tool bug.
+3. **The pod's own per-analytic `Filter_Expression`, when it has one** (added 2026-08-25) — some pods scope an analytic's extraction with a `Filter_Expression` in the `.pod` file (e.g. `Filter_Expression='...Test Step' = "Room"`), applied by PADB-R.exe against the Oracle database before a row is ever written to that analytic's CSV. This was always functionally in effect but never visible anywhere on an Interactive-mode page — `padb_make_v2_job.py` now bakes it into the generated plot job.json as `"pod_filter_expression"`, and the Help panel shows it verbatim so a viewer knows the data was already pre-scoped by the pod author.
+4. **General guidance on why a pooled statistic can look off** (added 2026-08-25) — static, always-shown, covering three pitfalls that apply to any pooled statistic in the tool, not just the Site Population Check that originally surfaced them: condition pooling merging populations that aren't really the same thing, a repeat DUT measurement quietly double-counting, and a single outlier dominating a spread statistic at an otherwise-fine `n`.
+
+Run `padb_csv_check.py` (below) *before* building plots to catch the same class of issue earlier, from the command line, without opening any HTML yet.
+
+---
+
+### `de_summary`
+
+**Source:** Type=60 Environmental CSV (pre-aggregated by PADB)  
+**What it shows:** The environmental contribution band [−LDE, +UDE] centred at zero vs frequency. Dotted lines show the estimated Total Tolerance Limit (TTL). One shaded band per PADB condition group. Spec limits shown as horizontal dashed red lines.
+
+**Important:** The Y axis represents the **environmental contribution to measurement uncertainty**, not absolute measurement levels. UDE and LDE are the upper and lower delta-environmental values that characterise how much the environment shifts the measurement. TTL represents the total estimated tolerance including both standard and environmental contributions.
+
+**Interactive controls:**
+- **Condition filter dropdowns** — one per varying condition dimension
+- **Show excluded** — display conditions excluded by the condition filter as dim grey UDE/LDE bands in the background.
+- **Frequency sliders** — min/max zoom on the X axis
+- **Log X toggle**
+- **Autoscale Y** (added 2026-08-31) — rescales only the Y axis to fit the currently-visible data, without disturbing the frequency (X) zoom.
+- **Statistics Table toggle** — scrollable table showing per-condition × per-frequency: UDE, LDE, Min(Env.), Max(Env.), Mean(Env.), TTL↑, TTL↓, Spec Lo, Spec Hi. Rows where TTL exceeds spec are highlighted red.
+- **CSV export**
+
+**Note:** Serial number filtering is not available for `de_summary`. The Environmental CSV is pre-aggregated across all DUTs by PADB before being written; no per-DUT rows are present.
+
+**Best for:** Assessing whether the measurement environment (temperature, humidity, etc.) introduces uncertainty that is comparable to or exceeds the spec margin.
+
+---
+
+## Understanding the Statistics
+
+### Tolerance Interval (TI)
+
+A (P, C) tolerance interval is a calculated interval that, with confidence C, captures at least fraction P of the population. For example, a (90%, 90%) TI says: "We are 90% confident this interval contains at least 90% of the population."
+
+- Wider than a confidence interval on the mean.
+- Requires a distributional assumption (Gaussian TI) or order statistics (non-parametric TI).
+- More conservative — and more meaningful for product compliance — than showing ±3σ or ±2σ bounds.
+- **Caveat (added 2026-08-25):** all of this assumes a reasonably well-behaved, low-noise population. With few DUTs, high measurement noise, or a non-normal/scattered distribution, a TI (or a KDE curve in `distribution`) can become unstable or misleading — `env_coverage`, `distribution`, `stat_summary`, and `summary` all show a static reminder of this near the top of the page; treat a tight-looking band on noisy data as a guide, not a guarantee, and check the underlying scatter/boxplot views before trusting it.
+
+### Non-Parametric TI (NP TI)
+
+Derived from order statistics (sorted ranks) rather than assuming a Gaussian distribution. More conservative than parametric TI for small n, but makes no distributional assumption. Displayed when n is sufficient for the requested (P, C) level.
+
+### UDE / LDE (Environmental Delta)
+
+From a PADB Type=60 Environmental analytic:
+- **UDE** (Upper Delta Environmental): the maximum upward shift in measurement value attributable to the environment.
+- **LDE** (Lower Delta Environmental): the maximum downward shift.
+- Together they define the environmental contribution band: `[−LDE, +UDE]` centred at zero.
+- A negative UDE or LDE in the data indicates the environmental shift is in the opposite direction from the convention; `de_summary` plots the signed values directly.
+
+### TTL (Total Tolerance Limit)
+
+PADB's estimated bound on the total measurement uncertainty, combining standard uncertainty (from repeat measurements) and environmental uncertainty (from environmental delta). If TTL exceeds the spec limit, the measurement cannot be guaranteed to pass in all environmental conditions.
+
+### UDE (Max)
+
+A scalar value reported by PADB representing the maximum UDE across all frequencies for a condition group. PADB sets this to 2,147,483,647 (INT_MAX) when the computation fails (e.g., insufficient data or a degenerate case). The tool clamps these to `null` and excludes them from statistics.
+
+### Duplicate Test Runs (added 2026-08-24/25)
+
+`n` in boxplot is a count of raw measurement rows, not distinct DUTs — a DUT contributes one row per distinct **(serial, condition, port, temperature, frequency)** combination it actually has in the CSV. If a DUT has two raw rows at the exact same combination (a genuine repeat test pass), it counts twice toward `n` unless you do something about it.
+
+**"Dup runs"** (Statistics Table, and the Site Population Check's per-DUT rollup) counts, for a given population, how many *extra* rows exist beyond one-per-DUT: a DUT with 2 rows contributes 1 extra; a DUT with 3 rows contributes 2. **This sums across every duplicated DUT** — three different DUTs each with one duplicate (2 rows apiece) reads as `Dup runs = 3`, not because one DUT has 3 copies, but because three separate DUTs each have one. The Site Population Check's **"Genuinely repeated freqs"** and **"SR dup pts"** (primary site) / **"Site dup pts"** (checked, non-primary site — added 2026-08-24 so both sides get the same signal) columns exist specifically to disambiguate this: instead of a bare summed number, they list which DUT(s) actually have a repeat and how many copies each (`"US65080419×2, US66060602×2"`), and which frequencies those repeats land on.
+
+**Port is part of the identity, deliberately.** A DUT's RF1 and RF2 measurements at the same condition/temperature/frequency are two genuinely independent measurements, not a duplicate of each other — every duplicate-detection function in this codebase keys on port (fixed 2026-08-25 after a real gap: two call sites had been missing it, which briefly miscounted a multi-port DUT's own distinct ports as duplicates of each other).
+
+**boxplot's Statistics Table default row (no filter active) now matches the plot on a genuine duplicate measurement** (fixed 2026-08-24). The default row used to read Mean/Std/Q1/Median/Q3/Outliers from the same DUT-averaged population `stat_summary` uses, while the plot itself (and the outlier-detail panel) read raw, unaveraged data — so a DUT with a real repeat measurement could show different outliers in the table than on the plot for the identical condition/frequency. The default row now recomputes those columns from the same raw data the plot uses; Normality/NP-TI stay sourced from the DUT-averaged population, since those are precomputed server-side against it and have no raw-data equivalent.
+
+**Condition pooling is not a duplicate either.** The Site Population Check and Group-by: Serial/Port both deliberately pool a DUT across every selected condition at a shared frequency (that's the feature working as intended) — only an *exact* identity match counts as a genuine repeat, so a DUT tested under several different SpurTypes that happen to share a frequency contributes 0 to Dup runs for that reason. A real dataset can show this distinction clearly: two DUTs with much higher "Checked" counts than their peers turned out to have broader SpurType coverage (145/120 distinct conditions vs. 60 for everyone else), not a "ran the test 3-4 times" pattern — the two effects can compound and need to be told apart.
+
+**"Collapse dup runs"** (boxplot only, opt-in, off by default) is the actual fix: it averages a DUT's exact-identity repeats into one point before Q1/Q2/Q3/whiskers are computed, so a heavily-repeated DUT stops silently outweighing everyone else in the box's own shape. `stat_summary` and `summary` don't need an equivalent toggle — their per-DUT data is already averaged server-side before either view's JS ever runs, so it's always in the "collapsed" state by design; there's no raw-measurement-level duplicate left at that resolution to collapse.
+
+---
+
+## index.html — Results Gallery
+
+Open `results\index.html` in any browser. Works from a network share — no server required.
+
+- **Run Info card** — pod file name, run timestamp, results path
+- **Extraction Overrides card** — the `subex` values used, documenting what was extracted
+- **Analytics card** — all analytics found in the pod, with a checkmark for each CSV collected
+- **Interactive Plots** — each secondary plot embedded as an iframe; click **Open full-screen** for full interactivity
+- **Downloads** — links to PDF reports, raw CSVs, `run.log`, and `_run.pod`
+- **Large-dataset viewer (optional)** — shown only when a `.parquet` sidecar is present; see below.
+
+---
+
+## Parquet input and padbloader (v2.0)
+
+### Where the data comes from
+
+padb-tools has two data sources:
+
+1. **PADB-R.exe extraction** (the original path) — `padb_run.py` drives PADB-R.exe and collects Type=80 CSVs.
+2. **padbloader** — a separate tool (written by a colleague, not part of this repo) that extracts **directly from Oracle** and exports CSV, Parquet or dbdiff results. It is far faster than the PADB GUI/command line, and it runs locally on your own PC.
+
+**Division of labour:** padbloader owns extraction, credentials and (in future) scheduling. padb-tools **consumes the Parquet files padbloader writes** and turns them into the interactive plot set. padb-tools does not talk to Oracle itself for this path. Use padbloader's **Parquet** export; its **CSV** export is *not* a usable input (it is one row per attribute — no serial, limits or run attributes — and every `EVENT_NUM` is 0).
+
+### The three kinds of file padb-tools reads
+
+| Kind | What it is | How it is used |
+|---|---|---|
+| **padbloader parquet** | Long format: `algorithm`, `result`, `value`, `units`, `limit_*`, `serial`, `step`, `c_*` condition columns, `r_*` run attributes; labels/units in the schema metadata | Converted by `padb_loader_adapter.py` into a PADB-style table + a `*_v2_job.json` per algorithm |
+| **padb-tools parquet** | The table padb-tools itself writes (the sidecar for large datasets) or `padb_csv_to_parquet.py` produces — the same columns as a Type=80 scatter CSV | Used **in place** — no conversion; a job simply points at it with `parquet_path` |
+| **CSV** | A PADB Type=80 scatter CSV | Unchanged (`csv_path`) |
+
+Parquet is quicker than CSV mainly because the file is 80–140× smaller and loads without text parsing; the big build-time wins came from removing slow Python loops, not from the file format (see **Performance**).
+
+### Drop a parquet on the web app
+
+On the web app's drop zone (the same one that takes a `.pod`):
+
+1. **Drop the `.parquet`** (or use **"use a parquet already on disk"** — the file is used where it is, nothing is uploaded or copied).
+2. The panel lists what it found: one row per algorithm (rows, units, whether it carries spec limits, swept x, number of test temperatures).
+3. **Tick the algorithms** you want. Selection is by exact *(algorithm, result)* — ticking the dBc result of a harmonics algorithm does **not** pull in its dBm results.
+4. **Combine an algorithm's results into one plot** (ticked by default; padbloader parquet only). One padbloader algorithm can emit several *results in different units* (e.g. Harmonics: the dBc level plus `Carrier Power (dBm)` and `Impurity Power (dBm)`). Combined, they share one dataset with a leading **`Result`** filter dimension; the main result is pre-selected (`result_default`), so dBc and dBm are never plotted on one axis until you tick another result. Untick to get a separate job per result.
+5. **Plots to generate** — every applicable view starts ticked (opt-out). The environmental views (`distribution`, `env_coverage`) are offered only when the data has more than one test temperature. On a **wide sweep** (more than 300 distinct x values) the heavy views (box plot, reference, statistical summary) are shown **ticked with a warning** — a 696-offset harmonics box plot took ~11 min and 70 MB; a 7,662-offset phase-noise box plot is ~300 MB. Your choice is written to each job's `views` and can be edited later.
+6. **Share path / Folder name** — same rules as Generate Job: Share path, else Folder name (`--module`), else local-only. `{algo}` in a path expands to the algorithm's name so algorithms never share a folder.
+7. **Generate Plot Jobs.** With **"Run the plots now (shows in Running Jobs)"** ticked (the default) the new jobs are queued straight into the **Running Jobs** panel (live log, elapsed time, Cancel). Jobs skipped because a job file already existed are not run; an existing job file is never overwritten without **force**.
+
+> After a code update, restart the web app (`Start_web.bat`) and hard-refresh (Ctrl+F5) — the page is re-read from disk but `padb_web.py` is not. The drop zone shows an explicit "server is older than the page" message if a route is missing.
+
+### Command line
+
+```
+py padb_loader_adapter.py <file.parquet> --list                       # what is in it
+py padb_loader_adapter.py <file.parquet> --out <dir> [--algorithm S]   # make the jobs
+        [--format parquet|csv] [--split-results] [--views a,b,...]
+        [--x-col NAME] [--no-publish | --publish-to PATH] [--force]
+py padb_v2.py <the_v2_job.json>                                        # build the plots
+py padb_csv_to_parquet.py <file.csv|folder> [--out] [--force] [--verify]
+```
+
+`padb_loader_adapter.py` recognises both parquet kinds (`sniff_parquet`). For a padb-tools parquet it writes only the job (pointing at the file) and honours the same `--views` / `--publish-to` / `--force`.
+
+### Job keys and behaviour
+
+- **`parquet_path`** — alias of `csv_path`; a parquet with the same columns as the CSV is a first-class source (also in `compare_csv` entries, `padb_csv_check.py` and the web app). A source parquet is never exported over or deleted as its own sidecar.
+- **`result_default`** — written for combined multi-result jobs; selects the main result at page load unless a saved lock/state says otherwise.
+- **Test temperature** comes from the `Test Step` column, written in the loader's native form (`Room` / `NN.N Deg C`). A step name that names no temperature (e.g. "Hot") is **warned** and counts as Room. Environmental views are dropped for single-temperature data.
+- **Condition columns** with more than 100 distinct values (e.g. a per-row event id) stay out of the Group string.
+- **Wide sweeps** (> 300 distinct x) default to `["scatter","summary"]` unless you tick more.
+- The adapter keeps a hand-edited job file unless you pass `--force`.
+
+### Known limitations
+
+- The plot loader reads a step such as `-40.0 Deg C` as **+40 °C** (the regex drops the minus sign) and any non-`Deg C` step text as Room. This affects temperature filters only, not values; it is documented rather than changed because fixing it would alter existing outputs.
+- A parquet at that scale still produces very large self-contained pages for the heavy views — use the scatter, or the **Large-dataset viewer** below, for multi-million-row sweeps.
+- Parquet is only as good as what padbloader exported: if its extract has no limits, the plots have no spec lines (use `spec_direction` or the manual Spec override).
+
+---
+
+## The job schema -- every key, checked (`padb_jobschema`) -- added 2026-11-24
+
+Every key a job file may carry is described once in `padb_jobschema.py` (type, whether it belongs to an extraction or a plot job, a group, a one-line meaning, and its constraints). Every run now **checks the job when it loads it** and prints what it finds -- it never stops the run:
+
+- **WARN -- unknown key.** The key has no effect. When it is close to a real one you are told which (`"scater_decimate"` -> `scatter_decimate`). Keys beginning with `_` (`"_notes"`) are comments and are always accepted.
+- **ERROR -- wrong type, or a value the tools cannot use**: `"tier_budget_s": "fast"`, `"proportion": 1.5`, `"y_lim": [1, 2, 3]`, a view name that does not exist (`boxpot` -> `boxplot`), an empty `views` list, a job with no data source.
+- **WARN -- a contradiction that silently resolves one way**: `limit_overrides` wins over `limits_file`, `filter_config` over `filters_file`, `parquet_path` over `csv_path`; a cross-site compare without `primary_site`.
+- `secondary_plots` entries (V1 jobs) are checked too: `type` must be a real plot function.
+
+Where you see it: the console / run log of `padb_v2` and `padb_run`; `job_issues` for each analysis in `padb_analyze`'s result; and in the web app's **job editor**, where **Review changes** lists the schema findings under the diff (advisory -- saving is not blocked). `GET /api/job-schema` returns the whole schema as JSON (what an editor form is built from) and `POST /api/job-validate` checks a job object. It was verified against all of this team's real job files and every job the generators write, so a clean job stays clean.
+
+## Size tiers -- what will be built for a big dataset (`tiering` / `tier_budget_s`) -- added 2026-11-24
+
+Before building, the tool predicts each view's build time from the dataset's size (rows, distinct x-values and conditions -- the boxplot and statistics views do work per x-value per condition, not per row) and compares it with a **budget of 300 s per view**. When the views were chosen **automatically** (no `views` in the job), an over-budget view is **not built**: the log, `tier.json`, the index page banner and `padb_analyze`'s result (`tier`) say which view, its predicted time and why, and recommend the **parquet viewer** for that dataset. Views you request **explicitly** (`"views": [...]`) are always built; if a requested view is predicted over budget you are only warned. Tiers: `standard` (nothing over budget), `heavy` (some views skipped, others built) and `giant` (every candidate over budget -- the single cheapest view is still built so there is something to open).
+
+- `"tiering": false` switches the planner off (every automatic view is built, as in v2.5). `"tier_budget_s": 900` raises the budget.
+- The predictions come from timings measured on a typical workstation (fit error up to ~40%, checked against a real 965k-row, 7,662-x build) -- an order-of-magnitude guide for a budget, not a stopwatch. Page *size* is not used for routing: the automatic size levers (decimation, float32 packing, compression) keep pages small, and the existing size warning still reports a page that turns out too big.
+
+## Choosing which conditions are filters in the HTML pages (`filters_file` / `filter_config`) -- added 2026-11-24
+
+The same file the viewer's **Edit filters** panel writes (`padb_viewer_filters.json`: `show` / `hide` / `labels`) can drive the static pages. Put it beside the job (or anywhere) and set `"filters_file": "filters.json"` (relative to the job file) or write the object inline as `"filter_config": {...}`; `py padb_analyze.py ... --filters-file filters.json` passes it through. **Applied by the Scatter and Reference views**; the others still list every condition and the index page says so.
+
+- `"hide": ["Port"]` removes those conditions from the automatic set; `"show": ["Mode", "AlcState"]` lists exactly these, in this order -- including a single-valued condition the automatic rules would drop.
+- A condition that is not offered puts **no restriction** on the data. The data is not edited: the table and CSV export still show the column, and series, hover, pass/fail and the Global Filter still see every condition. Station, Temperature and serial-like dimensions are never governed.
+- `labels` apply in the viewer only: saved filters and the cross-view lock identify a dimension by its label, so renaming it in some views would silently break them.
+- A missing, unreadable or empty file is warned about and ignored; it never fails a build.
+
+## Editable limit overrides (`limits_file` / `limit_overrides`) -- added 2026-11-23
+
+Sometimes the limit that matters is not the one the data carries: a datasheet value that was set after the measurements, a tighter customer limit, or data that has no limits at all. A **limit override** replaces the data's own Upper / Lower Limit over x-ranges you choose -- for the limit line, for Passing / Failing, and for every view -- **without touching the CSV or parquet**.
+
+**The file** (JSON; the viewer writes `padb_viewer_limits.json` next to the data, `limits.json` is also found, or point a job at any path):
+
+```json
+{"unit": "MHz",
+ "limits": [ {"lo": 0.009, "hi": 100, "upper": -76, "note": "dBc spec, low"},
+             {"lo": 100,   "hi": 350, "upper": -74},
+             {"lo": 200,   "hi": 400, "lower": -98} ]}
+```
+
+**Rules (one definition, shared by the viewer, the numpy/DuckDB code and the HTML builds):**
+- A range applies to rows with `lo <= x <= hi` -- **both edges inclusive**.
+- `upper` and `lower` are each optional. **A blank / missing side keeps the data's own value for that side**, so you can override only the upper limit. A range needs at least one of them; `lower` may not be above `upper`.
+- Rows outside every range keep the data's own limits.
+- Ranges are sorted by `lo`; where they **overlap or share an edge the later one wins**, separately for each side (so the example above gives -74 at x = 100, and a lower limit of -98 for x in 200-400 on top of the -74 upper).
+- Pass / fail is then the usual one: fail = value above a present upper limit or below a present lower limit.
+- Up to 200 ranges; numbers must be finite.
+
+**In a plot job** (`*_v2_job.json`):
+
+| Key | Meaning |
+|---|---|
+| `limits_file` | Path to the limits file, **relative to the job file** (or absolute). Its `unit` is converted to the data's x-unit. A missing or invalid file is skipped with a `[WARN]` -- it never fails the build. |
+| `limit_overrides` | The same list written inline (already in the data's x-unit). Takes precedence over `limits_file`. This is what the viewer passes to its band views. |
+
+The override is applied **right after the data is loaded and before any view is built**, so scatter, boxplot, stat_summary, summary and the rest all classify against the same effective limit. It sets both `Upper_Limit` and `Spec_Hi` (and the lower pair) -- the views prefer Spec over Limit -- and zeroes the uncertainty on overridden rows so the limit the views use *is* the override. The results `index.html` shows a yellow **"Limit overrides active"** banner with the file name, how many ranges and how many rows were overridden, so nobody mistakes an overridden verdict for the data's own. Re-plot with `py padb_v2.py <job> --csv <csv>` (or **Run** in the web app); no re-extraction is needed.
+
+**In a built HTML page (v3.0):** the shared bar (top right) has **Import limits / Export / Clear**. Import takes the same file (a `{unit, limits}` file, or a bare list; its x-range is converted to the page's unit) and the page reloads with the overrides applied. Every view with a swept x-axis (**Scatter, Statistical Summary, Summary, Boxplot, Reference**) applies them -- limit lines, tolerance limits, margins and Passing/Failing all follow; the overrides are stored in the browser per test. **The Histogram view (no swept x) does not**: they show "saved for this test, NOT applied in this view" on the bar rather than quietly using the data's own limits (it has no swept x to key a range on; rebuild with `limits_file` if you need it). A page built from data with no limits at all keeps its pass/fail controls hidden -- the override cannot resurrect them (use the viewer, or a `limits_file` build). Pinned by `qa_limits_inpage`, which also proves the page's JavaScript accepts and rejects exactly what the Python does.
+
+**Live editing in the parquet viewer:** the viewer's **Edit limits** panel edits this same file (see **Large-dataset viewer** below). Static HTML pages cannot be edited live -- they have no server -- so for those you edit the file and re-plot (seconds).
+
+**Limits and the limit-less case:** if the data carries **no** limits, an override *creates* a pass / fail basis in the viewer; in a static HTML build the views that hide their Passing/Failing control for limit-less data may still hide it -- set the override and check the plot, or use the viewer.
+
+---
+
+## Using the analysis on its own -- `padb_analyze.py` (v3.0)
+
+The analysis layer (jobs + plots) is independent of extraction and scheduling, so another tool -- padbloader -- can use it directly: **data in, artifacts out**, no PADB-R, no Oracle, no scheduler.
+
+```
+py padb_analyze.py request.json --result result.json
+py padb_analyze.py --input extract.parquet --out results --views scatter,summary --limits-file limits.json
+```
+
+Request (`padb-analysis-request/1`; only `input` and `out` are required): `input` = a **padbloader parquet**, a **padb-tools parquet** or a **PADB scatter .csv**; `out` = the output folder (jobs under `<out>/jobs`, each analysis under `<out>/results/<name>`); optional `views`, `algorithms` (padbloader results to analyse), `x_col`, `limits_file` (see **Editable limit overrides**), `publish_to` (default `""` = nothing is published), `pdf_report`. Result (`padb-analysis-result/1`): `ok`, and per analysis the job (the analysis object), the results folder, `index.html`, the views built, the files, `status`/`error`. Progress text goes to stderr; stdout is one JSON document. Exit code 0 = all ok, 1 = an analysis failed, 2 = a malformed request.
+
+`py make_analysis_bundle.py <folder> [--zip]` packages exactly what that needs (the entry point, `padb_core`, the plot builders, the viewer -- found by walking the imports) with a requirements list, a manifest and a README; it **refuses to build if the closure reaches extraction/scheduling code**. `qa/qa_separation.py` proves the separation by running real analyses from a freshly built bundle in another folder with no extraction code present. Design: `V3_PLAN.md`.
+
+---
+
+## Large-dataset viewer (parquet + `padb_viewer.py`)
+
+Self-contained HTML embeds every point, so a genuinely huge analytic (wide phase-noise offset sweeps, big cross-site compares, millions of points) can exceed what a browser can open. For those cases the pipeline writes a compact **parquet sidecar** next to the results and offers a small **local-server viewer** that serves only the slice being viewed.
+
+- **Parquet export** — `padb_v2.py` writes `<csv_stem>.parquet` (zstd, typically 80–140× smaller than the CSV) when a job sets `"export_parquet": true`, and **automatically** for compare jobs or when the source CSV is large (≥25 MB or ≥250k rows; per-job overridable via `export_parquet_auto_mb` / `export_parquet_auto_rows`). It never fails the build — a parquet error is logged and skipped.
+- **The viewer** — `py padb_viewer.py <folder-or-parquet>` starts a local Flask server (`http://127.0.0.1:<port>`) that reads the parquet once and answers server-side-decimated, filtered queries, so the browser never loads the whole dataset. Its main scatter has a frequency-range filter, Site and temperature checkboxes, and **band-view buttons** that render any full interactive view (boxplot/stat_summary/…) for the current frequency band. Autoscale / Reset-axes / drag-zoom on the main plot drive the frequency filter and re-query.
+- **DuckDB engine (v2.0)** — when the `duckdb` package is installed (`py -m pip install duckdb`) the viewer runs every query inside DuckDB instead of holding the data in a pandas frame. A 3.78M-row Closed Loop analytic loads in about 1 s using ~100 MB (the pandas engine: ~5 s and ~2.6 GB), and each pan/zoom/filter query takes tens of milliseconds, so datasets larger than RAM work. The plotted results are identical to the pandas engine (parity-tested). Without `duckdb` the viewer falls back to pandas automatically; force an engine with `--engine pandas|duckdb`. The band-view buttons still render the real interactive pages, so their time depends on the band's row count, not the engine.
+- **`PADB_Viewer.exe`** — `py build_viewer.py` freezes the viewer to a single `.exe` (PyInstaller) so users without Python can drop it into a results folder and double-click it. The `.exe`/`.parquet`/build dirs are git-ignored — rebuild, never commit the binary.
+- **The results `index.html` links it** — an "Open in viewer" / "Open folder" section plus an `Open_in_viewer.bat`. `_publish()` copies the parquet, exe, and bat to the share so the link works there too.
+- **Overview controls (v2.0+)** -- frequency/x window and max points; **Site** and **temperature** checkboxes (they apply on change -- no Update click); **Conditions** (every `Key: value` in the Group text with 2-40 values becomes a **row of filter dropdowns** -- one button per condition, a tick panel with *Select all*, an `n/total` badge when narrowed, exactly like the HTML views -- and the **Conditions** button opens the same filters as a full checkbox list; the two always show the same selection; serial, site, temperature and the x key are excluded; a blank value is "not applicable" = never excluded; unticking every value shows nothing); **Group by** (Site / Serial / Temperature / any condition, at most 60 groups -- colouring only, it does not filter); **Show: All / Passing / Failing** (against each point's own limit); **Show limits** (dashed upper/lower limit steps drawn from the data's limit columns -- display only; the limit at each x is the first one in file order); **hover** shows the serial, temperature and the point's full condition text. The overview plot is a min/max envelope per x bucket (the status line shows the true point count and how many are drawn), so narrowing a condition may not visibly change the picture where the extremes don't move -- read the count.
+- **Segment step and Edit bands** -- *Segment step* (Prev / Next) walks the window through **Spec/limit stairs** (each run of constant limit) or **Named bands**. **Edit bands** opens a table (name, min, max; edges inclusive; overlaps allowed; up to 64 bands; names unique): **Apply** validates, writes the shared band file (`padb_viewer_bands.json` / `bands.json` -- the same file the HTML builds read) atomically, and the band buttons, per-band counts, the "slow band" warning, the band-view row cap and the stepper all follow immediately. Invalid input or a failed save changes nothing and shows the reason. (The band *views* -- the iframe pages -- still derive their own named bands, so stepping *inside* one of those pages uses those, not your edited set.)
+- **Edit filters** -- chooses which conditions are offered as filters, in what order and under what names. Every filterable condition is listed with its status; a tick offers it, including ones the automatic rules hide (single-valued, serial-like such as Serial Number, or with more than 40 values -- those get a search box in their dropdown). Site, temperature and the x-axis have their own controls and are not listed. **A condition that is not offered restricts nothing** ("all"): hiding a narrowed filter clears it (the panel says which), and your selections on the conditions that stay offered are kept. Group-by follows the offered set. The choice is saved beside the data as `padb_viewer_filters.json` (`--filters PATH` to use another); **Reset to automatic** restores the default set. Renames are cosmetic -- the condition's own name is what saved filters and filter files use. Pinned by `qa_core` CORE-FILTERS and `qa_viewer_ui` INV-FILTCFG.
+- **Edit limits** -- the live editor for **limit overrides** (see the section above). Rows are x-range + upper and/or lower; **Apply** saves the limits file, and the limit line, Passing/Failing, the spec-stair stepper and every band view built from then on follow; **Clear all** returns to the data's own limits exactly. An amber **limit overrides ACTIVE (n ranges)** flag is shown while any are in force.
+- **One filter file with the HTML pages** -- **Export filter** saves the current filter (conditions, sites, temperatures, window, pass/fail) as `padb_filter.json` in the same format as an HTML page's **lock** (the lock bar's Export/Import); **Import filter** applies such a file -- from an HTML page or another viewer. Only narrowed conditions are written, so a fully-open one never constrains another view. Importing is best-effort: a condition or value that does not exist in this dataset is skipped and listed in the status line (never emptying the view), and serial-style entries are skipped because serial is a Group-by key here, not a filter. Pinned by `qa_filter_interchange` (a filter moves in both directions against a real built page).
+- **Remembered state** -- the window, max points, site/temperature/condition filters, Group by, Passing/Failing, Show limits, Full render and the segment basis + position are saved in the browser (per dataset) and restored on reload. **Reset all** clears them and reloads the defaults. Blocked or corrupt browser storage falls back to defaults -- it never breaks the page.
+- **Band views honour everything** -- the Scatter / Boxplot / Stat Summary / Summary buttons build the *real* interactive page for the current window **with** the site / temperature / condition / Passing-Failing filters and any limit overrides applied. A window with more points than the band cap (the cap never drops below your largest named band) returns a **"Band too large"** card instead of attempting a render -- narrow the window or pick a band.
+- **How it was checked** -- `qa/qa_viewer.py` (engine parity), `qa/qa_viewer_ui.py` (a real browser drives the overview and the pages it builds, against independent oracles), `qa/qa_viewer_scale.py` (2M rows: ready in about 3 s, ~210 MB, queries in 0.2-0.3 s) and `qa/qa_limits.py` (the override semantics). See `qa/QA_GUIDE.md`.
+- **Choosing HTML vs the viewer** -- choose by **data size, not file format**. A parquet is just an encoding of the same table: `parquet_path` jobs build the same self-contained HTML as a CSV. Keep the HTML for normal-sized analytics -- it needs no server, opens straight from the share, can be emailed or archived as a fixed snapshot, and carries the full feature set (Global Filter, locked filters, Site Population Check, auto-filter, PDF report). Use the viewer for the giants a browser can't open; its band views are the same `padb_v2` HTML renders, so features belong in `padb_v2` once and the viewer passes them in as parameters (that is how limit overrides reach the band views).
+
+---
+
+## Common Workflows
+
+### First run on a new pod
+
+1. Inspect the pod — identify analytics, their types, and output filenames.
+2. Write `job.json` with `subex` for the desired serials and dates.
+3. Run `--dry-run` to verify the switch file is built correctly.
+4. Full run. Check `results\padb\` for the CSVs that were produced.
+5. Add `secondary_plots` entries to `job.json` referencing the actual CSV names found.
+6. Run `--plots-only` to generate HTML.
+7. Review `results\index.html`.
+8. Publish.
+
+### Iterate on plots without re-extracting data
+
+```
+py "C:\apps\padb\tools\padb_run.py" job.json --plots-only
+```
+
+Edit `secondary_plots`, re-run. Takes seconds.
+
+### Add a new serial to an existing run
+
+Add the serial to the `serial_nums` list and re-run (full run, not `--plots-only`).
+If using raw `subex` instead, update `TestRun_SerialNum` with the full quoted list.
+
+### Compare two lots or date ranges
+
+Create two analysis folders with separate `job.json` files. Publish to different destination subfolders. Both results are accessible independently.
+
+### Pod returns no data
+
+Add `"TestRun_RunStatus": "{All}"` to `subex`. The PADB default filters to passing test runs only; this override includes all.
+
+### CSV not found after a PADB run
+
+1. Check `results\padb\` — is the file there with a slightly different name?
+2. Check `padb_run_*.log` in the results directory for the full run output and any errors.
+3. Check `run.log` for PADB-R.exe return code.
+4. Open the pod and confirm `OutputConfig_OutputCSV=True` for that analytic.
+5. If found but name doesn't match `csv` substring, switch to `csv_file` with the exact filename.
+
+**`results\padb\` (never R-Plots) is now the only trusted source for an analytic's CSV** (changed 2026-08-27). `_collect_padb_outputs()` used to fall back to scanning R-Plots — PADB's shared default save location — for any analytic that never got real `-dir` output, copying whatever it found there right or wrong. A real incident: a manual AMC2 GUI session had written output to R-Plots under the exact same filename an unrelated SR analytic used, and it got silently copied into the SR job's own results, corrupting a site-comparison job. If an analytic's output never lands in `results\padb\` now, that's reported as a real, unresolved gap by name — meaning a pod config issue (date range, `TestRun_RunStatus`, a `Filter_Expression` zeroing out every row), a genuine data gap, or that output type not supporting `-dir` at all — investigate at the source rather than expecting a fallback to paper over it. The one legitimate historical use of R-Plots — a CSV PADB never writes via any path at all (the clock-spurs SummaryPlot gotcha), manually placed into `results\padb\` once — is unaffected, since this function never deletes an existing file there.
+
+The missing-analytic check that reports these gaps also had two false-negative bugs fixed the same week (2026-08-27): a same-stem `.txt` file (PADB's own error-dump convention, e.g. "Analysis Failed / No data were selected by filtering") used to be silently accepted as if it were real output; and a first-match stem lookup could misattribute a file to a shorter sibling analytic whose stem happens to be a literal prefix of another's, falsely reporting the correct, longer-stem analytic as producing nothing despite its own file existing on disk (now prefers the longest/most specific matching stem).
+
+---
+
+## Generating job.json Files (padb_make_job.py)
+
+For the common case — one job.json per `.pod`, following this project's standard template — `padb_make_job.py` writes it for you instead of hand-copying an existing job.json:
+
+```
+py padb_make_job.py MyMeasurement.pod --module MyModule
+py padb_make_job.py pod1.pod pod2.pod pod3.pod --module MyModule --min-date "8 weeks ago" --max-date today
+py padb_make_job.py MyMeasurement.pod --no-publish
+py padb_make_job.py MyMeasurement.pod --module MyModule --force
+```
+
+Accepts one or more `.pod` paths and writes a `<pod_stem>_job.json` next to each.
+
+| Flag | Effect |
+|---|---|
+| `--module NAME` | Subfolder under `--publish-root` for `publish.destination`. **Required unless `--no-publish` is given** — not auto-derived from the pod filename, so a new pod family never silently lands in the wrong network folder. |
+| `--mode` | `legacy` / `simple` / `interactive`. Default `simple`. |
+| `--min-date`, `--max-date` | Written into `subex` verbatim, including relative-date sentinels (`"today"`, `"8 weeks ago"`) — see **subex → Relative-date values** above. Omit both and no `subex` key is written at all, leaving the pod's own baked-in `[Extract]` date range exactly as-is. |
+| `--no-publish` | Omit the `publish` key entirely — local results only. |
+| `--force` | Overwrite an existing job.json (default: skip if the target already exists, so a manually-tuned job.json is never clobbered). |
+| `--padb-exe`, `--output-dir`, `--logs-dir`, `--publish-root` | Override the defaults for `padb_exe` / `padb_output_dir` / `padb_logs_dir` / the publish-root prefix, if yours differ from this machine's. |
+
+---
+
+## Scheduling Overnight Runs
+
+Use `padb_scheduler.py` to manage Windows Task Scheduler entries for job files.
+
+```
+py "C:\apps\padb\tools\padb_scheduler.py"
+```
+
+The tool scans a directory for `*_job.json` files and shows a table with scheduled/unscheduled status. Double-click a row (or click **Add / Edit Schedule**) to configure a Weekly or Daily schedule with day-of-week selection and a 24-hour start time.
+
+Tasks run as the **current Windows user** so they can reach the NAS publish destination (`\\srsnas01...`).
+
+Each task is named `PADB_{job_stem}` in Task Scheduler (e.g. `PADB_amplitude_job`).
+
+**Run log files** — every run writes a timestamped `padb_run_YYYYMMDD_HHMMSS.log` to the results directory. This is the primary diagnostic for overnight failures. Check it first if a run produces unexpected output or fails silently.
+
+**Test Run Now** — the schedule dialog includes a button to launch the job immediately in a new console window without creating a Task Scheduler entry.
+
+---
+
+## Web App (webapp/padb_web.py)
+
+A local Flask app — local use only, not meant to be reachable beyond `127.0.0.1` — that wraps the CLI scripts above in a browser UI:
+
+```
+py "C:\apps\padb\tools\webapp\padb_web.py"
+```
+
+Or double-click **`Start_web.bat`** in the tools root (added 2026-08-31) — a convenience launcher that runs the same command, for users who'd rather not use a terminal.
+
+Opens `http://127.0.0.1:5000` in the default browser. Every route shells out to the same CLI scripts documented in this guide, or imports their functions directly — nothing about the underlying tools changed to build this.
+
+- **Drop a `.pod` file** (drag-and-drop or click to choose) → parses and previews its analytics → fill in mode/**Folder name**/dates → **Generate Job** calls `padb_make_job.py` or `padb_make_v2_job.py` exactly as the CLI would, showing the generated job.json and any `NOTE:`/`WARNING:` output verbatim. **"Folder name"** (renamed from "Module" 2026-09-02, `--module` under the hood) is the subfolder under the publish-share root — the generated job's `publish_to` becomes `<publish_root>\<Folder name>\<pod_stem>` (e.g. `…\SG6311A\PADB-Interactive\<Folder name>\<pod_stem>`). It only affects the *share* path, not the local `results_dir`, and only takes effect when a run actually publishes (see the publish toggle below). Leave it blank to generate a local-only job (`--no-publish`, no `publish_to`). A separate **"Share path (override)"** field (added 2026-09-02) sets `publish_to` *verbatim* to an exact path (bypassing the standard root + Folder name) — for publishing off the standard share tree; leave it blank to use the standard root + Folder name. Under the hood this is a new `--publish-to` flag on `padb_make_job.py` / `padb_make_v2_job.py` (takes precedence over `--module`; for a V2 pod every generated plot job shares the one override path).
+- **Execute job(s)** — a jobs table with checkboxes and **Run Selected**. A single background worker + queue serializes every PADB-R.exe launch, since two concurrent instances interfere with and stall each other (see **Cross-Process PADB-R.exe Exclusivity**, below). Run jobs execute before plot jobs in a mixed selection, and a queued or running job can be **aborted**. A status card shows `queued (N ahead)` while waiting, not just a bare "queued" (added 2026-08-24) — a real compare job can legitimately take 40+ minutes, so a plain "queued 0s" with no context was indistinguishable from stuck. A browser refresh no longer drops the Running Jobs panel (fixed 2026-08-24) — the page now re-subscribes to whatever's still queued/running on load, since job state lives in the Flask process and was never actually affected by the refresh in the first place. For a V2 `*_run_job.json`, once extraction succeeds the worker automatically runs every sibling `*_v2_job.json` plot job in turn — the full V2 flow in one click. **Re-running the same `*_run_job.json` always rebuilds every sibling from scratch** (fixed 2026-08-30) — a chain that had already completed once used to silently skip every sibling on a later re-run instead of picking up the fresh extraction. Separately, that auto-chain now survives a webapp restart mid-run (added 2026-08-24): a small per-sibling progress file lets a genuinely interrupted chain (restart killed it after only the first few siblings) resume automatically the next time the webapp starts, without resume-rebuilding an entire day's worth of already-correct pods in the process. A **failed job now surfaces a "View log" link** (added 2026-09-02) — the full captured console is written to `<results_dir>/webapp_console.log` after every job, so a job that "failed but produced data" (e.g. extraction succeeded but a chained plot sibling failed) can be diagnosed without hunting for the run log. A plot build that has **nothing plottable** (e.g. a PADB placeholder export written when an analytic returns *no matching test results* for a database/site) now logs a clear reason — "no matching test data …" — to both that console and a persistent `build_failures.log` in the results dir, instead of a raw traceback (added 2026-09-03); an auto-resumed chain also stops re-attempting such a permanently-failing sibling after one try, rather than re-spawning a doomed resume job on every webapp restart. The old "Dry run (skip PADB-R.exe)" checkbox was **removed** from the UI (2026-09-02) — the backend and the `padb_run.py --dry-run` CLI flag are unchanged. **Publishing is opt-in per run** (added 2026-09-02): a **"Publish to share after run"** checkbox next to Run Selected, **default OFF** — when off, the worker passes `--no-publish` to `padb_run.py` (run jobs) and `padb_v2.py` (plot jobs and the interactive sibling chain); when on, each job's own `publish_to` is honored. It's a runtime override only — job.json files are never rewritten, so an existing job keeps its own `publish_to` on disk. (`padb_v2.py` gained a `--no-publish` flag for this, mirroring `padb_run.py`'s; it forces the `publish_to` opt-out path without touching the job file. Auto-resume of an interrupted plot chain stays no-publish, matching the default.)
+- **Schedule/unschedule job(s)** — calls the same `padb_scheduler.py` functions the desktop Scheduler GUI uses, so a task created from either place is indistinguishable to the other.
+- **Convert pod/job between sites** — calls `padb_convert_site.py`'s functions directly (see **Converting Between Database Sites** below).
+- **Compare two datasets** — collapsed by default (a corner case, mainly useful the first time a new site comes online). Pick two already-extracted CSVs (auto-discovered from every `*_results/padb/*.csv` on disk), name each site, pick the primary, and **Create & Run** in one step — builds a `compare_csv` job.json (local-only by default) and queues it immediately. Validates first: a measurement-unit mismatch (e.g. dBc vs. dBm) *or* an x-axis unit/column mismatch (added 2026-08-30 — see **Cross-Site Comparison**) blocks with an explanation and an explicit override to proceed anyway; softer gaps (missing temperatures/ports, non-overlapping frequency ranges) only warn. Both **Check compatibility** and **Create & Run** show busy-state feedback ("Checking...", "Creating & queuing...") while their request is in flight (added 2026-08-24) — confirmed both already worked correctly server-side; the real gap was just no visual feedback, easy to mistake for the button not responding. See **Cross-Site Comparison** below for what the resulting job actually does.
+- The jobs table's **Kind** column distinguishes `run` jobs (have a `pod` key, runnable via `padb_run.py`) from `plot` jobs (have `csv_path`/`analytic`/`compare_csv`, only runnable via `padb_v2.py`) — use **Select All Runnable** to bulk-select only `run` jobs for an unattended batch, or **Select Filtered** (added 2026-09-02) to check every job matching the current Mode/Kind/Name filters — rather than hand-picking across a long list. **Scheduled**/**Last Run**/**Results** columns mirror the desktop Scheduler and the actual `results_dir/index.html` on disk.
+- **Edit a job file** (added 2026-11-04) — tick a job and an **Edit** button appears at the left of its Name. It opens the job's JSON in an editor so you can change extraction (`subex`, date range, `padb_timeout`, …) and analysis (`views`, `spec_direction`, `spec_interp`, `x_label`, `publish_to`, …) options without leaving the app. **Review changes** validates the JSON and shows a colour-coded before/after diff (red = removed, green = added) — nothing is written yet; **Confirm save** writes it. Safety net: a timestamped backup (`<job>.json.bak_<date>_<time>`) is made before every save (the last 20 are kept), the file is swapped in atomically, saving is blocked while that job is queued or running, and the file keeps its original line endings. **History / undo** lists the earlier versions (newest first, with how many lines differ from now); **Load this version** puts one in the editor and shows the diff — nothing changes until you press Confirm save, and the restore is itself backed up so it can be undone too. Notes: extraction keys (`subex`, `pod`) need a full re-run, analysis keys only need a re-plot; sibling `*_v2_job.json` files that share a `results_dir`/`publish_to` are **not** changed — edit each; a scheduled job's next run uses the saved file; editing `description` never renames the job or its outputs. If **Edit** does nothing after an update, restart the webapp (`Start_web.bat`) and hard-refresh (Ctrl+F5).
+- **Job lists** (added 2026-11-04) — separate Production from NPI, or just shorten the list. Tick jobs → **Add checked to list…** (type a name; a new name creates the list). The **List** dropdown next to the Name filter then shows only that list (with counts); **Remove checked from list**, **Rename list** and **Delete list** manage it. A job can be in several lists. Lists are only a *view*: job files, schedules, results and run order are untouched, and deleting a list never deletes jobs. **Select Filtered** respects the chosen list, so "pick Production → Select Filtered → Run Selected" runs just that set. Stored in `job_lists.json` in the Data folder (syncs with OneDrive); entries for deleted job files drop out automatically.
+- **Tooltip help** is always on — hover any control for an explanation of what it does and its scope. (The old "Show tooltip help" on/off checkbox was removed 2026-09-23; help is a default, not an option.)
+
+---
+
+## Cross-Process PADB-R.exe Exclusivity
+
+Two concurrent PADB-R.exe instances interfere with each other and both stall at zero CPU progress — this is true even across **separate process launches** (e.g. the web app restarting while a run is still in flight, or a scheduled task firing while someone is running a job from the CLI), not just within one Python process.
+
+`padb_batch.py`'s `PADBBatch.run()` — the one choke point every invocation path goes through (webapp queue and direct CLI use of `padb_run.py` alike) — calls `wait_for_exclusive_padb_r()` before launching PADB-R.exe:
+- Checks the **live OS process table** (`tasklist`), not a lock file, so a stale lock from a crashed process can never cause a false "still busy" deadlock.
+- If another instance is running, polls until it clears or a timeout is reached (defaults to the job's own `padb_timeout`), printing a one-time notice so a long wait doesn't look stuck.
+- If it never clears, raises an error naming the blocking PID(s) with the exact `taskkill /IM PADB-R.exe /F` command to clear a genuinely-stuck instance by hand, rather than launching a second instance and letting them silently interfere.
+- `--dry-run` never reaches this check — switch-file-only runs add no delay.
+
+**Web app "Clean up orphaned PADB-R" button** (Running Jobs section, added 2026-08-21) is the point-and-click alternative to the manual `taskkill` above — it lists every batch-invoked (`-f <switchfile>`) PADB-R.exe running system-wide (never an idle GUI window someone has open by hand), shows exactly what it found, warns if this browser session has an active job, and kills whichever PIDs you confirm — also taking down each one's currently-attached `R-Host.exe` helper process (a separate PADB-R.NET resource leak: this helper binary doesn't clean up after itself when its parent PADB-R.exe exits).
+
+**Also detects already-orphaned `R-Host.exe` processes with no live parent at all** (added 2026-08-24) — the original button above only ever found a helper process while its parent PADB-R.exe was still alive to cascade a kill from (`taskkill /T`); a helper left behind by a PADB-R.exe that was itself killed abruptly (e.g. a webapp restart mid-run) had nothing to cascade from and was invisible to it. The button now also checks every `R-Host.exe`'s `ParentProcessId` against currently-running `PADB-R.exe` PIDs directly, listing (and letting you kill) any helper whose parent is gone.
+
+---
+
+## Adding a Custom Plot Type
+
+Write a function in `padb_plots.py` (or your own module imported there):
+
+```python
+def my_custom_plot(csv_path: Path, cfg: dict, output_html: Path) -> None:
+    import pandas as pd
+    df = pd.read_csv(csv_path)
+    # ... build HTML ...
+    output_html.parent.mkdir(parents=True, exist_ok=True)
+    output_html.write_text(html, encoding="utf-8")
+```
+
+Reference it by function name in `job.json`:
+
+```json
+{"type": "my_custom_plot", "csv": "...", "title": "..."}
+```
+
+`padb_run.py` dispatches by function name via `getattr(padb_plots, plot_type)`, so no changes to `padb_run.py` are needed.
+
+---
+
+## The Statistics Library (padb_stats.py)
+
+Available for use in custom scripts. All functions handle NaN and the PADB INT_MAX sentinel (±2,147,483,647) automatically.
+
+| Function | Returns |
+|---|---|
+| `nonparam_tolerance_interval(data, proportion, confidence)` | `(lower, upper, warning_bool)` — two-sided NP TI |
+| `onesided_tolerance_bound(data, proportion, confidence, side)` | `(bound, warning_bool)` — one-sided, `side='upper'` or `'lower'` |
+| `kde(data, x_points, bandwidth)` | `(x, density)` — Gaussian KDE |
+| `fit_distributions(data, distributions)` | `[{name, params, aic, bic, dist}]` — sorted by AIC |
+| `best_fit_pdf(data, x_points)` | `(x, pdf, info_dict)` — best-fit PDF |
+| `bootstrap_ci(data, statistic, n_boot, confidence)` | `(lower, upper, point_estimate)` — bootstrap CI |
+| `band_summary(data, proportion, confidence)` | `dict` — full summary: descriptive + TI + bootstrap CI |
+| `sample_size_adequacy(n, proportion, confidence)` | `(adequate, n_required, message)` |
+
+---
+
+## PADB Simple Mode
+
+A direct, static replacement for the old internal Perl `PADB::Simple` tool: **no custom plotting or statistics at all.** Set `"mode": "simple"` in job.json and `padb_run.py` produces a bare gallery of PADB-R.exe's own native PNG/PDF renders — literally what the pod's analytics request, extracted and posted, nothing computed on top.
+
+### What changes when `mode` is `"simple"`
+
+- **Native rendering is forced on.** `make_run_pod()` sets `OutputConfig_OutputGraph=1` and `OutputConfig_GraphFormat=png,pdf` inside every `[PADBAnalyticN]` section of the run pod, regardless of what the source `.pod` currently has configured. You don't edit the pod yourself — this happens automatically, only for this mode. If those keys were already set (the common case), this is a no-op.
+- **`secondary_plots`/`views` are ignored.** There is no Python-side plotting step in this mode.
+- **`padb_simple.py` builds the gallery** instead of `padb_plots.py` + `make_index_html()`. One card per rendered PNG — an analytic can produce several via PADB's own pagination (a Scatter analytic with many groupings can emit a dozen or more numbered PNGs; that's normal PADB behavior, not a bug), each linked to its matching PDF.
+- **The metadata table is a literal dump**, not a summary: it pulls a fixed set of fields straight from the run pod's own `[Extract]` and matching `[PADBAnalyticN]` sections — `Algorithm_AlgorithmLabel`, `Device_Device`, `Device_Family`, `Environment_TestStep`, `Environment_TestSuite`, `ExtractionOptions_TestStationLabel`, `TestRun_Max`, `TestRun_Min`, `Limits_YLimit`, every `Grouping_ItemN` present, and a synthesized "Extraction Data Date Bounds" from `Device_MinDate`/`Device_MaxDate`. Nothing here is computed — if a field is blank, the pod itself has it blank.
+- **Download links** per analytic: `.pdf` (print-quality native render), `.csv` (if the analytic writes one), `.sao`, `.pod` (PADB's own run snapshot), `.txt` (PADB's tabular export).
+- **`HOW_TO_USE.txt`** is written to `results_dir\` alongside `index.html` — a short, mode-specific explainer of what the output is and how to switch tiers if you need filtering/statistics instead.
+- **Missing native output is visible, not silent.** If PADB didn't render a PNG for a given analytic (e.g. because a stem-matching mismatch prevented collection, or PADB itself failed to render), that analytic's card shows a plain "native graph not found" notice instead of a broken image or a card that silently disappears.
+
+### job.json for Simple mode
+
+Same job.json shape as any other `padb_run.py` job — just add `"mode": "simple"`:
+
+```json
+{
+    "description": "SG6311A MaxPower3 — Simple mode",
+    "pod": "MaxPower3.pod",
+    "mode": "simple",
+    "padb_exe": "C:\\Program Files\\KEYSIGHT\\PADB-R.NET\\PADB-R.exe",
+    "results_dir": "maxpower3_simple_results",
+    "padb_timeout": 7200,
+    "run_analytics": true,
+    "padb_output_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\R-Plots",
+    "padb_logs_dir": "C:\\Users\\damurray\\OneDrive - Keysight Technologies\\Documents\\Padb\\Logs"
+}
+```
+
+Run it exactly like any other job:
+```
+py padb_run.py path\to\job.json
+```
+`--dry-run`, `--no-publish`, and `--plots-only` all work the same as in legacy mode — `--plots-only` rebuilds the gallery from whatever's already in `results\padb\` without re-running PADB-R.exe.
+
+### What you won't find in Simple mode
+
+No filters, no serial/condition exclusion, no tolerance intervals, no interactivity of any kind. If you need any of that, use `"mode": "interactive"` (V2, below) instead — the gallery's `HOW_TO_USE.txt` says the same thing.
+
+### Known metadata gotcha across PADB versions
+
+`ExtractionOptions_AllRunResults` was renamed to `ExtractionOptions_LastRun` in newer PADB pods (confirmed against a PADB Version 4.12.2.8 pod vs. older 3.1.2-era output). The metadata table checks both field names automatically — if you ever spot another renamed field, it's handled the same way (a small list of candidate key names per row), not a special case.
+
+---
+
+## V2 Pipeline
+
+`padb_v2.py` is a lighter driver that generates all plot views from a single PADB Scatter (Type=80) CSV — no full `padb_run.py` orchestration required.
+
+```
+py padb_v2.py job_v2.json --csv path\to\Scatter.csv
+```
+
+V2 job JSON schema (all keys optional unless marked):
+
+| Key | Description |
+|---|---|
+| `title_prefix` | Stem used for all output filenames and plot titles |
+| `y_label` | Y-axis label for all plots |
+| `x_label` | X-axis title for `scatter`/`stat_summary`/`env_coverage`/`summary`/`distribution`/`boxplot`. Default: `"Frequency (MHz)"`. Set for non-MHz x-axes (e.g. `"Frequency Offset (Hz)"` for phase noise). |
+| `x_unit` | Short unit suffix used in hover text, stats table headers, CSV export headers, and filter-bar labels. Default: `"MHz"`. Set alongside `x_label` (e.g. `"Hz"`). |
+| `y_lim` | `[min, max]` Y-axis range |
+| `room_values` | List of Test Step strings treated as room temperature (default `["Room"]`) |
+| `proportion` | TI proportion (default `0.90`) |
+| `confidence` | TI confidence (default `0.90`) |
+| `views` | List of views to generate: `scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`. **Omit this key** to get automatic selection instead: Room-only data → `scatter` + `boxplot` + `reference` + `summary` + `stat_summary`; multi-temp data → all six (adds `distribution` + `env_coverage`). |
+| `room_only_full_views` | **No-op now (accepted for back-compat).** `summary` + `stat_summary` are Room-only defaults regardless; `distribution`/`env_coverage` are never added for Room-only (they need non-Room data). |
+| `results_dir` | Output folder relative to job file (default `v2_results`) |
+| `publish_to` | UNC or local path to copy results to. **Omit this key entirely** to publish to the default location `\\srsnas01...\SG6311A\padb-tools-results\<results_dir>` instead. Set explicitly to `""` / `false` / `null` to opt out of publishing altogether. |
+
+### V2 plot: `distribution`
+
+**What it shows:** Kernel density estimate (KDE) curves for delta-from-room temperature distributions per spur type. Supports absolute and delta view modes.
+
+**Interactive controls:**
+- **View mode** — Delta (relative to Room) or Absolute values
+- **Spur type filter** — individual checkboxes per spur type
+- **Temperature filter** — include/exclude individual non-room temperatures
+- **Serial / port filter** — exclude individual DUTs or ports
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — same mechanism as `scatter` (above); no "Group by" equivalent exists for this view.
+- **Frequency sliders** — restrict to a frequency sub-range
+- **Delta summary table** — per-spur-type statistics comparing temperature points
+- **Help (ⓘ) panel** — see **In-Page Help Panel** below.
+- **State persistence** — filter selections and frequency range are remembered across page loads
+
+**Axis labeling:** the frequency filter's `(MHz)` label follows `x_unit` (default `"MHz"`) — set alongside `x_label` for a non-MHz x-axis.
+
+---
+
+### V2 plot: `summary`
+
+**What it shows:** All-temperature summary. For each condition group: a min/max shaded band, a NP-TI band (both upper and lower — see TLL display below), and a mean line across all frequencies, covering every temperature in the dataset.
+
+**Interactive controls:**
+- **Condition filter dropdowns** — one per condition dimension found in the data (e.g. HarmonicNumber, Port, AlcState). Serial number columns are intentionally excluded — the summary pre-aggregates all DUTs per condition in Python, so no per-serial data reaches the browser.
+- **Group by** — collapse the full condition combination to a single dimension when per-unit grouping items fragment it into near-duplicates. Mean/min/max are exact when pooled; NP TI (`uttl`/`lttl`) and spec are worst-case across constituent conditions. See **Group By** above.
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band; respects the current Group-by selection. See **Segment-by Tab-Through** above.
+- **TLL display: Both / Upper only / Lower only** — which side(s) of the NP-TI (TTL) band to draw, and which columns the Results Table/CSV export show (see "TLL display and Data filter direction" below). Shown as a live radio selector *only* when the CSV has no `Upper_Limit`/`Lower_Limit` at all; if the CSV has a real limit, that decides the direction automatically and no selector appears.
+- **Data filter: All data / Passing only / Upper limit / Lower limit** — "Upper limit"/"Lower limit" are two independent radios (not one relabeled control), each shown only when relevant to the current TLL direction. "Upper limit" hides conditions whose max data exceeds a typed-in value; "Lower limit" hides conditions whose min data falls below it.
+- **Global filter (GF)** — cross-plot DUT exclusion set from the boxplot propagates here. Conditions whose pre-aggregated data includes GF-flagged DUTs are visually flagged. In Focus/Inspect mode only GF-flagged conditions are shown; in Exclude mode they are dimmed. GF matching strips both serial and temperature dimensions from the GF key before comparing against summary conditions (which aggregate both away). See **Global Filter (GF)** above.
+- **Show excluded** — dim grey min/max/mean bands for conditions excluded by the filter, rendered behind the active traces. Has no effect while Group by is active.
+- **Frequency sliders** — min/max zoom on the X axis.
+- **Log X toggle**
+- **Autoscale Y** (added 2026-08-31) — rescales only the Y axis to fit the currently-visible data, without disturbing the frequency (X) zoom.
+- **Help (ⓘ) panel** — see **In-Page Help Panel** above.
+- **Results Table** — per-condition × per-frequency stats table below the plot; columns follow the current TLL direction (TTL↑/Spec Hi/Margin↑ shown for Upper/Both, TTL↓/Spec Lo/Margin↓ for Lower/Both). CSV export mirrors the same column set.
+
+**TLL display and Data filter direction (added 2026-08-04):** a real spec limit in the CSV always decides which side of the tolerance band matters — no ambiguity, no selector. Only when the CSV has **no** limit at all (e.g. a guaranteed-minimum-power pod with `Limits_YLimit=None`) does the direction become a genuine choice; in that case job.json's `spec_direction` sets the *default* selection (or "Both" if unset/`"auto"`), and the live selector lets you override it without regenerating. See `spec_direction` under `stat_summary` above and the CLAUDE.md write-up for the full rule (identical logic is applied to `stat_boxplot` too — see below).
+
+**Note on serial filter:** Serial numbers are intentionally absent from the summary filter bar. The summary aggregates all DUT measurements per condition group in Python before generating the HTML — individual serial contributions are not separable in the browser. Use the boxplot or stat_summary for per-serial analysis.
+
+**Axis labeling:** x-axis title / hover text follow `x_label` / `x_unit` (defaults `"Frequency (MHz)"` / `"MHz"`), same as `accuracy_vs_freq`.
+
+---
+
+### V2 plot: `env_coverage`
+
+**What it shows:** Environmental coverage analysis. Per-frequency tolerance interval bands for the delta-from-room environmental contribution (UDE/LDE), Room measurement TI band, and Test Tolerance Upper/Lower (TTU/TTL) lines showing remaining spec margin after subtracting uncertainty. Y-axis scales to the UDE/LDE data range — TTU/TTL reference lines are rendered but do not drive the axis scale.
+
+**Interactive controls:**
+- **P / C sliders (Room and ΔEnv)** — tolerance interval probability and confidence for both the Room and delta-environmental components. k-factor table is embedded; all TI recompute live in the browser.
+- **M.U. input** — measurement uncertainty (dB) subtracted from spec limits to give TTU/TTL. `TTU = Spec_hi − UDE − MU`, `TTL = Spec_lo + LDE + MU`.
+- **Spec hi / Spec lo overrides** — enter explicit spec limits when the source CSV has no `Upper_Limit` / `Lower_Limit` values. Enables TTU/TTL lines that would otherwise be absent.
+- **n override inputs** — override the DUT count used for k-factor lookup (useful for extrapolating to a larger population).
+- **Temperature filter** — include/exclude individual non-room temperature conditions.
+- **Condition filter dropdowns** — one per varying condition dimension.
+- **Group by** — collapse the full condition combination to a single dimension. The only fully exact one of the three Group-by views: `computeStats()` recomputes UDE/LDE/TTU/TTL directly from pooled raw per-DUT data, so pooling introduces no approximation at all. See **Group By** above.
+- **Segment by: Spec / Limit / Uncertainty + Prev/Next** — jump the frequency range to each contiguous spec band. See **Segment-by Tab-Through** above.
+- **Serial / port filter** — exclude individual DUTs or ports; TI recomputes live. Room and ΔEnv TI bands are computed from the *same* serial/GF-filtered DUT population (port selection alone never shrinks either).
+- **Global filter (GF)** — cross-plot DUT exclusion reacts automatically, shrinking both the Room and ΔEnv bands together. See **Global Filter (GF)** above.
+- **Show excluded** — dim grey UDE/LDE bands for GF-excluded conditions. Has no effect while Group by is active.
+- **Frequency sliders** — min/max zoom on the X axis. A plot drag-zoom now syncs these automatically too (fixed 2026-08-30, same gap already closed in `stat_summary`/`stat_boxplot`) — previously a zoom only changed the viewport, so the Statistics Table kept showing every row regardless of what the plot was zoomed to. Double-click / "Reset axes" restores the full range.
+- **Log X toggle**
+- **Autoscale Y** (added 2026-08-31) — rescales only the Y axis to fit the currently-visible data, without disturbing the frequency (X) zoom.
+- **Help (ⓘ) panel** — see **In-Page Help Panel** above.
+- **Statistics table** — per-condition × per-frequency: UDE, LDE, TTU, TTL, Room μ, Room n, ΔEnv n. Rows where TTU/TTL exceeds the spec are highlighted red.
+- **CSV export**
+
+**Axis labeling:** x-axis title / hover / table / CSV header text follow `x_label` / `x_unit` (defaults `"Frequency (MHz)"` / `"MHz"`). Note `y_label` here is **not** configurable — `render_env_coverage` hardcodes `"ΔEnv (dB)"` regardless of job.json; the documented `env_coverage_y_label` key is not actually wired up.
+
+---
+
+## V2 Two-Step Workflow
+
+For V2 analyses, data extraction and plot generation are separate steps:
+
+**Step 1 — Extract from Oracle DB** (writes fresh CSVs to `padb_output_dir`):
+```
+py padb_run.py path\to\closein_env_v2_run_job.json
+```
+
+**Step 2 — Generate HTML plots** (reads existing CSVs, seconds to run):
+```
+py padb_v2.py path\to\closein_env_v2_job.json
+```
+
+The run job JSON (`*_run_job.json`) references the pod file and sets `padb_output_dir`. The plot job JSON (`*_v2_job.json`) references the CSV paths directly. The two are independent — re-run Step 2 alone whenever you tweak plot settings without needing fresh data.
+
+**V2 run job JSON keys:**
+
+| Key | Description |
+|---|---|
+| `pod` | Path to `.pod` file, relative to job file |
+| `padb_exe` | Full path to PADB-R.exe |
+| `results_dir` | Output folder for run logs and index |
+| `padb_timeout` | Seconds before PADB-R.exe is killed |
+| `subex` | `[Extract]` overrides — use `Device_MaxDate` to extend the date range |
+| `run_analytics` | `true` to run PADB analytics |
+| `padb_output_dir` | Directory where PADB writes CSV output files |
+| `padb_logs_dir` | Directory for run log files |
+| `unique_output_filenames` | `true` to force every analytic's `AnalyticName`/`OutputConfig_OutputFile` to a guaranteed-unique slug in the `_run.pod` copy — fixes pods where several analytics share one `OutputConfig_OutputFile` (a real case: 13 of 19 analytics in one pod). Not needed for well-behaved pods; `padb_make_v2_job.py` sets it automatically when it detects a collision. See `CLAUDE.md` → **`unique_output_filenames` job.json key**. |
+
+**V2 plot job JSON additional keys:**
+
+| Key | Description |
+|---|---|
+| `csv_path` | Full path to the main scatter CSV |
+| `env_coverage_csv` | Full path to an alternate CSV for the env_coverage view (e.g. carrier power data) |
+| `env_coverage_y_label` | Y-axis label override for env_coverage |
+| `env_coverage_y_lim` | `[min, max]` Y-axis range for env_coverage |
+| `env_coverage_freq_scale` | Frequency scale multiplier for env_coverage (e.g. `0.000001` converts Hz to MHz) |
+| `spec_direction` | `"lo"` / `"hi"` / `"both"` / `"none"` / `"auto"` (default). A real CSV limit always overrides this. Only sets the default TLL-display selection in `summary`/`stat_boxplot` (live selector, shown only when the CSV has no limit) and the display in `stat_summary` (manual entry fallback, no selector) — needed when the pod has no `Lower Limit`/`Upper Limit` data but the measurement is one-sided. See the 4 `MaxPower3_*_v2_job.json` jobs above. |
+| `force_output_csv` | `true` to force `OutputConfig_OutputCSV=1` on every Type=80 analytic in the `_run.pod` copy — fixes pods where a Scatter analytic has CSV output disabled at the pod level (a real case: a CW Closed Loop pod rendered native PNG/PDF but wrote zero CSVs). `padb_make_v2_job.py` sets it automatically when it detects this. See `CLAUDE.md` → **`force_output_csv` job.json key**. |
+
+---
+
+## Pre-Flight CSV Check (padb_csv_check.py)
+
+Run this **between Step 1 and Step 2** of the V2 workflow — after extraction, before `padb_v2.py` — to catch data issues that would otherwise surface as a confusing plot rather than a clear message:
+
+```
+py padb_csv_check.py path\to\Scatter.csv
+py padb_csv_check.py path\to\Scatter.csv --x-col "Amplitude (dBm)"
+```
+
+It calls the exact same CSV-loading function `padb_v2.py` itself uses (`padb_plots._load_scatter_for_stats()`), so its findings can never drift out of sync with what actually gets plotted. Checks, in order:
+
+1. **Load success** — 0 usable rows is reported as a FAIL with the same guidance the loader's own warning gives (set `--x-col`).
+2. **Orphaned numeric columns** — a numeric CSV column that isn't the detected x-axis/value/Limit column and isn't known metadata. Flagged with extra emphasis if it has *more* distinct values than the detected x-axis — the real case this catches: a pod with a genuine second swept dimension (e.g. Amplitude) sitting unused while Frequency got auto-detected as the x-axis.
+3. **Raw-vs-usable row count** — the drop rate from discarding rows with no frequency/value, so a large-looking drop isn't a surprise later.
+4. **Group cardinality** — warns above 100 distinct conditions (crowded legend — use Group by), and above 500 (real slowness — a 2,388-condition analytic took ~19 minutes to build boxplot/stat_summary).
+5. **Grouping-item presence** — Serial, Port, Upper/Lower Limit, Upper/Lower Spec/Uncertainty (needed for the Spec/Uncertainty Segment-by options — see **Segment-by Tab-Through** above).
+6. **Temperature coverage** — Room-only vs multi-temp, since that determines whether `distribution`/`env_coverage`/`summary` get built at all.
+
+Exit code is `1` on any WARN or FAIL, so it's usable as a pre-flight gate in a script, not just an interactive read.
+
+---
+
+## Generating V2 Job Files (padb_make_v2_job.py)
+
+For a new pod, `padb_make_v2_job.py` writes the entire Interactive-mode job set above automatically — the shared run job plus one plot job per Type=80 Scatter analytic:
+
+```
+py padb_make_v2_job.py MyPod.pod --module MyModule
+py padb_make_v2_job.py MyPod.pod --module MyModule --spec-direction lo
+py padb_make_v2_job.py MyPod.pod --module MyModule --min-date "2 months ago" --max-date today
+py padb_make_v2_job.py MyPod.pod --no-publish
+py padb_make_v2_job.py MyPod.pod --module MyModule --force
+```
+
+| Flag | Effect |
+|---|---|
+| `--module NAME` | Subfolder under `--publish-root` (default: this user's `PADB-Interactive` root, kept separate from the Simple-mode `PADB-Simple` tree). **Required unless `--no-publish`.** |
+| `--spec-direction` | Applied to every generated plot job. Default `"auto"` — override if you know a measurement is one-sided despite the pod having no configured spec limits (see `spec_direction` above). Remember a real CSV limit overrides this regardless of what's set here. |
+| `--min-date`, `--max-date` | Written into the run job's `subex` verbatim, including relative-date sentinels (`"today"`, `"2 months ago"`) — same mechanism as `padb_make_job.py`. Omit both to use the pod's own baked-in `[Extract]` date range. |
+| `--no-publish` | Omit `publish_to` from every generated plot job. |
+| `--force` | Overwrite existing job files (default: skip anything that already exists). |
+| `--padb-exe`, `--output-dir`, `--logs-dir`, `--publish-root` | Override this user's `padb_config` defaults for this generation only. |
+
+What it does and doesn't decide for you:
+
+- **`"views"` is always omitted** — every generated plot job relies on `padb_v2.py`'s own auto-view-selection (above) to pick the right set from the actual extracted data. You never need to tell it a pod has Environmental data or is Room-only; it finds out from the CSV.
+- **Every Type=80 analytic gets its own full plot job** — no attempt to pick one "primary" analytic and trim the rest to a lighter view set, unlike some hand-written job sets in this repo. Trim by hand afterward if a pod has several near-duplicate analytics and you don't want the full view set generated for all of them.
+- **`csv_path` is a prediction**, not a guarantee, until the run job has actually executed once — though on every pod tested so far (including one with severe `OutputConfig_OutputFile` collisions across 19 analytics) the prediction matched the real extracted filename exactly, with `unique_output_filenames` set automatically when needed (see above). If a predicted `csv_path` turns out wrong anyway, `padb_v2.py` now has a fallback (`_resolve_csv_path()`) that searches the same directory using the same name-normalization rules `find_csvs()` uses, before failing — see `CLAUDE.md` → **CSV auto-detection fallback**. **That fallback's fuzzy match is now token-based, not prefix-length-based** (fixed 2026-08-28) — the old fixed 15-character-prefix match could silently substitute a completely unrelated, much larger analytic's CSV in a multi-analytic pod (every scatter analytic shares the same short prefix), producing a mislabeled page with the wrong data already published before anyone noticed. Every word in the predicted stem must now appear in a candidate's own stem, so a candidate missing a distinguishing word (or carrying the wrong one) can never match — a genuinely absent CSV now fails cleanly with "CSV not found" instead of silently rendering the wrong dataset.
+- **Non-frequency x-axis detection no longer false-positives on "Frequency Offset"** (fixed 2026-08-28) — `_x_col_override()` used to treat any x-axis column containing "frequency" as the default carrier-frequency-in-MHz case and skip the `x_label`/`x_unit` override entirely. A real column named `"Frequency Offset (Hz)"` matches that substring but is a different quantity in a different unit — every generated job.json for a phase-noise pod silently mislabeled the axis "Frequency (MHz)"/"MHz", off by a factor of 1e6, with no `[WARN]` to catch it (the column itself still loaded fine). Now only skips the override when the label's own unit is genuinely missing or `"MHz"` *and* it isn't an "offset" quantity.
+- **`OutputConfig_OutputCSV=0` on a Type=80 analytic is auto-detected and fixed** — `force_output_csv: true` is set automatically on the run job when a Scatter analytic has CSV output disabled at the pod level, so PADB writes a CSV regardless (see `force_output_csv` above).
+- **`spec_direction` can't be inferred** for a one-sided measurement with no configured pod-level spec limits — set `--spec-direction` explicitly if you know better than `"auto"`, though even then it's just the default: a live selector still lets a viewer switch when the CSV has no limit.
+- **Generated file paths are checked against Windows' 260-character `MAX_PATH`** — both `padb_make_job.py` and `padb_make_v2_job.py` print a `WARNING:` with concrete next steps (shorten the module/pod name, move the pod to a shallower directory) if a generated job.json path reaches 220+ characters. See `CLAUDE.md` → **Path-length warning**.
+
+---
+
+## Converting Between Database Sites (padb_convert_site.py)
+
+Some tests run against more than one PADB database — e.g. the same test pulling production data from Santa Rosa vs. a remote site's own database (AMC2/Malaysia). Comparing a real pod from each site shows the only genuine differences live in `[Extract]`: `Device_Server` and `Device_Database`. Everything else — including every `AnalyticName` and `OutputConfig_OutputFile` — is identical, which means running both site variants writes identically-named CSVs. If either is ever pointed at a shared results/publish location, one silently overwrites the other.
+
+**Site registry** — `padb_sites.json`, next to the script:
+
+```json
+{
+  "SantaRosa": { "suffix": "", "Device_Server": "PADB ORACLE SR", "Device_Database": "V2_GALLEON" },
+  "AMC2":      { "suffix": "-AMC2", "Device_Server": "PADB ORACLE AMC2", "Device_Database": "GALLEON_1" }
+}
+```
+
+Exactly one site must have `"suffix": ""` — that's the *primary* site (Santa Rosa), whose analytic names are the canonical, unsuffixed ones every other site's names disambiguate against. Add a new site here — no code changes — when a third location comes online.
+
+**Converting a pod:**
+```
+py padb_convert_site.py --pod MyPod.pod --to AMC2
+```
+Detects the source site from the pod's live `Device_Server`/`Device_Database` (errors clearly, never guesses, if it matches no registered site). Writes a new pod — the source is never touched — swapping `Device_Server`/`Device_Database` to the target site's values, and appending that site's suffix to every `AnalyticName` (space-separated: `"Leveled Linear"` → `"Leveled Linear AMC2"`) and `OutputConfig_OutputFile` (underscore-separated: `"..._Linear"` → `"..._Linear_AMC2"`). Converting *to* the primary site strips a recognized suffix back off instead. Verified round-trip: Santa Rosa → AMC2 → Santa Rosa reproduces the original pod byte-for-byte (aside from `SaoFile`/`LastUpdated`).
+
+**`.sao` files cannot be converted.** They're a binary PADB format — version-tagged, with encoded DUT serial numbers specific to the DUTs run at that site. A Santa Rosa `.sao` is meaningless against AMC2 hardware. The tool points the converted pod's `SaoFile=` at the expected new filename and prints an explicit `WARNING:` that you still need to supply a real `.sao` extracted at the target site before the pod can actually run.
+
+**Converting a job.json:**
+```
+py padb_convert_site.py --job my_run_job.json --to AMC2
+```
+Repoints `"pod"`, and substitutes the old pod stem for the new one everywhere it appears — `results_dir`, `publish`/`publish_to`, `description`. Auto-generates the companion converted pod first if it doesn't already exist (prints when it does this). For a V2 run job (`"mode": "interactive"`), also prints a reminder to re-run `padb_make_v2_job.py` against the new pod for the plot-job side, rather than re-deriving a `csv_path` prediction a second time.
+
+`--force` overwrites an existing output file; without it, an existing converted pod/job is left alone and skipped — same convention as every other generator in this repo. `--list-sites` prints the registry. See `CLAUDE.md` → **`padb_convert_site.py`** for the full design rationale.
+
+---
+
+## Cross-Site Comparison (`compare_csv`)
+
+Compares data from two sites (e.g. Santa Rosa vs. a newly-stood-up site's early production units) without hand-merging CSVs — mainly useful once, when first standing up a new site, not an everyday tool. `Compare_Mode_Cheatsheet.md` has the one-page version of everything below.
+
+**job.json keys** (V2 plot job):
+```json
+"compare_csv": {"SR": "path/to/sr.csv", "AMC2": "path/to/amc2.csv"},
+"primary_site": "SR"
+```
+`compare_csv` overrides `csv_path`/`--csv` entirely (2+ site names required). `primary_site` defaults to the first key when omitted — it's the reference population for the Site Population Check (below, now in boxplot/`stat_summary`/`summary`); it has no effect on any other view.
+
+**X-axis unit auto-detect and cross-check** (added 2026-08-30). A real incident: a hand-authored compare job.json for a phase-noise pod silently defaulted to `"Frequency (MHz)"`/`"MHz"` while the real data was `"Frequency Offset (Hz)"` — a mislabeling by a factor of 1e6, since a compare job has no pod for `padb_make_v2_job.py`'s usual auto-detection to read from. Two fixes: the webapp's **Create & Run** now auto-sets `x_col`/`x_label`/`x_unit` in the generated job.json whenever Site A's real x-axis isn't the tool's own MHz-carrier-frequency default (skipped when already present, so a reused/hand-tuned job.json is untouched); and **Check compatibility** now also blocks (same severity as the existing dBc-vs-dBm mismatch check) when the two sites' x-axis column names don't match — `_build_compare_csv()` just concatenates raw values with no unit-aware scaling, so a genuine quantity/scale mismatch would otherwise silently compare non-equivalent values, not just display a wrong label.
+
+**Default publish location.** A `compare_csv` job with no explicit `publish_to` now defaults to a `PADB-Compare` share tree (added 2026-08-24) — a third top-level destination alongside `PADB-Simple` and `PADB-Interactive`. Only takes effect when `publish_to` is absent; existing hand-authored compare jobs that already opt out with `"publish_to": ""` are unaffected.
+
+**How it works:** each site's own scatter CSV is read as-is and tagged with `"  Site: <name>"` appended to its raw `Group` text, then concatenated into one merged CSV before the normal single-CSV pipeline runs completely unchanged. "Site" becomes a real, filterable/groupable condition dimension for free — every existing filter, Group-by, and spec-detection function already treats whatever's in `Group` text as a condition dimension. Deliberately tolerant of imperfect cross-site data: mismatched columns, one site missing spec limits entirely, or narrower temperature/port coverage than the other site are all expected, not errors.
+
+**Coverage-gap banner** — an always-visible note above the plot (not a togglable panel) listing what one site has that the other doesn't, e.g. `"AMC2 has no Temperature data for: 20°C, 30°C | AMC2 has no Port data for: RF2"`, so you can decide whether a gap means the newer site's test plan needs widening. Numeric values (specs/limits/uncertainties) are compared after normalizing for formatting differences between sites (e.g. `"-100.00"` vs `"-100"` for the same value never falsely shows as a gap).
+
+**"Site Population Check"** — for the current filter selection, buckets every primary-site point by `(temperature, frequency)`, builds a Tukey k×IQR fence from each bucket (the same fence and live k×IQR control already used for this view's own outlier detection), then tests every non-primary-site point at that same point against it. Points with fewer than 4 primary-site samples at that exact (temp, freq) are reported `n/a`, not silently dropped — a fence isn't meaningful below that. Available in **boxplot**, **`stat_summary`**, and **`summary`** (added 2026-08-19/21) — each compares whatever per-DUT granularity that view actually has: boxplot's raw per-point values per temperature, `stat_summary`'s per-DUT means, and `summary`'s per-DUT means blended *across all temperatures in a condition* (no per-temperature breakdown in that view). `summary`'s panel also has no Port column, since that view's per-DUT data doesn't carry one.
+
+Three tables, in order:
+1. **Per-DUT summary** — checked/outside counts, high/low direction split, max deviation distance, and how many of that DUT's outside points are *shared* with another DUT at the same (temp, freq). **Boxplot only** (added 2026-08-24): also includes **Dup runs** and **Genuinely repeated freqs** columns — see **Duplicate Test Runs** above; a DUT with a broader real dataset footprint (more distinct SpurTypes/conditions) can show a much higher "Checked" count without that meaning "ran the test N times," so these columns exist to tell the two apart rather than leaving it to be inferred from the raw total. Includes a **suggested triage tag** (not a verdict): "Likely station/systemic" (majority shared with other DUTs — the most consequential misread if missed, since it taints every DUT from that site) beats "Likely bad DUT" (toward-failing, not shared) beats "Isolated — worth a look" beats "Below population (benign)" (away from the side that would fail spec) beats "Ambiguous" (spec is two-sided or unconfigured, direction can't be inferred).
+2. **Frequency clusters** — every `(site, temp, freq)` where 2+ distinct DUTs are simultaneously outside, sorted by DUT count descending. Multiple independent DUTs failing at the identical spot is the strongest available signal for a station/fixture/calibration issue, not a bad DUT.
+3. **Per-point detail** — every checked point with its verdict, direction (high/low), and distance from the fence, for drill-down. **Boxplot only**: also includes an **"SR dup pts"** column (added 2026-08-24, changed to a per-DUT breakdown list on 2026-08-24 after a real report that a bare summed number was ambiguous) showing which of the primary site's own reference DUTs at that point have more than one raw row, e.g. `"US65080419×2"` — a DUT not listed contributed exactly one.
+
+**CSV export** (added 2026-08-24, all three views): "Export CSV (All)" / "Export CSV (Outside only)" buttons download the per-point detail table exactly as currently shown, with a metadata header (timestamp, primary site, frequency window). Per-DUT rollup and frequency-cluster summaries are not included in the export.
+
+Direction is reported relative to spec when determinable (reuses the live TLL-direction selector): for a one-sided spec, the side that moves toward failing is flagged differently from the side that can't fail spec but still indicates a real population difference (e.g. a site calibration offset). **A point OUTSIDE the fence but on the side that can't fail a one-sided spec now reads "OUTSIDE (benign)"** (added 2026-08-25, in the summary line, per-point table, and CSV export) — e.g. reading low against an upper-limit-only spec — distinct from a real compliance-relevant OUTSIDE on the side that matters.
+
+Two accuracy fixes to the fence/quality checks themselves (2026-08-25): duplicate-point detection now keys on (serial, condition, port) instead of serial alone, so a DUT legitimately appearing once under each of several pooled conditions is no longer misreported as a repeat measurement; and the "one bad unit" signal now reuses the same k×IQR outlier test as everywhere else in this codebase instead of a heuristic that rarely fired (IQR fences are deliberately robust to a single extreme point).
+
+All three tables respect the plot's current frequency window (`box_freq_lo`/`box_freq_hi`, the same range a drag-zoom already syncs to) — narrowing the view to investigate a specific cluster narrows the check to match, with a note in the summary line when the window is less than the full range.
+
+**Webapp UI**: a collapsed-by-default "Compare two datasets" panel (see **Web App** above) lets you pick two already-extracted CSVs, name each site, pick the primary, and Create & Run in one step — no hand-written job.json needed. It validates before running: a genuine measurement-unit mismatch (e.g. dBc vs. dBm) blocks by default with an explanation, with an explicit override to proceed anyway; softer gaps (missing temps/ports, non-overlapping frequency ranges) only warn, never block.
+
+**Scope**: `boxplot`, `stat_summary`, and `summary` have the Site Population Check. `env_coverage` and `distribution` render a `compare_csv`-merged dataset fine (Site is just a condition dimension to them too) but have no dedicated comparison feature yet.
+
+---
+
+## Performance: Decimation and Binary Encoding (added 2026-08-28/30)
+
+Two opt-in job.json keys for pods large enough to produce an impractically large HTML file — a genuinely dense continuous sweep (e.g. thousands of raw phase-noise offset points per DUT/condition) can otherwise embed a multi-hundred-MB page no browser renders well.
+
+**`scatter_decimate`** (`"auto"` | `"always"` | `"off"`, default `"auto"`) — reduces each independent (DUT × condition) series above `scatter_decimate_threshold` (default 2000 points) down to `scatter_decimate_target` (default 3000) via min/max-envelope bucketing along the x-axis: both the highest and lowest value in every bucket are always kept, so a narrow spike or glitch is never silently dropped, only the "boring middle" between the two extremes. Each series' true first/last x sample is also always kept, so the visible frequency range can never shrink. A visible on-page banner discloses when decimation actually ran (series affected, raw vs. embedded row count) — this is disclosed up front, not tucked into the Help panel, since a viewer comparing this page against the raw CSV or a native PADB render needs to know it isn't every raw point. Real result: an 8.5M-row DCFM CSV's scatter view dropped from ~400MB to 99MB.
+
+**`limits_file`** / **`limit_overrides`** -- editable limit overrides (x-range -> upper/lower, never touches the data); see **Editable limit overrides** above.
+
+**`binary_encode`** (`true`/`false`; **auto-enabled** when the CSV is ≥ 25 MB or ≥ 250k rows — `binary_encode_auto_mb`/`_rows` override, an explicit `true`/`false` always wins; plain `false` output is byte-identical when disabled) — encodes the numeric columns that dominate file size as raw float32 bytes (base64'd into a plain string) instead of JSON text, decoded client-side straight into a typed array with no per-value text parsing. Output is byte-identical to the unencoded page when the key is `false`.
+- **`scatter`**: encodes `Value` only. **`Frequency_MHz` is deliberately kept at full precision** — it is the band/segment axis, and float32 rounding of an edge frequency could move a point into a different named band than the box plot places it (a real per-band fail-count mismatch).
+- **`stat_boxplot`**: encodes `vals_detail` (the raw per-point array "Show points", exact duplicate-run detection, and the Site Population Check all need — it can't tolerate scatter's own decimation) — a real report that a phase-noise compare boxplot (625k raw points) took forever to load at 765MB motivated this. Columnar encoding (not array-of-objects) plus a (serial, port) lookup table cut a real 625k-point dataset from 225.4MB to 150.8MB (33.1%).
+**`parallel_views`** (`"auto"` default | `true` | `false`) and **`parallel_workers`** — render the views in separate worker processes instead of one after another. `auto` turns it on for big data only (≥ 200k usable rows, `parallel_views_auto_rows`) with two or more views, so small jobs behave exactly as before. Default workers = `min(3, cpus / 4)`; each worker holds its own copy of the dataset, so memory — not core count — is the limit. The pages are **byte-identical** to a serial build; only elapsed time changes (it becomes roughly the time of the slowest single view). The log shows `[view]`-prefixed lines per worker and a `finished in Ns` line per view; a view that fails in its worker gets the same placeholder page a serial failure does.
+
+**`compress_data`** (`"auto"` default | `true` | `false`, plus `compress_data_auto_mb`, default 20) — the very large data constants inside a page are deflated and decoded by a small inline routine when the page opens. Typical result: pages **5–16× smaller** (a 313 MB box plot became 41 MB; a scatter 83 MB → 10 MB), so they open much faster from the network share. The decoded data is identical, nothing about the plot changes, and it never fails a build. This shrinks the *file* — a very large page still needs the same memory once open, so for multi-million-row sweeps the scatter or the large-dataset viewer remains the right choice.
+
+**Why builds were slow, and the rule:** the time was Python loops (a per-frequency DataFrame filter, `iterrows`, and an O(n²) tolerance-interval search), not the file format. A real 965k-row, 7,662-offset phase-noise build with all five views went from **31m47s to 10m47s** with identical output (summary 8m → 87s; the box plot, now the slowest view, 14m → 10m). See `CLAUDE.md` → *Build-speed rule*.
+
+- Float32 has ~7 significant decimal digits — a deliberate precision reduction from JSON's full float64 text, comfortably enough for any dBm/dBc/Hz value in this codebase (e.g. `-76.7` round-trips as `-76.69999694824219`, expected float32 rounding, not a bug).
+
+---
+
+## Limitations and Known Issues
+
+- **No serial filter for de_summary.** The Environmental CSV is pre-aggregated across all DUTs; per-DUT data is not available in this file format.
+
+- **No serial filter for summary (V2).** The summary pre-aggregates all DUTs per condition group in Python before generating the HTML. Individual serial contributions are not separable in the browser. Use boxplot or stat_summary for per-serial analysis.
+
+- **stat_boxplot box statistics are from the CSV.** The box stats (Q1, Q2, Q3, whiskers) shown in the plot come from the per-frequency aggregates in the CSV. Serial filter and Y-range filter recompute from the raw per-measurement rows (`vals_detail`) but NP TI cannot be recalculated client-side; NP TI is set to null when a filter is active.
+
+- **Tolerance intervals need adequate n.** With n=15, P90/C90 is the maximum well-supported level. The tool flags an adequacy warning automatically.
+
+- **env_coverage TTU/TTL require spec overrides when CSV has no limits.** If `Upper_Limit` / `Lower_Limit` are null in the source CSV (common for carrier power data), TTU/TTL lines are absent until you enter values in the Spec hi / Spec lo override inputs.
+
+- **env_coverage Y-axis excludes TTU/TTL from ranging.** TTU/TTL may be in absolute spec units (e.g. carrier power dBm) while UDE/LDE are delta values (dB). The Y-axis is always scaled to UDE/LDE/Room data only; TTU/TTL are rendered as reference lines and may extend outside the visible range.
+
+- **PADB INT_MAX sentinel.** PADB uses ±2,147,483,647 for missing computation results (e.g., UDE (Max) when environmental computation fails). These are filtered to `null` automatically.
+
+- **`scatter`'s spec-line rendering auto-switches between a flat line and a per-frequency mask.** When more than 3 distinct rounded `Upper_Limit`/`Lower_Limit` values exist in the data, `accuracy_vs_freq` draws a proper step-line trace following the real (frequency, limit) pairs instead of a full-width dashed line per value — correct for a PADB `Limits_YLimit=Line` (frequency-varying) spec such as a phase-noise mask or a frequency-banded dBc spec. No job.json key controls this; it's auto-detected from the data every render. If your spec is genuinely constant but happens to produce >3 distinct rounded values (e.g. many small MU-adjustment differences), it will incorrectly render as a mask — check the actual spec structure if the scatter plot's spec line looks unexpectedly stepped.
+
+- **`env_coverage_y_label` is documented but not wired up.** `render_env_coverage` hardcodes `y_label="ΔEnv (dB)"` regardless of job.json. Fine for the intended use (ΔEnv is always the correct label for this view), but don't expect an override to take effect.
+
+- **PADB-R.exe requires a desktop session.** It is a WinForms application and will not run in a headless SSH session.
+
+- **Publish destination.** A simple directory copy. Requires write access to the network share. Large result sets (many large CSVs, many PDFs) may be slow.
+
+- **Site Population Check compares only exact-matching frequencies between sites.** It does not attempt to match frequencies that are close-but-not-identical between two sites' sweeps (a real, confirmed case exists: one site's sweep had 335 distinct frequency points vs. the other's 334, one of which didn't line up). A point at a site-unique frequency simply reports `n/a`, not a false match.
+
+- **`"mode": "interactive"` does not invoke V2 automatically.** It's a label plus a printed hint after extraction — you still run `padb_v2.py` yourself as a second command (see **V2 Two-Step Workflow**). V2's job.json schema is structurally different from `padb_run.py`'s (different `results_dir`/CSV semantics), and `generate_report()` takes one CSV per call while a `padb_run.py` job's analytics list can produce several — wiring this into one command was a deliberate scope cut, not a missed feature.

@@ -6,6 +6,30 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 
 ---
 
+## Repository layout
+
+```
+padb-tools/
+|-- README.md  CLAUDE.md  CHANGELOG.md   start here / developer context / history
+|-- padb_*.py  build_viewer.py  make_analysis_bundle.py
+|                                        the tools themselves: every entry point you run (see Files below)
+|-- padb_core/                           the v3.0 analysis core (conditions, filters, limits, DuckDB engine)
+|-- webapp/                              local Flask web UI
+|-- assets/                              branding (Keysight logo)
+|-- docs/                                user guides, cheatsheets, case studies, training material, the v3.0 plan
+|   `-- images/                          screenshots used by the tutorials
+|-- qa/                                  all QA / test code and its baseline  (py qa/qa_selfcheck.py)
+|-- examples/                            reference job files and the standard SG6311A band file
+|-- scripts/                             developer / ops helpers (help-PDF builder, Windows launch repair, memory backup)
+`-- archive/                             superseded code kept for reference (v1.0, one-off scripts, old job files)
+```
+
+**Why the tools stay at the top level:** they import each other by bare name, and `padb_scheduler.py` bakes the absolute path of `padb_run.py` into the Windows Task Scheduler entries it creates -- moving an entry point would silently break every existing overnight task.
+
+**Run the tests** from the repository root: `py qa/qa_selfcheck.py` (the umbrella gate) or any single suite, e.g. `py qa/qa_core.py`. The QA scripts locate the repository from their own file, so they work from any working directory. See `qa/QA_GUIDE.md`.
+
+---
+
 ## Files
 
 | File | Description |
@@ -20,11 +44,11 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_convert_site.py` | Converts a `.pod`/job.json between PADB database sites (e.g. Santa Rosa ↔ AMC2/Malaysia) — site registry in `padb_sites.json` — `py padb_convert_site.py --pod MyPod.pod --to AMC2` |
 | `padb_csv_check.py` | Pre-flight CSV sanity check — run between extraction and `padb_v2.py` to catch orphaned columns, inverted spec rows, and high Group cardinality before building plots — `py padb_csv_check.py path\to\Scatter.csv` |
 | `padb_viewer.py` | Local-server viewer for datasets too big to open as self-contained HTML — reads a compact `.parquet` sidecar (written automatically by `padb_v2.py` for compares / large data) and serves only the decimated slice being viewed — `py padb_viewer.py <results-folder>`. Filters (site / temperature / conditions / Passing-Failing), Group by, Show limits, hover with conditions, segment stepper, **live editors for the named bands and for limit overrides**, per-dataset remembered state, and band-view buttons that build the real interactive pages with your filters and overrides. `build_viewer.py` freezes it to `PADB_Viewer.exe`. Optional: the HTML plots have the same analysis; use the viewer only when they're too large to open. |
-| `PADBLOADER_WITH_PADB_TOOLS.md` | How to use PadbLoader (Oracle extraction + scheduling) together with padb-tools (analysis objects + plots): the Parquet hand-off, the web-app drop zone, the command-line paths, scheduled extractions, troubleshooting. |
-| `padb_analyze.py` | The analysis layer's stable entry point (v3.0): a padbloader parquet, a padb-tools parquet or a PADB CSV in -> plot jobs + interactive HTML views + index out, driven by a versioned request/result JSON -- no extraction, no scheduling. `make_analysis_bundle.py` packages exactly that closure (refuses if it reaches extraction code). See `PADB_Tools_Guide.md` -> **Using the analysis on its own**. |
+| `docs/PADBLOADER_WITH_PADB_TOOLS.md` | How to use PadbLoader (Oracle extraction + scheduling) together with padb-tools (analysis objects + plots): the Parquet hand-off, the web-app drop zone, the command-line paths, scheduled extractions, troubleshooting. |
+| `padb_analyze.py` | The analysis layer's stable entry point (v3.0): a padbloader parquet, a padb-tools parquet or a PADB CSV in -> plot jobs + interactive HTML views + index out, driven by a versioned request/result JSON -- no extraction, no scheduling. `make_analysis_bundle.py` packages exactly that closure (refuses if it reaches extraction code). See `docs/PADB_Tools_Guide.md` -> **Using the analysis on its own**. |
 | `padb_jobschema.py` | **Job schema** (v3.0): every job key described once (type, kind, constraints); `validate()` reports unknown / mistyped / out-of-range keys with did-you-mean, advisory only; also served to the web app (`/api/job-schema`). |
 | `padb_tiers.py` | **Size-tier planner** (v3.0): predicts each view's build time from rows / x-values / conditions before building and routes over-budget views away by default (`tiering`, `tier_budget_s`); reports the tier in `tier.json`, the index page and `padb_analyze`'s result. |
-| `padb_limits.py` | Editable **limit overrides** shared by the viewer and the `padb_v2` builds: x-range -> upper/lower replacing the data's own limits for the limit line, Passing/Failing and every view (never touches the data). Job keys `limits_file` / `limit_overrides` — see `PADB_Tools_Guide.md` → **Editable limit overrides**. |
+| `padb_limits.py` | Editable **limit overrides** shared by the viewer and the `padb_v2` builds: x-range -> upper/lower replacing the data's own limits for the limit line, Passing/Failing and every view (never touches the data). Job keys `limits_file` / `limit_overrides` — see `docs/PADB_Tools_Guide.md` → **Editable limit overrides**. |
 | `padb_loader_adapter.py` | Turns a **padbloader** parquet (direct-from-Oracle extract) into PADB-style data + plot jobs; also accepts padb-tools' own parquet in place — `py padb_loader_adapter.py <file.parquet> --list` / `--out <dir>`. Also drives the web app's parquet drop zone |
 | `padb_csv_to_parquet.py` | Streamed CSV → zstd parquet converter (80–140× smaller, same columns; `--verify` compares row count, columns and the first 1000 cells) — `py padb_csv_to_parquet.py <file.csv\|folder> --verify` |
 | `padb_make_bands.py` | Creates a named-band file for "Segment by: Named bands" — `--sg6311a` preset, `--band "Name:lo:hi"`, or auto from the data |
@@ -33,7 +57,7 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `padb_stats.py` | Statistical helpers (tolerance intervals, k-factors) |
 | `padb_batch.py` | Shared PADB-R.exe launcher used by every entry point (CLI and web app) — enforces cross-process exclusivity so two PADB-R.exe instances never run concurrently and stall each other |
 | `webapp/` | Local Flask web UI (`padb_web.py` + `static/`/`templates/`) — see **Web app** below |
-| `v1.0/` | Archive of the original V1.0 scripts |
+| `archive/v1.0/` | Archive of the original V1.0 scripts |
 
 ### Job files
 
@@ -41,14 +65,14 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 
 | File | Description |
 |---|---|
-| `amplitude_job.json` | Amplitude accuracy — all temps |
-| `harmonics_job.json` | Harmonics — all temps |
-| `harmonics_v2_job.json` | Harmonics — V2 pipeline |
-| `clockspurs_job.json` | Non-harmonic clock spurs |
-| `linespurs_job.json` | Line-related spurs |
-| `closein_job.json` | Close-in non-harmonics |
-| `absphase_noise_job.json` | Absolute phase noise |
-| `maxpower2_job.json` | Max power (superseded — known issues, see `CLAUDE.md`) |
+| `examples/jobs/amplitude_job.json` | Amplitude accuracy — all temps |
+| `examples/jobs/harmonics_job.json` | Harmonics — all temps |
+| `archive/job-archive/harmonics_v2_job.json` | Harmonics — V2 pipeline |
+| `examples/jobs/clockspurs_job.json` | Non-harmonic clock spurs |
+| `examples/jobs/linespurs_job.json` | Line-related spurs |
+| `examples/jobs/closein_job.json` | Close-in non-harmonics |
+| `examples/jobs/absphase_noise_job.json` | Absolute phase noise |
+| `archive/job-archive/maxpower2_job.json` | Max power (superseded — known issues, see `CLAUDE.md`) |
 | `maxpower3_run_job.json` | Max power V3 — extract step (V2 pipeline) |
 | `maxpower3_leveled_log_job.json` | Max power V3 — leveled, log X, scatter only |
 | `maxpower3_unleveled_log_job.json` | Max power V3 — unleveled, log X, scatter only |
@@ -57,8 +81,8 @@ All HTML output is fully self-contained (Plotly.js embedded inline). Engineers o
 | `vswr_v2_job.json` | VSWR (Output Attenuator Cal NA) — Room-only, V2 |
 | `return_loss_v2_job.json` | Return Loss (Output Attenuator Cal NA) — Room-only, V2 |
 | `phase_noise_de_v2_job.json` | Absolute Phase Noise EP6 EFC (DE) — multi-temp, V2, Frequency Offset (Hz) x-axis |
-| `v2_probe_job.json` | V2 probe run |
-| `job.json` | Scratch / template |
+| `archive/job-archive/v2_probe_job.json` | V2 probe run |
+| `archive/job-archive/job.json` | Scratch / template |
 
 ---
 
@@ -91,7 +115,7 @@ py padb_v2.py job.json --csv path\to\data.csv
 
 ### Plot from a padbloader (or padb-tools) parquet — no PADB-R.exe
 
-[padbloader](PADB_Tools_Guide.md#parquet-input-and-padbloader-v20) is a separate tool that extracts directly from Oracle and exports Parquet. padb-tools consumes that parquet (padbloader owns extraction and scheduling):
+[padbloader](docs/PADB_Tools_Guide.md#parquet-input-and-padbloader-v20) is a separate tool that extracts directly from Oracle and exports Parquet. padb-tools consumes that parquet (padbloader owns extraction and scheduling):
 
 ```
 py padb_loader_adapter.py data.parquet --list                    # algorithms, rows, units, limits, swept x
@@ -99,7 +123,7 @@ py padb_loader_adapter.py data.parquet --out C:\temp\data        # write a *_v2_
 py padb_v2.py C:\temp\data\<name>_v2_job.json                    # build the plots
 ```
 
-Or simply drop the `.parquet` on the web app's drop zone, tick the algorithms and the plots you want, and **Generate Plot Jobs** (optionally run them straight into the Running Jobs panel). A job can also point at a parquet directly with `"parquet_path"`. See `PADB_Tools_Guide.md` → **Parquet input and padbloader**.
+Or simply drop the `.parquet` on the web app's drop zone, tick the algorithms and the plots you want, and **Generate Plot Jobs** (optionally run them straight into the Running Jobs panel). A job can also point at a parquet directly with `"parquet_path"`. See `docs/PADB_Tools_Guide.md` → **Parquet input and padbloader**.
 
 ### Schedule overnight runs
 
@@ -117,7 +141,7 @@ py webapp\padb_web.py
 
 (Or double-click **`Start_web.bat`** in the tools root — same thing, no terminal needed.)
 
-Opens a local web UI (`http://127.0.0.1:5000`, local use only) for these workflows: drop a `.pod` file to auto-generate its job.json (or drop a **padbloader / padb-tools `.parquet`** to generate plot jobs from it — choose the algorithms and plots, optionally run them straight into Running Jobs), select one or more job files to execute, schedule/unschedule jobs in Windows Task Scheduler, convert a pod or job between database sites, and pair two already-extracted CSVs into a cross-site comparison job (collapsed by default — a corner case, mainly useful the first time a new site comes online). PADB-R.exe runs are strictly serialized through a background queue — this also holds across separate process launches (e.g. a webapp restart) via `padb_batch.py`'s cross-process exclusivity guard, not just within one queue's lifetime. Run jobs execute before plot jobs in a mixed selection, a queued or running job can be aborted, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. Publishing to the network share is opt-in per run — a **Publish to share after run** checkbox (default off) next to Run Selected; off passes `--no-publish`, on honors each job's own `publish_to` (job files are never rewritten). The jobs table filters by mode/kind/name (with **Select All Runnable** / **Select Filtered** for bulk selection) and shows each job's actual schedule cadence, when it last ran, and a link to its results gallery; a failed job shows a **View log** link. A "Show tooltip help" checkbox toggles hover tooltips across the whole page. See `CLAUDE.md` → **Web app**, **Cross-process PADB-R.exe exclusivity guard**, and **Cross-site comparison** for details. It can also **edit a job file in place** (Edit button on selected rows: JSON editor with diff review, automatic timestamped backups and a History / undo) and organise the jobs table with **named job lists** (e.g. Production / NPI) — see `PADB_Tools_Guide.md` → Web App.
+Opens a local web UI (`http://127.0.0.1:5000`, local use only) for these workflows: drop a `.pod` file to auto-generate its job.json (or drop a **padbloader / padb-tools `.parquet`** to generate plot jobs from it — choose the algorithms and plots, optionally run them straight into Running Jobs), select one or more job files to execute, schedule/unschedule jobs in Windows Task Scheduler, convert a pod or job between database sites, and pair two already-extracted CSVs into a cross-site comparison job (collapsed by default — a corner case, mainly useful the first time a new site comes online). PADB-R.exe runs are strictly serialized through a background queue — this also holds across separate process launches (e.g. a webapp restart) via `padb_batch.py`'s cross-process exclusivity guard, not just within one queue's lifetime. Run jobs execute before plot jobs in a mixed selection, a queued or running job can be aborted, and `"mode": "interactive"` run jobs auto-chain their sibling V2 plot jobs after extraction succeeds. Publishing to the network share is opt-in per run — a **Publish to share after run** checkbox (default off) next to Run Selected; off passes `--no-publish`, on honors each job's own `publish_to` (job files are never rewritten). The jobs table filters by mode/kind/name (with **Select All Runnable** / **Select Filtered** for bulk selection) and shows each job's actual schedule cadence, when it last ran, and a link to its results gallery; a failed job shows a **View log** link. A "Show tooltip help" checkbox toggles hover tooltips across the whole page. See `CLAUDE.md` → **Web app**, **Cross-process PADB-R.exe exclusivity guard**, and **Cross-site comparison** for details. It can also **edit a job file in place** (Edit button on selected rows: JSON editor with diff review, automatic timestamped backups and a History / undo) and organise the jobs table with **named job lists** (e.g. Production / NPI) — see `docs/PADB_Tools_Guide.md` → Web App.
 
 ---
 
@@ -184,7 +208,7 @@ All V2 views (plus the real `distribution`) also have an in-page ⓘ Help panel 
 }
 ```
 
-See `Quick_Start.md` for a full walkthrough and `PADB_Tools_Guide.md` for complete documentation.
+See `docs/Quick_Start.md` for a full walkthrough and `docs/PADB_Tools_Guide.md` for complete documentation.
 
 **`"mode"` key** (optional, default `"legacy"`): `"legacy"` runs the V1 plots above unchanged; `"simple"` produces a literal extract-and-post gallery of PADB-R's own native PNG/PDF renders instead (a modern `PADB::Simple` replacement — no custom plotting); `"interactive"` is a label documenting that this job feeds the V2 flow (`padb_v2.py`, run separately). See `CLAUDE.md` → **`mode` job.json key** for full details. Both `simple` and `interactive` also write `results_dir/HOW_TO_USE.txt`, a short guide to that tier's output.
 

@@ -179,7 +179,7 @@ def check_csv(csv_path: Path, x_col: str | None = None) -> None:
     #         not just _load_scatter_for_stats's simpler dedicated-column-
     #         only Serial detection, since most real pods embed Serial in
     #         Group text rather than a dedicated CSV column -- see
-    #         PADB_Analytic_Requirements.md section 7). -----------------------
+    #         docs/PADB_Analytic_Requirements.md section 7). -----------------------
     parsed = [pp._parse_group_kv(g) for g in group_vals] if group_vals else []
     all_keys: set[str] = set()
     for kv in parsed:

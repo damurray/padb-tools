@@ -1310,7 +1310,7 @@ def _compare_side_stats(csv_path: Path, x_col: str | None = None) -> dict:
         return {"rows": 0, "freq_min": None, "freq_max": None, "temps": [], "n_dut": None}
     # A dedicated CSV "Serial" column is rare in this codebase's real pods --
     # Serial Number is usually embedded in the Group text instead (see
-    # PADB_Analytic_Requirements.md's Group-string convention), which
+    # docs/PADB_Analytic_Requirements.md's Group-string convention), which
     # _load_scatter_for_stats doesn't parse on its own. Try the dedicated
     # column first, fall back to a lightweight Group-text regex; if neither
     # finds anything, report None (unknown) rather than a misleading 0.

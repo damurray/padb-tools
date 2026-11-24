@@ -4,7 +4,7 @@ Reads a padb-style parquet ONCE into a small derived table (`pts0`: x, y, site, 
 own limits, typed condition columns, source row id) and exposes the effective-limit view `pts`
 (see limits.py). Every query takes a FilterSpec and is answered in SQL, so only the decimated result
 reaches Python. Stage-1 equivalent of the v2 viewer's DuckDataSet, built from the core pieces
-(GroupIndex, FilterSpec, LimitTable) and proven equal to it by qa_core.py.
+(GroupIndex, FilterSpec, LimitTable) and proven equal to it by qa/qa_core.py.
 """
 from __future__ import annotations
 

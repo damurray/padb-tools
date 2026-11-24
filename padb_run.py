@@ -1190,8 +1190,8 @@ Downloads available per analytic (results/padb/):
   .txt   -- PADB-R's own tabular export of the plotted data
 
 Want the richer interactive tier instead?
-  Set "mode": "interactive" in this job.json and see PADB_Tools_Guide.md /
-  GETTING_STARTED.md for the two-command V2 workflow (filters, tolerance
+  Set "mode": "interactive" in this job.json and see docs/PADB_Tools_Guide.md /
+  docs/GETTING_STARTED.md for the two-command V2 workflow (filters, tolerance
   intervals, serial exclusion, global-flag exclusion, CSV export, etc.).
 """,
     "interactive": """\
@@ -1209,7 +1209,7 @@ in the run log. To build the actual interactive HTML views, run:
   py padb_v2.py <your_v2_job.json> --csv <path/to/data.csv>
 
 using one of the CSVs just extracted into results/padb/. See
-GETTING_STARTED.md ("Two pipelines") and PADB_Tools_Guide.md for the full
+docs/GETTING_STARTED.md ("Two pipelines") and docs/PADB_Tools_Guide.md for the full
 V2 job.json schema (views, room_values, publish_to, etc.) and what each
 interactive control does.
 
