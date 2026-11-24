@@ -92,6 +92,7 @@ import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent))
 import padb_bands
+import padb_brand
 from padb_names import filename_stem_variants
 
 # ---------------------------------------------------------------------------
@@ -2027,9 +2028,11 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
   li{{margin:6px 0;}}
   a{{color:#1f77b4;text-decoration:none;}} a:hover{{text-decoration:underline;}}
   a.pdf{{color:#b02a37;font-weight:600;}}
+  .brand{{margin:0 0 14px;padding-bottom:10px;border-bottom:3px solid #e8002d;}}
 </style>
 </head>
 <body>
+<div class="brand">{padb_brand.logo_img(30)}</div>
 <h1>{title}</h1>
 {"<p>"+desc+"</p>" if desc else ""}
 {lim_note_html}

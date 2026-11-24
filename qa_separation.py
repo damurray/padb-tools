@@ -62,6 +62,8 @@ def main() -> int:
     check("SEP-BUNDLE: it carries the entry point, the engine and the plot builders",
           {"padb_analyze", "padb_v2", "padb_plots", "padb_core", "padb_names"} <= {Path(f).parts[0].replace(".py", "") for f in info["files"]},
           sorted(info["files"]))
+    check("SEP-BUNDLE: the brand module travels with the bundle (the logo is part of the analysis output)",
+          "padb_brand.py" in info["files"], sorted(info["files"]))
     check("SEP-BUNDLE: the manifest hashes every file", all(len(h) == 64 for h in info["files"].values()))
     # teeth: the builder refuses when an analysis file imports extraction (synthetic tree)
     fake = tmp / "fake"
@@ -122,6 +124,9 @@ def main() -> int:
         check("SEP-RUN[%s]: an index.html and the requested views were produced" % label,
               bool(a.get("index")) and Path(a["index"]).is_file() and set(views) <= set(a.get("views", [])),
               (a.get("views"), a.get("index")))
+        idx_html = Path(a["index"]).read_text(encoding="utf-8") if a.get("index") and Path(a["index"]).is_file() else ""
+        check("SEP-RUN[%s]: the built index.html carries the embedded Keysight logo (self-contained data URI)" % label,
+              'class="kslogo"' in idx_html and "data:image/png;base64," in idx_html, label)
         check("SEP-RUN[%s]: the --result file == stdout (one JSON document; progress went to stderr)" % label,
               res_file.is_file() and json.loads(res_file.read_text()) == res and r.stderr.strip() != "", "")
 

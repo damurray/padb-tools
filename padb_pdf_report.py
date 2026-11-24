@@ -42,6 +42,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+import padb_brand as _brand
+
 # Playwright's sync driver leaves a greenlet event loop that, during interpreter
 # shutdown -- AFTER the report has already been written -- logs benign
 # "Task was destroyed but it is pending! / Future exception was never retrieved
@@ -238,6 +240,7 @@ def _cover_html(meta: dict[str, Any], view_labels: list[str],
     return f"""<!doctype html><html><head><meta charset="utf-8"><title>{title}</title>
 <style>
   body {{ font-family: Segoe UI, Arial, sans-serif; color:#222; margin:0; padding:48px 56px; }}
+  .brand {{ margin:0 0 22px; padding-bottom:12px; border-bottom:3px solid #e8002d; }}
   h1 {{ font-size:26px; margin:0 0 4px; }}
   h2 {{ font-size:15px; color:#555; font-weight:500; margin:0 0 28px; }}
   table {{ border-collapse:collapse; font-size:14px; margin-bottom:26px; }}
@@ -247,6 +250,7 @@ def _cover_html(meta: dict[str, Any], view_labels: list[str],
   p.note {{ font-size:12.5px; color:#555; line-height:1.6; background:#f7faff;
             border:1px solid #cdd6e6; border-radius:4px; padding:12px 14px; }}
 </style></head><body>
+  <div class="brand">{_brand.logo_img(36)}</div>
   <h1>{title}</h1>
   <h2>Comprehensive multi-view analysis report</h2>
   <div class="sect">Dataset (as collected)</div>

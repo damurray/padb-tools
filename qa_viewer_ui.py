@@ -189,6 +189,9 @@ def main() -> int:
             return int(t.split(" pts")[0].replace(",", "")) if " pts" in t else -1
 
         full = len(df)
+        hl = page.evaluate("(() => { const i=document.querySelector('header img.kslogo'); return i ? [i.naturalWidth, i.alt, Math.round(i.getBoundingClientRect().height)] : null; })()")
+        check("INV-BRAND: the Keysight logo renders in the viewer header (loaded image, alt text, ~28 px high)",
+              bool(hl) and hl[0] > 100 and hl[1] == "Keysight" and 20 <= hl[2] <= 40, hl)
         check("INV-COND baseline: all rows in view", total() == full, "%s vs %s" % (total(), full))
         a = dims["AlcState"]
         page.click("#condbtn")

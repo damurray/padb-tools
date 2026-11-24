@@ -4,6 +4,8 @@ Read automatically at session start. Captures non-obvious decisions, layout, and
 
 ---
 
+> **Branding (2026-11-23):** the Keysight logo lives in `padb_brand.py` (embedded data URI; `logo_img(height)`), used by the viewer header, results `index.html`, the web app header, the help PDFs and the PDF report cover -- not inside the interactive plot pages. The source art is `assets/keysight-logo.png`; keep it on a light background and do not recolour it.
+
 > **Branch note (2026-11-23):** `develop` = the v2.5 line (tag `v2.5`). **`v3.0`** is the redesign branch -- see `V3_PLAN.md` and `padb_core/` (stage 1: condition index, FilterSpec, limits-as-data view, DuckDB `Dataset`, proven against the v2 code by `qa_core.py`). Nothing in v2 depends on `padb_core` yet; consumers move onto it stage by stage.
 
 ## What this repo is

@@ -21,6 +21,7 @@ DOCS = [
     "GETTING_STARTED.md",
     "Interactive_Plots_User_Guide.md",
     "PADB_Tools_Guide.md",
+    "PADBLOADER_WITH_PADB_TOOLS.md",
     "CHANGELOG.md",
 ]
 
@@ -42,8 +43,12 @@ th{background:#f2f4f8;}
 blockquote{border-left:3px solid #0066cc;margin:0.8em 0;padding:2px 14px;color:#555;background:#f8f9fb;}
 hr{border:none;border-top:1px solid #ccc;margin:1.6em 0;}
 a{color:#0066cc;}
+.brand{margin:0 0 14px;padding-bottom:10px;border-bottom:3px solid #e8002d;}
 </style>
 """
+
+sys.path.insert(0, str(TOOLS_DIR))
+import padb_brand  # noqa: E402
 
 MD_EXTENSIONS = ["extra", "tables", "fenced_code", "toc", "sane_lists"]
 
@@ -53,7 +58,7 @@ def _md_to_html(md_name: str) -> tuple[str, Path]:
     body = markdown.markdown(md_path.read_text(encoding="utf-8"), extensions=MD_EXTENSIONS)
     title = md_name.replace(".md", "").replace("_", " ")
     html = (f"<!DOCTYPE html><html><head><meta charset='utf-8'><title>{title}</title>"
-            f"{CSS}</head><body>{body}</body></html>")
+            f"{CSS}</head><body><div class='brand'>{padb_brand.logo_img(34)}</div>{body}</body></html>")
     return html, md_path
 
 

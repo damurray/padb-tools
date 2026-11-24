@@ -143,6 +143,9 @@ def _wait_terminal(job_id: str, timeout: float = 5.0) -> str:
 def test_index():
     r = client.get("/")
     check("GET / renders the page", r.status_code == 200 and b"<" in r.data, f"status={r.status_code}")
+    check("GET / shows the Keysight logo in the header", b"keysight-logo.png" in r.data and b'alt="Keysight"' in r.data)
+    lg = client.get("/static/keysight-logo.png")
+    check("the logo asset is served as a PNG", lg.status_code == 200 and lg.data[:8] == b"\x89PNG\r\n\x1a\n", f"status={lg.status_code}")
 
 
 def test_sites():

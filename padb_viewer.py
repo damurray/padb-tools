@@ -43,6 +43,7 @@ import pandas as pd
 from flask import Flask, Response, jsonify, request
 
 import padb_bands
+import padb_brand
 import padb_limits
 from padb_core import Dataset as _CoreDataset, FilterSpec, lockio
 from padb_core.columns import detect_columns as _detect_columns, qi as _qi
@@ -470,7 +471,9 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
 <script src="/plotly.js"></script>
 <style>
  body{font:13px system-ui,Segoe UI,sans-serif;margin:0;background:#f7f7f8;color:#222}
- header{background:#0066cc;color:#fff;padding:8px 14px;font-weight:600}
+ header{background:#fff;color:#222;padding:6px 14px;font-weight:600;display:flex;align-items:center;gap:14px;border-bottom:3px solid #e8002d}
+ header .kslogo{height:28px;width:auto}
+ header .apptitle{font-size:15px;letter-spacing:.02em;color:#333}
  #bar{padding:8px 14px;background:#fff;border-bottom:1px solid #ddd;display:flex;
       gap:16px;align-items:center;flex-wrap:wrap}
  #bar label{font-size:12px}
@@ -490,7 +493,7 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
  .dd-badge{font-size:11px;background:#0066cc;color:#fff;border-radius:10px;padding:1px 6px;margin-right:2px;display:none}
  .dd-badge.active{display:inline}
 </style></head><body>
-<header>PADB Viewer <span id="ttl" style="font-weight:400"></span></header>
+<header><img class="kslogo" alt="Keysight" src="__LOGO__"><span class="apptitle">PADB Viewer</span> <span id="ttl" style="font-weight:400;color:#555;font-size:13px"></span></header>
 <div id="bar">
   <span><b id="xlbl">x</b> min <input type="number" id="flo" step="any"></span>
   <span>max <input type="number" id="fhi" step="any"></span>
@@ -1081,7 +1084,7 @@ boot();
 
 @app.route("/")
 def index():
-    return Response(_PAGE, mimetype="text/html")
+    return Response(_PAGE.replace("__LOGO__", padb_brand.LOGO_DATA_URI), mimetype="text/html")
 
 
 @app.route("/plotly.js")

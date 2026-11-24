@@ -369,6 +369,29 @@ def main() -> int:
     check("CORE-LOCK: an unknown passfail value is skipped and reported (filter stays 'all')",
           sp3.pf == "all" and [x[0] for x in sk3] == ["passfail"])
 
+    # ---------------- CORE-BRAND: the embedded Keysight logo is valid and light ----------------
+    import base64
+    import io
+    import padb_brand
+    from PIL import Image
+    raw = base64.b64decode(padb_brand.LOGO_PNG_B64)
+    try:
+        im = Image.open(io.BytesIO(raw))
+        im.load()
+    except Exception:  # noqa: BLE001 -- corrupt artwork must be a clean FAIL, not a crash
+        im = Image.new("RGBA", (1, 1))
+    check("CORE-BRAND: the embedded logo is a valid RGBA PNG with the declared size and the logo's aspect ratio",
+          raw[:8] == b"\x89PNG\r\n\x1a\n" and im.mode == "RGBA" and im.size == (padb_brand.LOGO_WIDTH, padb_brand.LOGO_HEIGHT)
+          and 5.0 < padb_brand.LOGO_ASPECT < 5.7, (im.mode, im.size))
+    check("CORE-BRAND: it stays light (< 40 KB) so every generated page remains small", len(raw) < 40000, len(raw))
+    tag = padb_brand.logo_img(30)
+    check("CORE-BRAND: logo_img() gives a self-contained <img> (data URI, alt text, requested height)",
+          tag.startswith("<img") and 'alt="Keysight"' in tag and "data:image/png;base64," in tag and "height:30px" in tag
+          and "http" not in tag.split("base64,")[0])
+    check("CORE-BRAND: the logo has transparency + both brand colours (red mark, dark wordmark), i.e. not a flat placeholder",
+          im.getchannel("A").getextrema()[0] == 0 and any(r > 200 and g < 60 for r, g, b, a in im.getdata() if a > 250)
+          and any(r < 40 and g < 40 and b < 40 for r, g, b, a in im.getdata() if a > 250))
+
     # ---------------- CORE-BOUNDARY: analysis must not depend on extraction / scheduling ----------------
     import ast
 
@@ -378,7 +401,7 @@ def main() -> int:
                 + ["padb_v2.py", "padb_plots.py", "padb_refstats.py", "padb_pdf_report.py", "padb_compress.py",
                    "padb_bands.py", "padb_limits.py", "padb_loader_adapter.py", "padb_viewer.py",
                    "padb_csv_to_parquet.py", "padb_make_bands.py", "padb_csv_check.py",
-                   "padb_names.py", "padb_stats.py", "padb_analyze.py", "make_analysis_bundle.py"])
+                   "padb_names.py", "padb_stats.py", "padb_analyze.py", "make_analysis_bundle.py", "padb_brand.py"])
 
     def imports_of(src):
         found = set()

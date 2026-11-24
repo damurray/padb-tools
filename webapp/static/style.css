@@ -13,6 +13,8 @@ body {
   box-sizing: border-box;
 }
 
+header { border-bottom: 3px solid #e8002d; padding-bottom: 0.6rem; }
+header .brand { height: 34px; width: auto; display: block; margin: 0.2rem 0 0.5rem; }
 header h1 { margin-bottom: 0; }
 .subtitle { color: #666; margin-top: 0.2rem; }
 

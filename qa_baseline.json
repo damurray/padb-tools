@@ -13,7 +13,7 @@
       "failed": 0
     },
     "qa_viewer_ui": {
-      "passed": 109,
+      "passed": 110,
       "failed": 0
     },
     "qa_filter_interchange": {
@@ -21,11 +21,11 @@
       "failed": 0
     },
     "qa_separation": {
-      "passed": 29,
+      "passed": 33,
       "failed": 0
     },
     "qa_core": {
-      "passed": 57,
+      "passed": 61,
       "failed": 0
     },
     "qa_limits": {
@@ -45,7 +45,7 @@
       "failed": 0
     },
     "qa_webapp": {
-      "passed": 111,
+      "passed": 113,
       "failed": 0
     },
     "qa_regressions": {
