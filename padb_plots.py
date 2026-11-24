@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import html
 import json
+import padb_limits as _padb_limits
 import math
 import re
 from pathlib import Path
@@ -3296,6 +3297,7 @@ def accuracy_vs_freq(csv_path: Path, cfg: dict, output_html: Path) -> None:
     """
     df = _load_scatter_csv(csv_path)
     df = _parse_group_fields(df)
+    _padb_limits.apply_from_cfg(df, cfg)     # the temp-CSV round trip dropped the override on Spec/Unc (Group text)
     title = cfg.get("title", output_html.stem)
     html = _build_av_freq_html(df, cfg, title)
     output_html.parent.mkdir(parents=True, exist_ok=True)
@@ -4514,7 +4516,7 @@ _LIMOV_JS = r"""
    so loudly on the shared bar instead of silently showing the data's own verdicts (cross-view rule). */
 var PADB_LIMOV_KEY=(typeof GF_KEY!=='undefined'&&GF_KEY&&GF_KEY.indexOf('padb_v2_excluded_')===0)
   ? ('padb_v2_limits_'+GF_KEY.slice(17)) : null;
-var _limovState={registered:false, ranges:0, rows:0};
+var _limovState={registered:false, ranges:0, rows:0, what:'points'};
 var _LIMOV_UNIT_HZ={hz:1,khz:1e3,mhz:1e6,ghz:1e9};
 function PADB_limovUnitScale(fromUnit,toUnit){
   var f=String(fromUnit||'').trim().toLowerCase(), t=String(toUnit||'').trim().toLowerCase();
@@ -4593,6 +4595,31 @@ function PADB_limovPrepass(rows,xKey){
   _limovState.ranges=lst.length; _limovState.rows=n;
   return n;
 }
+/* Patch ONE per-DUT / per-row limit record ({upper_limit, lower_limit, spec_hi, spec_lo, unc_hi, unc_lo}) the
+   way padb_limits.apply_df patches a frame row: Upper_Limit AND Spec_Hi (the classifier prefers Spec) and the
+   lower pair, uncertainty zeroed on the overridden side. Returns whether anything changed. */
+function PADB_limovPatchDut(d,ov){
+  var hit=false;
+  if(ov.hi!==undefined){ d.upper_limit=ov.hi; d.spec_hi=ov.hi; d.unc_hi=0; hit=true; }
+  if(ov.lo!==undefined){ d.lower_limit=ov.lo; d.spec_lo=ov.lo; d.unc_lo=0; hit=true; }
+  return hit;
+}
+/* stat_summary: each STAT_DATA[*].freq_stats[*] carries the per-frequency spec (spec_up / spec_lo -- what
+   computeFreqResult derives the tolerance limits and margins from) AND its DUTs' own limit records. */
+function PADB_limovPrepassStat(){
+  _limovState.registered=true; _limovState.what='frequency points';
+  var lst=PADB_limovGet(); if(!lst||typeof STAT_DATA==='undefined') return 0;
+  var n=0;
+  STAT_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(fs){
+    var ov=PADB_limovFor(+fs.freq,lst), hit=false;
+    if(ov.hi!==undefined){ fs.spec_up=ov.hi; hit=true; }
+    if(ov.lo!==undefined){ fs.spec_lo=ov.lo; hit=true; }
+    (fs.dut_vals||[]).forEach(function(d){ PADB_limovPatchDut(d,ov); });
+    (fs.outlier_detail||[]).forEach(function(d){ if(d&&typeof d==='object') PADB_limovPatchDut(d,ov); });
+    if(hit) n++;
+  }); });
+  _limovState.ranges=lst.length; _limovState.rows=n; return n;
+}
 function PADB_limovImportFile(file){
   if(!file) return;
   var r=new FileReader();
@@ -4624,7 +4651,7 @@ function PADB_limovBarHtml(btn){
   }
   var head='<span style="font-weight:700;color:#7a3e00">&#128207; Limit overrides</span> ';
   var state=reg
-    ? '<span style="color:#2a7a2a" title="Applied to the limit line and to every Passing/Failing verdict in this view">applied: '+_limovState.ranges+' range'+(_limovState.ranges===1?'':'s')+', '+_limovState.rows+' point'+(_limovState.rows===1?'':'s')+'</span>'
+    ? '<span style="color:#2a7a2a" title="Applied to the limit line and to every Passing/Failing verdict in this view">applied: '+_limovState.ranges+' range'+(_limovState.ranges===1?'':'s')+', '+_limovState.rows+' '+_limovState.what+'</span>'
     : '<span style="color:#b26a00;font-weight:700" title="This test has limit overrides saved, but this view does not apply them yet: its limits and verdicts are STILL the data\'s own. Rebuild with limits_file, or use the scatter view / the viewer.">saved for this test, NOT applied in this view</span>';
   return '<div style="margin-top:6px;border-top:1px solid #e2e8f0;padding-top:5px">'+head+state+
     '<div style="margin-top:3px">'+(reg?imp:'')+
@@ -11019,6 +11046,7 @@ def _build_stat_summary_html(
         + "<script>\n"
         + constants + "\n"
         + _COMMON_JS + "\n"
+        + "PADB_limovPrepassStat();\n"
         + _AUTO_FILTER_SHARED_JS + "\n"
         + _STAT_SUMMARY_JS
         + "</script>\n</body>\n</html>"
@@ -13705,6 +13733,7 @@ def stat_boxplot(csv_path: Path, cfg: dict, output_html: Path, interactive: bool
         return
     df = _load_scatter_for_stats(csv_path)
     df = _parse_group_fields(df)
+    _padb_limits.apply_from_cfg(df, cfg)     # the temp-CSV round trip dropped the override on Spec/Unc (Group text)
     title = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
     y_lim = cfg.get("y_lim")
@@ -18784,6 +18813,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
     """Fully interactive box plot — condition/temperature/Y-range filter controls."""
     df = _load_scatter_for_stats(csv_path)
     df = _parse_group_fields(df)
+    _padb_limits.apply_from_cfg(df, cfg)     # the temp-CSV round trip dropped the override on Spec/Unc (Group text)
     title = cfg.get("title", output_html.stem)
     y_label = cfg.get("y_label", df["_val_col_name"].iloc[0] if len(df) else "Value")
     x_unit = cfg.get("x_unit", "MHz")

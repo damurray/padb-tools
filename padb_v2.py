@@ -1492,32 +1492,19 @@ def _render_views_parallel(views, cfg, csv_path, output_dir, prefix, n_workers, 
 
 
 def _apply_limit_overrides(df, cfg: dict) -> int:
-    """Job keys `limit_overrides` (inline list, already in the data's x unit -- what the viewer
-    passes) or `limits_file` (path, relative to the job file; its x-range is converted to the
-    data unit). Replaces the data's Upper/Lower Limit for rows in each x-range BEFORE any view
-    is built, so every view's pass/fail, spec line and tables agree. See padb_limits.py for the
-    exact semantics. Never fails the build; records a note for the index page."""
+    """Job keys `limit_overrides` (inline list, already in the data's x unit -- what the viewer passes) or
+    `limits_file` (path, relative to the job file; its x-range is converted to the data unit). Replaces the
+    data's Upper/Lower Limit for rows in each x-range BEFORE any view is built, so every view's pass/fail,
+    spec line and tables agree. See padb_limits.py for the exact semantics. Never fails the build; records a
+    note for the index page. (The scatter and boxplot views reload their data from a temporary CSV that
+    carries only Upper/Lower Limit, so they re-apply the same override after the reload --
+    padb_limits.apply_from_cfg -- otherwise a spec carried in the Group text would silently win.)"""
     try:
         import padb_limits
-        lims, src = None, ""
-        if cfg.get("limit_overrides"):
-            lims, err = padb_limits.validate(cfg["limit_overrides"])
-            src = "inline overrides"
-            if err:
-                print(f"  [WARN] limit_overrides ignored: {err}", flush=True)
-                return 0
-        elif cfg.get("limits_file"):
-            lf = Path(cfg["limits_file"])
-            if not lf.is_absolute():
-                lf = Path(cfg.get("_job_dir") or ".") / lf
-            lims, err = padb_limits.load_file(lf, cfg.get("x_unit", "MHz"))
-            src = lf.name
-            if err:
-                print(f"  [WARN] limits_file ignored: {err}", flush=True)
-                return 0
-            if not lf.is_file():
-                print(f"  [WARN] limits_file not found: {lf}", flush=True)
-                return 0
+        lims, src, err = padb_limits.resolve_from_cfg(cfg)
+        if err:
+            print(f"  [WARN] limit overrides ignored: {err}", flush=True)
+            return 0
         if not lims:
             return 0
         n = padb_limits.apply_df(df, lims, "Frequency_MHz")
