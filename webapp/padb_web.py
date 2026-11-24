@@ -39,6 +39,7 @@ import tempfile
 import threading
 import time
 import webbrowser
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -66,6 +67,73 @@ DATA_DIR = Path(DEFAULTS["data_dir"])
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 app = Flask(__name__)
+
+# ----------------------------------------------------------------------------------------------------------------
+# Loopback guard. The app has no login and ~20 state-changing POST routes (run / delete / schedule a job, open
+# Explorer or the viewer, kill processes, change the default share). Binding to 127.0.0.1 does NOT keep a web page
+# in the user's own browser out: (1) CSRF -- a cross-site <form enctype=text/plain> or fetch(mode:'no-cors') is a
+# "simple request" (no preflight) and these routes read the body with get_json(force=True), so the action runs;
+# (2) DNS rebinding -- a page whose name is re-pointed at 127.0.0.1 gets an answer to a request whose Host header
+# is its own name, same-origin to the browser, so it can READ everything. Both were reproduced in a real browser
+# (qa/qa_websecurity.py) before this guard existed.
+#   * the Host header must be a loopback name (any port);
+#   * a state-changing request must come from this app's own origin: an Origin header equal to the request's own
+#     scheme+host (so `null`, another site, another local app on another port and https are all refused), or --
+#     with no Origin -- a Sec-Fetch-Site of same-origin / none. Clients that send neither (curl, the Flask test
+#     client, scripts) are not browsers and are not the threat, so they are unaffected.
+# ----------------------------------------------------------------------------------------------------------------
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+_SAFE_METHODS = ("GET", "HEAD", "OPTIONS")
+
+
+def _host_name(netloc: str) -> str:
+    """'localhost:5000' -> 'localhost'; '[::1]:5000' -> '[::1]'; '127.0.0.1@evil.example' stays as is (refused)."""
+    v = (netloc or "").strip().lower()
+    if v.startswith("["):
+        end = v.find("]")
+        return v[: end + 1] if end != -1 else v
+    return v.rsplit(":", 1)[0] if v.count(":") == 1 else v
+
+
+def _is_loopback_netloc(netloc: str) -> bool:
+    return _host_name(netloc) in _LOOPBACK_HOSTS and "@" not in (netloc or "")
+
+
+def _guard_refusal(why: str):
+    app.logger.warning("refused request from %s %s: %s", request.method, request.path, why)
+    return jsonify(error="Refused: this local app only accepts requests from its own page on this machine (%s)." % why), 403
+
+
+@app.before_request
+def _loopback_guard():
+    if not _is_loopback_netloc(request.headers.get("Host", "")):
+        return _guard_refusal("Host header is not loopback")
+    if request.method in _SAFE_METHODS:
+        return None
+    origin = request.headers.get("Origin")
+    if origin is not None:
+        o = urlsplit(origin)
+        if (o.scheme != "http" or not _is_loopback_netloc(o.netloc)
+                or o.netloc.lower() != request.headers.get("Host", "").strip().lower()):
+            return _guard_refusal("cross-origin request")
+    else:
+        site = request.headers.get("Sec-Fetch-Site")
+        if site is not None and site.strip().lower() not in ("same-origin", "none"):
+            return _guard_refusal("cross-site request")
+    return None
+
+# ---------------------------------------------------------------------------
+# Result file serving -- browsers block navigating a rendered http:// page to
+# a file:// link (silently, with no console error), so result HTML is served
+# through the app itself instead. Each result directory we've ever pointed at
+# gets a short token; /results/<token>/<filename> serves any file within that
+# one directory (send_from_directory blocks path traversal outside it), and
+# because the URL path itself mirrors the directory structure, the generated
+# gallery's own relative links between sibling plot HTML files resolve
+# correctly in the browser without any rewriting.
+# ---------------------------------------------------------------------------
+_RESULT_DIRS: dict[str, str] = {}
+_result_dirs_lock = threading.Lock()
 
 # ---------------------------------------------------------------------------
 # Result file serving -- browsers block navigating a rendered http:// page to

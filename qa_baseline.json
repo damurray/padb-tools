@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 32,
+      "passed": 34,
       "failed": 0
     },
     "qa_padb": {
@@ -66,6 +66,10 @@
     },
     "qa_limits_groupspec": {
       "passed": 4,
+      "failed": 0
+    },
+    "qa_websecurity": {
+      "passed": 27,
       "failed": 0
     }
   }
