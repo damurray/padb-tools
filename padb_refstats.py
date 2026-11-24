@@ -33,7 +33,7 @@ import pandas as pd
 from padb_plots import (
     _get_plotlyjs, _checkbox_panel, _detect_group_cols, _short_x_label,
     _floor_dec, _ceil_dec, _freq_label_map, _AUTO_FILTER_SHARED_JS,
-    _BUSY_OVERLAY_HTML, _LOCK_JS, _FILTER_CHIP_JS, _FILTER_CHIP_HTML,
+    _BUSY_OVERLAY_HTML, _LOCK_JS, _FILTER_CHIP_JS, _FILTER_CHIP_HTML, _LIMOV_JS,
 )
 
 # Keyword match for the pod's pass/fail status field among the group dims (the JS
@@ -268,7 +268,7 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + _BUSY_OVERLAY_HTML
         + _FILTER_CHIP_HTML
         + body
-        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_LOCK_JS}\n{_FILTER_CHIP_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
+        + f"<script>\n{constants}\n{_AUTO_FILTER_SHARED_JS}\n{_LOCK_JS}\n{_LIMOV_JS}\nPADB_limovPrepassRef();\n{_FILTER_CHIP_JS}\n{_REF_STATS_JS}</script>\n</body>\n</html>\n"
     )
 
 

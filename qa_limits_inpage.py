@@ -14,7 +14,7 @@ same override at every x.
               rows carry the override (Upper_Limit AND Spec_Hi, uncertainty 0); a kHz file is converted;
               Export round-trips; Clear restores the data's own verdicts; a bare list imports; a bad file is
               rejected with the SAME message and stores nothing
-  LIMP-NOTICE a view that does not apply overrides (boxplot) says so on the bar instead of silently
+  LIMP-NOTICE a view that does not apply overrides (an unregistered boxplot copy) says so on the bar instead of silently
               showing the data's limits; Clear works from there
 
 Honest-exits 3 without Playwright/Chromium.     py qa_limits_inpage.py
@@ -264,7 +264,13 @@ def main() -> int:
         # ---------------- LIMP-NOTICE ----------------
         pg2 = browser.new_page()
         pg2.on("dialog", lambda d: d.dismiss())
-        pg2.goto(boxplot.as_uri())
+        # every swept-x view applies overrides now (4b), so make an UNREGISTERED view: a boxplot page copy
+        # with its pre-pass call removed (what a view without a pre-pass looks like to the shared bar)
+        _h = boxplot.read_text(encoding="utf-8")
+        assert _h.count("PADB_limovPrepassBox();") == 1
+        _unreg = boxplot.with_name("unregistered_" + boxplot.name)
+        _unreg.write_text(_h.replace("PADB_limovPrepassBox();", "/*no pre-pass*/"), encoding="utf-8")
+        pg2.goto(_unreg.as_uri())
         pg2.wait_for_selector("#plot .main-svg", timeout=120000)
         pg2.wait_for_timeout(800)
         pg2.evaluate("(l) => PADB_limovSet(l)", PL.validate([{"lo": 0, "hi": 400, "upper": -90}])[0])

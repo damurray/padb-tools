@@ -41,7 +41,40 @@ SNAPSHOTS = {
           var r=computeFreqResult(fs,p);
           return {freq:fs.freq, spec_up:fs.spec_up, spec_lo:fs.spec_lo, result:r,
                   duts:(fs.dut_vals||[]).map(function(d){ return [d.s,d.v,d.upper_limit,d.lower_limit,d.spec_hi,d.spec_lo,d.unc_hi,d.unc_lo]; })}; })}; })}; }""",
+    # summary: DATA[*] with per-frequency spec lists, scalar spec, DUT limit matrices (all-temp and per-temp), the page
+    # constants, and the view's own verdict functions evaluated for every (frequency, DUT) cell
+    "summary": r"""() => {
+      var p=getSumParams();
+      return {consts:{HI_SPEC:HI_SPEC, LO_SPEC:LO_SPEC, SPEC_DIRECTION:SPEC_DIRECTION},
+        conds: DATA.map(function(cd){ return {c:cd.condition, spec_hi:cd.spec_hi, spec_lo:cd.spec_lo,
+          hi_list:cd.spec_hi_list, lo_list:cd.spec_lo_list, spec:cd.dut_spec_vals, specT:cd.dut_spec_vals_by_temp,
+          f:cd.freqs.map(function(x,fi){ return {x:x,
+            lim:cd.dut_info.map(function(_,di){ return _sumDutLimit(cd,fi,di,null,null); }),
+            pt:cd.dut_info.map(function(_,di){ return _sumPtFail(cd,fi,di,p); }),
+            fa:_sumFailAt(cd,fi,p)}; })}; })}; }""",
+    # scatter: every row's limit record, the page-level spec constants, and the Failing count the view computes
+    "scatter": r"""() => {
+      var fr=document.querySelector('input[name="scat_flt"][value="failing"]'); if(fr) fr.checked=true; update();
+      var nfail=applyFilters(DATA).length;
+      var al=document.querySelector('input[name="scat_flt"][value="all"]'); if(al) al.checked=true; update();
+      return {consts:{HI_SPEC:HI_SPEC, LO_SPEC:LO_SPEC}, failing:nfail,
+        rows: DATA.map(function(r){ return [r.Frequency_MHz,r.Value,r.Upper_Limit,r.Lower_Limit,r.Spec_Hi,r.Spec_Lo,r.Unc_Hi,r.Unc_Lo]; })}; }""",
+    # boxplot: BOX_STATS (stat_summary's shape) + the raw per-point records + the view's verdict per point
+    "boxplot": r"""() => {
+      return {consts:{HI_SPEC:HI_SPEC, LO_SPEC:LO_SPEC, SPEC_DIRECTION:SPEC_DIRECTION},
+        stats: BOX_STATS.map(function(cd){ return {c:cd.condition, f:cd.freq_stats.map(function(fs){
+          return {freq:fs.freq, spec_up:fs.spec_up, spec_lo:fs.spec_lo,
+                  duts:(fs.dut_vals||[]).map(function(d){ return [d.s,d.v,d.upper_limit,d.lower_limit,d.spec_hi,d.spec_lo,d.unc_hi,d.unc_lo]; })}; })}; }),
+        pts: BOX_DATA.map(function(cd){ return {c:cd.condition, f:cd.freq_stats.map(function(fs){
+          return {freq:fs.freq, d:(fs.vals_detail||[]).map(function(d){
+            var vd; try{ vd=_boxVerdict(cd.condition,d,null); }catch(e){ vd='ERR'; }
+            return [d.s,d.v,d.upper_limit,d.lower_limit,d.spec_hi,d.spec_lo,d.unc_hi,d.unc_lo,vd]; })}; })}; })}; }""",
+    # reference: the row objects built from COLS (limits) + the view's own pass/fail per row in 'limits' mode
+    "reference": r"""() => {
+      return {consts:{HAS_LIMITS:HAS_LIMITS},
+        rows: DATA.map(function(r){ return [r.Frequency_MHz,r.Value,r.Upper_Limit,r.Lower_Limit,_pf(r,'limits')]; })}; }""",
 }
+READY = {"reference": "#f_lo"}
 
 
 def check(desc, cond, detail=""):
@@ -142,19 +175,19 @@ def main() -> int:
             errs = []
             pa.on("pageerror", lambda e: errs.append(str(e)))
             pa.goto(A[v].as_uri())
-            pa.wait_for_selector("#plot .main-svg", timeout=120000)
+            pa.wait_for_selector(READY.get(v, "#plot .main-svg"), timeout=120000)
             pa.wait_for_timeout(800)
             want = pa.evaluate(snap)
             pb = browser.new_page()
             pb.on("pageerror", lambda e: errs.append(str(e)))
             pb.on("dialog", lambda d: d.dismiss())
             pb.goto(B[v].as_uri())
-            pb.wait_for_selector("#plot .main-svg", timeout=120000)
+            pb.wait_for_selector(READY.get(v, "#plot .main-svg"), timeout=120000)
             pb.wait_for_timeout(800)
             plain = pb.evaluate(snap)
             pb.evaluate("(l) => PADB_limovSet(l)", lims)
             pb.reload()
-            pb.wait_for_selector("#plot .main-svg", timeout=120000)
+            pb.wait_for_selector(READY.get(v, "#plot .main-svg"), timeout=120000)
             pb.wait_for_timeout(1000)
             got = pb.evaluate(snap)
             # which top-level parts differ (to make a failure readable)

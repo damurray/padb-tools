@@ -1833,6 +1833,30 @@ def _get_spec(df: pd.DataFrame, cfg: dict) -> tuple[float, float]:
             float(hi.iloc[0]) if len(hi) else np.nan)
 
 
+def _spec_prefix_xs(df: pd.DataFrame, cap: int = 4096) -> dict:
+    """The distinct x of the leading rows (data-frame order, first appearance) up to and including the first row
+    with a non-null Upper_Limit / Lower_Limit -- exactly the rows `_get_spec` scans to choose the page-level
+    HI_SPEC / LO_SPEC. An override depends only on x, so de-duplicating keeps the answer exact while a long
+    sweep repeated per DUT stays short. Embedded in the page so an IN-PAGE limit override can re-make that
+    choice the way a build-time override does (the first row whose limit is non-null AFTER the override). A side
+    with no limit at all lists every distinct x. None for a side with more than `cap` distinct x (the in-page
+    code then keeps the page value)."""
+    out = {}
+    if "Frequency_MHz" not in df.columns:
+        return {"hi": None, "lo": None}
+    xs = pd.to_numeric(df["Frequency_MHz"], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+    for side, col in (("hi", "Upper_Limit"), ("lo", "Lower_Limit")):
+        if col not in df.columns:
+            out[side] = None
+            continue
+        v = pd.to_numeric(df[col], errors="coerce").to_numpy(dtype=float, na_value=np.nan)
+        nn = np.flatnonzero(~np.isnan(v))
+        k = int(nn[0]) + 1 if len(nn) else len(v)
+        distinct = list(dict.fromkeys(float(x) for x in xs[:k] if not np.isnan(x)))
+        out[side] = distinct if len(distinct) <= cap else None
+    return out
+
+
 def _write(fig: go.Figure, output_html: Path, cfg: dict) -> None:
     output_html.parent.mkdir(parents=True, exist_ok=True)
     title = cfg.get("title", output_html.stem)
@@ -3049,6 +3073,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         "_reconstituteBinaryData();",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
+        f"var SPEC_PREFIX_X={json.dumps(_spec_prefix_xs(df))};",
         f"var Y_LABEL={json.dumps(y_label)};",
         f"var X_LABEL={json.dumps(x_label)};",
         f"var X_SHORT_LABEL={json.dumps(_short_x_label(x_label))};",
@@ -4592,6 +4617,7 @@ function PADB_limovPrepass(rows,xKey){
     if(ov.lo!==undefined){ r.Lower_Limit=ov.lo; r.Spec_Lo=ov.lo; if('Unc_Lo' in r) r.Unc_Lo=0; hit=true; }
     if(hit) n++;
   }
+  _limovRemakePageSpec(lst);
   _limovState.ranges=lst.length; _limovState.rows=n;
   return n;
 }
@@ -4604,13 +4630,11 @@ function PADB_limovPatchDut(d,ov){
   if(ov.lo!==undefined){ d.lower_limit=ov.lo; d.spec_lo=ov.lo; d.unc_lo=0; hit=true; }
   return hit;
 }
-/* stat_summary: each STAT_DATA[*].freq_stats[*] carries the per-frequency spec (spec_up / spec_lo -- what
-   computeFreqResult derives the tolerance limits and margins from) AND its DUTs' own limit records. */
-function PADB_limovPrepassStat(){
-  _limovState.registered=true; _limovState.what='frequency points';
-  var lst=PADB_limovGet(); if(!lst||typeof STAT_DATA==='undefined') return 0;
+/* Shared inner loop of the stat_summary / boxplot pre-passes: a list shaped like STAT_DATA / BOX_STATS
+   (cd.freq_stats[*].{freq, spec_up, spec_lo, dut_vals[], outlier_detail[]}). */
+function _limovPatchStatList(arr,lst){
   var n=0;
-  STAT_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(fs){
+  (arr||[]).forEach(function(cd){ (cd.freq_stats||[]).forEach(function(fs){
     var ov=PADB_limovFor(+fs.freq,lst), hit=false;
     if(ov.hi!==undefined){ fs.spec_up=ov.hi; hit=true; }
     if(ov.lo!==undefined){ fs.spec_lo=ov.lo; hit=true; }
@@ -4618,6 +4642,109 @@ function PADB_limovPrepassStat(){
     (fs.outlier_detail||[]).forEach(function(d){ if(d&&typeof d==='object') PADB_limovPatchDut(d,ov); });
     if(hit) n++;
   }); });
+  return n;
+}
+/* boxplot: BOX_STATS has stat_summary's shape; BOX_DATA's freq_stats carry the raw per-point records
+   (vals_detail, already decoded by the constants block when binary_encode was on). */
+function PADB_limovPrepassBox(){
+  _limovState.registered=true; _limovState.what='frequency points';
+  var lst=PADB_limovGet(); if(!lst) return 0;
+  var n=(typeof BOX_STATS!=='undefined')?_limovPatchStatList(BOX_STATS,lst):0;
+  if(typeof BOX_DATA!=='undefined') BOX_DATA.forEach(function(cd){ (cd.freq_stats||[]).forEach(function(fs){
+    var ov=PADB_limovFor(+fs.freq,lst);
+    (fs.vals_detail||[]).forEach(function(d){ PADB_limovPatchDut(d,ov); });
+  }); });
+  _limovRemakePageSpec(lst);
+  _limovState.ranges=lst.length; _limovState.rows=n; return n;
+}
+/* summary: DATA[*] = {freqs[], spec_hi_list[], spec_lo_list[], spec_hi, spec_lo, dut_vals[fi][di],
+   dut_spec_vals{field:[fi][di]}, dut_vals_by_temp / dut_spec_vals_by_temp (>1 temperature)}. Mirrors
+   padb_v2.render_summary after padb_limits.apply_df: the per-frequency spec lists, the scalar spec (the FIRST
+   non-null of its list), every (frequency, DUT) cell that has a point, and the page constants HI_SPEC /
+   LO_SPEC (the first condition's scalar spec) and SPEC_DIRECTION (derived from which sides exist). */
+function PADB_limovPrepassSum(){
+  _limovState.registered=true; _limovState.what='frequency points';
+  var lst=PADB_limovGet(); if(!lst||typeof DATA==='undefined') return 0;
+  var HI=['upper_limit','spec_hi'], LO=['lower_limit','spec_lo'];
+  function setCells(tbl,vals,fi,val,fields,unc){
+    fields.forEach(function(f){
+      if(!tbl[f]) tbl[f]=vals.map(function(row){ return (row||[]).map(function(){ return null; }); });
+      var row=tbl[f][fi]; if(!row) return;
+      (vals[fi]||[]).forEach(function(v,di){ if(v!==null&&v!==undefined) row[di]=val; });
+    });
+    if(tbl[unc]&&tbl[unc][fi]) (vals[fi]||[]).forEach(function(v,di){ if(v!==null&&v!==undefined) tbl[unc][fi][di]=0; });
+  }
+  var n=0;
+  DATA.forEach(function(cd){
+    (cd.freqs||[]).forEach(function(x,fi){
+      var ov=PADB_limovFor(+x,lst); if(ov.hi===undefined&&ov.lo===undefined) return;
+      if(ov.hi!==undefined) cd.spec_hi_list[fi]=ov.hi;
+      if(ov.lo!==undefined) cd.spec_lo_list[fi]=ov.lo;
+      var tabs=[[cd.dut_spec_vals,cd.dut_vals]];
+      Object.keys(cd.dut_spec_vals_by_temp||{}).forEach(function(tp){
+        tabs.push([cd.dut_spec_vals_by_temp[tp],(cd.dut_vals_by_temp||{})[tp]||[]]); });
+      tabs.forEach(function(pair){
+        if(!pair[0]) return;
+        if(ov.hi!==undefined) setCells(pair[0],pair[1],fi,ov.hi,HI,'unc_hi');
+        if(ov.lo!==undefined) setCells(pair[0],pair[1],fi,ov.lo,LO,'unc_lo');
+      });
+      n++;
+    });
+    function first(a){ for(var i=0;i<a.length;i++) if(a[i]!==null&&a[i]!==undefined) return a[i]; return null; }
+    cd.spec_hi=first(cd.spec_hi_list||[]); cd.spec_lo=first(cd.spec_lo_list||[]);
+  });
+  function firstCd(k){ for(var i=0;i<DATA.length;i++) if(DATA[i][k]!==null&&DATA[i][k]!==undefined) return DATA[i][k]; return null; }
+  HI_SPEC=firstCd('spec_hi'); LO_SPEC=firstCd('spec_lo');
+  if(HI_SPEC!==null||LO_SPEC!==null) SPEC_DIRECTION=(HI_SPEC!==null&&LO_SPEC!==null)?'both':(HI_SPEC!==null?'hi':'lo');
+  _limovState.ranges=lst.length; _limovState.rows=n; return n;
+}
+/* stat_summary: each STAT_DATA[*].freq_stats[*] carries the per-frequency spec (spec_up / spec_lo -- what
+   computeFreqResult derives the tolerance limits and margins from) AND its DUTs' own limit records. */
+function PADB_limovPrepassStat(){
+  _limovState.registered=true; _limovState.what='frequency points';
+  var lst=PADB_limovGet(); if(!lst||typeof STAT_DATA==='undefined') return 0;
+  var n=_limovPatchStatList(STAT_DATA,lst);
+  _limovState.ranges=lst.length; _limovState.rows=n; return n;
+}
+/* The page-level HI_SPEC / LO_SPEC: Python takes the FIRST non-null Upper/Lower_Limit in data-frame row order
+   (_get_spec). After an override that is the first row, in that order, whose limit is non-null: a leading row
+   the override covers wins, else the page's own value stands. SPEC_PREFIX_X (embedded at build) lists the x of
+   the leading rows up to the first non-null one, so this reproduces a build-time override exactly. */
+function _limovPageSpec(cur,prefix,lst,side){
+  if(!prefix) return cur;
+  for(var i=0;i<prefix.length;i++){
+    if(prefix[i]===null||prefix[i]===undefined) continue;
+    var ov=PADB_limovFor(+prefix[i],lst), v=(side==='hi')?ov.hi:ov.lo;
+    if(v!==undefined) return v;
+  }
+  return cur;
+}
+function _limovRemakePageSpec(lst){
+  if(typeof HI_SPEC==='undefined'||typeof SPEC_PREFIX_X==='undefined'||!SPEC_PREFIX_X) return;
+  var hadDir=(typeof SPEC_DIRECTION!=='undefined');
+  var before=hadDir?SPEC_DIRECTION:null;
+  HI_SPEC=_limovPageSpec(HI_SPEC,SPEC_PREFIX_X.hi,lst,'hi');
+  LO_SPEC=_limovPageSpec(LO_SPEC,SPEC_PREFIX_X.lo,lst,'lo');
+  /* the direction follows which sides exist -- except for a dataset with no limit at all, whose direction is
+     the user's live selector (left alone) */
+  if(hadDir&&before!=='none'&&(HI_SPEC!==null||LO_SPEC!==null)&&typeof HAS_SPEC_BASIS!=='undefined'&&HAS_SPEC_BASIS)
+    SPEC_DIRECTION=(HI_SPEC!==null&&LO_SPEC!==null)?'both':(HI_SPEC!==null?'hi':'lo');
+}
+/* reference: COLS is column-oriented (Frequency_MHz, Upper_Limit, Lower_Limit arrays; a missing limit column is
+   created, as padb_limits.apply_df does) and the view reads only those two limit columns plus HAS_LIMITS. */
+function PADB_limovPrepassRef(){
+  _limovState.registered=true; _limovState.what='points';
+  var lst=PADB_limovGet(); if(!lst||typeof COLS==='undefined'||!COLS.Frequency_MHz) return 0;
+  var xs=COLS.Frequency_MHz, n=0;
+  ['Upper_Limit','Lower_Limit'].forEach(function(k){ if(!COLS[k]) COLS[k]=xs.map(function(){ return null; }); });
+  for(var i=0;i<xs.length;i++){
+    if(xs[i]===null||xs[i]===undefined) continue;
+    var ov=PADB_limovFor(+xs[i],lst), hit=false;
+    if(ov.hi!==undefined){ COLS.Upper_Limit[i]=ov.hi; hit=true; }
+    if(ov.lo!==undefined){ COLS.Lower_Limit[i]=ov.lo; hit=true; }
+    if(hit) n++;
+  }
+  if(typeof HAS_LIMITS!=='undefined'&&(COLS.Upper_Limit.some(function(v){return v!==null;})||COLS.Lower_Limit.some(function(v){return v!==null;}))) HAS_LIMITS=true;
   _limovState.ranges=lst.length; _limovState.rows=n; return n;
 }
 function PADB_limovImportFile(file){
@@ -18242,6 +18369,7 @@ def _build_box_interactive_html(
     coverage_gap_html: str = "",
     has_segments: bool = True,
     drop_points: bool = False,
+    spec_prefix_x: dict | None = None,
     status_field: str = "",
     cfg: dict | None = None,
 ) -> str:
@@ -18562,6 +18690,7 @@ def _build_box_interactive_html(
         f"var BOX_FREQ_VALS={json.dumps(freq_cat_vals or [])};",
         f"var BOX_FREQ_MIN={box_freq_min!r};",
         f"var BOX_FREQ_MAX={box_freq_max!r};",
+        f"var SPEC_PREFIX_X={json.dumps(spec_prefix_x)};",
         f"var LO_SPEC={lo_js};",
         f"var HI_SPEC={hi_js};",
         f"var HAS_SPEC_BASIS={json.dumps(bool((cfg or {}).get('_has_spec_basis', True)))};",
@@ -18804,7 +18933,7 @@ def _build_box_interactive_html(
         + '<div id="box_site_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
         + '<div id="box_wf_panel" style="display:none;overflow-x:auto;padding:8px 12px;background:#f7faff;border:1px solid #cdd6e6;border-radius:4px;margin:4px 0"></div>\n'
         + '<div id="auto_gf_panel" style="display:none;overflow-x:auto;padding:4px 8px"></div>\n'
-        + f"<script>\n{constants}\n{_COMMON_JS}\n{_AUTO_FILTER_SHARED_JS}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
+        + f"<script>\n{constants}\n{_COMMON_JS}\nPADB_limovPrepassBox();\n{_AUTO_FILTER_SHARED_JS}\n{_STAT_BOXPLOT_INTERACTIVE_JS}</script>\n"
         "</body>\n</html>"
     )
 
@@ -19164,6 +19293,7 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
         primary_site=primary_site if site_compare_enabled else None,
         coverage_gap_html=coverage_gap_html,
         has_segments=has_segments,
+        spec_prefix_x=_spec_prefix_xs(df),
         drop_points=bool(cfg.get("box_drop_points", False)),
         status_field=box_status_field,
         cfg=cfg,
@@ -21865,6 +21995,7 @@ def _build_summary_html(
         + "<script>\n"
         + constants + "\n"
         + _COMMON_JS + "\n"
+        + "PADB_limovPrepassSum();\n"
         + _AUTO_FILTER_SHARED_JS + "\n"
         + _SUMPLOT_JS
         + "</script>\n</body>\n</html>"
