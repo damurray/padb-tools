@@ -422,6 +422,164 @@ def main() -> int:
     finally:
         sl.kill()
         sl.wait()
+    # ------------------------------------------------------------------ W-RETAIN
+    STAMPS = ["20261124-100000", "20261124-110000", "20261124-120000", "20261124-130000", "20261124-140000", "20261124-150000"]
+
+    def retain_run(tag, stamps, keep_inputs, keep_results, streams=("S - u",), runner_=None):
+        base = tmp / ("ret_" + tag)
+        for s_ in streams:
+            for st_ in stamps:
+                put(base / s_ / ("R_%s.parquet" % st_))
+        outr = tmp / ("out_ret_" + tag)
+        w_ = W.Watcher([base], outr, settle_s=0, recheck_s=0, runner=runner_ or stub, log=quiet,
+                       keep_inputs=keep_inputs, keep_results=keep_results, max_attempts=1)
+        w_.run_pass()
+        return base, outr, w_
+
+    def snaps(outr, stream="S - u"):
+        d_ = outr / "_inputs" / stream
+        return sorted(p.name.split("__")[0] for p in d_.glob("*")) if d_.exists() else []
+
+    def results(outr, stream="S - u"):
+        d_ = outr / stream
+        return sorted(p.name for p in d_.glob("*") if p.is_dir()) if d_.exists() else []
+    newest2 = ["R_20261124-140000", "R_20261124-150000"]
+
+    base1, out_r1, w1r = retain_run("a", STAMPS, 2, 0)
+    check("W-RETAIN: --keep-inputs 2 keeps the snapshots of the 2 NEWEST runs only; every result is kept (keep-results 0)",
+          snaps(out_r1) == newest2 and len(results(out_r1)) == 6, (snaps(out_r1), len(results(out_r1))))
+    ents = list(json.loads((out_r1 / "watch_ledger.json").read_text())["entries"].values())
+    check("W-RETAIN: the ledger entries stay (still 'done', the 4 older marked inputs_pruned) so nothing is analysed again",
+          len(ents) == 6 and all(e["status"] == "done" for e in ents) and sum(1 for e in ents if e.get("inputs_pruned")) == 4, [e.get("inputs_pruned") for e in ents])
+    n_calls = len(calls)
+    W.Watcher([base1], out_r1, settle_s=0, recheck_s=0, runner=stub, log=quiet, keep_inputs=2).run_pass()
+    check("W-RETAIN: ... a later pass does NOT re-analyse the pruned runs even though their source files still exist", len(calls) == n_calls, len(calls) - n_calls)
+    check("W-RETAIN: pruning a snapshot never touches the original file (it may be a hard link to it)",
+          all(p.is_file() and p.read_bytes() == gbytes for p in (base1 / "S - u").glob("*.parquet")) and len(list((base1 / "S - u").glob("*.parquet"))) == 6)
+    base2, out_r2, _ = retain_run("b", STAMPS, 0, 3)
+    pg = (out_r2 / "index.html").read_text(encoding="utf-8")
+    check("W-RETAIN: --keep-results 3 removes the 3 oldest result folders, keeps the newest 3, and the overview says 'results pruned'",
+          results(out_r2) == ["R_20261124-130000", "R_20261124-140000", "R_20261124-150000"] and pg.count("(results pruned)") == 3
+          and pg.count('href="S - u/R_') == 3, (results(out_r2), pg.count("(results pruned)")))
+    base3, out_r3, _ = retain_run("c", STAMPS, 0, 0)
+    check("W-RETAIN: 0 / 0 keeps everything", len(snaps(out_r3)) == 6 and len(results(out_r3)) == 6)
+    base4, out_r4, _ = retain_run("d", STAMPS, 2, 2, streams=("S1 - u", "S2 - u"))
+    check("W-RETAIN: each stream keeps its OWN newest N (2 + 2 snapshots, 2 + 2 results)",
+          snaps(out_r4, "S1 - u") == newest2 and snaps(out_r4, "S2 - u") == newest2
+          and len(results(out_r4, "S1 - u")) == 2 and len(results(out_r4, "S2 - u")) == 2)
+
+    def fail_oldest(src, out_dir, opts, timeout_s):
+        if "R_20261124-100000" in str(src):
+            return {"ok": False, "error": "nope", "analyses": []}
+        return stub(src, out_dir, opts, timeout_s)
+    base5, out_r5, _ = retain_run("e", STAMPS, 1, 1, runner_=fail_oldest)
+    check("W-RETAIN: only FINISHED runs are pruned -- the snapshot of a run that was given up on is kept",
+          "R_20261124-100000" in snaps(out_r5) and "R_20261124-150000" in snaps(out_r5) and len(snaps(out_r5)) == 2, snaps(out_r5))
+
+    base6 = tmp / "ret_f"
+    for st_ in (STAMPS[4], STAMPS[5]):
+        put(base6 / "S - u" / ("R_%s.parquet" % st_))
+    out_r6 = tmp / "out_ret_f"
+    W.Watcher([base6], out_r6, settle_s=0, recheck_s=0, runner=stub, log=quiet, keep_inputs=2).run_pass()
+    put(base6 / "S - u" / ("R_%s.parquet" % STAMPS[0]))
+    W.Watcher([base6], out_r6, settle_s=0, recheck_s=0, runner=stub, log=quiet, keep_inputs=2).run_pass()
+    check("W-RETAIN: 'newest' is by the RUN STAMP, not by when it was processed -- a late-arriving OLDER run is the one pruned",
+          snaps(out_r6) == ["R_%s" % STAMPS[4], "R_%s" % STAMPS[5]], snaps(out_r6))
+
+    # dry run + CLI
+    base7, out_r7, w7 = retain_run("g", STAMPS, 0, 0)
+    w7.keep_inputs = 2
+    before = (snaps(out_r7), json.dumps(w7.ledger.entries, sort_keys=True))
+    rd = w7.apply_retention(dry_run=True)
+    check("W-RETAIN: a dry run reports what it would remove and removes / changes nothing",
+          (snaps(out_r7), json.dumps(w7.ledger.entries, sort_keys=True)) == before and rd["bytes"] > 0 and rd["inputs_removed"] == 0, rd)
+    cli_r = lambda *a: subprocess.run([sys.executable, str(HERE / "padb_watch.py"), "--watch", str(base7), "--out", str(out_r7), "--prune-now"] + list(a),
+                                      capture_output=True, text=True, timeout=120)
+    rdry = cli_r("--keep-inputs", "2", "--dry-run")
+    check("W-RETAIN: `--prune-now --dry-run` reports and deletes nothing", rdry.returncode == 0 and "would remove" in rdry.stdout and len(snaps(out_r7)) == 6, rdry.stdout[-300:])
+    rreal = cli_r("--keep-inputs", "2")
+    check("W-RETAIN: `--prune-now` applies the retention without scanning or analysing", rreal.returncode == 0
+          and snaps(out_r7) == newest2 and "4 input snapshot(s)" in rreal.stdout, (rreal.stdout[-300:], snaps(out_r7)))
+    slp = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        (out_r7 / "watch.lock").write_text(json.dumps({"pid": slp.pid, "started": "x"}))
+        rlk2 = cli_r("--keep-results", "1")
+        check("W-RETAIN: `--prune-now` is refused (exit 2) while another watcher holds the output folder", rlk2.returncode == 2, rlk2.returncode)
+    finally:
+        slp.kill()
+        slp.wait()
+        (out_r7 / "watch.lock").unlink(missing_ok=True)
+
+    # safety: a damaged / tampered ledger and links must never make it delete anything else
+    outside = tmp / "outside" / "keep"
+    outside.mkdir(parents=True)
+    (outside / "sentinel.txt").write_text("do not delete")
+    base8, out_r8, w8 = retain_run("h", STAMPS[:3], 0, 0)
+    ents8 = sorted(w8.ledger.entries.values(), key=lambda e: e["rel"])          # oldest .. newest
+    ents8[0]["input_snapshot"] = str(outside / "file.parquet")                   # parent.parent is not <out>/_inputs
+    ents8[0]["result_dir"] = str(outside)
+    ents8[1]["input_snapshot"] = str(out_r8 / "_inputs" / "S - u" / "x")         # depth right, but not what we made -> absent: fine
+    ents8[1]["result_dir"] = str(out_r8 / "_inputs" / "S - u")                   # a result folder inside _inputs
+    ents8[2]["result_dir"] = str(out_r8)                                         # the output folder itself
+    w8.keep_inputs, w8.keep_results = 1, 1
+    w8.ledger.entries[next(iter(w8.ledger.entries))]  # (touch)
+    keep_before = sorted(p.name for p in (out_r8 / "_inputs" / "S - u").glob("*"))
+    r8 = w8.apply_retention()
+    check("W-RETAIN: ledger entries pointing OUTSIDE the output folder, at _inputs itself, or at the output folder are REFUSED "
+          "(the sentinel file survives, %d refused)" % r8["skipped"],
+          (outside / "sentinel.txt").is_file() and r8["skipped"] >= 2 and (out_r8 / "_inputs").is_dir()
+          and sorted(p.name for p in (out_r8 / "_inputs" / "S - u").glob("*")) == keep_before and (out_r8 / "S - u").is_dir(), (r8, keep_before))
+
+    # a junction / symlink in the path is never followed
+    jt = tmp / "jtarget"
+    jt.mkdir()
+    (jt / "sentinel.txt").write_text("do not delete")
+    base9, out_r9, w9 = retain_run("i", STAMPS[:3], 0, 0)
+    ents9 = sorted(w9.ledger.entries.values(), key=lambda e: e["rel"])
+    victim = Path(ents9[0]["input_snapshot"]).parent
+    shutil.rmtree(victim)
+    made = False
+    if os.name == "nt":
+        made = subprocess.run(["cmd", "/c", "mklink", "/J", str(victim), str(jt)], capture_output=True).returncode == 0
+    else:
+        try:
+            os.symlink(jt, victim, target_is_directory=True)
+            made = True
+        except OSError:
+            made = False
+    if made:
+        w9.keep_inputs = 1
+        r9 = w9.apply_retention()
+        check("W-RETAIN: a junction / symlink standing where a snapshot folder was is never followed (target survives, refused)",
+              (jt / "sentinel.txt").is_file() and r9["skipped"] >= 1, r9)
+    else:
+        print("  SKIP  W-RETAIN junction test: could not create a junction / symlink here")
+
+    # the case where ONLY the link check can save it: a junction to ANOTHER snapshot folder INSIDE the output folder
+    # (it resolves inside, at the right depth -- every other guard would let it through)
+    base10, out_r10, w10 = retain_run("j", STAMPS[:3], 0, 0)
+    ents10 = sorted(w10.ledger.entries.values(), key=lambda e: e["rel"])        # oldest .. newest
+    victim2 = Path(ents10[0]["input_snapshot"]).parent
+    target2 = Path(ents10[2]["input_snapshot"]).parent                          # the newest run's snapshot folder
+    (target2 / "sentinel.txt").write_text("do not delete")
+    shutil.rmtree(victim2)
+    made2 = False
+    if os.name == "nt":
+        made2 = subprocess.run(["cmd", "/c", "mklink", "/J", str(victim2), str(target2)], capture_output=True).returncode == 0
+    else:
+        try:
+            os.symlink(target2, victim2, target_is_directory=True)
+            made2 = True
+        except OSError:
+            made2 = False
+    if made2:
+        w10.keep_inputs = 1
+        r10 = w10.apply_retention()
+        check("W-RETAIN: a junction to ANOTHER snapshot folder inside the output folder is refused and nothing it points at is touched "
+              "(only the link check catches this one)",
+              (target2 / "sentinel.txt").is_file() and r10["skipped"] >= 1 and any(target2.glob("*.parquet")), r10)
+    else:
+        print("  SKIP  W-RETAIN inside-junction test: could not create a junction / symlink here")
     print("\nqa_watch: PASS=%d FAIL=%d" % (PASS, FAIL))
     return 1 if FAIL else 0
 

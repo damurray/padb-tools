@@ -26,6 +26,13 @@ WHAT THAT MEANS FOR A WATCHER (each is handled, and pinned by qa/qa_watch.py):
     is SNAPSHOT (hard link when on one volume, else a copy) into the output folder BEFORE it is analysed;
   * a file is identified by (path, size, mtime): a re-written file is a new version and is analysed again.
 
+RETENTION: snapshots are the heavy part (a snapshot is the only copy once PadbLoader prunes the original), so they are
+trimmed: `--keep-inputs N` (default 14 = PadbLoader's own window) keeps the newest N runs' snapshots per stream and
+`--keep-results N` (default 0 = keep every result) the result folders; newest = by the run stamp in the file name. Only
+FINISHED runs are pruned, the ledger entry stays (marked pruned) so a pruned run is not analysed again, a delete is only
+ever done on a folder at exactly the expected place inside the output folder with no symlink / junction on the way, and
+`--prune-now [--dry-run]` applies it once.
+
 RELIABILITY: polling (works on shares); a ledger (`watch_ledger.json`, atomic writes) so nothing is processed
 twice across restarts; the file is marked `running` before the analysis starts, so a crash mid-run is retried;
 retry with a delay, give up after --max-attempts (and say so); one analysis at a time; one watcher per output
@@ -311,6 +318,31 @@ def release_lock(out_dir):
         pass
 
 
+def _link_below(base, path) -> bool:
+    """True when any component of `path` below `base` is a symlink / junction (never delete through one)."""
+    cur = Path(base)
+    try:
+        rel = Path(path).relative_to(base)
+    except ValueError:
+        return True
+    for part in rel.parts:
+        cur = cur / part
+        if cur.is_symlink() or (hasattr(os.path, "isjunction") and os.path.isjunction(cur)):
+            return True
+    return False
+
+
+def _tree_size(path) -> int:
+    total = 0
+    for dp, _dn, fn in os.walk(path):
+        for f in fn:
+            try:
+                total += os.path.getsize(os.path.join(dp, f))
+            except OSError:
+                pass
+    return total
+
+
 def snapshot_input(src, dest_dir):
     """Keep our own copy of the input before analysing it (PadbLoader prunes old runs and deletes failed ones):
     a hard link when source and destination share a volume (instant, no extra disk), else a copy. -> (path, how)."""
@@ -375,9 +407,11 @@ def run_analysis(snapshot, out_dir, opts, timeout_s, argv_prefix=None):
 # ------------------------------------------------------------------------------------------ the watcher
 class Watcher:
     def __init__(self, roots, out_dir, depth=1, settle_s=30.0, recheck_s=1.0, max_attempts=3, retry_delay_s=300.0,
-                 timeout_s=7200, retry_failed=False, snapshot=True, opts=None, runner=None, log=None):
+                 timeout_s=7200, retry_failed=False, snapshot=True, opts=None, runner=None, log=None,
+                 keep_inputs=14, keep_results=0):
         self.roots = [Path(r) for r in roots]
         self.out = Path(out_dir)
+        self.keep_inputs, self.keep_results = keep_inputs, keep_results
         self.depth, self.settle_s, self.recheck_s = depth, settle_s, recheck_s
         self.max_attempts, self.retry_delay_s, self.timeout_s = max_attempts, retry_delay_s, timeout_s
         self.retry_failed, self.snapshot, self.opts = retry_failed, snapshot, opts or {}
@@ -432,11 +466,66 @@ class Watcher:
                 e["error"] = "the file disappeared before it could be analysed (PadbLoader deletes failed / pruned runs)"
                 s["vanished"] += 1
                 self.log("vanished: %s" % key.split("|", 1)[1])
+        r = self.apply_retention(dry_run=dry_run)
+        s["pruned"] = r["inputs_removed"] + r["results_removed"]
         if not dry_run:
             self.ledger.save()
             self._write_status(s)
             self.write_overview()
         return s
+
+    # ---- retention -------------------------------------------------------------------------------------
+    def _prune_dir(self, d, base, depth_parent, dry_run, res, what, rel) -> bool:
+        """Delete one recorded folder, but ONLY if it is exactly where the watcher puts such folders
+        (`<base>/<stream>/<folder>`), strictly inside the output folder, with no symlink / junction on the way: a
+        damaged or tampered ledger must never be able to delete anything else. -> True when it was (or would be) removed."""
+        d = Path(d)
+        if not d.exists():
+            return True                                       # already gone: just record it
+        try:
+            ok = (d.parent.parent == Path(base) and d.parent.parent != d and not _link_below(self.out, d)
+                  and (Path(base) != self.out or d.parent.name != "_inputs")        # a result folder is never in _inputs
+                  and Path(base).resolve() in d.resolve().parents and self.out.resolve() in d.resolve().parents)
+        except OSError:
+            ok = False
+        if not ok:
+            res["skipped"] += 1
+            self.log("retention: REFUSED to delete %s (not a folder this watcher created)" % d)
+            return False
+        size = _tree_size(d)
+        res["bytes"] += size
+        if dry_run:
+            self.log("retention (dry run): would remove the %s of %s (%.1f MB)" % (what, rel, size / 1e6))
+            return False
+        shutil.rmtree(d, ignore_errors=True)
+        self.log("retention: removed the %s of %s (%.1f MB)" % (what, rel, size / 1e6))
+        return not d.exists()
+
+    def apply_retention(self, dry_run=False) -> dict:
+        """Keep the newest `keep_inputs` input snapshots and `keep_results` result folders PER STREAM (newest by the run
+        stamp in the file name, else by finish time); 0 keeps all. Only finished (`done`) runs are ever pruned; the
+        ledger entry stays (marked pruned) so a pruned run is not analysed again while its source file still exists."""
+        res = {"inputs_removed": 0, "results_removed": 0, "bytes": 0, "skipped": 0}
+        if not (self.keep_inputs or self.keep_results):
+            return res
+        groups = {}
+        for key, e in self.ledger.entries.items():
+            if e.get("status") == "done":
+                groups.setdefault((e.get("root"), e.get("stream")), []).append(e)
+        for items in groups.values():
+            items.sort(key=lambda e: (parse_name(Path(e.get("rel", "")).name)[1] or "", e.get("finished") or ""), reverse=True)
+            for rank, e in enumerate(items):
+                if self.keep_inputs and rank >= self.keep_inputs and e.get("input_snapshot") and not e.get("inputs_pruned"):
+                    if self._prune_dir(Path(e["input_snapshot"]).parent, self.out / "_inputs", None, dry_run, res, "input snapshot", e.get("rel")):
+                        if not dry_run:
+                            e["inputs_pruned"], e["input_snapshot"] = _now_iso(), None
+                            res["inputs_removed"] += 1
+                if self.keep_results and rank >= self.keep_results and e.get("result_dir") and not e.get("results_pruned"):
+                    if self._prune_dir(e["result_dir"], self.out, None, dry_run, res, "results", e.get("rel")):
+                        if not dry_run:
+                            e["results_pruned"] = _now_iso()
+                            res["results_removed"] += 1
+        return res
 
     def _process(self, root, c, key, sig, s):
         prev = self.ledger.entries.get(key)
@@ -498,8 +587,8 @@ class Watcher:
         """`<out>/index.html`: every run, newest first, with a link to each result index. Static, no scripts."""
         rows = []
         for e in sorted(self.ledger.entries.values(), key=lambda x: x.get("finished") or x.get("last_attempt") or "", reverse=True):
-            link = ""
-            for a in e.get("analyses") or []:
+            link = "(results pruned)" if e.get("results_pruned") else ""
+            for a in [] if e.get("results_pruned") else (e.get("analyses") or []):
                 if a.get("index") and e.get("status") == "done":
                     try:
                         rel = os.path.relpath(a["index"], self.out).replace("\\", "/")
@@ -546,6 +635,11 @@ def main(argv=None) -> int:
     ap.add_argument("--retry-failed", action="store_true", help="also retry files that were given up on")
     ap.add_argument("--timeout", type=int, default=7200, help="seconds before one analysis is killed (default 7200)")
     ap.add_argument("--no-snapshot", action="store_true", help="analyse the file in place (it may be pruned later)")
+    ap.add_argument("--keep-inputs", type=int, default=14, metavar="N",
+                    help="keep the input snapshots of the newest N runs per stream, delete older ones (default 14; 0 = keep all)")
+    ap.add_argument("--keep-results", type=int, default=0, metavar="N",
+                    help="keep the result folders of the newest N runs per stream, delete older ones (default 0 = keep all)")
+    ap.add_argument("--prune-now", action="store_true", help="apply the retention settings once and exit (with --dry-run: report only)")
     ap.add_argument("--dry-run", action="store_true", help="report what would be analysed; do nothing")
     ap.add_argument("--list", action="store_true", help="print the ledger and exit")
     ap.add_argument("--views"), ap.add_argument("--limits-file"), ap.add_argument("--filters-file"), ap.add_argument("--publish-to")
@@ -587,7 +681,19 @@ def main(argv=None) -> int:
     opts = {"views": a.views, "limits_file": a.limits_file, "filters_file": a.filters_file,
             "publish_to": a.publish_to, "pdf_report": a.pdf_report}
     w = Watcher(roots, out, depth=a.depth, settle_s=a.settle, max_attempts=a.max_attempts, retry_delay_s=a.retry_delay,
-                timeout_s=a.timeout, retry_failed=a.retry_failed, snapshot=not a.no_snapshot, opts=opts)
+                timeout_s=a.timeout, retry_failed=a.retry_failed, snapshot=not a.no_snapshot, opts=opts,
+                keep_inputs=max(0, a.keep_inputs), keep_results=max(0, a.keep_results))
+    if a.prune_now:
+        try:
+            r = w.apply_retention(dry_run=a.dry_run)
+            if not a.dry_run:
+                w.ledger.save()
+                w.write_overview()
+            w.log("retention%s: %d input snapshot(s) and %d result folder(s) removed, %d refused, %.1f MB"
+                  % (" (dry run)" if a.dry_run else "", r["inputs_removed"], r["results_removed"], r["skipped"], r["bytes"] / 1e6))
+            return 0
+        finally:
+            release_lock(out)
     w.log("watching %s -> %s%s" % (", ".join(str(r) for r in roots), out, " (once)" if a.once else " (every %.0f s; Ctrl+C to stop)" % a.interval))
     try:
         while True:
