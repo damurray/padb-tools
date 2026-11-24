@@ -45,7 +45,8 @@ from flask import Flask, Response, jsonify, request
 import padb_bands
 import padb_brand
 import padb_limits
-from padb_core import Dataset as _CoreDataset, FilterSpec, lockio
+from padb_core import Dataset as _CoreDataset, FilterSpec, FilterConfig, lockio
+from padb_core import filterconfig as _filterconfig
 from padb_core.columns import detect_columns as _detect_columns, qi as _qi
 from padb_core.conditions import MAX_DIM_VALUES, parse_group as _parse_group_dims
 
@@ -287,6 +288,9 @@ class PandasDataSet:
             "is_room_only": bool(self.is_room_only),
             "has_limits": bool(self.has_limits),
             "limits": _limits_list(self),
+            "all_dims": self.all_dims() if hasattr(self, "all_dims") else [],
+            "unavailable": (self.index.unavailable if getattr(self, "index", None) else []),
+            "filters": (self.index.config.to_dict() if getattr(self, "index", None) else {}),
             "dims": getattr(self, "dims", []),
         }
 
@@ -505,6 +509,7 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span id="limflag" style="display:none;color:#b26a00;font-weight:600" title="The limits shown and used for pass/fail come from your override file, not (only) from the data."></span>
   <button id="grpbtn" onclick="toggleGrp()"
     title="Colour/split the overview points by Site, Serial Number, Temperature or any condition. Display only -- does not filter.">Group by &#9662;</button>
+  <button id="fltbtn" onclick="toggleFltEdit()" style="display:none" title="Choose which conditions are offered as filters, in what order and under what names -- including ones the automatic rules hide (single-valued, serial-like, many values). A condition that is not offered puts no restriction on the data.">Edit filters</button>
   <button id="condbtn" onclick="toggleConds()" style="display:none"
     title="Filter by condition (every Key: value in the Group text). Unticking a value hides those points in the plot AND in the band views.">Conditions &#9662;</button>
   <span class="sitebox" id="pfbox" title="Filter the overview points by pass/fail against each point's own limit. Failing = crosses a present limit; Passing = everything else (pass + no-limit). Needs a limit column in the data.">
@@ -522,6 +527,7 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
 </div>
 <div id="grppanel" style="display:none;padding:6px 14px;background:#f2fff2;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="limedit" style="display:none;padding:6px 14px;background:#fff6f0;border-bottom:1px solid #ddd;font-size:12px"></div>
+<div id="fltedit" style="display:none;padding:6px 14px;background:#f4f8ff;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="condrow"></div>
 <div id="condpanel" style="display:none;padding:6px 14px;background:#fffaf0;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="segbar" style="padding:6px 14px;background:#f6f6ff;border-bottom:1px solid #ddd;font-size:12px">
@@ -595,6 +601,7 @@ async function boot(){
     });
   }
   buildConds(); buildGrp();
+  if((META.all_dims||[]).length){ document.getElementById('fltbtn').style.display=''; }
   if(META.has_limits){ document.getElementById('limbox').style.display=''; }
   await loadState();   // restore the last filters/window/group-by for THIS dataset (Reset all clears it)
   // Band-view buttons render the full interactive view for the current x-range.
@@ -837,10 +844,13 @@ async function _segStep(d){
 }
 // --- Condition filters (every Key: value dimension in Group). Only NARROWED dims are sent. ---
 function buildConds(){
-  var dims=(META&&META.dims)||[]; if(!dims.length) return;
+  var dims=(META&&META.dims)||[];
+  if(!dims.length){ var _p=document.getElementById('condpanel'), _r=document.getElementById('condrow');
+    if(_p){ _p.innerHTML=''; _p.style.display='none'; } if(_r){ _r.innerHTML=''; _r.style.display='none'; }
+    document.getElementById('condbtn').style.display='none'; return; }
   var p=document.getElementById('condpanel'), h='';
   dims.forEach(function(d){
-    h+='<div style="margin:3px 0"><b>'+d.name+':</b> ';
+    h+='<div style="margin:3px 0"><b>'+(d.label||d.name)+':</b> ';
     d.values.forEach(function(v){
       h+='<label style="margin-right:8px"><input type="checkbox" checked class="condchk" data-dim="'+d.id+
          '" value="'+String(v).replace(/"/g,'&quot;')+'" onchange="syncCondRow();update()"> '+v+'</label>';
@@ -854,7 +864,7 @@ function buildConds(){
 }
 function buildGrp(){
   var h='<b>Group by:</b> ', opts=[['site','Site'],['serial','Serial Number'],['temp','Temperature']];
-  ((META&&META.dims)||[]).forEach(function(d){ opts.push(['d'+d.id,d.name]); });
+  ((META&&META.dims)||[]).forEach(function(d){ opts.push(['d'+d.id,d.label||d.name]); });
   opts.forEach(function(o){
     h+='<label style="margin-right:10px"><input type="checkbox" class="grpchk" value="'+o[0]+'"'+(o[0]==='site'?' checked':'')+
        ' onchange="update()"> '+o[1]+'</label>'; });
@@ -870,8 +880,10 @@ function buildCondRow(){
   var h='<b style="margin-right:4px" title="Filter by condition. Same state as the full list under the Conditions button.">Conditions:</b>';
   dims.forEach(function(d){
     h+='<span class="dd-wrap"><button class="dd-btn" id="ddbtn_'+d.id+'" onclick="ddToggle('+d.id+',event)">'+
-       String(d.name).replace(/</g,'&lt;')+' <span class="dd-badge" id="ddb_'+d.id+'"></span>&#9662;</button>'+
+       String(d.label||d.name).replace(/</g,'&lt;')+' <span class="dd-badge" id="ddb_'+d.id+'"></span>&#9662;</button>'+
        '<div class="dd-panel" id="ddp_'+d.id+'" onclick="event.stopPropagation()">'+
+       (d.values.length>12?'<input type="search" class="dd-search" placeholder="search '+d.values.length+' values..." '+
+         'oninput="ddSearch('+d.id+',this.value)" style="width:100%;box-sizing:border-box;margin-bottom:4px">':'')+
        '<label class="dd-item"><input type="checkbox" class="ddall" data-dim="'+d.id+'" checked onchange="ddAll('+d.id+',this.checked)"><b>Select&nbsp;all</b></label><hr class="dd-div">';
     d.values.forEach(function(v){
       h+='<label class="dd-item"><input type="checkbox" class="ddchk" data-dim="'+d.id+'" value="'+String(v).replace(/"/g,'&quot;')+
@@ -880,8 +892,15 @@ function buildCondRow(){
   });
   h+=' <a href="#" onclick="condReset();return false" title="Tick every value of every condition">reset</a>';
   row.innerHTML=h; row.style.display='flex';
-  document.addEventListener('click',function(){ document.querySelectorAll('.dd-panel.open').forEach(function(p){p.classList.remove('open');}); });
+  if(!window.__ddClickBound){ window.__ddClickBound=true;
+    document.addEventListener('click',function(){ document.querySelectorAll('.dd-panel.open').forEach(function(p){p.classList.remove('open');}); }); }
   syncCondRow();
+}
+function ddSearch(id,q){
+  q=String(q||'').toLowerCase();
+  document.querySelectorAll('#ddp_'+id+' .dd-item').forEach(function(l){
+    if(l.querySelector('.ddall')) return;
+    l.style.display=(!q||l.textContent.toLowerCase().indexOf(q)>=0)?'':'none'; });
 }
 function ddToggle(id,ev){
   if(ev) ev.stopPropagation();
@@ -950,6 +969,77 @@ async function importFilter(file){
     if(r.skipped.length) m+=' -- skipped: '+r.skipped.map(function(s){return s.label+' ('+s.reason+')';}).join('; ');
     st.textContent=m+'  |  '+st.textContent; },300);
 }
+// --- Edit filters: which conditions are exposed (padb_core.filterconfig). Rows = every filterable condition
+//     (exposed ones first, in display order). Tick = exposed; the name you give is cosmetic (the KEY is the
+//     identity saved filters use). A condition that is not exposed puts NO restriction on the data: hiding a
+//     narrowed filter clears it. Apply is instant -- no reload; selections on conditions that stay exposed
+//     are kept. ------------------------------------------------------------------------------------------
+function toggleFltEdit(){
+  var p=document.getElementById('fltedit');
+  if(p.style.display==='none'||!p.style.display){ renderFltEdit(); p.style.display='block'; } else p.style.display='none';
+}
+function _fltRows(){
+  var all=(META.all_dims||[]).slice(), pos={};
+  (META.dims||[]).forEach(function(d,i){ pos[d.id]=i; });
+  var exposed=all.filter(function(a){ return pos[a.id]!==undefined; }).sort(function(a,b){ return pos[a.id]-pos[b.id]; });
+  var others=all.filter(function(a){ return pos[a.id]===undefined; });
+  return exposed.concat(others);
+}
+function _fltRow(a){
+  var tag=a.auto?'<span style="color:#060">automatic</span>':'<span style="color:#b26a00" title="The automatic rules do not offer this one">extra: '+String(a.reason).replace(/</g,'&lt;')+'</span>';
+  return '<tr class="fltrow" data-name="'+String(a.name).replace(/"/g,'&quot;')+'"><td><input type="checkbox" class="flt_on"'+(a.exposed?' checked':'')+'></td>'+
+    '<td>'+String(a.name).replace(/</g,'&lt;')+'</td><td>'+a.n_values+' value'+(a.n_values===1?'':'s')+'</td><td>'+tag+'</td>'+
+    '<td><input type="text" class="flt_label" placeholder="(same)" value="'+String(a.label||'').replace(/"/g,'&quot;')+'" style="width:140px"></td>'+
+    '<td><a href="#" onclick="fltMove(this,-1);return false" title="Move up">&#9650;</a> <a href="#" onclick="fltMove(this,1);return false" title="Move down">&#9660;</a></td></tr>';
+}
+function renderFltEdit(){
+  var p=document.getElementById('fltedit'), un=(META.unavailable||[]);
+  p.innerHTML='<b>Filters</b> <span style="color:#666">(tick = offered as a filter; a condition that is not offered restricts nothing. '+
+    'Site, temperature and the x-axis have their own controls'+(un.length?' -- not listed: '+un.map(function(u){return String(u.name).replace(/</g,'&lt;');}).join(', '):'')+')</span>'+
+    '<table id="flttbl" style="margin:4px 0"><tr><th></th><th align="left">Condition</th><th align="left">Values</th><th align="left">Offered by default?</th><th align="left">Name shown</th><th></th></tr>'+
+    _fltRows().map(_fltRow).join('')+'</table>'+
+    '<button onclick="fltApply()" style="font-weight:600">Apply</button> <button onclick="renderFltEdit()">Revert</button> '+
+    '<button onclick="fltReset()" title="Back to the automatic set, no renames">Reset to automatic</button> '+
+    '<button onclick="toggleFltEdit()">Close</button> <span id="fltmsg" style="margin-left:8px"></span>';
+}
+function fltMove(a,d){
+  var tr=a.closest('tr'), sib=(d<0)?tr.previousElementSibling:tr.nextElementSibling;
+  if(!sib||!sib.classList.contains('fltrow')) return;
+  if(d<0) tr.parentNode.insertBefore(tr,sib); else tr.parentNode.insertBefore(sib,tr);
+}
+function fltRead(){
+  var show=[], labels={};
+  document.querySelectorAll('#flttbl .fltrow').forEach(function(r){
+    var name=r.getAttribute('data-name');
+    if(r.querySelector('.flt_on').checked) show.push(name);
+    var lab=r.querySelector('.flt_label').value.trim(); if(lab) labels[name]=lab; });
+  return {show:show, labels:labels};
+}
+async function _fltPost(cfg){
+  var msg=document.getElementById('fltmsg'); msg.style.color='#666'; msg.textContent='applying...';
+  var prev=selectedConds(), prevBy=selectedBy(), j;
+  try{
+    var r=await fetch('/api/filters',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({config:cfg})});
+    j=await r.json();
+  }catch(e){ msg.style.color='#c00'; msg.textContent='could not reach the server'; return; }
+  if(!j.ok){ msg.style.color='#c00'; msg.textContent=j.error||'rejected'; return; }
+  META.dims=j.dims; META.all_dims=j.all_dims; META.filters=j.config; META.unavailable=j.unavailable;
+  buildConds(); buildGrp();
+  var kept=0, cleared=[];
+  Object.keys(prev).forEach(function(k){
+    if(!(META.dims||[]).some(function(d){ return String(d.id)===String(k); })){ cleared.push(k); return; }
+    document.querySelectorAll('.condchk[data-dim="'+k+'"]').forEach(function(c){ c.checked=prev[k].indexOf(c.value)>=0; }); kept++; });
+  var okBy=prevBy.filter(function(v){ return v==='site'||v==='serial'||v==='temp'||(META.dims||[]).some(function(d){return 'd'+d.id===v;}); });
+  document.querySelectorAll('.grpchk').forEach(function(c){ c.checked=okBy.indexOf(c.value)>=0; });
+  syncCondRow(); update();
+  renderFltEdit();
+  var m2=document.getElementById('fltmsg'); m2.style.color='#060';
+  var nm={}; (j.all_dims||[]).forEach(function(a){ nm[a.id]=a.name; });
+  m2.textContent=(META.dims||[]).length+' filter(s) offered'+(cleared.length?' -- cleared the selection on hidden: '+cleared.map(function(k){return nm[k]||k;}).join(', '):'')+
+    (j.unknown&&j.unknown.length?' -- not in this data: '+j.unknown.join(', '):'')+'  ->  '+j.path;
+}
+function fltApply(){ return _fltPost(fltRead()); }
+function fltReset(){ return _fltPost({}); }
 function toggleGrp(){ var p=document.getElementById('grppanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
 function selectedBy(){ return [...document.querySelectorAll('.grpchk:checked')].map(function(c){return c.value;}); }
 function toggleConds(){ var p=document.getElementById('condpanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
@@ -1160,13 +1250,50 @@ def api_scatter():
                               {k: v for k, v in spec.conds.items()} or None, by))
 
 
+# --- Which conditions are exposed as filters (padb_core.filterconfig) ----------------------------
+# A per-dataset config beside the data (show / order / labels, incl. "expose anyway" for keys the
+# automatic rules drop). Saved atomically; applying is metadata only (instant, no reload, ids stable so
+# saved selections stay valid). A condition that is not exposed puts no restriction on the data.
+FILTERS_PATH: Path | None = None
+
+
+def _filters_payload():
+    m = DS.meta()
+    return {"config": m["filters"], "dims": m["dims"], "all_dims": m["all_dims"],
+            "unavailable": m["unavailable"], "supported": hasattr(DS, "set_filters"),
+            "path": str(FILTERS_PATH or (DS.path.parent / _filterconfig.DEFAULT_NAME))}
+
+
+@app.route("/api/filters", methods=["GET", "POST"])
+def api_filters():
+    if request.method == "GET":
+        return jsonify(_filters_payload())
+    if not hasattr(DS, "set_filters"):
+        return jsonify({"ok": False, "error": "customising filters needs the DuckDB engine"}), 400
+    body = request.get_json(silent=True)
+    try:
+        cfg = FilterConfig.from_dict((body or {}).get("config"))
+    except (ValueError, TypeError, AttributeError) as exc:
+        return jsonify({"ok": False, "error": "bad filter configuration: %s" % exc}), 400
+    path = FILTERS_PATH or (DS.path.parent / _filterconfig.DEFAULT_NAME)
+    with _bands_lock:
+        try:
+            _filterconfig.save_file(path, cfg)
+        except OSError as exc:
+            return jsonify({"ok": False, "error": "could not save %s: %s" % (path, exc)}), 500
+        unknown = DS.set_filters(cfg)
+    return jsonify({"ok": True, "unknown": unknown, **_filters_payload()})
+
+
 # --- One filter file across tools (padb_core.lockio) ---------------------------------------------
 # Export the current filter as the HTML pages' "lock" JSON, or import one (from a page or another
 # viewer). The mapping lives ONCE in padb_core.lockio; the page just posts and applies the result.
 def _lock_ctx():
     m = DS.meta()
+    exposed = {d["name"] for d in m.get("dims", [])}
     return {"dims": m.get("dims", []), "sites": m["sites"], "temps": m["temps"],
-            "x_min": m["x_min"], "x_max": m["x_max"]}
+            "x_min": m["x_min"], "x_max": m["x_max"],
+            "hidden": [a["name"] for a in m.get("all_dims", []) if a["name"] not in exposed]}
 
 
 @app.route("/api/filter/export", methods=["POST"])
@@ -1481,6 +1608,8 @@ def main(argv=None):
                          "env PADB_VIEWER_ENGINE also works)")
     ap.add_argument("--bands", help="JSON file of named frequency bands "
                     "(default: bands.json / padb_viewer_bands.json next to the parquet)")
+    ap.add_argument("--filters", help="JSON file saying which conditions are exposed as filters "
+                    "(default: padb_viewer_filters.json / filters.json next to the parquet)")
     ap.add_argument("--limits", help="JSON file of limit overrides "
                     "(default: padb_viewer_limits.json / limits.json next to the parquet)")
     ap.add_argument("--auto-bands", dest="auto_bands", action="store_true", default=True,
@@ -1490,7 +1619,7 @@ def main(argv=None):
                     help="Do NOT auto-generate a band file (an existing one still loads)")
     args = ap.parse_args(argv)
 
-    global DS, BANDS_PATH, LIMITS_PATH
+    global DS, BANDS_PATH, LIMITS_PATH, FILTERS_PATH
     target = Path(args.target).resolve() if args.target else _default_target()
     pqpath = _find_parquet(target)
     print(f"Loading {pqpath} ...", flush=True)
@@ -1516,6 +1645,16 @@ def main(argv=None):
             print(f"  [bands] loaded {len(DS.bands)} band(s) from {Path(bpath).name} "
                   f"(data unit {DS.x_unit or '?'})", flush=True)
     DS.compute_band_counts()
+    fpath = Path(args.filters).resolve() if args.filters else _filterconfig.find_file([pqpath.parent])
+    FILTERS_PATH = fpath if fpath else None
+    if fpath and hasattr(DS, "set_filters"):
+        fcfg, ferr = _filterconfig.load_file(fpath)
+        if ferr:
+            print(f"  [filters] {ferr} -- ignored", flush=True)
+        elif not fcfg.is_default():
+            unknown = DS.set_filters(fcfg)
+            print(f"  [filters] {fpath.name} applied ({len(DS.dims)} condition filter(s) exposed"
+                  + (f"; not in this data: {', '.join(unknown)}" if unknown else "") + ")", flush=True)
     lpath = Path(args.limits).resolve() if args.limits else padb_limits.find_file([pqpath.parent])
     LIMITS_PATH = lpath if lpath else None
     if lpath:

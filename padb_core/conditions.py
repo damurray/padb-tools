@@ -14,7 +14,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-MAX_DIM_VALUES = 40          # a condition with more distinct values is not a usable filter
+from .filterconfig import FilterConfig
+
+MAX_DIM_VALUES = 40          # AUTOMATIC rule: a condition with more distinct values is not offered by default
+EXPOSE_MAX_VALUES = 500      # ceiling: a condition with more values than this can never be a filter
 _SITE_RE = re.compile(r"Site:\s*([^\s]+)")
 _SERIAL_LABELLED = re.compile(r"Serial\s*(?:Number|No|Num)?\s*:\s*([^\s|]+)")
 _SERIAL_BARE = re.compile(r"\b([A-Za-z]{2,3}\d{5,})\b")
@@ -65,6 +68,28 @@ def serial_of(group_str, bare_fallback: bool = False):
     return None
 
 
+def classify_key(name: str, values, xb: str = "", max_values: int = MAX_DIM_VALUES):
+    """-> (exposable, auto, reason). `exposable` False = the key has its own dedicated filter (site,
+    temperature, the x-axis) or too many values to be a filter at all; `auto` = the automatic rules would
+    offer it; `reason` says why not (shown in the Edit filters panel)."""
+    kl = name.lower()
+    if kl == "site" or "temp" in kl:
+        return False, False, "has its own dedicated filter"
+    if "frequency" in kl or (xb and kl.split("(")[0].strip() == xb):
+        return False, False, "is the x-axis"
+    n = len(values)
+    if n > EXPOSE_MAX_VALUES:
+        return False, False, "%d values (more than %d)" % (n, EXPOSE_MAX_VALUES)
+    if any(t_ in kl for t_ in ("serial", "unit id", "dut id", "s/n")) \
+            or sum(1 for x in values if _SERIAL_PAT.match(x)) * 2 > n:
+        return True, False, "serial-like"
+    if n < 2:
+        return True, False, "single value"
+    if n > max_values:
+        return True, False, "%d values (more than %d)" % (n, max_values)
+    return True, True, ""
+
+
 @dataclass
 class GroupIndex:
     """The DISTINCT Group strings of a dataset, parsed once.
@@ -72,17 +97,25 @@ class GroupIndex:
     groups[i]        the i-th distinct Group text (gid == i)
     sites[i]         site name ('(all)' when untagged)
     serials[i]       serial ('?' when none)
-    dims             [{'id','name','values'}] -- the usable condition dimensions
-    values[i][d.id]  the group's value for dimension d (None = absent = not applicable)
+    registry         EVERY filterable condition key with a STABLE id: [{'id','name','n_values','auto','reason',
+                     'values'}]. Ids are assigned from the automatic rules only (auto keys by name first --
+                     exactly the v2.5 ids -- then the others by name), never from a FilterConfig, so changing
+                     what is exposed never renumbers anything and saved selections stay valid.
+    unavailable      keys that can never be filters here: [{'name','reason'}]
+    dims             the EXPOSED conditions per `config`: [{'id','name','values'[, 'label']}] in display order
+    values[i][id]    the group's value for registry key `id` (None = absent = not applicable)
     """
     groups: list
     sites: list
     serials: list
+    registry: list = field(default_factory=list)
+    unavailable: list = field(default_factory=list)
     dims: list = field(default_factory=list)
     values: list = field(default_factory=list)
+    config: FilterConfig = field(default_factory=FilterConfig)
 
     @classmethod
-    def build(cls, groups, x_col: str = "", max_values: int = MAX_DIM_VALUES) -> "GroupIndex":
+    def build(cls, groups, x_col: str = "", max_values: int = MAX_DIM_VALUES, config=None) -> "GroupIndex":
         groups = list(groups)
         sites = [site_of(g) for g in groups]
         ser1 = [serial_of(g) for g in groups]
@@ -95,27 +128,51 @@ class GroupIndex:
             for k, v in kv.items():
                 seen.setdefault(k, set()).add(v)
         xb = (x_col or "").lower().split("(")[0].strip()
-        dims = []
+        autos, extras, unavailable = [], [], []
         for k in sorted(seen):
-            kl = k.lower()
-            vs = seen[k]
-            if (kl == "site" or "temp" in kl or "frequency" in kl
-                    or (xb and kl.split("(")[0].strip() == xb)
-                    or any(t in kl for t in ("serial", "unit id", "dut id", "s/n"))
-                    or len(vs) < 2 or len(vs) > max_values
-                    or sum(1 for x in vs if _SERIAL_PAT.match(x)) * 2 > len(vs)):
-                continue
-            dims.append({"id": len(dims), "name": k, "values": sorted(vs)})
-        values = [{d["id"]: kv.get(d["name"]) for d in dims} for kv in kvs]
-        return cls(groups=groups, sites=sites, serials=serials, dims=dims, values=values)
+            ok, auto, why = classify_key(k, seen[k], xb, max_values)
+            if not ok:
+                unavailable.append({"name": k, "reason": why})
+            elif auto:
+                autos.append((k, why))
+            else:
+                extras.append((k, why))
+        registry = []
+        for k, why in autos + extras:
+            registry.append({"id": len(registry), "name": k, "n_values": len(seen[k]), "auto": not why,
+                             "reason": why, "values": sorted(seen[k])})
+        values = [{r["id"]: kv.get(r["name"]) for r in registry} for kv in kvs]
+        idx = cls(groups=groups, sites=sites, serials=serials, registry=registry, unavailable=unavailable,
+                  values=values)
+        idx.apply_config(config or FilterConfig())
+        return idx
+
+    def apply_config(self, config: FilterConfig):
+        """Choose which registry keys are exposed (display order + labels). Metadata only -- the per-key
+        columns exist for every registry key, so this is instant and needs no data reload.
+        -> the names the config mentions that this dataset does not have."""
+        chosen, unknown = config.resolve(self.registry)
+        dims = []
+        for r in chosen:
+            d = {"id": r["id"], "name": r["name"], "values": list(r["values"])}
+            lab = config.labels.get(r["name"])
+            if lab:
+                d["label"] = lab
+            dims.append(d)
+        self.dims = dims
+        self.config = config
+        return unknown
+
+    def exposed_ids(self):
+        return [d["id"] for d in self.dims]
 
     def frame(self):
-        """pandas frame to register in DuckDB: g, gid, g_site, g_serial, d0..dN."""
+        """pandas frame to register in DuckDB: g, gid, g_site, g_serial, d<id> for EVERY registry key."""
         import pandas as pd
         cols = {"g": self.groups, "gid": list(range(len(self.groups))),
                 "g_site": self.sites, "g_serial": self.serials}
-        for d in self.dims:
-            cols["d%d" % d["id"]] = [v[d["id"]] for v in self.values]
+        for r in self.registry:
+            cols["d%d" % r["id"]] = [v[r["id"]] for v in self.values]
         return pd.DataFrame(cols)
 
     def hover(self, gid: int) -> str:

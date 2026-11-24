@@ -346,6 +346,9 @@ def main() -> None:
         pm.pop("engine")
         dims = dm.pop("dims", [])      # condition filters are a DuckDB-engine feature
         pm.pop("dims", None)
+        for _k in ("all_dims", "unavailable", "filters"):   # filter customisation is a DuckDB-engine feature too
+            dm.pop(_k, None)
+            pm.pop(_k, None)
         check("engine parity: meta identical", dm == pm, str([k for k in dm if dm[k] != pm[k]]))
         # Condition filters: every unticked value must remove exactly its rows, a blank dim
         # is "no constraint", and an empty selection matches nothing. Oracle = pandas over

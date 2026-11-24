@@ -96,7 +96,10 @@ def _suite(name: str, argv: list[str], rx: str, timeout: int = 300) -> dict:
         # No summary line parsed -- either it crashed or reported env-only.
         return {"name": name, "passed": 0, "failed": 0 if env else 1,
                 "env": env, "detail": (out.strip().splitlines()[-1:] or ["no summary line"])[0]}
-    return {"name": name, "passed": pf[0], "failed": pf[1], "env": env,
+    # Keep the failing check lines so a RED gate says WHICH check failed (a bare count cannot be debugged).
+    fails = [ln.strip() for ln in out.splitlines()
+             if re.match(r"^\s*(FAIL|\[FAIL\])\b", ln) and not re.search(r"(PASS|FAIL)\s*[:=]\s*\d", ln)][:6]
+    return {"name": name, "passed": pf[0], "failed": pf[1], "env": env, "fails": fails,
             "detail": f"{pf[0]} pass / {pf[1]} fail" + (" (some UNVERIFIED)" if env else "")}
 
 
@@ -200,6 +203,11 @@ def main(argv=None) -> None:
 
     verdict = "RED" if regressions else ("AMBER" if amber else "GREEN")
     mark = {"GREEN": "GREEN [OK]", "AMBER": "AMBER [unverified]", "RED": "RED [regression]"}[verdict]
+    for r in rows:
+        if r.get("fails") and r["failed"] > 0 and r["status"] in ("REGRESSED", "UNVERIFIED"):
+            print(f"\n  {r['name']} -- failing checks (first {len(r['fails'])}):")
+            for ln in r["fails"]:
+                print("    " + ln[:200])
     print(f"\n  VERDICT: {mark}")
     if regressions:
         print(f"    Regressed vs baseline: {', '.join(regressions)} -- further testing warranted.")

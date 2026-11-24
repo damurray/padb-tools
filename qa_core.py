@@ -168,10 +168,14 @@ def main() -> int:
         cg = core.index.frame().sort_values("g").reset_index(drop=True)
         check("CORE-INDEX[%s]: condition dimensions == the viewer's (%s)" % (label, [d["name"] for d in core.dims]),
               core.dims == old.dims, (core.dims, old.dims))
-        check("CORE-INDEX[%s]: per-group site / serial / dimension columns == the viewer's gmap table" % label,
-              list(cg.columns) == list(og.columns)
-              and cg.drop(columns=["gid"]).fillna("<NA>").equals(og.drop(columns=["gid"]).fillna("<NA>")),
+        shared = [x for x in og.columns if x != "gid"]
+        check("CORE-INDEX[%s]: per-group site / serial / dimension columns == the viewer's gmap table (every v2.5 column)" % label,
+              all(x in cg.columns for x in og.columns)
+              and cg[shared].fillna("<NA>").equals(og[shared].fillna("<NA>")),
               (cg.head(3).to_dict("list"), og.head(3).to_dict("list")))
+        extra = [x for x in cg.columns if x not in og.columns]
+        check("CORE-INDEX[%s]: ... plus a column for every OTHER filterable key (the stage-3b registry: %s)" % (label, extra),
+              len(extra) == len(core.registry) - len(old.dims), (extra, len(core.registry), len(old.dims)))
         if label == "synthetic":
             names = [d["name"] for d in core.dims]
             check("CORE-INDEX[synthetic]: dims are exactly AlcState + Port (Mode constant, Run >40 values, Serial/Site/Frequency excluded)",
@@ -368,6 +372,99 @@ def main() -> int:
     sp3, _a3, sk3 = lockio.from_lock({"passfail": "maybe"}, mctx)
     check("CORE-LOCK: an unknown passfail value is skipped and reported (filter stays 'all')",
           sp3.pf == "all" and [x[0] for x in sk3] == ["passfail"])
+
+    # ---------------- CORE-FILTERS: which conditions are exposed as filters (stage 3b) ----------------
+    from padb_core import FilterConfig
+    import padb_core.filterconfig as fcmod
+    import re as _re
+    fds = Dataset(bigq)                                     # synthetic: AlcState, Port + Mode(const), Run(60), Serial, Site, Freq
+    reg = {r["name"]: r for r in fds.registry}
+    check("CORE-FILTERS: the registry lists EVERY filterable key; the automatic rules mark AlcState + Port",
+          {n for n, r in reg.items() if r["auto"]} == {"AlcState", "Port"}
+          and set(reg) == {"AlcState", "Port", "Mode", "Run", "Serial Number"}, {n: r["auto"] for n, r in reg.items()})
+    check("CORE-FILTERS: each non-automatic key says WHY (single value / serial-like / more than 40 values)",
+          reg["Mode"]["reason"] == "single value" and reg["Serial Number"]["reason"] == "serial-like"
+          and "60 values" in reg["Run"]["reason"], {n: r["reason"] for n, r in reg.items()})
+    check("CORE-FILTERS: Site and the x-axis can NEVER be exposed here (they have dedicated filters)",
+          {u["name"] for u in fds.index.unavailable} == {"Site", "Frequency (MHz)"}, fds.index.unavailable)
+    ids0 = {n: r["id"] for n, r in reg.items()}
+    check("CORE-FILTERS: ids = the v2.5 ids for the automatic keys (AlcState 0, Port 1), the others follow by name",
+          ids0 == {"AlcState": 0, "Port": 1, "Mode": 2, "Run": 3, "Serial Number": 4}, ids0)
+    dims_default = [dict(d) for d in fds.dims]
+
+    # config model
+    cfg_bad = {"not an object": [1], "unknown field": {"colour": 1}, "show not a list": {"show": "Port"},
+               "show twice": {"show": ["Port", "Port"]}, "hide not a list": {"hide": 3},
+               "labels not an object": {"labels": []}, "label too long": {"labels": {"Port": "x" * 61}}}
+    for label, bad in cfg_bad.items():
+        try:
+            FilterConfig.from_dict(bad)
+            raised = False
+        except ValueError:
+            raised = True
+        check("CORE-FILTERS: the config rejects %s" % label, raised)
+    c1 = FilterConfig.from_dict({"show": ["Run", "Port"], "labels": {"Run": "Run #", "Port": "Port"}})
+    check("CORE-FILTERS: a label equal to the key is dropped (cosmetic only); JSON round trip",
+          c1.to_dict() == {"show": ["Run", "Port"], "labels": {"Run": "Run #"}}
+          and FilterConfig.from_dict(c1.to_dict()).to_dict() == c1.to_dict() and FilterConfig().is_default())
+    fpath = tmp / "filters.json"
+    fcmod.save_file(fpath, c1)
+    back, err = fcmod.load_file(fpath)
+    (tmp / "badf.json").write_text("{nope")
+    check("CORE-FILTERS: file round trip (atomic); a corrupt file -> (default, message); missing -> (default, None)",
+          back.to_dict() == c1.to_dict() and err is None and not (tmp / "filters.json.part").exists()
+          and fcmod.load_file(tmp / "badf.json")[0].is_default() and bool(fcmod.load_file(tmp / "badf.json")[1])
+          and fcmod.load_file(tmp / "nope.json") == (FilterConfig(), None))
+
+    # exposure
+    t0 = __import__("time").time()
+    unk = fds.set_filters({"show": ["Run", "Port", "Nope"], "labels": {"Run": "Run #"}})
+    dt = __import__("time").time() - t0
+    names = [d["name"] for d in fds.dims]
+    check("CORE-FILTERS: show = exactly these keys in this order (incl. 'expose anyway' Run); unknown names reported",
+          names == ["Run", "Port"] and unk == ["Nope"], (names, unk))
+    check("CORE-FILTERS: changing the exposure is METADATA ONLY -- instant, rows unchanged (%.3f s)" % dt,
+          dt < 0.5 and fds.counts(FilterSpec(lo=0, hi=1e9)) == fds.n_rows)
+    check("CORE-FILTERS: a label shows up as 'label' (name and id unchanged); unlabeled dims carry no 'label'",
+          fds.dims[0]["label"] == "Run #" and fds.dims[0]["name"] == "Run" and fds.dims[0]["id"] == 3
+          and "label" not in fds.dims[1])
+    ids_now = {d["name"]: d["id"] for d in fds.dims}
+    check("CORE-FILTERS: ids are STABLE across configs (saved selections stay valid)",
+          all(ids_now[n] == ids0[n] for n in ids_now))
+    runv = big["Group"].str.extract(r"Run: (\d+)")[0]
+    rid = fds.dims[0]["id"]
+    got = fds.counts(FilterSpec(lo=0, hi=1e9, conds={rid: ["5", "17"]}))
+    check("CORE-FILTERS: an 'expose anyway' high-count key filters correctly (== pandas oracle)",
+          got == int(runv.isin(["5", "17"]).sum()) > 0, (got, int(runv.isin(["5", "17"]).sum())))
+    alc_id = ids0["AlcState"]
+    narrowed = FilterSpec(lo=0, hi=1e9, conds={alc_id: ["TRUE"]})
+    want_true = int(big["Group"].str.contains("AlcState: TRUE").sum())
+    check("CORE-FILTERS: a condition that is NOT exposed is 'all' -- a spec narrowing it constrains NOTHING",
+          fds.counts(narrowed) == fds.n_rows, (fds.counts(narrowed), fds.n_rows))
+    fds.set_filters({"show": ["AlcState", "Port"]})
+    check("CORE-FILTERS: ... and exposing it again makes the SAME spec constrain it (== oracle, nothing lost)",
+          fds.counts(narrowed) == want_true < fds.n_rows, (fds.counts(narrowed), want_true))
+    fds.set_filters({"hide": ["Port"]})
+    check("CORE-FILTERS: hide (automatic mode) removes just that key", [d["name"] for d in fds.dims] == ["AlcState"])
+    fds.set_filters({"show": ["Run"]})
+    by_run = fds.query(FilterSpec(lo=0, hi=1e9), 4000, ["d3"])
+    by_hidden = fds.query(FilterSpec(lo=0, hi=1e9), 4000, ["d%d" % ids0["Mode"]])
+    check("CORE-FILTERS: group-by an exposed key splits by it; a hidden key falls back to Site",
+          (by_run.get("too_many") or len(by_run["traces"])) == 60 and len(by_hidden["traces"]) == 2,
+          (by_run.get("too_many"), len(by_run["traces"]), len(by_hidden["traces"])))
+    fds.set_filters({})
+    check("CORE-FILTERS: an empty config restores the automatic set exactly (== the v2.5 dimensions)",
+          fds.dims == dims_default and fds.index.config.is_default(), (fds.dims, dims_default))
+    ad = {r["name"]: r for r in fds.all_dims()}
+    check("CORE-FILTERS: all_dims() reports every key with exposed / auto / reason for an editor",
+          ad["AlcState"]["exposed"] and ad["AlcState"]["auto"] and not ad["Run"]["exposed"] and not ad["Run"]["auto"]
+          and ad["Run"]["n_values"] == 60 and ad["Mode"]["reason"] == "single value", ad)
+    fds.set_filters({"show": ["Run"]})
+    ctx_h = {"dims": fds.dims, "sites": fds.sites, "temps": fds.temps, "x_min": fds.x_min, "x_max": fds.x_max,
+             "hidden": [r["name"] for r in fds.registry if r["name"] not in {d["name"] for d in fds.dims}]}
+    _sp, _ap, skp = lockio.from_lock({"dims": {"AlcState": ["TRUE"]}}, ctx_h)
+    check("CORE-FILTERS: importing a filter file that names a HIDDEN condition skips it and says so",
+          skp and "hidden by this dataset's filter configuration" in skp[0][1], skp)
 
     # ---------------- CORE-BRAND: the embedded Keysight logo is valid and light ----------------
     import base64

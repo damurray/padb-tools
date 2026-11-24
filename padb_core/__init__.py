@@ -13,6 +13,7 @@ __version__ = "3.0.0-dev1"
 
 from .conditions import GroupIndex, parse_group, serial_of, site_of      # noqa: F401
 from .filterspec import FilterSpec                                       # noqa: F401
+from .filterconfig import FilterConfig                                   # noqa: F401
 from .limits import LimitTable                                           # noqa: F401
 from .engine import Dataset                                              # noqa: F401
 from . import lockio                                                     # noqa: F401

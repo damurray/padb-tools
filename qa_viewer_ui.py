@@ -12,6 +12,10 @@ checked against an independent pandas oracle over the same parquet:
   INV-RAPID  3 back-to-back Next clicks end on the LAST window (no stale response wins)
   INV-HOVER  hover text carries Serial + the condition text
   INV-NOERR  no uncaught page errors
+  INV-FILTCFG which conditions are exposed as filters: API validation, hide clears a hidden narrowing,
+             expose-anyway (serial-like) filters == oracle, rename/reorder, group-by follows, file persisted,
+             reload, Reset to automatic, hidden names in an imported filter are skipped and said so,
+             a high-count condition gets a search box
   INV-SPEC   the API takes ONE FilterSpec (`spec` JSON): == the legacy params, window defaults to the
              x-range, junk -> 400 (scatter AND view), and the band page honours it
   INV-DDROW  condition filters as a ROW of dropdowns (same state as the checkbox list):
@@ -445,6 +449,7 @@ def main() -> int:
         # ---- Stage 2: the API takes ONE FilterSpec (legacy params still accepted) ---------------
         import urllib.parse as _up
         aidx = str(dims["AlcState"]["id"])
+        aid_i = dims["AlcState"]["id"]
         sp = {"lo": 60, "hi": 330, "conds": {aidx: ["TRUE"]}}
         via_spec = api("/api/scatter?maxpts=4000&by=site&spec=" + _up.quote(json.dumps(sp)))
         via_legacy = api("/api/scatter?flo=60&fhi=330&maxpts=4000&by=site&conds=" + _up.quote(json.dumps({aidx: ["TRUE"]})))
@@ -741,6 +746,152 @@ def main() -> int:
         check("INV-LIMEDIT: Clear all -> band view back on the data's stair (-76/-74)",
               r.get("uniq") == ["-74", "-76"], r)
         bp2.close()
+
+        # ---- Which conditions are exposed as filters (stage 3b) -----------------------------------
+        ffile = tmp / "padb_viewer_filters.json"
+        fl = api("/api/filters")
+        ad = {x["name"]: x for x in fl["all_dims"]}
+        check("INV-FILTCFG: GET /api/filters lists every filterable condition with its status",
+              fl["supported"] and [d["name"] for d in fl["dims"]] == ["AlcState", "Port"]
+              and ad["Serial Number"]["auto"] is False and ad["Serial Number"]["reason"] == "serial-like"
+              and ad["AlcState"]["exposed"] and not ad["Serial Number"]["exposed"]
+              and any(u["name"] == "Frequency (MHz)" for u in fl["unavailable"]), fl)
+
+        def post_filters(payload):
+            req = urllib.request.Request(base + "/api/filters", data=json.dumps(payload).encode(),
+                                         headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                r = urllib.request.urlopen(req, timeout=30)
+                return r.status, json.loads(r.read())
+            except urllib.error.HTTPError as e:
+                return e.code, json.loads(e.read())
+
+        for label, payload in {"show is not a list": {"config": {"show": "Port"}},
+                               "unknown field": {"config": {"colour": 1}},
+                               "label too long": {"config": {"labels": {"Port": "x" * 70}}}}.items():
+            code, body = post_filters(payload)
+            check("INV-FILTCFG: a bad configuration is refused with 400 (%s) and changes nothing" % label,
+                  code == 400 and body.get("ok") is False and [d["name"] for d in api("/api/filters")["dims"]] == ["AlcState", "Port"]
+                  and not ffile.exists(), (code, body))
+
+        pid, said = dims["Port"]["id"], str(ad["Serial Number"]["id"])
+        page.evaluate("localStorage.clear()")
+        reload_page()
+        page.evaluate("condReset()")
+        total()
+        # narrow AlcState (list) and Port (dropdown row), so we can see what hiding Port does
+        if not page.is_visible("#condpanel"):
+            page.click("#condbtn")
+        page.uncheck('.condchk[data-dim="%d"][value="FALSE"]' % aid_i)
+        page.uncheck('.condchk[data-dim="%d"][value="RF2"]' % pid)
+        n_both = total()
+        sg = df["Group"]
+        o_alc = sg.str.contains("AlcState: TRUE")
+        o_rf1 = sg.str.contains("Port: RF1")
+        check("INV-FILTCFG baseline: AlcState=TRUE and Port=RF1 narrowed (== oracle)",
+              n_both == int((o_alc & o_rf1).sum()), (n_both, int((o_alc & o_rf1).sum())))
+        page.click("#fltbtn")
+        page.wait_for_selector("#flttbl .fltrow")
+        names = page.evaluate("[...document.querySelectorAll('#flttbl .fltrow')].map(r=>r.getAttribute('data-name'))")
+        check("INV-FILTCFG: the panel lists every filterable condition, exposed ones first",
+              names[:2] == ["AlcState", "Port"] and "Serial Number" in names and len(names) == 3, names)
+        page.uncheck('#flttbl .fltrow[data-name="Port"] .flt_on')
+        page.check('#flttbl .fltrow[data-name="Serial Number"] .flt_on')
+        page.fill('#flttbl .fltrow[data-name="AlcState"] .flt_label', "ALC")
+        for _ in range(2):      # move Serial Number to the top
+            page.click('#flttbl .fltrow[data-name="Serial Number"] a[title="Move up"]')
+        page.click("#fltedit button:has-text('Apply')")
+        page.wait_for_function("document.getElementById('fltmsg').textContent.indexOf('filter(s) offered')>=0", timeout=30000)
+        msg = page.inner_text("#fltmsg")
+        btns = page.evaluate("[...document.querySelectorAll('#condrow .dd-btn')].map(b=>b.textContent.replace(/[^A-Za-z ]/g,'').trim())")
+        check("INV-FILTCFG: Apply re-draws the dropdown row live: Serial Number first (expose anyway), ALC (renamed), no Port",
+              btns == ["Serial Number", "ALC"], btns)
+        check("INV-FILTCFG: the full checkbox list and the group-by follow the exposed set",
+              page.evaluate("document.querySelectorAll('.condchk[data-dim=\"%d\"]').length" % pid) == 0
+              and page.evaluate("document.querySelectorAll('.condchk[data-dim=\"%s\"]').length" % said) == 3
+              and page.evaluate("document.querySelector('.grpchk[value=\"d%d\"]')" % pid) is None
+              and page.evaluate("!!document.querySelector('.grpchk[value=\"d%s\"]')" % said), msg)
+        n_hidden = total()
+        check("INV-FILTCFG: hiding Port CLEARED its narrowing (a hidden filter restricts nothing); AlcState stays narrowed (== oracle)",
+              n_hidden == int(o_alc.sum()) and "Port" in msg and "cleared" in msg, (n_hidden, int(o_alc.sum()), msg))
+        # an exposed 'serial-like' key really filters
+        page.click("#ddbtn_%s" % said)
+        page.uncheck('.ddchk[data-dim="%s"][value="US65080003"]' % said)
+        n_ser = total()
+        o_ser = sg.str.contains("Serial Number: US65080001") | sg.str.contains("Serial Number: US65080002")
+        check("INV-FILTCFG: the exposed Serial Number dropdown filters correctly (== oracle)",
+              n_ser == int((o_alc & o_ser).sum()) < n_hidden, (n_ser, int((o_alc & o_ser).sum())))
+        cfg = json.loads(ffile.read_text())
+        check("INV-FILTCFG: the configuration is saved beside the data (show order + labels)",
+              cfg == {"show": ["Serial Number", "AlcState"], "labels": {"AlcState": "ALC"}}, cfg)
+        reload_page()
+        btns2 = page.evaluate("[...document.querySelectorAll('#condrow .dd-btn')].map(b=>b.textContent.replace(/[^A-Za-z ]/g,'').trim())")
+        check("INV-FILTCFG: a reload keeps the configuration AND the selection on the still-exposed filters",
+              btns2 == ["Serial Number", "ALC"] and total() == n_ser, (btns2,))
+        _rq = urllib.request.Request(base + "/api/filter/import", method="POST", headers={"Content-Type": "application/json"},
+                                     data=json.dumps({"lock": {"dims": {"Port": ["RF1"], "AlcState": ["TRUE"]}}}).encode())
+        imp = json.loads(urllib.request.urlopen(_rq, timeout=30).read())
+        check("INV-FILTCFG: importing a filter file that names the hidden Port skips it and says why",
+              imp["spec"]["conds"] == {aid: ["TRUE"]} and imp["skipped"]
+              and "hidden by this dataset" in imp["skipped"][0]["reason"], imp)
+        page.click("#fltbtn")
+        page.click("#fltedit button:has-text('Reset to automatic')")
+        page.wait_for_function("document.getElementById('fltmsg').textContent.indexOf('filter(s) offered')>=0", timeout=30000)
+        btns3 = page.evaluate("[...document.querySelectorAll('#condrow .dd-btn')].map(b=>b.textContent.replace(/[^A-Za-z ]/g,'').trim())")
+        check("INV-FILTCFG: Reset to automatic restores AlcState + Port (no rename) and writes an empty configuration",
+              btns3 == ["AlcState", "Port"] and json.loads(ffile.read_text()) == {}, (btns3, ffile.read_text()))
+        page.evaluate("condReset()")
+        total()
+
+        # ---- a high-count condition gets a search box (second small dataset) ------------------------
+        d2 = tmp / "d2"
+        d2.mkdir()
+        import pandas as _pd
+        rows2 = []
+        for i in range(180):
+            rows2.append({"Group": "AlcState: %s  Run: %d  Frequency (MHz): %g" % ("TRUE" if i % 2 else "FALSE", i % 45, 10 + i),
+                          "Frequency (MHz)": 10.0 + i, "SpurPower (dBc)": -80.0 - (i % 7), "Upper Limit": -70.0, "Test Step": "Room"})
+        _pd.DataFrame(rows2).to_parquet(d2 / "d2.parquet")
+        srv2 = subprocess.Popen([sys.executable, str(HERE / "padb_viewer.py"), str(d2), "--port", "8798", "--no-open"],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, cwd=str(HERE))
+        try:
+            b2 = "http://127.0.0.1:8798"
+            for _ in range(60):
+                try:
+                    urllib.request.urlopen(b2 + "/api/meta", timeout=5).read()
+                    break
+                except Exception:  # noqa: BLE001
+                    time.sleep(0.5)
+            m2 = json.loads(urllib.request.urlopen(b2 + "/api/meta").read())
+            run = next(x for x in m2["all_dims"] if x["name"] == "Run")
+            check("INV-FILTCFG: a 45-value condition is NOT offered by default (automatic rule) but can be exposed",
+                  run["auto"] is False and not run["exposed"] and "45 values" in run["reason"], run)
+            p2 = browser.new_page()
+            p2.goto(b2 + "/")
+            p2.wait_for_selector("#plot .main-svg", timeout=60000)
+            p2.wait_for_timeout(800)
+            p2.click("#fltbtn")
+            p2.check('#flttbl .fltrow[data-name="Run"] .flt_on')
+            p2.click("#fltedit button:has-text('Apply')")
+            p2.wait_for_function("document.getElementById('fltmsg').textContent.indexOf('filter(s) offered')>=0", timeout=30000)
+            rid2 = run["id"]
+            p2.click("#ddbtn_%d" % rid2)
+            check("INV-FILTCFG: a condition with more than 12 values gets a search box in its dropdown",
+                  p2.is_visible("#ddp_%d .dd-search" % rid2))
+            p2.fill("#ddp_%d .dd-search" % rid2, "4")
+            shown = p2.evaluate("[...document.querySelectorAll('#ddp_%d .dd-item')].filter(l=>!l.querySelector('.ddall')&&l.style.display!=='none').map(l=>l.textContent.trim())" % rid2)
+            check("INV-FILTCFG: typing in the search box filters the visible values (45 -> only those containing '4')",
+                  0 < len(shown) < 45 and all("4" in x for x in shown), shown)
+            p2.fill("#ddp_%d .dd-search" % rid2, "")
+            for v in [str(i) for i in range(45) if i not in (3, 11)]:
+                p2.uncheck('.ddchk[data-dim="%d"][value="%s"]' % (rid2, v))
+            p2.wait_for_timeout(1500)
+            n2 = int(p2.inner_text("#status").split(" pts")[0].replace(",", ""))
+            want2 = sum(1 for i in range(180) if i % 45 in (3, 11))
+            check("INV-FILTCFG: narrowing the exposed high-count condition via the dropdown == oracle", n2 == want2, (n2, want2))
+            p2.close()
+        finally:
+            srv2.terminate()
         check("INV-NOERR: no uncaught page errors", not errs, errs)
     finally:
         srv.terminate()

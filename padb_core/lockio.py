@@ -96,7 +96,9 @@ def from_lock(lock, ctx: dict):
         else:
             d = by_name.get(label) or by_lower.get(low)
             if not d:
-                skipped.append((label, "no such condition in this dataset"))
+                skipped.append((label, "hidden by this dataset's filter configuration"
+                                if label in set(ctx.get("hidden", [])) or low in {h.lower() for h in ctx.get("hidden", [])}
+                                else "no such condition in this dataset"))
                 continue
             got = pick(vals, d["values"])
             if got:

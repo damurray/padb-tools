@@ -18,6 +18,7 @@ import pyarrow.parquet as pq
 
 from .columns import detect_columns, qi
 from .conditions import GroupIndex
+from .filterconfig import FilterConfig
 from .filterspec import FilterSpec
 from .limits import LimitTable
 
@@ -49,7 +50,7 @@ def _stairs(rows, x_max):
 
 
 class Dataset:
-    def __init__(self, parquet, x_col=None, value_col=None):
+    def __init__(self, parquet, x_col=None, value_col=None, filters=None):
         self.path = Path(parquet)
         names = pq.ParquetFile(self.path).schema.names
         (self.x_col, self.value_col, self.serial_col,
@@ -72,6 +73,7 @@ class Dataset:
         self._lock = threading.Lock()
         self.index = None
         self.limits = LimitTable()
+        self._filters0 = filters or FilterConfig()
         self._build()
         self.x_label, self.value_label = self.x_col, self.value_col
         m = re.search(r"\(([^)]+)\)", self.x_label)
@@ -92,15 +94,17 @@ class Dataset:
                 f"SELECT DISTINCT COALESCE(CAST({qi(self.group_col)} AS VARCHAR), 'nan') FROM read_parquet('{src}')"
             ).fetchall()]
             # sorted -> deterministic group ids (DISTINCT order is arbitrary and differs per run)
-            self.index = GroupIndex.build(sorted(vals), x_col=self.x_col)
+            self.index = GroupIndex.build(sorted(vals), x_col=self.x_col, config=self._filters0)
             gdf = self.index.frame()
             con.register("gmap_df", gdf)
             con.execute("CREATE TABLE gmap AS SELECT * FROM gmap_df")
             con.unregister("gmap_df")
             gjoin = (f"LEFT JOIN gmap ON gmap.g = COALESCE(CAST(r.{qi(self.group_col)} AS VARCHAR), 'nan')")
             site_expr, serial_expr, gid_expr = "gmap.g_site", "gmap.g_serial", "gmap.gid"
-            dsel = "".join(f", gmap.d{d['id']} AS d{d['id']}" for d in self.index.dims)
-            dout = "".join(f", d{d['id']}" for d in self.index.dims) + ", gid"
+            # a column for EVERY registry key (not just the exposed ones): exposing / hiding a filter is
+            # then metadata only -- instant, no reload, saved selections stay valid
+            dsel = "".join(f", gmap.d{r['id']} AS d{r['id']}" for r in self.index.registry)
+            dout = "".join(f", d{r['id']}" for r in self.index.registry) + ", gid"
         dsel += f", {gid_expr} AS gid"
         if self.serial_col:
             serial_expr = f"CAST(r.{qi(self.serial_col)} AS VARCHAR)"
@@ -150,7 +154,30 @@ class Dataset:
         return self.index.dims if self.index else []
 
     def dim_ids(self):
+        """Ids of the EXPOSED conditions. FilterSpec.to_sql ignores any other id, so a condition that is
+        not exposed puts no restriction on the data ("all")."""
         return [d["id"] for d in self.dims]
+
+    @property
+    def registry(self):
+        return self.index.registry if self.index else []
+
+    def set_filters(self, config):
+        """Apply a FilterConfig (which conditions are exposed, in what order, with what labels). Metadata
+        only. -> the names the config mentions that this dataset does not have."""
+        cfg = config if isinstance(config, FilterConfig) else FilterConfig.from_dict(config)
+        with self._lock:
+            return self.index.apply_config(cfg) if self.index else []
+
+    def all_dims(self):
+        """Every filterable condition with its status, for an editor: id, name, n_values, auto, reason, exposed."""
+        exposed = {d["id"]: d for d in self.dims}
+        out = []
+        for r in self.registry:
+            e = exposed.get(r["id"])
+            out.append({"id": r["id"], "name": r["name"], "n_values": r["n_values"], "auto": r["auto"],
+                        "reason": r["reason"], "exposed": e is not None, "label": (e or {}).get("label", "")})
+        return out
 
     def distinct_x(self):
         return [r[0] for r in self._all("SELECT DISTINCT x FROM pts0 ORDER BY x")]
@@ -160,7 +187,9 @@ class Dataset:
                 "x_label": self.x_label, "value_label": self.value_label, "x_min": self.x_min,
                 "x_max": self.x_max, "sites": self.sites, "temps": self.temps, "n_serials": self.n_serials,
                 "x_unit": self.x_unit, "is_room_only": self.is_room_only, "has_limits": self.has_limits,
-                "limits": self.limits.to_list(), "dims": self.dims}
+                "limits": self.limits.to_list(), "dims": self.dims,
+                "all_dims": self.all_dims(), "unavailable": self.index.unavailable if self.index else [],
+                "filters": self.index.config.to_dict() if self.index else {}}
 
     # ---- limits as data ------------------------------------------------------------------
     def set_limits(self, entries):

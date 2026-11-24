@@ -49,10 +49,12 @@ class FilterConfig:
             if len(set(show)) != len(show):
                 raise ValueError("`show` lists a condition twice")
             show = list(show)
-        hide = d.get("hide") or []
+        hide = d.get("hide")
+        hide = [] if hide is None else hide
         if not isinstance(hide, list) or not all(isinstance(k, str) and k for k in hide):
             raise ValueError("`hide` must be a list of condition names")
-        labels = d.get("labels") or {}
+        labels = d.get("labels")
+        labels = {} if labels is None else labels
         if not isinstance(labels, dict):
             raise ValueError("`labels` must be an object {condition: label}")
         clean = {}
