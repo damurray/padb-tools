@@ -146,7 +146,7 @@ def analyze(request, log=None) -> dict:
         if r["pdf_report"]:
             job["build_pdf_report"] = True
         jp.write_text(json.dumps(job, indent=2), encoding="utf-8")
-        entry = {"name": name, "job": str(jp), "results_dir": str(rd), "index": None, "views": [],
+        entry = {"name": name, "job": str(jp), "results_dir": str(rd), "index": None, "views": [], "tier": None,
                  "files": [], "status": "ok", "error": None}
         code = 0
         try:
@@ -165,6 +165,12 @@ def analyze(request, log=None) -> dict:
                                  and not any(p.stem.endswith("_" + w) and len(w) > len(v) for w in _VIEWS)})
         idx = rd / "index.html"
         entry["index"] = str(idx) if idx.is_file() else None
+        tj = rd / "tier.json"
+        if tj.is_file():
+            try:
+                entry["tier"] = json.loads(tj.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                entry["tier"] = None
         if code or not entry["index"]:
             entry["status"] = "failed"
             entry["error"] = entry["error"] or "no index.html was produced"

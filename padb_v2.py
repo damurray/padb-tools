@@ -1562,6 +1562,41 @@ def _resolve_filter_config(cfg: dict) -> bool:
         return False
 
 
+def _apply_size_tier(cfg: dict, df, views: list, explicit: bool, output_dir: Path) -> list:
+    """Stage 5: predict the build cost of `views` from the dataset's size (padb_tiers) BEFORE building. Automatically
+    chosen views that are predicted over budget are not built (reason + prediction recorded, parquet viewer
+    recommended); explicitly requested views are never dropped, only reported. The outcome goes to cfg["_tier"],
+    `tier.json` in the results folder and the index page. Job keys: `tiering` (false = off), `tier_budget_s`.
+    Never fails a build."""
+    try:
+        t_opt = cfg.get("tiering", True)
+        if t_opt is False or str(t_opt).lower() in ("false", "off", "0"):
+            return views
+        import padb_tiers
+        from padb_core.conditions import parse_group
+        groups = df["Group"].dropna().unique() if "Group" in df.columns else []
+        n_cond = padb_tiers.count_conditions(
+            groups, parse_group, lambda k: any(w in k.lower() for w in ("serial", "unit id", "dut id", "s/n")))
+        n_x = int(df["Frequency_MHz"].nunique()) if "Frequency_MHz" in df.columns else 0
+        p = padb_tiers.plan(len(df), n_x, n_cond, views, explicit,
+                            float(cfg.get("tier_budget_s", padb_tiers.DEFAULT_BUDGET_S)))
+        cfg["_tier"] = p
+        try:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            (Path(output_dir) / "tier.json").write_text(json.dumps(p, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+        print(f"  Size tier: {p['tier']} ({p['stats']['rows']:,} rows, {p['stats']['n_x']:,} x, "
+              f"{p['stats']['n_cond']:,} conditions) -- predicted build s: "
+              + ", ".join(f"{v} {s}" for v, s in p["predictions"].items() if s is not None), flush=True)
+        for note in p["notes"]:
+            print("  [TIER] " + note, flush=True)
+        return p["build"]
+    except Exception as exc:  # noqa: BLE001 -- never fail a build over the planner
+        print(f"  [WARN] size-tier planner skipped: {exc}", flush=True)
+        return views
+
+
 def generate_report(
     csv_path: Path,
     cfg: dict,
@@ -1704,6 +1739,7 @@ def generate_report(
     room_values = set(cfg.get("room_values", ["Room"]))
     is_room_only = set(df["Temperature"].dropna().unique()) <= room_values
 
+    _explicit_views = "views" in cfg
     if "views" in cfg:
         views = cfg["views"]
     else:
@@ -1718,6 +1754,8 @@ def generate_report(
             print(f"    Room-only data detected -> default views: {views}", flush=True)
         else:
             views = list(_VIEW_FN.keys())
+    if not _is_worker:
+        views = _apply_size_tier(cfg, df, views, _explicit_views, output_dir)
     generated: list[Path] = []
     gen_pairs: list[tuple[str, Path]] = []
 
@@ -2051,6 +2089,11 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
     _ln = cfg.get("_limits_note")
     lim_note_html = ("<p style='background:#fff3cd;border:1px solid #e0b84a;padding:6px 10px;border-radius:4px'>"
                      "<b>Limit overrides active.</b> " + _html.escape(_ln) + "</p>") if _ln else ""
+    _tn = (cfg.get("_tier") or {})
+    if _tn.get("notes"):
+        lim_note_html += ("<p style='background:#fff3cd;border:1px solid #e0b84a;padding:6px 10px;border-radius:4px'>"
+                          "<b>Size tier: " + _html.escape(str(_tn.get("tier"))) + ".</b> "
+                          + _html.escape(" ".join(_tn["notes"])) + "</p>")
     _fn = cfg.get("_filters_note")
     if _fn:
         lim_note_html += ("<p style='background:#fff3cd;border:1px solid #e0b84a;padding:6px 10px;border-radius:4px'>"

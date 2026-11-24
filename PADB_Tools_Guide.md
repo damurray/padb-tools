@@ -603,6 +603,13 @@ py padb_csv_to_parquet.py <file.csv|folder> [--out] [--force] [--verify]
 
 ---
 
+## Size tiers -- what will be built for a big dataset (`tiering` / `tier_budget_s`) -- added 2026-11-24
+
+Before building, the tool predicts each view's build time from the dataset's size (rows, distinct x-values and conditions -- the boxplot and statistics views do work per x-value per condition, not per row) and compares it with a **budget of 300 s per view**. When the views were chosen **automatically** (no `views` in the job), an over-budget view is **not built**: the log, `tier.json`, the index page banner and `padb_analyze`'s result (`tier`) say which view, its predicted time and why, and recommend the **parquet viewer** for that dataset. Views you request **explicitly** (`"views": [...]`) are always built; if a requested view is predicted over budget you are only warned. Tiers: `standard` (nothing over budget), `heavy` (some views skipped, others built) and `giant` (every candidate over budget -- the single cheapest view is still built so there is something to open).
+
+- `"tiering": false` switches the planner off (every automatic view is built, as in v2.5). `"tier_budget_s": 900` raises the budget.
+- The predictions come from timings measured on a typical workstation (fit error up to ~40%, checked against a real 965k-row, 7,662-x build) -- an order-of-magnitude guide for a budget, not a stopwatch. Page *size* is not used for routing: the automatic size levers (decimation, float32 packing, compression) keep pages small, and the existing size warning still reports a page that turns out too big.
+
 ## Choosing which conditions are filters in the HTML pages (`filters_file` / `filter_config`) -- added 2026-11-24
 
 The same file the viewer's **Edit filters** panel writes (`padb_viewer_filters.json`: `show` / `hide` / `labels`) can drive the static pages. Put it beside the job (or anywhere) and set `"filters_file": "filters.json"` (relative to the job file) or write the object inline as `"filter_config": {...}`; `py padb_analyze.py ... --filters-file filters.json` passes it through. **Applied by the Scatter and Reference views**; the others still list every condition and the index page says so.
