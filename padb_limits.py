@@ -43,6 +43,8 @@ def validate(raw):
     for i, e in enumerate(raw, 1):
         if not isinstance(e, dict):
             return None, "range %d: not an object" % i
+        if isinstance(e.get("lo"), bool) or isinstance(e.get("hi"), bool):
+            return None, "range %d: min and max must be numbers" % i
         try:
             lo, hi = float(e["lo"]), float(e["hi"])
         except (KeyError, TypeError, ValueError):
@@ -57,6 +59,8 @@ def validate(raw):
             if v is None or (isinstance(v, str) and not v.strip()):
                 vals[key] = None
                 continue
+            if isinstance(v, bool):
+                return None, "range %d: %s must be a number or blank" % (i, key)
             try:
                 f = float(v)
             except (TypeError, ValueError):

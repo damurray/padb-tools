@@ -3271,6 +3271,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         + "<script>\n"
         + constants + "\n"
         + _COMMON_JS + "\n"
+        + "PADB_limovPrepass(DATA, 'Frequency_MHz');\n"
         + _AV_FREQ_JS
         + "</script>\n</body>\n</html>"
     )
@@ -4235,6 +4236,7 @@ function PADB_lockRenderBar(rep){
     html += '<span onclick="PADB_lockSave()" title="Save ALL of this view\'s data filters -- conditions, frequency range, temperature, serial/port, and Passing/Failing -- as a cross-view lock; other views auto-apply it. On the boxplot, if you have narrowed serial/port it ALSO pins that exact per-unit population everywhere (handled for you). Clear removes only what this lock added -- any other Global-Filter items you set stay. (Plot type, group-by, table mode and zoom stay per-view.)" style="'+btn+';margin-left:0">🔒 Lock these filters</span>'+
       '<span onclick="document.getElementById(\'padb_lock_import\').click()" title="Import a locked-filters file" style="'+btn+'">Import</span>';
   }
+  if(typeof PADB_limovBarHtml==='function'){ var _lv=PADB_limovBarHtml(btn); if(_lv) html += (html?'<div style="border-top:1px solid #e2e8f0;margin:6px 0 0"></div>':'')+_lv; }
   /* ---- Global Filter section: shown whenever a GF exists (with or without a lock), so its
      state is visible + manageable from ANY view, not just the boxplot (David 2026-09-28). ---- */
   var _gf=PADB_gfSummary();
@@ -4500,7 +4502,138 @@ function PADB_segHint(curKey,curCount){
   el.textContent=msg; el.style.display=msg?'inline':'none';
 }
 """
-_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS + "\n" + _FILTER_CHIP_JS + "\n" + _PASSFAIL_JS + "\n" + _SEGHINT_JS
+_LIMOV_JS = r"""
+/* ==================== Limit overrides in the page (stage 4a) ====================
+   The SAME limits file the viewer edits and `limits_file` builds apply: ranges {lo,hi,upper,lower,note};
+   a range replaces the data's Upper/Lower limit for lo<=x<=hi (edges inclusive); a blank side keeps the
+   data's own value; later range wins on overlap / a shared edge, per side. This is a port of
+   padb_limits.py (validate / override_arrays) and is conformance-tested against it in a browser
+   (qa_limits_inpage), so the three renderings -- numpy, DuckDB SQL, this JS -- cannot drift.
+   Stored per TEST (same prefix as the Global Filter / lock), applied by a PRE-PASS over the view's embedded
+   rows before the view reads them; Import / Clear therefore reload the page. A view that has no pre-pass says
+   so loudly on the shared bar instead of silently showing the data's own verdicts (cross-view rule). */
+var PADB_LIMOV_KEY=(typeof GF_KEY!=='undefined'&&GF_KEY&&GF_KEY.indexOf('padb_v2_excluded_')===0)
+  ? ('padb_v2_limits_'+GF_KEY.slice(17)) : null;
+var _limovState={registered:false, ranges:0, rows:0};
+var _LIMOV_UNIT_HZ={hz:1,khz:1e3,mhz:1e6,ghz:1e9};
+function PADB_limovUnitScale(fromUnit,toUnit){
+  var f=String(fromUnit||'').trim().toLowerCase(), t=String(toUnit||'').trim().toLowerCase();
+  return (_LIMOV_UNIT_HZ[f]&&_LIMOV_UNIT_HZ[t])?(_LIMOV_UNIT_HZ[f]/_LIMOV_UNIT_HZ[t]):1;
+}
+/* a JSON value -> {ok:true,v:number} | {ok:false,kind:'nan'|'inf'}  (numbers and numeric strings only) */
+function _limovParse(v){
+  if(typeof v==='number') return isFinite(v)?{ok:true,v:v}:{ok:false,kind:'inf'};
+  if(typeof v!=='string') return {ok:false,kind:'nan'};
+  var s=v.trim();
+  if(/^[+-]?(inf|infinity|nan)$/i.test(s)) return {ok:false,kind:'inf'};
+  if(/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return {ok:true,v:Number(s)};
+  return {ok:false,kind:'nan'};
+}
+function PADB_limovValidate(raw){
+  if(!Array.isArray(raw)) return {error:'limits must be a list'};
+  if(raw.length>200) return {error:'at most 200 limit ranges'};
+  var out=[];
+  for(var i=0;i<raw.length;i++){
+    var e=raw[i], n=i+1;
+    if(!e||typeof e!=='object'||Array.isArray(e)) return {error:'range '+n+': not an object'};
+    var lo=_limovParse(e.lo), hi=_limovParse(e.hi);
+    if(!lo.ok&&lo.kind==='nan'||!hi.ok&&hi.kind==='nan') return {error:'range '+n+': min and max must be numbers'};
+    if(!lo.ok||!hi.ok) return {error:'range '+n+': min and max must be finite'};
+    if(lo.v>hi.v) return {error:'range '+n+': min must not be above max'};
+    var vals={};
+    var sides=['upper','lower'];
+    for(var k=0;k<2;k++){
+      var key=sides[k], v=e[key];
+      if(v===null||v===undefined||(typeof v==='string'&&!v.trim())){ vals[key]=null; continue; }
+      var p=_limovParse(v);
+      if(!p.ok) return {error:'range '+n+': '+key+(p.kind==='inf'?' must be finite':' must be a number or blank')};
+      vals[key]=p.v;
+    }
+    if(vals.upper===null&&vals.lower===null) return {error:'range '+n+': give an upper and/or a lower limit'};
+    if(vals.upper!==null&&vals.lower!==null&&vals.lower>vals.upper) return {error:'range '+n+': lower must not be above upper'};
+    var item={lo:lo.v,hi:hi.v,upper:vals.upper,lower:vals.lower};
+    var note=String(e.note==null?'':e.note).trim(); if(note) item.note=note.slice(0,120);
+    out.push(item);
+  }
+  out.sort(function(a,b){ return a.lo-b.lo; });      /* stable: equal lo keeps the user's order */
+  return {list:out};
+}
+/* the override at x: {hi:number|undefined, lo:number|undefined}; later entry wins, per side */
+function PADB_limovFor(x,list){
+  var hi, lo;
+  for(var i=0;i<list.length;i++){
+    var e=list[i];
+    if(x>=e.lo&&x<=e.hi){ if(e.upper!==null) hi=e.upper; if(e.lower!==null) lo=e.lower; }
+  }
+  return {hi:hi,lo:lo};
+}
+function PADB_limovGet(){
+  if(!PADB_LIMOV_KEY) return null;
+  try{ var s=localStorage.getItem(PADB_LIMOV_KEY); var o=s?JSON.parse(s):null; return (o&&o.limits&&o.limits.length)?o.limits:null; }catch(e){ return null; }
+}
+function PADB_limovSet(list){
+  if(!PADB_LIMOV_KEY) return;
+  try{ localStorage.setItem(PADB_LIMOV_KEY,JSON.stringify({v:1,unit:(typeof X_UNIT!=='undefined'?X_UNIT:''),limits:list})); }catch(e){}
+}
+function PADB_limovClear(){ try{ if(PADB_LIMOV_KEY) localStorage.removeItem(PADB_LIMOV_KEY); }catch(e){} location.reload(); }
+/* PRE-PASS: call once after the data and this code exist and BEFORE the view reads them. Mutates the rows
+   exactly like padb_limits.apply_df: Upper_Limit AND Spec_Hi (the classifier prefers Spec) and the lower
+   pair, uncertainty zeroed on overridden rows. Registers the view as one that APPLIES overrides. */
+function PADB_limovPrepass(rows,xKey){
+  _limovState.registered=true;
+  var lst=PADB_limovGet(); if(!lst||!rows) return 0;
+  var n=0;
+  for(var i=0;i<rows.length;i++){
+    var r=rows[i], x=r[xKey]; if(x===null||x===undefined||!isFinite(x)) continue;
+    var ov=PADB_limovFor(+x,lst), hit=false;
+    if(ov.hi!==undefined){ r.Upper_Limit=ov.hi; r.Spec_Hi=ov.hi; if('Unc_Hi' in r) r.Unc_Hi=0; hit=true; }
+    if(ov.lo!==undefined){ r.Lower_Limit=ov.lo; r.Spec_Lo=ov.lo; if('Unc_Lo' in r) r.Unc_Lo=0; hit=true; }
+    if(hit) n++;
+  }
+  _limovState.ranges=lst.length; _limovState.rows=n;
+  return n;
+}
+function PADB_limovImportFile(file){
+  if(!file) return;
+  var r=new FileReader();
+  r.onload=function(){
+    var obj; try{ obj=JSON.parse(r.result); }catch(e){ alert('Could not read the limits file: not JSON ('+e+')'); return; }
+    var raw=Array.isArray(obj)?obj:(obj&&obj.limits);
+    var v=PADB_limovValidate(raw);
+    if(v.error){ alert('Limits file rejected: '+v.error); return; }
+    var sc=PADB_limovUnitScale(Array.isArray(obj)?'':obj.unit,(typeof X_UNIT!=='undefined'?X_UNIT:''));
+    if(sc!==1) v.list.forEach(function(e){ e.lo*=sc; e.hi*=sc; });
+    PADB_limovSet(v.list); location.reload();
+  };
+  r.readAsText(file);
+}
+function PADB_limovExport(){
+  var lst=PADB_limovGet(); if(!lst){ alert('No limit overrides to export.'); return; }
+  var blob=new Blob([JSON.stringify({unit:(typeof X_UNIT!=='undefined'?X_UNIT:''),limits:lst},null,2)],{type:'application/json'});
+  var a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='padb_limits.json';
+  document.body.appendChild(a); a.click(); setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); },500);
+}
+/* the section of the shared bar: state + Import / Export / Clear, or the loud 'not applied here' notice */
+function PADB_limovBarHtml(btn){
+  if(!PADB_LIMOV_KEY) return '';
+  var lst=PADB_limovGet(), reg=_limovState.registered;
+  var inp='<input type="file" id="padb_limov_import" accept=".json,application/json" style="display:none" onchange="PADB_limovImportFile(this.files[0]);this.value=\'\'">';
+  var imp='<span onclick="document.getElementById(\'padb_limov_import\').click()" title="Import a limits file (the same file the viewer\'s Edit limits panel saves, or a job\'s limits_file). Replaces the data\'s own limits over the ranges in the file, for the limit line and every Passing/Failing verdict in this view. The page reloads." style="'+btn+';margin-left:0">Import limits</span>';
+  if(!lst){
+    return reg?('<div style="margin-top:6px"><span style="font-weight:700;color:#7a3e00">&#128207; Limit overrides</span> '+imp+inp+'</div>'):'';
+  }
+  var head='<span style="font-weight:700;color:#7a3e00">&#128207; Limit overrides</span> ';
+  var state=reg
+    ? '<span style="color:#2a7a2a" title="Applied to the limit line and to every Passing/Failing verdict in this view">applied: '+_limovState.ranges+' range'+(_limovState.ranges===1?'':'s')+', '+_limovState.rows+' point'+(_limovState.rows===1?'':'s')+'</span>'
+    : '<span style="color:#b26a00;font-weight:700" title="This test has limit overrides saved, but this view does not apply them yet: its limits and verdicts are STILL the data\'s own. Rebuild with limits_file, or use the scatter view / the viewer.">saved for this test, NOT applied in this view</span>';
+  return '<div style="margin-top:6px;border-top:1px solid #e2e8f0;padding-top:5px">'+head+state+
+    '<div style="margin-top:3px">'+(reg?imp:'')+
+    '<span onclick="PADB_limovExport()" title="Export the overrides as a limits file" style="'+btn+(reg?'':';margin-left:0')+'">Export</span>'+
+    '<span onclick="PADB_limovClear()" title="Remove the overrides for this test (the page reloads with the data\'s own limits)" style="'+btn+';color:#b00">Clear</span>'+inp+'</div></div>';
+}
+"""
+
+_COMMON_JS = _COMMON_JS + "\n" + _LOCK_JS + "\n" + _BANDSEG_JS + "\n" + _FILTER_CHIP_JS + "\n" + _PASSFAIL_JS + "\n" + _SEGHINT_JS + "\n" + _LIMOV_JS
 
 # Static loading overlay, painted before the giant data <script> parses (so the page
 # never just looks dead). Hidden by PADB_busyHide (_COMMON_JS) after the first render.

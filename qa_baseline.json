@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 45,
+      "passed": 46,
       "failed": 0
     },
     "qa_padb": {
@@ -14,6 +14,10 @@
     },
     "qa_viewer_ui": {
       "passed": 128,
+      "failed": 0
+    },
+    "qa_limits_inpage": {
+      "passed": 43,
       "failed": 0
     },
     "qa_filter_interchange": {
@@ -29,7 +33,7 @@
       "failed": 0
     },
     "qa_limits": {
-      "passed": 51,
+      "passed": 54,
       "failed": 0
     },
     "qa_viewer_scale": {

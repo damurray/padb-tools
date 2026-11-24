@@ -87,6 +87,12 @@ def main() -> int:
         check("LIM-VALID: rejects '%s' with a message" % label, c is None and bool(err), (c, err))
     c, err = L.validate([{"lo": 0, "hi": 1, "upper": 1}] * (L.MAX_LIMITS + 1))
     check("LIM-VALID: rejects more than %d ranges" % L.MAX_LIMITS, c is None and bool(err))
+    for label, raw in {"boolean range": [{"lo": True, "hi": 2, "upper": 1}],
+                       "boolean upper": [{"lo": 1, "hi": 2, "upper": True}],
+                       "boolean lower": [{"lo": 1, "hi": 2, "lower": False}]}.items():
+        c, err = L.validate(raw)
+        check("LIM-VALID: a %s is not a number (JSON true/false must not become a limit of 1/0)" % label,
+              c is None and bool(err), (c, err))
     c, err = L.validate([{"lo": 5, "hi": 9, "upper": "", "lower": "-3"}, {"lo": 0, "hi": 4, "upper": 2}])
     check("LIM-VALID: blank side -> None, strings parsed, result sorted by lo",
           err is None and [e["lo"] for e in c] == [0.0, 5.0] and c[1]["upper"] is None and c[1]["lower"] == -3.0, (c, err))
