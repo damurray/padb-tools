@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 47,
+      "passed": 48,
       "failed": 0
     },
     "qa_padb": {
@@ -81,6 +81,10 @@
       "failed": 0
     },
     "qa_compress": {
+      "passed": 26,
+      "failed": 0
+    },
+    "qa_filters_pages": {
       "passed": 26,
       "failed": 0
     }

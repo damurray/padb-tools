@@ -1518,6 +1518,50 @@ def _apply_limit_overrides(df, cfg: dict) -> int:
         return 0
 
 
+def _resolve_filter_config(cfg: dict) -> bool:
+    """Job keys `filters_file` (path, relative to the job file) or `filter_config` (inline object) -- which
+    condition dimensions the HTML views expose as filters (padb_core.filterconfig schema: show / hide / labels).
+    Resolved to a plain dict in cfg["_filter_cfg"] (JSON-safe, so parallel workers get it) and a note for the
+    index page. APPLIED by the scatter and reference views only so far; the other views still list every
+    condition and the index says so (a feature must not silently apply in some views and not others). Never
+    fails a build."""
+    try:
+        if cfg.get("filter_config") is None and not cfg.get("filters_file"):
+            return False
+        from padb_core import filterconfig as _fcm
+        if cfg.get("filter_config") is not None:
+            fc, src = _fcm.FilterConfig.from_dict(cfg["filter_config"]), "inline filter_config"
+        else:
+            lf = Path(cfg["filters_file"])
+            if not lf.is_absolute():
+                lf = Path(cfg.get("_job_dir") or ".") / lf
+            if not lf.is_file():
+                print(f"  [WARN] filters_file not found: {lf}", flush=True)
+                return False
+            fc, err = _fcm.load_file(lf)
+            if err:
+                print(f"  [WARN] filters_file ignored: {err}", flush=True)
+                return False
+            src = lf.name
+        if fc.is_default():
+            return False
+        cfg["_filter_cfg"] = fc.to_dict()
+        bits = []
+        if fc.show is not None:
+            bits.append("showing only " + ", ".join(fc.show))
+        if fc.hide:
+            bits.append("hiding " + ", ".join(fc.hide))
+        if fc.labels:
+            bits.append("custom labels (viewer only)")
+        cfg["_filters_note"] = (f"Filter configuration from {src}: " + "; ".join(bits) + ". Applied in the Scatter and "
+                                "Reference views; the other views still list every condition.")
+        print("  " + cfg["_filters_note"], flush=True)
+        return True
+    except Exception as exc:  # noqa: BLE001 -- never fail a build over a filter configuration
+        print(f"  [WARN] filter configuration skipped: {exc}", flush=True)
+        return False
+
+
 def generate_report(
     csv_path: Path,
     cfg: dict,
@@ -1564,6 +1608,7 @@ def generate_report(
     print(f"  Loading scatter CSV: {csv_path.name}", flush=True)
     df = load_scatter(csv_path, cfg)
     _apply_limit_overrides(df, cfg)
+    _resolve_filter_config(cfg)
     if df.empty:
         msg = (
             f"No usable rows loaded from {csv_path.name} -- the x-axis/value column "
@@ -2006,6 +2051,10 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
     _ln = cfg.get("_limits_note")
     lim_note_html = ("<p style='background:#fff3cd;border:1px solid #e0b84a;padding:6px 10px;border-radius:4px'>"
                      "<b>Limit overrides active.</b> " + _html.escape(_ln) + "</p>") if _ln else ""
+    _fn = cfg.get("_filters_note")
+    if _fn:
+        lim_note_html += ("<p style='background:#fff3cd;border:1px solid #e0b84a;padding:6px 10px;border-radius:4px'>"
+                          "<b>Filter configuration active.</b> " + _html.escape(_fn) + "</p>")
     html = f"""<!DOCTYPE html>
 <html>
 <head><meta charset='utf-8'><title>{title}</title>

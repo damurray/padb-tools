@@ -603,6 +603,15 @@ py padb_csv_to_parquet.py <file.csv|folder> [--out] [--force] [--verify]
 
 ---
 
+## Choosing which conditions are filters in the HTML pages (`filters_file` / `filter_config`) -- added 2026-11-24
+
+The same file the viewer's **Edit filters** panel writes (`padb_viewer_filters.json`: `show` / `hide` / `labels`) can drive the static pages. Put it beside the job (or anywhere) and set `"filters_file": "filters.json"` (relative to the job file) or write the object inline as `"filter_config": {...}`; `py padb_analyze.py ... --filters-file filters.json` passes it through. **Applied by the Scatter and Reference views**; the others still list every condition and the index page says so.
+
+- `"hide": ["Port"]` removes those conditions from the automatic set; `"show": ["Mode", "AlcState"]` lists exactly these, in this order -- including a single-valued condition the automatic rules would drop.
+- A condition that is not offered puts **no restriction** on the data. The data is not edited: the table and CSV export still show the column, and series, hover, pass/fail and the Global Filter still see every condition. Station, Temperature and serial-like dimensions are never governed.
+- `labels` apply in the viewer only: saved filters and the cross-view lock identify a dimension by its label, so renaming it in some views would silently break them.
+- A missing, unreadable or empty file is warned about and ignored; it never fails a build.
+
 ## Editable limit overrides (`limits_file` / `limit_overrides`) -- added 2026-11-23
 
 Sometimes the limit that matters is not the one the data carries: a datasheet value that was set after the measurements, a tighter customer limit, or data that has no limits at all. A **limit override** replaces the data's own Upper / Lower Limit over x-ranges you choose -- for the limit line, for Passing / Failing, and for every view -- **without touching the CSV or parquet**.

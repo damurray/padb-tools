@@ -7,7 +7,7 @@ report). It is how padbloader -- or any other tool, in any language -- uses the 
 request JSON, run this, read the result JSON. It can equally be imported (`analyze(request) -> result`).
 
     py padb_analyze.py request.json [--result result.json]        # '-' reads the request from stdin
-    py padb_analyze.py --input data.parquet --out results_dir [--views scatter,summary] [--limits-file f.json]
+    py padb_analyze.py --input data.parquet --out results_dir [--views scatter,summary] [--limits-file f.json] [--filters-file filters.json]
 
 REQUEST  (schema "padb-analysis-request/1"; only `input` and `out` are required)
     {"schema": "padb-analysis-request/1",
@@ -81,12 +81,18 @@ def validate_request(req) -> dict:
         if not lp.is_file():
             raise BadRequest("limits_file not found: %s" % lp)
         lim = str(lp)
-    unknown = set(req) - {"schema", "input", "out", "views", "algorithms", "x_col", "limits_file",
+    flt = req.get("filters_file")
+    if flt:
+        fp = Path(flt).expanduser().resolve()
+        if not fp.is_file():
+            raise BadRequest("filters_file not found: %s" % fp)
+        flt = str(fp)
+    unknown = set(req) - {"schema", "input", "out", "views", "algorithms", "x_col", "limits_file", "filters_file",
                           "publish_to", "pdf_report"}
     if unknown:
         raise BadRequest("unknown request field(s): %s" % ", ".join(sorted(unknown)))
     return {"input": inp, "out": Path(req["out"]).expanduser().resolve(), "views": views, "algorithms": algos,
-            "x_col": req.get("x_col") or None, "limits_file": lim, "publish_to": req.get("publish_to") or "",
+            "x_col": req.get("x_col") or None, "limits_file": lim, "filters_file": flt, "publish_to": req.get("publish_to") or "",
             "pdf_report": bool(req.get("pdf_report"))}
 
 
@@ -135,6 +141,8 @@ def analyze(request, log=None) -> dict:
         job["publish_to"] = r["publish_to"]
         if r["limits_file"]:
             job["limits_file"] = r["limits_file"]
+        if r["filters_file"]:
+            job["filters_file"] = r["filters_file"]
         if r["pdf_report"]:
             job["build_pdf_report"] = True
         jp.write_text(json.dumps(job, indent=2), encoding="utf-8")
@@ -172,6 +180,7 @@ def main(argv=None) -> int:
     ap.add_argument("--out")
     ap.add_argument("--views", help="comma-separated views")
     ap.add_argument("--limits-file")
+    ap.add_argument("--filters-file")
     ap.add_argument("--x-col")
     ap.add_argument("--publish-to", default="")
     ap.add_argument("--pdf-report", action="store_true")
@@ -187,6 +196,8 @@ def main(argv=None) -> int:
                 req["views"] = [v.strip() for v in a.views.split(",") if v.strip()]
             if a.limits_file:
                 req["limits_file"] = a.limits_file
+            if a.filters_file:
+                req["filters_file"] = a.filters_file
             if a.x_col:
                 req["x_col"] = a.x_col
         else:

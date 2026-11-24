@@ -32,7 +32,7 @@ import pandas as pd
 
 from padb_plots import (
     _get_plotlyjs, _checkbox_panel, _detect_group_cols, _short_x_label,
-    _floor_dec, _ceil_dec, _freq_label_map, _AUTO_FILTER_SHARED_JS,
+    _floor_dec, _ceil_dec, _freq_label_map, _AUTO_FILTER_SHARED_JS, _apply_filter_config,
     _BUSY_OVERLAY_HTML, _LOCK_JS, _FILTER_CHIP_JS, _FILTER_CHIP_HTML, _LIMOV_JS,
 )
 
@@ -84,6 +84,10 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         if c in df.columns:
             json_cols.append(c)
     json_cols += [c for c, _ in grp_dims]
+    # the job's filter configuration (filters_file / filter_config) decides which conditions are offered as
+    # filters + group-by here; the Global Filter (GF_DIMS) and the status field still see every condition
+    exp_dims = _apply_filter_config(grp_dims, df, cfg)
+    json_cols += [c for c, _ in exp_dims if c not in json_cols]
     # Column-oriented embed (arrays, not per-row dicts) so column NAMES aren't
     # repeated 40k times -- an order-of-magnitude smaller file. JS reconstitutes
     # row objects once on load. NaN embeds as the JS literal NaN (this is a JS
@@ -106,9 +110,11 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
 
     # ---- filter bar ----
     filt_parts = []
-    for c, lbl in grp_dims:
+    # an explicit `show` list may expose a single-valued condition the automatic rules drop
+    _min_vals = 0 if (cfg.get("_filter_cfg") or {}).get("show") is not None else 1
+    for c, lbl in exp_dims:
         vals = sorted(str(v) for v in df[c].dropna().unique())
-        if 1 < len(vals) <= 200:
+        if _min_vals < len(vals) <= 200:
             filt_parts.append(_checkbox_panel(c, lbl, vals))
     if serial_panel:
         filt_parts.append(_checkbox_panel("Serial", "Serial",
@@ -131,11 +137,11 @@ def _build_reference_stats_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
 
     # Group-by selector (per-group table + pareto). Default: status field if present,
     # else the fewest-cardinality real dim, else Serial.
-    gb_opts_src = grp_dims + ([("Serial", "Serial")] if has_serial else [])
-    if status_col:
+    gb_opts_src = exp_dims + ([("Serial", "Serial")] if has_serial else [])
+    if status_col and any(c == status_col for c, _ in gb_opts_src):
         default_gb = status_col
-    elif grp_dims:
-        default_gb = min(grp_dims, key=lambda cl: df[cl[0]].replace("", pd.NA).nunique(dropna=True))[0]
+    elif exp_dims:
+        default_gb = min(exp_dims, key=lambda cl: df[cl[0]].replace("", pd.NA).nunique(dropna=True))[0]
     elif has_serial:
         default_gb = "Serial"
     else:

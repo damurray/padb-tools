@@ -452,6 +452,7 @@ function saveCSV(withExcluded){
   var colMap={'Frequency_MHz':'Frequency_MHz','Value':Y_LABEL.replace(/[,"\n]/g,'')};
   if(TEMPS&&TEMPS.length>1) colMap['Test_Step']='Temperature';
   GROUP_COLS.forEach(function(p){colMap[p[0]]=p[1].replace(/[,"\n]/g,'');});
+  (typeof HIDDEN_COLS!=='undefined'?HIDDEN_COLS:[]).forEach(function(p){colMap[p[0]]=p[1].replace(/[,"\n]/g,'');});
   var cols=Object.keys(filtered[0]).filter(function(c){return colMap[c];});
   var hdrs=cols.map(function(c){return colMap[c];});
   var bnd=(typeof _scatterBounds==='function')?_scatterBounds():{spec:false,limit:false};
@@ -1258,6 +1259,7 @@ function updateScatterTable(filtered){
   var hdrs=[(typeof X_SHORT_LABEL!=='undefined'?X_SHORT_LABEL:'Freq')+' ('+X_UNIT+')',(typeof Y_LABEL!=='undefined'&&Y_LABEL?Y_LABEL:'Value')];
   if(typeof TEMPS!=='undefined'&&TEMPS&&TEMPS.length>1){cols.push('Test_Step');hdrs.push('Temperature');}
   GROUP_COLS.forEach(function(pr){cols.push(pr[0]);hdrs.push(pr[1]);});
+  (typeof HIDDEN_COLS!=='undefined'?HIDDEN_COLS:[]).forEach(function(pr){cols.push(pr[0]);hdrs.push(pr[1]);});
   var row0=filtered[0],keep=[],keepH=[];
   cols.forEach(function(c,i){if(c in row0){keep.push(c);keepH.push(hdrs[i]);}});
   function esc(v){v=String(v===null||v===undefined?'':v);return v.replace(/&/g,'&amp;').replace(/</g,'&lt;');}
@@ -1950,6 +1952,36 @@ def _parse_group_fields(df: pd.DataFrame) -> pd.DataFrame:
         col = grp.map(mapping).astype(object)
         df[f"_grp_{key}"] = col.where(col.notna(), None)
     return _derive_run_index(df)
+
+
+def _apply_filter_config(result: list, df: pd.DataFrame, cfg: dict | None) -> list:
+    """Honour a job's filter configuration (`filters_file` / `filter_config`, resolved by padb_v2 into
+    cfg["_filter_cfg"]; same schema as padb_core.filterconfig) on the list of condition dimensions a view
+    offers as FILTERS (the checkbox panels and GROUP_COLS) -- never the data itself: series partitioning, hover,
+    the pass/fail field, the Global Filter and the table / CSV export still see every condition. ONLY the `_grp_*`
+    condition dimensions are governed; Station / Temperature keep their dedicated controls, and a serial-like
+    dimension is never removed (the Global Filter and the serial controls depend on it), exactly as in the viewer. `show` lists exactly these conditions in this order
+    (including ones the automatic rules drop, "expose anyway" -- they need only exist in the data); otherwise
+    `hide` removes conditions from the automatic set. A condition that is not exposed puts NO restriction on the
+    data (its checkbox panel is simply absent). `labels` are deliberately NOT applied in a page: saved filters
+    and the cross-view lock match a dimension by its LABEL, so renaming one in some views would silently break
+    that. Unknown names are ignored."""
+    fc = (cfg or {}).get("_filter_cfg")
+    if not fc:
+        return result
+    _ser = ("serial", "unit id", "dut id", "s/n")
+
+    def _governed(c):
+        return c.startswith("_grp_") and not any(k in c[5:].lower() for k in _ser)
+    grp = [(c, l) for c, l in result if _governed(c)]
+    rest = [(c, l) for c, l in result if not _governed(c)]
+    show = fc.get("show")
+    if show is None:
+        hidden = set(fc.get("hide") or [])
+        grp = [(c, l) for c, l in grp if c[5:] not in hidden]
+    else:
+        grp = [("_grp_" + k, k) for k in show if ("_grp_" + k) in df.columns and _governed("_grp_" + k)]
+    return grp + rest
 
 
 def _detect_group_cols(df: pd.DataFrame) -> list[tuple[str, str]]:
@@ -2812,7 +2844,9 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
     show_env_bar = len(temps_present) > 1
     # filter_cols = group_cols used for GROUP_COLS JS constant (drives applyFilters).
     # Exclude Test_Step here because it's filtered via env_chk checkboxes instead.
-    filter_cols = [(c, l) for c, l in group_cols if not (c == "Test_Step" and show_env_bar)]
+    _exposed_cols = _apply_filter_config(group_cols, df, cfg)
+    filter_cols = [(c, l) for c, l in _exposed_cols if not (c == "Test_Step" and show_env_bar)]
+    _hidden_cols = [(c, l) for c, l in group_cols if c.startswith("_grp_") and (c, l) not in _exposed_cols]
 
     # PADB pass/fail status field (e.g. "Test Event Status" = P/F) -- a group dim with
     # NO numeric spec limit. Detect it (status-like name, values are pass/fail tokens
@@ -2852,8 +2886,8 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
             hover_col_list.append(("Lower_Limit", "Spec Lo"))
 
     # Columns to embed as JSON
-    json_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"] + [c for c, _ in group_cols]
-    json_cols = [c for c in json_cols if c in df.columns]
+    json_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"] + [c for c, _ in group_cols] + [c for c, _ in _exposed_cols]
+    json_cols = list(dict.fromkeys(c for c in json_cols if c in df.columns))
 
     # Binary encoding (opt-in, "binary_encode": true in job.json): Frequency_MHz
     # and Value repeat on every single row and are the dominant size driver for
@@ -2944,7 +2978,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
 
     # Checkbox panels — one per filter dimension (skip Test_Step; handled by env_bar)
     panels: list[str] = []
-    for col, label in group_cols:
+    for col, label in _exposed_cols:
         if col == "Test_Step" and show_env_bar:
             continue
         vals = sorted(str(v) for v in df[col].dropna().replace("", pd.NA).dropna().unique())
@@ -3086,6 +3120,7 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
         f"var LOG_X={'true' if log_x else 'false'};",
         f"var TITLE={json.dumps(title)};",
         f"var GROUP_COLS={json.dumps([[c, l] for c, l in filter_cols])};",
+        f"var HIDDEN_COLS={json.dumps([[c, l] for c, l in _hidden_cols])};",
         f"var SCAT_STATUS_FIELD={json.dumps(scat_status_field)};",
         f"var HOVER_COLS={json.dumps([[c, l] for c, l in hover_col_list])};",
         f"var TRACE_MODE={json.dumps(cfg.get('mode', 'lines+markers'))};",
