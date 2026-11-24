@@ -146,7 +146,9 @@ def analyze(request, log=None) -> dict:
         if r["pdf_report"]:
             job["build_pdf_report"] = True
         jp.write_text(json.dumps(job, indent=2), encoding="utf-8")
+        import padb_jobschema
         entry = {"name": name, "job": str(jp), "results_dir": str(rd), "index": None, "views": [], "tier": None,
+                 "job_issues": padb_jobschema.validate(job),
                  "files": [], "status": "ok", "error": None}
         code = 0
         try:

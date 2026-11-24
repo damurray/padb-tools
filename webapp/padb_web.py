@@ -1615,6 +1615,21 @@ def get_job_file():
                    active=_job_is_active(p))
 
 
+@app.route("/api/job-schema")
+def job_schema():
+    """The job schema as JSON (every key: type, kind, group, description, constraints) -- what an editor is built from."""
+    import padb_jobschema
+    return jsonify(padb_jobschema.describe())
+
+
+@app.route("/api/job-validate", methods=["POST"])
+def job_validate():
+    """Validate a job object (JSON body {job: {...}}) against the schema -> {issues: [...]}. Advisory; writes nothing."""
+    import padb_jobschema
+    body = request.get_json(force=True) or {}
+    return jsonify(issues=padb_jobschema.validate(body.get("job")))
+
+
 @app.route("/api/job-file", methods=["POST"])
 def save_job_file():
     """Edit a job.json. preview=true -> validate + return a unified diff only
@@ -1647,7 +1662,12 @@ def save_job_file():
         diff = "".join(difflib.unified_diff(
             old.splitlines(True), text.splitlines(True),
             fromfile="current", tofile="edited", n=2))
-        return jsonify(ok=True, changed=(old != text), diff=diff)
+        try:
+            import padb_jobschema
+            issues = padb_jobschema.validate(cfg)
+        except Exception:  # noqa: BLE001 -- the schema check is advisory
+            issues = []
+        return jsonify(ok=True, changed=(old != text), diff=diff, issues=issues)
     if _job_is_active(p):
         return jsonify(error="This job is queued or running -- wait for it to finish before saving."), 409
     if old == text:

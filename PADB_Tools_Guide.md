@@ -603,6 +603,17 @@ py padb_csv_to_parquet.py <file.csv|folder> [--out] [--force] [--verify]
 
 ---
 
+## The job schema -- every key, checked (`padb_jobschema`) -- added 2026-11-24
+
+Every key a job file may carry is described once in `padb_jobschema.py` (type, whether it belongs to an extraction or a plot job, a group, a one-line meaning, and its constraints). Every run now **checks the job when it loads it** and prints what it finds -- it never stops the run:
+
+- **WARN -- unknown key.** The key has no effect. When it is close to a real one you are told which (`"scater_decimate"` -> `scatter_decimate`). Keys beginning with `_` (`"_notes"`) are comments and are always accepted.
+- **ERROR -- wrong type, or a value the tools cannot use**: `"tier_budget_s": "fast"`, `"proportion": 1.5`, `"y_lim": [1, 2, 3]`, a view name that does not exist (`boxpot` -> `boxplot`), an empty `views` list, a job with no data source.
+- **WARN -- a contradiction that silently resolves one way**: `limit_overrides` wins over `limits_file`, `filter_config` over `filters_file`, `parquet_path` over `csv_path`; a cross-site compare without `primary_site`.
+- `secondary_plots` entries (V1 jobs) are checked too: `type` must be a real plot function.
+
+Where you see it: the console / run log of `padb_v2` and `padb_run`; `job_issues` for each analysis in `padb_analyze`'s result; and in the web app's **job editor**, where **Review changes** lists the schema findings under the diff (advisory -- saving is not blocked). `GET /api/job-schema` returns the whole schema as JSON (what an editor form is built from) and `POST /api/job-validate` checks a job object. It was verified against all of this team's real job files and every job the generators write, so a clean job stays clean.
+
 ## Size tiers -- what will be built for a big dataset (`tiering` / `tier_budget_s`) -- added 2026-11-24
 
 Before building, the tool predicts each view's build time from the dataset's size (rows, distinct x-values and conditions -- the boxplot and statistics views do work per x-value per condition, not per row) and compares it with a **budget of 300 s per view**. When the views were chosen **automatically** (no `views` in the job), an over-budget view is **not built**: the log, `tier.json`, the index page banner and `padb_analyze`'s result (`tier`) say which view, its predicted time and why, and recommend the **parquet viewer** for that dataset. Views you request **explicitly** (`"views": [...]`) are always built; if a requested view is predicted over budget you are only warned. Tiers: `standard` (nothing over budget), `heavy` (some views skipped, others built) and `giant` (every candidate over budget -- the single cheapest view is still built so there is something to open).

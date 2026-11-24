@@ -1278,7 +1278,11 @@ function _ejRenderDiff(diff) {
 _ej("editJobReview").addEventListener("click", async () => {
   const { ok, data } = await _ejPost(true);
   if (!ok) { _ej("editJobErr").textContent = data.error; return; }
-  _ej("editJobErr").textContent = data.changed ? "" : "No changes.";
+  const iss = (data.issues || []).map(i => "[" + i.level.toUpperCase() + "] " + (i.key || "job") + ": " + i.message
+    + (i.suggestion ? " (" + i.suggestion + ")" : ""));
+  _ej("editJobErr").style.whiteSpace = "pre-wrap";
+  _ej("editJobErr").textContent = (data.changed ? "" : "No changes.") +
+    (iss.length ? (data.changed ? "" : "\n") + "Schema check (advisory -- saving is not blocked):\n" + iss.join("\n") : "");
   _ejRenderDiff(data.changed ? data.diff : "");
   _ejMode(true);
   _ej("editJobSave").disabled = !data.changed;

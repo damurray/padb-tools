@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 51,
+      "passed": 53,
       "failed": 0
     },
     "qa_padb": {
@@ -94,6 +94,10 @@
     },
     "qa_tiers": {
       "passed": 16,
+      "failed": 0
+    },
+    "qa_jobschema": {
+      "passed": 32,
       "failed": 0
     }
   }

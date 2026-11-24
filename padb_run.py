@@ -127,6 +127,11 @@ def load_job(job_path: Path) -> dict:
     """
     with open(job_path, encoding="utf-8") as f:
         cfg = json.load(f)
+    try:
+        import padb_jobschema
+        padb_jobschema.report(cfg, job_path.name)
+    except ImportError:
+        pass
 
     base = job_path.parent
     cfg["_base_dir"] = base

@@ -2432,6 +2432,11 @@ def main(argv: list[str] | None = None) -> None:
 
     with job_path.open(encoding="utf-8") as f:
         cfg = json.load(f)
+    try:
+        import padb_jobschema
+        padb_jobschema.report(cfg, job_path.name)
+    except ImportError:
+        pass
 
     # --no-publish / --publish are runtime overrides only -- they steer
     # _finish_report()'s publish decision without rewriting the job file on
