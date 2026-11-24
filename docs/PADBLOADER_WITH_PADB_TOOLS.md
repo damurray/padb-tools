@@ -251,3 +251,9 @@ Plot each source's file separately until that is checked.
 
 More: `PADB_Tools_Guide.md` (full reference), `Interactive_Plots_User_Guide.md` (using the plots),
 `V3_PLAN.md` (the v3.0 design, including the analysis/extraction separation).
+
+---
+
+## Hands-free: the folder watcher
+
+Instead of dropping each parquet on the web app by hand, let `padb_watch.py` pick up PadbLoader's scheduled output: `py padb_watch.py --padbloader --out D:\padb\watch` (or `--once` from Task Scheduler). It finds PadbLoader's export folder the way PadbLoader does, waits until each parquet is finished, keeps its own copy (PadbLoader prunes older runs), and runs the analysis once per file. See **Watching a folder for new parquet files** in `PADB_Tools_Guide.md`. PadbLoader's scheduled runs need its page open and signed in -- that is PadbLoader's own constraint, not something the watcher can change.

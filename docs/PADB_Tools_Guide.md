@@ -603,6 +603,22 @@ py padb_csv_to_parquet.py <file.csv|folder> [--out] [--force] [--verify]
 
 ---
 
+## Watching a folder for new parquet files (`padb_watch.py`) -- added 2026-11-24
+
+PadbLoader writes parquet files on a schedule; the watcher analyses each new one automatically, once.
+
+```
+py padb_watch.py --discover                                     # where does PadbLoader write on this machine, and why
+py padb_watch.py --padbloader --out D:\padb\watch               # follow PadbLoader's scheduled output (keeps running)
+py padb_watch.py --watch D:\exports --out D:\padb\watch --once  # one pass: for Windows Task Scheduler
+```
+
+**What it watches.** PadbLoader puts scheduled runs in `<export folder>\PadbLoader Data\Scheduled\<schedule> - <owner>\<schedule>_<yyyyMMdd-HHmmss>.parquet` -- one new file per run -- and manual pulls in `<export folder>\PadbLoader Data\`. The export folder is the one chosen in PadbLoader's Data Source Editor, else `Export:OutputDirectory` in its settings, else `%LOCALAPPDATA%\PadbLoader\Exports` (`PADBLOADER_DATA_DIR` moves the root). `--padbloader` finds it the same way (`--padbloader-manual` adds the manual folder; `--padbloader-config` points at an `appsettings.json`). **If PadbLoader runs under another Windows account, its `%LOCALAPPDATA%` is that account's: set an explicit shared export folder in PadbLoader and use `--watch` on its `PadbLoader Data\Scheduled`.**
+
+**What it does with a file.** It waits until the file is really finished -- PadbLoader writes the final file in place, so a half-written parquet is visible at its real name: not modified for `--settle` seconds (default 30), size unchanged on a re-check, and a valid parquet footer. It then keeps its own copy of the input (a hard link on one volume, else a copy, in `<out>\_inputs`) because **PadbLoader deletes older runs (default: keeps the last 14) and deletes empty or failed ones**, and runs `padb_analyze` on it into `<out>\<schedule folder>\<file>\`. `<out>\index.html` lists every run, newest first.
+
+**Never twice, never lost.** A ledger (`watch_ledger.json`) records every file by path, size and modified time: a restart does not repeat finished work, a file that PadbLoader re-writes is analysed again, and a run that was in progress when the watcher died is retried. A failed analysis is retried after `--retry-delay` (300 s) up to `--max-attempts` (3), then given up on and logged (`--retry-failed` tries again); a hung analysis is killed (with everything it started) after `--timeout` (7200 s). Only one watcher can use an output folder at a time. `--once` exits 0 when nothing failed, 1 when an analysis failed, 2 if another watcher holds the folder; `--list` prints the ledger; `--dry-run` reports what it would do. The job-level options pass straight through: `--views`, `--limits-file`, `--filters-file`, `--publish-to`, `--pdf-report`.
+
 ## The job schema -- every key, checked (`padb_jobschema`) -- added 2026-11-24
 
 Every key a job file may carry is described once in `padb_jobschema.py` (type, whether it belongs to an extraction or a plot job, a group, a one-line meaning, and its constraints). Every run now **checks the job when it loads it** and prints what it finds -- it never stops the run:

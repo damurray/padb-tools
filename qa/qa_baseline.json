@@ -1,7 +1,7 @@
 {
   "suites": {
     "compile": {
-      "passed": 54,
+      "passed": 56,
       "failed": 0
     },
     "qa_padb": {
@@ -102,6 +102,10 @@
     },
     "qa_websecurity": {
       "passed": 27,
+      "failed": 0
+    },
+    "qa_watch": {
+      "passed": 59,
       "failed": 0
     }
   }
