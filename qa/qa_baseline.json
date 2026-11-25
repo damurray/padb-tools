@@ -107,6 +107,10 @@
     "qa_watch": {
       "passed": 75,
       "failed": 0
+    },
+    "qa_bigdata": {
+      "passed": 62,
+      "failed": 0
     }
   }
 }

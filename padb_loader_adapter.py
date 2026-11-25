@@ -153,14 +153,205 @@ def _pick_x(g, x_col=None):
     return "c_frequency_offset" if off.nunique() > 1 else "c_frequency"
 
 
-def list_algorithms(parquet, x_col=None):
-    """Summarise the algorithms in a padbloader parquet WITHOUT loading it all:
-    reads only the handful of columns needed.  Returns a list of dicts
-    {algorithm, rows, units, has_limits, x_col, n_x, wide}."""
+def _nn_pd(s):
+    """Non-null, non-NaN mask of a pandas Series (what pandas' notna / nunique treat as present)."""
+    return s.notna()
+
+
+def _primitives_from_df(g, df_all, x_col):
+    """The few whole-group facts conversion needs, read from an in-memory group `g` (rows with a value).  The streaming
+    path produces the same dict from DuckDB aggregates (padb_loader_stream), so everything built from it is shared."""
+    cols = list(g.columns)
+    P = {"base_algo": str(g["algorithm"].iloc[0]), "n_rows": int(len(g)),
+         "n_serials": int(g["serial"].nunique()), "device0": str(df_all["device"].iloc[0]), "columns": cols,
+         "dat_units": {d: _datum_units(gd, d) for d, gd in g.groupby("_datum")},
+         "main": str(g["_datum"].value_counts().index[0])}
+    P["units_first"] = (str(g["units"].dropna().iloc[0]) if "units" in g.columns and g["units"].notna().any() else None)
+    P["c_stats"] = {c: (int(g[c].notna().sum()), int(g[c].nunique())) for c in cols if c.startswith("c_")}
+    P["run_nonnull"] = {c: int(g[c].notna().sum()) for c in _RUN_KEEP if c in cols}
+    extra = x_col if (x_col and x_col in cols and x_col not in P["c_stats"]) else None
+    P["x_distinct"] = {c: int(g[c].nunique()) for c in set(list(P["c_stats"]) + ([extra] if extra else []))
+                       if c in ("c_frequency", "c_frequency_offset") or c == extra}
+    P["steps"] = (list(g["step"].drop_duplicates()) if "step" in cols and g["step"].notna().any() else None)
+    P["limit_nonnull"] = {c: int(g[c].notna().sum()) for c in ("limit_upper", "limit_lower") if c in cols}
+    return P
+
+
+def _facts_from_primitives(P, algo, combine_results, x_col, lab, unit, log):
+    """Everything the output builder and the job writer need, from the primitives (shared by both paths)."""
+    dat_units = P["dat_units"]
+    multi = combine_results and len(dat_units) > 1
+    F = {"algo": algo, "base_algo": P["base_algo"], "multi": multi, "dat_units": dat_units,
+         "n_rows": P["n_rows"], "n_serials": P["n_serials"], "device0": P["device0"]}
+    if multi:
+        def _rlabel(d, u=None):
+            u = dat_units[d] if u is None else u
+            return d if (not u or _units_from_label(d) == u) else "%s (%s)" % (d, u)
+        F["rlabel"] = {d: _rlabel(d) for d in dat_units}
+        F["runits"] = dict(dat_units)
+        main = algo if algo in dat_units else P["main"]
+        F["result_default"] = _rlabel(main)
+    units = P["units_first"] if P["units_first"] is not None else _units_from_label(algo)
+    F["units"] = "" if multi else units
+    if x_col:
+        xc = x_col
+    else:
+        xc = "c_frequency_offset" if P["x_distinct"].get("c_frequency_offset", 0) > 1 else "c_frequency"
+    F["xc"] = xc
+    xlab = lab.get(xc, xc)
+    xu = unit.get(xc, "")
+    F["x_header"] = "%s (%s)" % (xlab, xu) if xu else xlab
+    F["xu"] = xu
+    F["val_header"] = ("%s (%s)" % (algo, F["units"])
+                       if F["units"] and _units_from_label(algo) != F["units"] else algo)
+    ccols = []
+    for c in P["columns"]:
+        if not c.startswith("c_") or c == xc or P["c_stats"].get(c, (0, 0))[0] == 0:
+            continue
+        if P["c_stats"][c][1] > MAX_COND_CARD:
+            log("  note: %s dropped from Group (%d distinct values > %d)" % (c, P["c_stats"][c][1], MAX_COND_CARD))
+            continue
+        ccols.append(c)
+    rcols = [c for c in _RUN_KEEP if P["run_nonnull"].get(c, 0) > 0]
+    F["keys"] = [(c, "%s (%s)" % (lab.get(c, c), unit.get(c, "")) if unit.get(c, "") else lab.get(c, c))
+                 for c in ccols + rcols]
+    if P["steps"] is not None:
+        _norm, F["n_steps"], F["bad_steps"] = _step_summary(pd.Series(P["steps"], dtype=object))
+        F["has_step"] = True
+    else:
+        F["n_steps"], F["bad_steps"], F["has_step"] = 1, [], False
+    F["limit_cols"] = [(src, dst) for src, dst in (("limit_upper", "Upper Limit"), ("limit_lower", "Lower Limit"))
+                       if P["limit_nonnull"].get(src, 0) > 0]
+    F["has_lim"] = bool(F["limit_cols"])
+    F["n_x"] = int(P["x_distinct"].get(xc, 0))
+    F["wide"] = F["n_x"] > WIDE_X
+    return F
+
+
+def _build_output(g, F, use_runtime):
+    """The PADB-style table for rows `g` (any subset of one group's valid rows -- every step is per row, the
+    whole-group decisions are in the facts F), so a chunk gives exactly the rows the whole group would."""
+    g = g.copy()
+    multi = F["multi"]
+    if multi:
+        g["_rlabel"] = g["_datum"].map(F["rlabel"])
+        g["_runits"] = g["_datum"].map(F["runits"])
+    grp = pd.Series("", index=g.index)
+    if multi:
+        # the Result dimension first: the views' condition filter selects the result.
+        # (Group is split on 2+ spaces; labels have single spaces only)
+        grp = "Result: " + g["_rlabel"].str.replace(r"\s{2,}", " ", regex=True) + "  "
+    for c, l in F["keys"]:
+        col = g[c]
+        txt = col.map(lambda v: "" if pd.isna(v) else _fmt(v))
+        # Group is split on 2+ spaces; values with 2+ spaces would corrupt it
+        txt = txt.str.replace(r"\s{2,}", " ", regex=True)
+        part = (l + ": " + txt)
+        part[txt == ""] = ""
+        grp = grp + part + "  "
+    grp = grp + "Test Event Status: " + g["run_status"].astype(str)
+    if use_runtime:
+        grp = grp + "  Test Run Datetime: " + g["run_datetime"].dt.strftime("%Y-%m-%d %H:%M:%S")
+    grp = grp.str.replace(r"\s{3,}", "  ", regex=True)
+    units, algo, base_algo = F["units"], F["algo"], F["base_algo"]
+    o = pd.DataFrame({
+        "Analysis Type": "ScatterPlot",
+        "Model(s)": g["device"],
+        "Algorithm -> Result": (base_algo + "-->" + g["_rlabel"]) if multi else
+                               (base_algo + "-->" + g["result"].fillna(algo) + (" (%s)" % units if units else "")),
+        "Units": g["_runits"] if multi else units,
+        "Group": grp,
+        F["x_header"]: g[F["xc"]],
+        F["val_header"]: g["value"],
+        "Serial Number": g["serial"],
+    })
+    if F["has_step"]:
+        # the PADB "Test Step" column: the loader turns it into Temperature, which is
+        # what makes a multi-step (hot/cold) file offer the environmental views
+        o["Test Step"] = _step_summary(g["step"])[0]
+    for src, dst in F["limit_cols"]:
+        o[dst] = g[src]
+    return o
+
+
+def _range_tag(xr):
+    """File / job name suffix for an x-range slice: _x<lo>_<hi>."""
+    return "_x%s_%s" % (_slug(_fmt(float(xr[0]))), _slug(_fmt(float(xr[1]))))
+
+
+def _facts_apply_range(F, g, xr):
+    """Counts of a band (rows of one group inside the x-range); the column decisions stay those of the WHOLE group,
+    so every band of one dataset has the same columns and filters."""
+    F = dict(F)
+    F["n_rows"] = int(len(g))
+    F["n_serials"] = int(g["serial"].nunique())
+    F["n_x"] = int(g[F["xc"]].nunique())
+    F["wide"] = F["n_x"] > WIDE_X
+    F["has_lim"] = any(bool(g[s].notna().any()) for s, _d in F["limit_cols"])
+    F["x_range"] = [float(xr[0]), float(xr[1])]
+    return F
+
+
+def _slice_names(sl):
+    """Normalise a slice request. -> {'servers': [...]|None, 'serials': [...]|int|None, 'steps': [...]|None,
+    'x_range': [lo, hi]|None} or None.  `x_range` is on each algorithm's OWN swept x column (frequency offset, amplitude,
+    Vgg ... -- never assumed to be frequency), in the units stored in the file, ends inclusive."""
+    if not sl:
+        return None
+    out = {}
+    xr = sl.get("x_range")
+    if xr not in (None, [], ()):
+        if len(xr) != 2 or float(xr[0]) > float(xr[1]):
+            raise ValueError("x_range must be [lo, hi] with lo <= hi")
+        out["x_range"] = [float(xr[0]), float(xr[1])]
+    for k in ("algorithms", "servers", "serials", "steps"):
+        v = sl.get(k)
+        if v in (None, [], ""):
+            continue
+        if k == "serials" and isinstance(v, int):
+            out[k] = int(v)
+        else:
+            out[k] = [str(x) for x in (v if isinstance(v, (list, tuple)) else [v])]
+    return out or None
+
+
+def _slice_df(df, sl, serial_list=None):
+    """Apply a slice to an in-memory frame (the streaming path applies the same rules in SQL)."""
+    sl = _slice_names(sl)
+    if not sl:
+        return df
+    m = pd.Series(True, index=df.index)
+    if sl.get("algorithms"):                    # EXACT algorithm names (algo_filter is a substring and would over-match)
+        m &= df["algorithm"].astype(str).isin(set(sl["algorithms"]))
+    if sl.get("servers"):
+        low = [s.lower() for s in sl["servers"]]
+        m &= df["server"].astype(str).str.lower().map(lambda v: any(s in v for s in low))
+    if sl.get("serials") is not None:
+        wanted = serial_list if serial_list is not None else (
+            sorted(df["serial"].dropna().astype(str).unique())[:sl["serials"]] if isinstance(sl["serials"], int) else sl["serials"])
+        m &= df["serial"].astype(str).isin(set(wanted))
+    if sl.get("steps"):
+        want = set(sl["steps"])
+        norm = df["step"].map(lambda v: _norm_step(v) or str(v))
+        m &= norm.isin(want)
+    return df[m]
+
+
+def list_algorithms(parquet, x_col=None, engine="auto"):
+    """Summarise the algorithms in a padbloader parquet.  Returns a list of dicts
+    {algorithm, rows, units, has_limits, x_col, n_x, wide}.  engine 'pandas' reads a handful of columns
+    into memory; 'duckdb' aggregates out of core (any size); 'auto' picks by the memory the pandas read needs."""
     pf = pq.ParquetFile(parquet)
     names = set(pf.schema_arrow.names)
     if "algorithm" not in names:
         raise ValueError("not a padbloader parquet (no 'algorithm' column)")
+    if engine == "auto":
+        import padb_sizeguard
+        fp = padb_sizeguard.footprint(parquet)
+        engine = "duckdb" if (fp["rows"] > 2_000_000 or not padb_sizeguard.assess(parquet, "convert")["ok"]) else "pandas"
+    if engine == "duckdb":
+        import padb_loader_stream
+        return padb_loader_stream.list_algorithms_duckdb(parquet, x_col)
     want = [c for c in ("algorithm", "result", "value", "units", "limit_upper", "limit_lower",
                         "c_frequency", "c_frequency_offset", "step") if c in names]
     df = _with_datum(pf.read(columns=want).to_pandas())
@@ -182,9 +373,60 @@ def list_algorithms(parquet, x_col=None):
     return out
 
 
+def _write_job(F, algo, slug, jp, stem, lab, publish_to, views, fmt, data_path, n_out_rows, log):
+    """Write the v2 job file for one converted group and return its result dict (shared by both paths)."""
+    device = F["device0"]
+    wide, n_steps, bad_steps = F["wide"], F["n_steps"], F["bad_steps"]
+    job = {
+        "description": "%s %s (padbloader parquet)" % (device, algo),
+        "title_prefix": "%s %s" % (device, algo),
+        "y_label": F["val_header"],
+        ("parquet_path" if fmt == "parquet" else "csv_path"): os.path.abspath(data_path),
+        "results_dir": "%s_%s_v2_results" % (stem, slug),
+        "index_title": "%s %s" % (device, stem),
+        "spec_direction": "auto",
+        "x_col": F["x_header"],
+        "x_label": F["x_header"],
+        "x_unit": F["xu"],
+    }
+    note_extra = ""
+    if bad_steps:
+        note_extra += ("  [WARNING: test step(s) %s name no temperature; the loader reads them "
+                       "as Room]" % ", ".join(bad_steps))
+    if F["n_x"] <= 1:
+        # a test with no swept x (one value per unit: a voltage, a resistance, a pass/fail, a time): every x-based view
+        # would fail ("no plottable data"), the value distribution is what there is to look at
+        job["views"] = ["histogram"]
+        note_extra += "  [no swept x -> histogram view]"
+    elif views is not None:
+        vv = [v for v in views if n_steps > 1 or v not in ENV_VIEWS]
+        if len(vv) != len(views):
+            note_extra += "  [environmental views dropped: data has a single test temperature]"
+        job["views"] = vv
+    elif wide:
+        job["views"] = list(WIDE_VIEWS)
+    if F.get("x_range"):
+        job["description"] += " [x %s..%s]" % (_fmt(F["x_range"][0]), _fmt(F["x_range"][1]))
+        job["index_title"] += " [x %s..%s]" % (_fmt(F["x_range"][0]), _fmt(F["x_range"][1]))
+    if F["multi"]:
+        job["result_default"] = F["result_default"]
+        job["description"] += " -- %d results (pick with the Result filter)" % len(F["dat_units"])
+    if publish_to is not None:
+        # "{algo}" in publish_to expands to this algorithm's slug, so several
+        # algorithms from one parquet never publish into the same folder
+        job["publish_to"] = publish_to.replace("{algo}", slug)
+    with open(jp, "w", encoding="utf-8", newline="\n") as fh:
+        json.dump(job, fh, indent=2)
+    return {"algorithm": algo, "status": "ok", "rows": n_out_rows,
+            "serials": F["n_serials"], "limits": F["has_lim"],
+            "data_path": data_path, "job_path": jp, "wide": wide,
+            "note": (("wide sweep (%d x values) -> views %s" % (F["n_x"], WIDE_VIEWS))
+                     if wide and views is None else "") + note_extra}
+
+
 def convert(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None,
             publish_to=None, use_runtime=True, algorithms=None, fmt="parquet",
-            force=False, log=print, combine_results=True, views=None):
+            force=False, log=print, combine_results=True, views=None, stream="auto", slice_=None):
     """Convert a padbloader parquet.  `algorithms` = exact datum (result) names to
     convert (None = all, narrowed by the `algo_filter` substring if given).
 
@@ -200,15 +442,37 @@ def convert(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None,
     step.  None = the default (a wide sweep gets scatter+summary, others let padb_v2
     auto-select).
 
+    stream: 'auto' (default) converts in memory when the file fits and STREAMS it (a slice of rows at a time, with
+    the whole-group decisions computed first by DuckDB) when it would not; 'always' / 'off' force one or the other.
+    Both paths share the same per-row builder, so the output is the same either way (qa/qa_bigdata proves it).
+    slice_: {'algorithms': [...exact...], 'servers': [...], 'serials': [...] | N, 'steps': [...], 'x_range': [lo, hi]} -- convert only that part
+    of the data (x_range is on each algorithm's own swept x, in the stored units).
+
     Returns a list of dicts, one per job: {algorithm, status, rows, serials, limits,
     data_path, job_path, wide, note}; status is 'ok' or 'exists' (job file already
     present and force is False -- left untouched)."""
     if fmt not in ("parquet", "csv"):
         raise ValueError("fmt must be 'parquet' or 'csv'")
+    if stream not in ("auto", "always", "off"):
+        raise ValueError("stream must be 'auto', 'always' or 'off'")
     if views is not None:
         bad = [v for v in views if v not in ALL_VIEWS]
         if bad or not views:
             raise ValueError("views must be a non-empty list of %s (got %s)" % (ALL_VIEWS, views))
+    use_stream = stream == "always"
+    if stream == "auto":
+        import padb_sizeguard
+        a = padb_sizeguard.assess(parquet, "convert")
+        use_stream = not a["ok"] or a["level"] == "warn"
+        if use_stream:
+            log("  note: %s -- converting by streaming, a slice of rows at a time" % a["message"].split(" -- ")[0])
+    if use_stream:
+        import padb_loader_stream
+        return padb_loader_stream.convert_stream(parquet, out_dir, jobs_dir, x_col, algo_filter, publish_to,
+                                                 use_runtime, algorithms, fmt, force, log, combine_results, views, slice_)
+    if stream == "off":
+        import padb_sizeguard
+        padb_sizeguard.require(parquet, "convert")        # the user forced the in-memory path: still refuse if it cannot fit
     pf = pq.ParquetFile(parquet)
     lab, unit = _labels(pf.schema_arrow)
     df = _with_datum(pf.read().to_pandas())
@@ -217,31 +481,21 @@ def convert(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None,
     if algo_filter:
         df = df[df["_datum"].str.contains(algo_filter, case=False, regex=False)
                 | df["algorithm"].str.contains(algo_filter, case=False, regex=False)]
+    if slice_:
+        df = _slice_df(df, slice_)
     if df.empty:
         raise ValueError("no rows after filtering")
+    xr = (_slice_names(slice_) or {}).get("x_range")
     stem = _slug(os.path.splitext(os.path.basename(parquet))[0])
     data_dir = os.path.join(out_dir, "padb")
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(jobs_dir, exist_ok=True)
-    device = str(df["device"].iloc[0])
     made = []
     for algo, g in df.groupby("algorithm" if combine_results else "_datum", sort=True):
         g = g.dropna(subset=["value"]).copy()
         if g.empty:
             continue
-        base_algo = str(g["algorithm"].iloc[0])
-        # per-datum labels/units (several results only matter when combining)
-        dat_units = {d: _datum_units(gd, d) for d, gd in g.groupby("_datum")}
-        multi = combine_results and len(dat_units) > 1
-        if multi:
-            def _rlabel(d, u=None):
-                u = dat_units[d] if u is None else u
-                return d if (not u or _units_from_label(d) == u) else "%s (%s)" % (d, u)
-            g["_rlabel"] = g["_datum"].map({d: _rlabel(d) for d in dat_units})
-            g["_runits"] = g["_datum"].map(dat_units)
-            main = algo if algo in dat_units else g["_datum"].value_counts().index[0]
-            result_default = _rlabel(main)
-        slug = _slug(algo)
+        slug = _slug(algo) + (_range_tag(xr) if xr else "")
         jp = os.path.join(jobs_dir, "%s_%s_v2_job.json" % (stem, slug))
         if os.path.exists(jp) and not force:
             made.append({"algorithm": algo, "status": "exists", "rows": len(g),
@@ -249,115 +503,21 @@ def convert(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None,
                          "data_path": None, "job_path": jp, "wide": None,
                          "note": "job file exists (use force/--force to overwrite)"})
             continue
-        units = _datum_units(g, algo) if not multi else ""
-        xc = _pick_x(g, x_col)
-        xlab = lab.get(xc, xc)
-        xu = unit.get(xc, "")
-        x_header = "%s (%s)" % (xlab, xu) if xu else xlab
-        # (a label already ending in "(units)" -- e.g. 'Carrier Power (dBm)' -- is not doubled;
-        # a combined dataset has no single unit, so its value column is just the algorithm)
-        val_header = ("%s (%s)" % (algo, units)
-                      if units and _units_from_label(algo) != units else algo)
-        # condition columns for Group: every c_* with >=1 non-null (not x) and a
-        # usable cardinality, plus selected run attributes; constant ones are
-        # harmless (hidden by the views)
-        ccols = []
-        for c in g.columns:
-            if not c.startswith("c_") or c == xc or not g[c].notna().any():
-                continue
-            if g[c].nunique() > MAX_COND_CARD:
-                log("  note: %s dropped from Group (%d distinct values > %d)" % (c, g[c].nunique(), MAX_COND_CARD))
-                continue
-            ccols.append(c)
-        rcols = [c for c in _RUN_KEEP if c in g.columns and g[c].notna().any()]
-        keys = []
-        for c in ccols + rcols:
-            l = lab.get(c, c)
-            u = unit.get(c, "")
-            keys.append((c, "%s (%s)" % (l, u) if u else l))
-        grp = pd.Series("", index=g.index)
-        if multi:
-            # the Result dimension first: the views' condition filter selects the result.
-            # (Group is split on 2+ spaces; labels have single spaces only)
-            grp = "Result: " + g["_rlabel"].str.replace(r"\s{2,}", " ", regex=True) + "  "
-        for c, l in keys:
-            col = g[c]
-            txt = col.map(lambda v: "" if pd.isna(v) else _fmt(v))
-            # Group is split on 2+ spaces; values with 2+ spaces would corrupt it
-            txt = txt.str.replace(r"\s{2,}", " ", regex=True)
-            part = (l + ": " + txt)
-            part[txt == ""] = ""
-            grp = grp + part + "  "
-        grp = grp + "Test Event Status: " + g["run_status"].astype(str)
-        if use_runtime:
-            grp = grp + "  Test Run Datetime: " + g["run_datetime"].dt.strftime("%Y-%m-%d %H:%M:%S")
-        grp = grp.str.replace(r"\s{3,}", "  ", regex=True)
-        o = pd.DataFrame({
-            "Analysis Type": "ScatterPlot",
-            "Model(s)": g["device"],
-            "Algorithm -> Result": (base_algo + "-->" + g["_rlabel"]) if multi else
-                                   (base_algo + "-->" + g["result"].fillna(algo) + (" (%s)" % units if units else "")),
-            "Units": g["_runits"] if multi else units,
-            "Group": grp,
-            x_header: g[xc],
-            val_header: g["value"],
-            "Serial Number": g["serial"],
-        })
-        n_steps, bad_steps = 1, []
-        if "step" in g.columns and g["step"].notna().any():
-            # the PADB "Test Step" column: the loader turns it into Temperature, which is
-            # what makes a multi-step (hot/cold) file offer the environmental views
-            o["Test Step"], n_steps, bad_steps = _step_summary(g["step"])
-        has_lim = False
-        for src, dst in (("limit_upper", "Upper Limit"), ("limit_lower", "Lower Limit")):
-            if g[src].notna().any():
-                o[dst] = g[src]
-                has_lim = True
-        n_x = int(g[xc].nunique())
-        wide = n_x > WIDE_X
+        P = _primitives_from_df(g, df, x_col)
+        F = _facts_from_primitives(P, str(algo), combine_results, x_col, lab, unit, log)
+        if xr:
+            g = g[(g[F["xc"]] >= xr[0]) & (g[F["xc"]] <= xr[1])]
+            if g.empty:
+                continue                       # this algorithm has nothing in the band
+            F = _facts_apply_range(F, g, xr)
+        o = _build_output(g, F, use_runtime)
         ext = "parquet" if fmt == "parquet" else "csv"
         data_path = os.path.join(data_dir, "%s_%s.%s" % (stem, slug, ext))
         if fmt == "parquet":
             o.to_parquet(data_path, compression="zstd", compression_level=9, index=False)
         else:
             o.to_csv(data_path, index=False, quoting=1)
-        job = {
-            "description": "%s %s (padbloader parquet)" % (device, algo),
-            "title_prefix": "%s %s" % (device, algo),
-            "y_label": val_header,
-            ("parquet_path" if fmt == "parquet" else "csv_path"): os.path.abspath(data_path),
-            "results_dir": "%s_%s_v2_results" % (stem, slug),
-            "index_title": "%s %s" % (device, stem),
-            "spec_direction": "auto",
-            "x_col": x_header,
-            "x_label": x_header,
-            "x_unit": xu,
-        }
-        note_extra = ""
-        if bad_steps:
-            note_extra += ("  [WARNING: test step(s) %s name no temperature; the loader reads them "
-                           "as Room]" % ", ".join(bad_steps))
-        if views is not None:
-            vv = [v for v in views if n_steps > 1 or v not in ENV_VIEWS]
-            if len(vv) != len(views):
-                note_extra += "  [environmental views dropped: data has a single test temperature]"
-            job["views"] = vv
-        elif wide:
-            job["views"] = list(WIDE_VIEWS)
-        if multi:
-            job["result_default"] = result_default
-            job["description"] += " -- %d results (pick with the Result filter)" % len(dat_units)
-        if publish_to is not None:
-            # "{algo}" in publish_to expands to this algorithm's slug, so several
-            # algorithms from one parquet never publish into the same folder
-            job["publish_to"] = publish_to.replace("{algo}", slug)
-        with open(jp, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(job, fh, indent=2)
-        made.append({"algorithm": algo, "status": "ok", "rows": len(o),
-                     "serials": int(g["serial"].nunique()), "limits": has_lim,
-                     "data_path": data_path, "job_path": jp, "wide": wide,
-                     "note": (("wide sweep (%d x values) -> views %s" % (n_x, WIDE_VIEWS))
-                              if wide and views is None else "") + note_extra})
+        made.append(_write_job(F, str(algo), slug, jp, stem, lab, publish_to, views, fmt, data_path, len(o), log))
     return made
 
 
@@ -466,7 +626,10 @@ def convert_padb_parquet(parquet, jobs_dir, x_col=None, publish_to=None, views=N
         "x_unit": _units_from_label(xh),
     }
     note = ""
-    if views is not None:
+    if info["n_x"] <= 1:
+        job["views"] = ["histogram"]
+        note = "  [no swept x -> histogram view]"
+    elif views is not None:
         vv = [w for w in views if info["n_steps"] > 1 or w not in ENV_VIEWS]
         if len(vv) != len(views):
             note = "  [environmental views dropped: data has a single test temperature]"
@@ -516,6 +679,15 @@ def main():
     ap.add_argument("--split-results", action="store_true",
                     help="one job per result stream instead of one job per algorithm with a Result filter")
     ap.add_argument("--list", action="store_true", help="list the algorithms and exit")
+    ap.add_argument("--stream", choices=("auto", "always", "off"), default="auto",
+                    help="auto (default): convert in memory when the file fits, else stream it a slice of rows at a time")
+    ap.add_argument("--server", default=None, help="convert only rows whose server contains one of these (comma list), e.g. SR")
+    ap.add_argument("--serials", default=None, help="convert only these serials: a count N (the first N, sorted) or a comma list")
+    ap.add_argument("--steps", default=None, help="convert only these test steps (comma list), e.g. Room,55.0 Deg C")
+    ap.add_argument("--x-range", nargs=2, type=float, metavar=("LO", "HI"), default=None,
+                    help="convert only this band of each algorithm's OWN swept x column (inclusive, stored units)")
+    ap.add_argument("--plan-bands", type=int, metavar="MAX_ROWS", default=None,
+                    help="print how each algorithm's swept x splits into bands of at most MAX_ROWS rows, and exit")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--no-publish", action="store_true")
     g.add_argument("--publish-to", default=None)
@@ -531,13 +703,32 @@ def main():
                 r["algorithm"], r["rows"], r["units"] or "-", r["has_limits"], r["x_col"],
                 r["n_x"], ", WIDE" if r["wide"] else ""))
         return 0
+    sl = {}
+    if a.server:
+        sl["servers"] = [s.strip() for s in a.server.split(",") if s.strip()]
+    if a.serials:
+        sl["serials"] = int(a.serials) if a.serials.strip().isdigit() else [s.strip() for s in a.serials.split(",") if s.strip()]
+    if a.steps:
+        sl["steps"] = [s.strip() for s in a.steps.split(",") if s.strip()]
+    if a.x_range:
+        sl["x_range"] = list(a.x_range)
+    if a.plan_bands:
+        import padb_loader_stream
+        for p in padb_loader_stream.plan_x_bands(a.parquet, a.plan_bands, None, a.algorithm, sl or None, a.x_col,
+                                                 not a.split_results):
+            print("%s: %s rows, x = %s (%d values) -> %d band(s)" % (p["algorithm"], format(p["rows"], ","), p["x_col"],
+                                                                      p["n_x"], len(p["bands"])))
+            for b in p["bands"]:
+                print("    --x-range %s %s    (%s rows, %d x values)" % (_fmt(b["lo"]), _fmt(b["hi"]), format(b["rows"], ","), b["n_x"]))
+        return 0
     if not a.out:
         ap.error("--out is required (unless --list)")
     pub = "" if a.no_publish else a.publish_to
     jobs_dir = a.jobs_dir or os.path.dirname(os.path.abspath(a.out))
     made = convert(a.parquet, a.out, jobs_dir, a.x_col, a.algorithm, pub,
                    not a.no_run_datetime, None, a.format, a.force, combine_results=not a.split_results,
-                   views=[v.strip() for v in a.views.split(",") if v.strip()] if a.views else None)
+                   views=[v.strip() for v in a.views.split(",") if v.strip()] if a.views else None,
+                   stream=a.stream, slice_=sl or None)
     for r in made:
         if r["status"] == "exists":
             print("%s: skipped -- %s" % (r["algorithm"], r["note"]))

@@ -396,10 +396,12 @@ def run_analysis(snapshot, out_dir, opts, timeout_s, argv_prefix=None):
         return {"ok": False, "error": "padb_analyze produced no result (exit %s): %s" % (proc.returncode, tail[:200]), "analyses": []}
     analyses = [{"name": a.get("name"), "status": a.get("status"), "views": a.get("views", []), "index": a.get("index"),
                  "tier": (a.get("tier") or {}).get("tier"), "error": a.get("error"),
+                 "viewer": (a.get("giant") or {}).get("viewer"),
                  "issues": len([i for i in (a.get("job_issues") or []) if i.get("level") == "error"])}
                 for a in res.get("analyses", [])]
-    ok = bool(res.get("ok")) and bool(analyses) and all(a["status"] == "ok" for a in analyses)
-    err = None if ok else (res.get("error") or "; ".join("%s: %s" % (a["name"], a["error"]) for a in analyses if a["status"] != "ok")
+    # 'giant' = converted but too big to build into HTML pages here: a finished outcome (open it in the viewer), not a failure
+    ok = bool(res.get("ok")) and bool(analyses) and all(a["status"] in ("ok", "giant") for a in analyses)
+    err = None if ok else (res.get("error") or "; ".join("%s: %s" % (a["name"], a["error"]) for a in analyses if a["status"] not in ("ok", "giant"))
                            or "no analysis was produced")
     return {"ok": ok, "error": err, "analyses": analyses}
 
@@ -596,6 +598,10 @@ class Watcher:
                         break
                     except ValueError:
                         pass
+            if not link and e.get("status") == "done":
+                gi = [a for a in (e.get("analyses") or []) if a.get("status") == "giant"]
+                if gi:                                   # converted, but too big for HTML pages here: say how to open it
+                    link = _html.escape("too big for HTML pages -- open in the viewer: %s" % (gi[0].get("viewer") or "padb_viewer.py"))
             tier = next((a.get("tier") for a in e.get("analyses") or [] if a.get("tier")), "") or ""
             color = {"done": "#2a7a2a", "failed": "#b26a00", "gave_up": "#c00", "running": "#555", "vanished": "#777"}.get(e.get("status"), "#222")
             rows.append("<tr><td>%s</td><td>%s</td><td style='color:%s;font-weight:700'>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (

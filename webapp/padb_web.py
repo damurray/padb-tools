@@ -1102,8 +1102,24 @@ def generate_parquet_jobs():
                          + f", limits={r['limits']}" + (f"  [{r['note'].strip()}]" if r["note"] else ""))
         p = Path(r["job_path"])
         if p.exists():
-            jobs.append({"path": str(p), "name": p.name, "status": r["status"],
-                         "content": p.read_text(encoding="utf-8")})
+            entry = {"path": str(p), "name": p.name, "status": r["status"],
+                     "content": p.read_text(encoding="utf-8")}
+            # a dataset too big to build into self-contained pages: say so now, and do not queue a build that is
+            # certain to be refused (the data is converted; the parquet viewer reads it out of core)
+            try:
+                import padb_sizeguard
+                dp = r.get("data_path")
+                a = padb_sizeguard.assess(dp, "analyze", views=json.loads(entry["content"]).get("views")) \
+                    if (dp and str(dp).lower().endswith(".parquet") and r["status"] == "ok") else None
+                if a and not a["ok"]:
+                    entry["giant"] = {"message": a["message"], "viewer": 'py padb_viewer.py "%s"' % os.path.dirname(os.path.abspath(dp)),
+                                      "max_rows": a["max_rows"]}
+                    lines.append(f"  [TOO BIG FOR HTML PAGES HERE] {a['message']}")
+                    lines.append(f"  open it in the viewer instead: {entry['giant']['viewer']}  "
+                                 f"(or analyse a slice -- one algorithm / site / serials / x band -- with padb_analyze --x-range / --bands auto)")
+            except Exception:  # noqa: BLE001 -- advice only
+                pass
+            jobs.append(entry)
         lines.append(f"  job: {r['job_path']}")
     return jsonify(stdout=buf.getvalue() + "\n".join(lines) + "\n", stderr="", returncode=0, jobs=jobs)
 

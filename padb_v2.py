@@ -1618,6 +1618,21 @@ def generate_report(
     output_dir.mkdir(parents=True, exist_ok=True)
     prefix = cfg.get("title_prefix", csv_path.stem)
 
+    # Big-data guard: building the pages needs ~10-20 KB of memory per row (measured), so a very large parquet is
+    # refused HERE, with what to do instead, rather than thrashing the machine. Parallel workers are exempt (the
+    # parent has already been through this). PADB_SIZE_GUARD=off overrides.
+    if str(csv_path).lower().endswith(".parquet") and not cfg.get("_worker_view"):
+        try:
+            import padb_sizeguard
+            _g = padb_sizeguard.require(csv_path, "analyze", views=cfg.get("views"))
+            if _g["level"] == "warn":
+                print(f"  [SIZE] {_g['message']}", flush=True)
+        except padb_sizeguard.TooBig as _exc:
+            print(f"\n  [TOO BIG] {_exc}\n", flush=True)
+            raise SystemExit(3)
+        except Exception as _exc:  # noqa: BLE001 -- the guard is advice: never let it be the reason a build fails
+            print(f"  [WARN] size check skipped: {_exc}", flush=True)
+
     # No-swept-x value-distribution view (e.g. switching speed: one number per
     # event, spec'd against a limit -- the pod's original analytics are Type=70
     # histograms). Routed here BEFORE load_scatter, which requires a numeric

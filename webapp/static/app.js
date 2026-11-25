@@ -272,7 +272,14 @@ document.getElementById("generateForm").addEventListener("submit", async e => {
     renderGenerated(pr.data);
     // Queue the freshly written jobs so they show in Running Jobs (live log / cancel)
     const runAfter = document.getElementById("runAfterChk");
-    const fresh = pr.data.jobs.filter(j => j.status === "ok").map(j => j.path);
+    const fresh = pr.data.jobs.filter(j => j.status === "ok" && !j.giant).map(j => j.path);
+    const giant = pr.data.jobs.filter(j => j.giant);
+    if (giant.length) {
+      alert(giant.length + " of the generated job(s) hold more data than can be built into HTML pages on this machine right now, "
+        + "so they were NOT queued:\n\n" + giant.map(j => j.name).join("\n")
+        + "\n\nThe data is converted -- open it in the parquet viewer (the command is in the output below), "
+        + "or generate a slice (padb_analyze --x-range / --bands auto).");
+    }
     if (runAfter && runAfter.checked && fresh.length) {
       const rr = await fetchJson("/api/execute-job", {
         method: "POST", headers: { "Content-Type": "application/json" },

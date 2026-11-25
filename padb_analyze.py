@@ -87,12 +87,28 @@ def validate_request(req) -> dict:
         if not fp.is_file():
             raise BadRequest("filters_file not found: %s" % fp)
         flt = str(fp)
+    sl = req.get("slice")
+    if sl is not None:
+        if not isinstance(sl, dict) or set(sl) - {"algorithms", "servers", "serials", "steps", "x_range"}:
+            raise BadRequest("`slice` must be an object with any of: algorithms, servers, serials, steps, x_range")
+        try:
+            import padb_loader_adapter as _ad
+            _ad._slice_names(sl)
+        except (ValueError, TypeError) as exc:
+            raise BadRequest("bad `slice`: %s" % exc)
+    stream = req.get("stream", "auto")
+    if stream not in ("auto", "always", "off"):
+        raise BadRequest("`stream` must be 'auto', 'always' or 'off'")
+    bands = req.get("bands")
+    if bands is not None and not (bands == "auto" or (isinstance(bands, int) and not isinstance(bands, bool) and bands > 0)):
+        raise BadRequest("`bands` must be 'auto' or a positive row count")
     unknown = set(req) - {"schema", "input", "out", "views", "algorithms", "x_col", "limits_file", "filters_file",
-                          "publish_to", "pdf_report"}
+                          "publish_to", "pdf_report", "slice", "stream", "bands"}
     if unknown:
         raise BadRequest("unknown request field(s): %s" % ", ".join(sorted(unknown)))
     return {"input": inp, "out": Path(req["out"]).expanduser().resolve(), "views": views, "algorithms": algos,
-            "x_col": req.get("x_col") or None, "limits_file": lim, "filters_file": flt, "publish_to": req.get("publish_to") or "",
+            "x_col": req.get("x_col") or None, "limits_file": lim, "filters_file": flt, "slice": sl, "stream": stream,
+            "bands": bands, "publish_to": req.get("publish_to") or "",
             "pdf_report": bool(req.get("pdf_report"))}
 
 
@@ -117,10 +133,50 @@ def _make_jobs(r, log):
                          "nor a padb-tools table (a Group column plus a Frequency / X value column)")
     if kind == "padb":
         made = ad.convert_padb_parquet(str(inp), str(jobs_dir), r["x_col"], "", r["views"], True)
+    elif r.get("bands"):
+        # a file too big for one build: cut each algorithm's own swept x into bands that fit, one analysis per band
+        import padb_loader_stream as stream_mod
+        import padb_sizeguard
+        budget = r["bands"] if isinstance(r["bands"], int) else padb_sizeguard.max_rows("analyze", r["views"])
+        base = dict(r["slice"] or {})
+        base.pop("x_range", None)
+        plan = stream_mod.plan_x_bands(str(inp), budget, r["algorithms"], None, base or None, r["x_col"])
+        n_bands = sum(len(p["bands"]) for p in plan)
+        log("  band plan (<= %s rows per band): %s" % (format(budget, ","), "; ".join(
+            "%s -> %d band(s)" % (p["algorithm"], len(p["bands"])) for p in plan)))
+        if r["bands"] == "auto" and n_bands > 60:
+            raise BadRequest("`bands: auto` would make %d bands of at most %s rows (this machine has little memory free "
+                             "right now). Free some memory, or choose the band size yourself with --bands <rows> "
+                             "(or `padb_loader_adapter --plan-bands <rows>` to preview)." % (n_bands, format(budget, ",")))
+        made = []
+        for p in plan:
+            for b in p["bands"]:
+                sl = dict(base, algorithms=[p["algorithm"]], x_range=[b["lo"], b["hi"]])
+                made += ad.convert(str(inp), str(out), str(jobs_dir), r["x_col"], None, "", True, None,
+                                   "parquet", True, log=log, views=r["views"], stream=r["stream"], slice_=sl)
     else:
         made = ad.convert(str(inp), str(out), str(jobs_dir), r["x_col"], None, "", True, r["algorithms"],
-                          "parquet", True, log=log, views=r["views"])
+                          "parquet", True, log=log, views=r["views"], stream=r["stream"], slice_=r["slice"])
     return [(m["algorithm"], Path(m["job_path"])) for m in made if m.get("job_path") and m.get("status") != "exists"]
+
+
+def _giant_check(job: dict, r: dict):
+    """None when the job's data can be built into HTML pages; otherwise what to do instead (never raises)."""
+    try:
+        pp = job.get("parquet_path")
+        if not pp or not os.path.isfile(pp):
+            return None
+        import padb_sizeguard
+        a = padb_sizeguard.assess(pp, "analyze", views=job.get("views"))
+        if a["ok"]:
+            return None
+        folder = os.path.dirname(os.path.abspath(pp))
+        return {"assessment": a, "message": a["message"], "data": os.path.abspath(pp),
+                "viewer": 'py padb_viewer.py "%s"' % folder,
+                "bands": ('py padb_analyze.py --input "%s" --out "%s" --bands auto' % (r["input"], r["out"])),
+                "slice": "or analyse a slice: add --server / --serials / --steps / --x-range LO HI"}
+    except Exception:  # noqa: BLE001 -- the guard is advice, never a reason to fail
+        return None
 
 
 def analyze(request, log=None) -> dict:
@@ -151,6 +207,12 @@ def analyze(request, log=None) -> dict:
                  "job_issues": padb_jobschema.validate(job),
                  "files": [], "status": "ok", "error": None}
         code = 0
+        giant = _giant_check(job, r)
+        if giant:
+            entry["status"], entry["giant"] = "giant", giant
+            log("  [GIANT] %s: %s" % (name, giant["message"]))
+            result["analyses"].append(entry)
+            continue
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 padb_v2.main([str(jp)] + ([] if r["publish_to"] else ["--no-publish"]))
@@ -190,6 +252,17 @@ def main(argv=None) -> int:
     ap.add_argument("--limits-file")
     ap.add_argument("--filters-file")
     ap.add_argument("--x-col")
+    ap.add_argument("--stream", choices=("auto", "always", "off"), default="auto",
+                    help="auto (default): convert a padbloader parquet in memory when it fits, else stream it")
+    ap.add_argument("--bands", default=None, metavar="auto|ROWS",
+                    help="a file too big for one build: split each algorithm's swept x into bands of at most ROWS rows "
+                         "(auto = what fits in memory now) and analyse each band")
+    ap.add_argument("--algorithm", action="append", default=None, help="only this EXACT algorithm / result name (repeatable)")
+    ap.add_argument("--server", default=None, help="slice: only rows whose server contains one of these (comma list)")
+    ap.add_argument("--serials", default=None, help="slice: a count N (the first N serials) or a comma list")
+    ap.add_argument("--steps", default=None, help="slice: only these test steps (comma list)")
+    ap.add_argument("--x-range", nargs=2, type=float, metavar=("LO", "HI"), default=None,
+                    help="slice: a band of each algorithm's OWN swept x (inclusive, stored units)")
     ap.add_argument("--publish-to", default="")
     ap.add_argument("--pdf-report", action="store_true")
     ap.add_argument("--result", help="also write the result JSON to this file")
@@ -208,10 +281,27 @@ def main(argv=None) -> int:
                 req["filters_file"] = a.filters_file
             if a.x_col:
                 req["x_col"] = a.x_col
+            if a.stream != "auto":
+                req["stream"] = a.stream
+            if a.bands:
+                req["bands"] = "auto" if a.bands == "auto" else int(a.bands)
+            if a.algorithm:
+                req["algorithms"] = a.algorithm
+            sl = {}
+            if a.server:
+                sl["servers"] = [s.strip() for s in a.server.split(",") if s.strip()]
+            if a.serials:
+                sl["serials"] = int(a.serials) if a.serials.strip().isdigit() else [s.strip() for s in a.serials.split(",") if s.strip()]
+            if a.steps:
+                sl["steps"] = [s.strip() for s in a.steps.split(",") if s.strip()]
+            if a.x_range:
+                sl["x_range"] = list(a.x_range)
+            if sl:
+                req["slice"] = sl
         else:
             ap.error("give a request file, or --input and --out")
         res = analyze(req)
-    except (BadRequest, ValueError, OSError) as exc:
+    except (BadRequest, ValueError, OSError, MemoryError) as exc:
         res = {"schema": RESULT_SCHEMA, "ok": False, "analyses": [], "warnings": [], "error": str(exc)}
         print(json.dumps(res, indent=2))
         if a.result:

@@ -1232,7 +1232,20 @@ Two opt-in job.json keys for pods large enough to produce an impractically large
 
 ---
 
-## Limitations and Known Issues
+## Very Large Datasets (padbloader parquet, millions of rows)
+
+A multi-million-row pull cannot be turned into HTML pages in one piece (about 10-28 KB of memory per row). The tools check first and tell you what to do:
+
+- **Size guard.** `padb_v2`, `padb_loader_adapter` and `padb_analyze` estimate the memory needed and refuse (rather than thrash the PC) when it exceeds 85% of what is free or 60% of all RAM. Override with the environment variable `PADB_SIZE_GUARD=off`, or set a fixed budget with `PADB_MAX_LOAD_GB=<n>`.
+- **Conversion never needs the whole file in memory.** For a big file `padb_loader_adapter` / `padb_analyze` stream it automatically (`--stream auto|always|off`); the output is identical to the in-memory conversion. A 6.25M-row phase-noise file converts in about two minutes.
+- **A dataset that is still too big for pages** is reported as `giant`: the data is converted, and you get the command to open it in the parquet viewer (`py padb_viewer.py "<folder>"`), which reads it out of core.
+- **Analyse a slice** with `--algorithm "<exact name>"`, `--server SR`, `--serials 5` or `--serials a,b`, `--steps "Room"`, `--x-range LO HI` (on that algorithm's own swept x -- offset, amplitude, Vgg ...).
+- **Analyse in bands:** `py padb_loader_adapter.py <file> --plan-bands 250000` previews the bands; `py padb_analyze.py --input <file> --out <dir> --bands auto` (or `--bands <rows>`) runs one analysis per x-band, each in its own results folder. An x value is never split across bands, so every statistic inside a band is exact; statistics are not combined across bands.
+- If the memory runs out inside the analysis engine you get a plain message naming `PADB_STREAM_MEM_GB`; close other programs or give it more.
+
+---
+
+## Limitations and Known Issues## Limitations and Known Issues
 
 - **No serial filter for de_summary.** The Environmental CSV is pre-aggregated across all DUTs; per-DUT data is not available in this file format.
 
