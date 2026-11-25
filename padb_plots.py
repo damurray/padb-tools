@@ -35,6 +35,14 @@ from plotly.subplots import make_subplots
 import padb_stats as pst
 
 INT_SENTINEL = 2_147_483_647
+
+
+def _is_int_sentinel(f) -> bool:
+    """PADB writes INT_MAX (2147483647) where a value could not be computed; as a float32 it reads back 2147483648.
+    ONLY those two are 'no data'. The old test (>= INT_MAX) also dropped every legitimate larger number -- e.g. a carrier
+    frequency in Hz above 2.147 GHz (3.2 GHz, 10 GHz, 20 GHz): the points vanished without a word (qa_truth, x in Hz)."""
+    a = abs(f)
+    return INT_SENTINEL <= a <= INT_SENTINEL + 1
 _PLOTLY_JS = True  # embed plotly.js; each HTML is self-contained (~4 MB)
 _PLOTLYJS_CACHE: str = ""
 
@@ -1606,7 +1614,10 @@ function _onPlotRelayout(ed){
   if(Array.isArray(ed['xaxis.range'])){lo=ed['xaxis.range'][0];hi=ed['xaxis.range'][1];}
   if(lo===undefined||hi===undefined) return;
   var log=isLogX();
-  var loV=log?Math.pow(10,lo):lo,hiV=log?Math.pow(10,hi):hi;
+  /* 10^log10(x) is not exactly x (10^log10(8) = 7.999999999999999): snapped to 12 significant digits so a band edge that
+     setFreqBand just wrote comes back as the SAME number -- the outward floor/ceil below would otherwise turn it into 7.999,
+     which falls outside its own band and left Prev/Next stuck on the first band (qa_truth, log-x pages). */
+  var loV=log?parseFloat(Math.pow(10,lo).toPrecision(12)):lo,hiV=log?parseFloat(Math.pow(10,hi).toPrecision(12)):hi;
   _zoomSyncFreq(loV,hiV);
 }
 _loadGlobalFilter();
@@ -1666,7 +1677,7 @@ PADB_lockInit();
 def _sfloat(v):
     try:
         f = float(v)
-        return np.nan if abs(f) >= INT_SENTINEL else f
+        return np.nan if _is_int_sentinel(f) else f
     except (TypeError, ValueError):
         return np.nan
 
@@ -7724,7 +7735,7 @@ def _load_scatter_for_stats(csv_path: Path, x_col: str | None = None) -> pd.Data
             s = str(v).strip().lstrip('<=>').strip()
             try:
                 f = float(s)
-                return np.nan if abs(f) >= INT_SENTINEL else f
+                return np.nan if _is_int_sentinel(f) else f
             except (ValueError, TypeError):
                 return np.nan
         return series.map(_pl)
@@ -7980,7 +7991,11 @@ def _aggregate_stat_data(df: pd.DataFrame, cfg: dict) -> list:
         if _serial_col:
             valid = df[_serial_col].astype(str).str.strip().str.match(r'^([A-Z]{2,3}\d{5,}|\d{5,})$')
             if valid.any():
-                df["_serial_id"] = df[_serial_col].astype(str).str.strip().where(valid, df["_serial_id"])
+                _sid = df[_serial_col].astype(str).str.strip()
+                # one DUT = serial + port, exactly as a Serial key inside the Group gives (RF1 and RF2 of a unit are
+                # different measurements; dropping the port averaged them into one point -- n halved, spread wrong)
+                _sid = (_sid + "_" + df["_port"].astype(str)).where(df["_port"].astype(str) != "", _sid)
+                df["_serial_id"] = _sid.where(valid, df["_serial_id"])
                 _serial_applied = True
         if not _serial_applied:
             # No serial key in Group AND no usable serial column -> no genuine per-DUT
@@ -10353,7 +10368,10 @@ function _onPlotRelayout(ed){
   if(Array.isArray(ed['xaxis.range'])){lo=ed['xaxis.range'][0];hi=ed['xaxis.range'][1];}
   if(lo===undefined||hi===undefined) return;
   var log=isLogX();
-  var loV=log?Math.pow(10,lo):lo,hiV=log?Math.pow(10,hi):hi;
+  /* 10^log10(x) is not exactly x (10^log10(8) = 7.999999999999999): snapped to 12 significant digits so a band edge that
+     setFreqBand just wrote comes back as the SAME number -- the outward floor/ceil below would otherwise turn it into 7.999,
+     which falls outside its own band and left Prev/Next stuck on the first band (qa_truth, log-x pages). */
+  var loV=log?parseFloat(Math.pow(10,lo).toPrecision(12)):lo,hiV=log?parseFloat(Math.pow(10,hi).toPrecision(12)):hi;
   setFreqBand(loV,hiV);
 }
 function setFreqBand(lo,hi){
@@ -12265,7 +12283,10 @@ function _onPlotRelayout(ed){
   if(Array.isArray(ed['xaxis.range'])){lo=ed['xaxis.range'][0];hi=ed['xaxis.range'][1];}
   if(lo===undefined||hi===undefined) return;
   var log=isLogX();
-  var loV=log?Math.pow(10,lo):lo,hiV=log?Math.pow(10,hi):hi;
+  /* 10^log10(x) is not exactly x (10^log10(8) = 7.999999999999999): snapped to 12 significant digits so a band edge that
+     setFreqBand just wrote comes back as the SAME number -- the outward floor/ceil below would otherwise turn it into 7.999,
+     which falls outside its own band and left Prev/Next stuck on the first band (qa_truth, log-x pages). */
+  var loV=log?parseFloat(Math.pow(10,lo).toPrecision(12)):lo,hiV=log?parseFloat(Math.pow(10,hi).toPrecision(12)):hi;
   setFreqBand(loV,hiV);
 }
 function setFreqBand(lo,hi){
@@ -19111,7 +19132,11 @@ def _stat_boxplot_interactive(csv_path: Path, cfg: dict, output_html: Path) -> N
             if _serial_col:
                 valid = df[_serial_col].astype(str).str.strip().str.match(r'^([A-Z]{2,3}\d{5,}|\d{5,})$')
                 if valid.any():
-                    df["_serial_id"] = df[_serial_col].astype(str).str.strip().where(valid, df["_serial_id"])
+                    _sid = df[_serial_col].astype(str).str.strip()
+                    # one DUT = serial + port, exactly as a Serial key inside the Group gives (RF1 and RF2 of a unit are
+                    # different measurements; dropping the port averaged them into one point -- n halved, spread wrong)
+                    _sid = (_sid + "_" + df["_port"].astype(str)).where(df["_port"].astype(str) != "", _sid)
+                    df["_serial_id"] = _sid.where(valid, df["_serial_id"])
                     _serial_applied = True
             if not _serial_applied:
                 # No serial key in the Group string AND no usable serial column: this

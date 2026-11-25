@@ -111,6 +111,10 @@
     "qa_bigdata": {
       "passed": 62,
       "failed": 0
+    },
+    "qa_truth": {
+      "passed": 102,
+      "failed": 0
     }
   }
 }
