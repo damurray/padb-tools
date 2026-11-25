@@ -156,7 +156,17 @@
           <option value="plot">Plot jobs</option>
         </select>
       </label>
-      <label title="Case-insensitive filter on job filename.">Name <input type="text" id="nameFilter" placeholder="filter by name…"></label>
+      <label title="Case-insensitive search over job name, description, pod and test family. Every word must match (e.g. 'harmonics amc2').">Find <input type="text" id="nameFilter" placeholder="name, description, pod…" size="24"></label>
+      <label title="Group the table into collapsible sections. Test family = the results folder a run job and its plot jobs share. Only changes how the list is shown -- job files, schedules and results are untouched.">Group by
+        <select id="groupBy">
+          <option value="none">None</option>
+          <option value="family">Test family</option>
+          <option value="kind">Kind</option>
+          <option value="mode">Mode</option>
+          <option value="schedule">Scheduled</option>
+          <option value="lastrun">Last run</option>
+        </select>
+      </label>
       <label title="Show only the jobs in a saved list (e.g. Production, NPI). Lists only choose what is shown here -- job files, schedules and results are untouched, and a job can be in several lists.">List <select id="listFilter"><option value="all">All jobs</option></select></label>
       <button id="addToListBtn" class="secondary" title="Adds the checked jobs to a list (you type a name; a new name creates the list).">Add checked to list&hellip;</button>
       <button id="removeFromListBtn" class="secondary" title="Removes the checked jobs from the list shown in the List dropdown. The job files themselves are not deleted." disabled>Remove checked from list</button>
@@ -166,6 +176,15 @@
       <button id="selectFilteredBtn" class="secondary" title="Checks every job matching the current Mode/Kind/Name filters (all rows shown in the table), Run and Plot alike, and unchecks everything else.">Select Filtered</button>
       <button id="runSelectedBtn" title="Queues every checked job. PADB-R.exe runs are strictly serialized (one at a time, others wait as queued); Run jobs are always queued ahead of Plot jobs regardless of selection order, since a Plot job may read a CSV its own Run job just produced.">Run Selected</button>
       <label title="Off by default: builds locally only (--no-publish). Check to also publish results to each job's own configured publish_to on the network share. Never rewrites the job file -- it's a per-run choice."><input type="checkbox" id="publishCheckbox"> Publish to share after run</label>
+    </div>
+    <div class="toolbar" id="jobChips" title="Quick filters -- click to switch on or off; several can be on at once (all must hold). The number is how many jobs match that chip on its own.">
+      <span class="job-count" id="jobCount"></span>
+      <button class="chip" data-chip="failed" title="Jobs whose most recent run in THIS server session failed (a server restart forgets earlier runs).">Failed</button>
+      <button class="chip" data-chip="never" title="Jobs with no results yet (no index.html written).">Never run</button>
+      <button class="chip" data-chip="scheduled" title="Jobs with a Windows scheduled task.">Scheduled</button>
+      <button class="chip" data-chip="today" title="Jobs whose results were written today.">Ran today</button>
+      <button class="chip" data-chip="results" title="Jobs that have a results page to open.">Has results</button>
+      <button class="chip" id="chipClear" title="Switch every chip off and clear the Find box.">Clear</button>
     </div>
     <details id="optionalActions" class="optional-actions">
       <summary title="Optional per-job actions -- not part of the required drop &rarr; generate &rarr; run flow. Collapsed by default to reduce clutter."><span class="opt-chip">optional</span> More actions &mdash; PDF report, Test-point Reduce, Schedule, Convert site</summary>

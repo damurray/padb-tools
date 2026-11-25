@@ -1745,6 +1745,32 @@ def _job_kind(cfg: dict) -> str:
     return "unknown"
 
 
+def _job_family(cfg: dict, name: str) -> str:
+    """The test a job belongs to -- what the jobs table groups by. A run job and the plot jobs made from its extraction
+    share a results folder, so that folder's name (minus the _results / _run_results / _v2_results tail and a padbloader
+    timestamp prefix) is the family; else the pod's name; else the job file's name."""
+    import re
+    rd = str(cfg.get("results_dir") or "").replace("\\", "/").rstrip("/")
+    base = rd.rsplit("/", 1)[-1] if rd else ""
+    if not base and cfg.get("pod"):
+        base = Path(str(cfg["pod"]).replace("\\", "/")).stem
+    if not base:
+        base = re.sub(r"_job\.json$", "", name)
+    base = re.sub(r"(_(v2|run|simple|interactive))*_results$", "", base, flags=re.I)
+    base = re.sub(r"^padbloader_\d{8}_\d{6}_", "", base)
+    base = re.sub(r"_v2$", "", base, flags=re.I)
+    return base or name
+
+
+def _job_last_status(path: str) -> str | None:
+    """done / failed / cancelled for the newest run of this job in THIS server session (in-memory; a restart forgets it)."""
+    with _jobs_lock:
+        runs = [j for j in _jobs.values() if j.get("path") == path and j.get("status") in ("done", "failed", "cancelled")]
+    if not runs:
+        return None
+    return max(runs, key=lambda j: j.get("finished") or j.get("started") or 0).get("status")
+
+
 @app.route("/api/jobs")
 def list_jobs():
     scheduled_tasks = {t.upper() for t in discover_all_padb_tasks()}
@@ -1778,6 +1804,8 @@ def list_jobs():
             "last_run": last_run,
             "scheduled": is_scheduled,
             "schedule_summary": schedule_summary,
+            "family": _job_family(cfg, p.name),
+            "last_status": _job_last_status(str(p)),
         })
     return jsonify(jobs=jobs)
 

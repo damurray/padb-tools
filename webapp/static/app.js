@@ -682,47 +682,151 @@ async function loadJobs() {
   renderJobsTable();
 }
 
+// ---- jobs table: find / chips / grouping (display only; never touches job files) ----
+const JOB_CHIPS = {
+  failed:    j => j.last_status === "failed",
+  never:     j => !j.last_run,
+  scheduled: j => !!j.scheduled,
+  today:     j => !!j.last_run && j.last_run.slice(0, 10) === _todayStr(),
+  results:   j => !!j.index_url,
+};
+function _todayStr() {
+  const d = new Date(), z = n => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + z(d.getMonth() + 1) + "-" + z(d.getDate());
+}
+function _lsGet(k, dflt) { try { const v = localStorage.getItem(k); return v === null ? dflt : v; } catch (e) { return dflt; } }
+function _lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+let activeChips = new Set((_lsGet("padb_web_job_chips", "") || "").split(",").filter(c => JOB_CHIPS[c]));
+let collapsedGroups = new Set();
+try { collapsedGroups = new Set(JSON.parse(_lsGet("padb_web_job_collapsed", "[]"))); } catch (e) {}
+
+// Every word typed must appear in the name, description, pod or family (case-insensitive).
+function jobMatchesFind(job, q) {
+  if (!q) return true;
+  const hay = (job.name + " " + (job.description || "") + " " + (job.pod || "") + " " + (job.family || "")).toLowerCase();
+  return q.split(/\s+/).every(w => hay.includes(w));
+}
+
+function jobGroupKey(job, by) {
+  if (by === "family") return job.family || "(unknown)";
+  if (by === "kind") return job.kind === "run" ? "Run jobs (PADB-R extraction)" : "Plot jobs (HTML from a CSV / parquet)";
+  if (by === "mode") return job.mode || "(none)";
+  if (by === "schedule") return job.scheduled ? "Scheduled" : "Not scheduled";
+  if (by === "lastrun") {
+    if (!job.last_run) return "Never run";
+    const d = job.last_run.slice(0, 10);
+    if (d === _todayStr()) return "Today";
+    const age = (Date.now() - new Date(d + "T00:00:00").getTime()) / 86400000;
+    return age <= 7 ? "Last 7 days" : "Older";
+  }
+  return "";
+}
+const GROUP_ORDER = { lastrun: ["Today", "Last 7 days", "Older", "Never run"], schedule: ["Scheduled", "Not scheduled"] };
+
+function _escHtml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function buildJobRow(job, groupId, visible) {
+  const tr = document.createElement("tr");
+  if (groupId) tr.dataset.groupOf = groupId;
+  if (!visible) tr.style.display = "none";
+  const td = document.createElement("td");
+  const cb = document.createElement("input");
+  cb.type = "checkbox";
+  cb.value = job.path;
+  cb.dataset.kind = job.kind;
+  cb.dataset.compare = job.is_compare ? "1" : "";
+  td.appendChild(cb);
+  tr.appendChild(td);
+  const resultsCell = job.index_url
+    ? `<a href="${job.index_url}" target="_blank" title="${job.index_path}">Open</a>`
+    : "";
+  const scheduledCell = job.scheduled
+    ? `<span class="sched-yes">&#10003; ${job.schedule_summary || ""}</span>`
+    : "";
+  tr.innerHTML += `<td class="wrap">${job.name}</td><td>${job.mode}</td>` +
+    `<td class="wrap">${job.pod}</td><td class="wrap">${job.description}</td>` +
+    `<td class="wrap">${scheduledCell}</td><td>${job.last_run || ""}</td><td>${resultsCell}</td>`;
+  const editBtn = document.createElement("button");
+  editBtn.textContent = "Edit";
+  editBtn.title = "Edit this job.json (extraction + analysis options). Changes are reviewed as a diff before saving; a .bak copy is kept.";
+  editBtn.addEventListener("click", () => openEditJob(job.path));
+  editBtn.style.marginRight = "6px";
+  editBtn.style.display = "none"; // revealed only while this row is selected
+  editBtn.className = "edit-job-btn";
+  const nameCell = tr.children[1];
+  nameCell.insertBefore(editBtn, nameCell.firstChild);
+  return tr;
+}
+
 function renderJobsTable() {
   const modeFilter = document.getElementById("modeFilter").value;
   const kindFilter = document.getElementById("kindFilter").value;
   const nameFilter = document.getElementById("nameFilter").value.trim().toLowerCase();
   const listSel = document.getElementById("listFilter").value;
+  const groupBy = (document.getElementById("groupBy") || {}).value || "none";
   const listSet = listSel !== "all" && jobLists[listSel] ? new Set(jobLists[listSel]) : null;
   const tbody = document.querySelector("#jobsTable tbody");
   tbody.innerHTML = "";
-  for (const job of allJobs) {
-    if (listSet && !listSet.has(job.name)) continue;
-    if (modeFilter !== "all" && job.mode !== modeFilter) continue;
-    if (kindFilter !== "all" && job.kind !== kindFilter) continue;
-    if (nameFilter && !job.name.toLowerCase().includes(nameFilter)) continue;
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.value = job.path;
-    cb.dataset.kind = job.kind;
-    cb.dataset.compare = job.is_compare ? "1" : "";
-    td.appendChild(cb);
-    tr.appendChild(td);
-    const resultsCell = job.index_url
-      ? `<a href="${job.index_url}" target="_blank" title="${job.index_path}">Open</a>`
-      : "";
-    const scheduledCell = job.scheduled
-      ? `<span class="sched-yes">&#10003; ${job.schedule_summary || ""}</span>`
-      : "";
-    tr.innerHTML += `<td class="wrap">${job.name}</td><td>${job.mode}</td>` +
-      `<td class="wrap">${job.pod}</td><td class="wrap">${job.description}</td>` +
-      `<td class="wrap">${scheduledCell}</td><td>${job.last_run || ""}</td><td>${resultsCell}</td>`;
-    const editBtn = document.createElement("button");
-    editBtn.textContent = "Edit";
-    editBtn.title = "Edit this job.json (extraction + analysis options). Changes are reviewed as a diff before saving; a .bak copy is kept.";
-    editBtn.addEventListener("click", () => openEditJob(job.path));
-    editBtn.style.marginRight = "6px";
-    editBtn.style.display = "none"; // revealed only while this row is selected
-    editBtn.className = "edit-job-btn";
-    const nameCell = tr.children[1];
-    nameCell.insertBefore(editBtn, nameCell.firstChild);
-    tbody.appendChild(tr);
+  // 1. the jobs that pass every filter (list, mode, kind, find, chips)
+  const shown = allJobs.filter(job =>
+    !(listSet && !listSet.has(job.name)) &&
+    !(modeFilter !== "all" && job.mode !== modeFilter) &&
+    !(kindFilter !== "all" && job.kind !== kindFilter) &&
+    jobMatchesFind(job, nameFilter) &&
+    [...activeChips].every(c => JOB_CHIPS[c](job)));
+  for (const b of document.querySelectorAll("#jobChips button.chip[data-chip]")) {
+    const c = b.dataset.chip;
+    b.textContent = b.textContent.replace(/ \(\d+\)$/, "") + " (" + allJobs.filter(JOB_CHIPS[c]).length + ")";
+    b.classList.toggle("on", activeChips.has(c));
+  }
+  const cnt = document.getElementById("jobCount");
+  if (cnt) cnt.textContent = "Showing " + shown.length + " of " + allJobs.length + " jobs";
+  // 2. order into groups
+  const groups = new Map();
+  for (const job of shown) {
+    const k = groupBy === "none" ? "" : jobGroupKey(job, groupBy);
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(job);
+  }
+  const keys = [...groups.keys()];
+  const fixed = GROUP_ORDER[groupBy];
+  keys.sort((a, b) => fixed ? fixed.indexOf(a) - fixed.indexOf(b) : a.toLowerCase().localeCompare(b.toLowerCase()));
+  for (const gk of keys) {
+    const members = groups.get(gk);
+    if (groupBy === "none") {
+      for (const job of members) tbody.appendChild(buildJobRow(job, "", true));
+      continue;
+    }
+    const hid = groupBy + "::" + gk;
+    const open = !collapsedGroups.has(hid);
+    const htr = document.createElement("tr");
+    htr.className = "job-group-row";
+    htr.dataset.group = hid;
+    const hd = document.createElement("td");
+    hd.colSpan = 8;
+    const nSched = members.filter(j => j.scheduled).length;
+    hd.innerHTML = '<span class="g-caret">' + (open ? "&#9662;" : "&#9656;") + "</span> " + _escHtml(gk) +
+      '<span class="g-meta">' + members.length + " job" + (members.length === 1 ? "" : "s") +
+      (nSched ? ", " + nSched + " scheduled" : "") + "</span>" +
+      '<button type="button" class="secondary g-check" title="Check every job in this group (or uncheck them all if they were all checked).">check group</button>';
+    htr.appendChild(hd);
+    htr.addEventListener("click", (e) => {
+      if (e.target && e.target.classList.contains("g-check")) return;
+      if (collapsedGroups.has(hid)) collapsedGroups.delete(hid); else collapsedGroups.add(hid);
+      _lsSet("padb_web_job_collapsed", JSON.stringify([...collapsedGroups]));
+      renderJobsTable();
+    });
+    hd.querySelector(".g-check").addEventListener("click", () => {
+      const boxes = [...tbody.querySelectorAll("tr")].filter(r => r.dataset.groupOf === hid).map(r => r.querySelector("input[type=checkbox]"));
+      const all = boxes.length && boxes.every(b => b.checked);
+      boxes.forEach(b => { b.checked = !all; });
+      updatePdfSiteEnabled();
+    });
+    tbody.appendChild(htr);
+    // rows of a collapsed group are still built (just hidden) so "Select Filtered" and the checked state cover them
+    for (const job of members) tbody.appendChild(buildJobRow(job, hid, open));
   }
   applyTooltipPref(); // Results link's title is only known once rendered here
   updatePdfSiteEnabled();
@@ -762,6 +866,27 @@ document.getElementById("refreshJobsBtn").addEventListener("click", loadJobs);
 document.getElementById("modeFilter").addEventListener("change", renderJobsTable);
 document.getElementById("kindFilter").addEventListener("change", renderJobsTable);
 document.getElementById("nameFilter").addEventListener("input", renderJobsTable);
+{
+  const gb = document.getElementById("groupBy");
+  const saved = _lsGet("padb_web_job_group", "none");
+  gb.value = saved;
+  if (gb.value !== saved) gb.value = "none";
+  gb.addEventListener("change", () => { _lsSet("padb_web_job_group", gb.value); renderJobsTable(); });
+}
+for (const b of document.querySelectorAll("#jobChips button.chip[data-chip]")) {
+  b.addEventListener("click", () => {
+    const c = b.dataset.chip;
+    if (activeChips.has(c)) activeChips.delete(c); else activeChips.add(c);
+    _lsSet("padb_web_job_chips", [...activeChips].join(","));
+    renderJobsTable();
+  });
+}
+document.getElementById("chipClear").addEventListener("click", () => {
+  activeChips.clear();
+  _lsSet("padb_web_job_chips", "");
+  document.getElementById("nameFilter").value = "";
+  renderJobsTable();
+});
 
 document.getElementById("selectAllRunnableBtn").addEventListener("click", () => {
   const boxes = document.querySelectorAll("#jobsTable tbody input[type=checkbox]");

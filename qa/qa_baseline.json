@@ -115,6 +115,10 @@
     "qa_truth": {
       "passed": 102,
       "failed": 0
+    },
+    "qa_jobs_table": {
+      "passed": 41,
+      "failed": 0
     }
   }
 }
