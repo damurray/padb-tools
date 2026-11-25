@@ -58,7 +58,7 @@ SCHEMA = {
     "unique_output_filenames": F("bool", "run", "extraction", "Force a unique output file per analytic."),
     "force_output_csv": F("bool", "run", "extraction", "Force CSV output on every scatter analytic."),
     "reduction_extraction": F("bool", "run", "extraction", "All-runs extraction for the test-point reduction study."),
-    "mode": F("str", "both", "extraction", "legacy / simple (PADB native plots) / interactive (HTML views).",
+    "mode": F("str", "both", "extraction", "interactive (HTML views; the default) / simple (PADB native plots). 'legacy' is retired = interactive.",
               enum=("legacy", "simple", "interactive")),
     # ---- data source (plot jobs)
     "csv_path": F("str", "plot", "source", "The PADB scatter CSV to plot."),
@@ -262,6 +262,8 @@ def validate(job) -> list:
             out.append(_issue("warn", key, "deprecated: " + spec["deprecated"]))
             continue
         out += _check_value(key, v, spec)
+    if job.get("mode") == "legacy":
+        out.append(_issue("warn", "mode", "'legacy' is retired: it runs as 'interactive' (set \"mode\": \"interactive\")"))
     # ---- a data source
     kind = job_kind(job)
     if kind == "unknown":

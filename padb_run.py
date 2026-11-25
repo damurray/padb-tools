@@ -107,6 +107,18 @@ def _resolve_date_sentinel(value: str) -> str | None:
     return result.isoformat()
 
 
+def normalise_mode(mode):
+    """-> (mode, note). 'interactive' (the default) and 'simple' are the two modes; 'legacy' (the old V1 default) is retired and
+    runs as 'interactive' -- the same pipeline (secondary_plots and the index are unchanged) plus the HOW_TO_USE guidance.
+    An unknown value gives (None, None)."""
+    if mode in ("interactive", "simple"):
+        return mode, None
+    if mode == "legacy":
+        return "interactive", ("mode 'legacy' is retired -- running as 'interactive' (same plots and index; also writes "
+                               "HOW_TO_USE.txt). Set \"mode\": \"interactive\" in the job to silence this.")
+    return None, None
+
+
 def load_job(job_path: Path) -> dict:
     """Load job.json, resolving relative paths against the job file location.
 
@@ -154,7 +166,7 @@ def load_job(job_path: Path) -> dict:
     cfg.setdefault("padb_logs_dir", _user_defaults["padb_logs_dir"])
     cfg.setdefault("run_analytics", True)
     cfg.setdefault("padb_timeout", 600)
-    cfg.setdefault("mode", "legacy")  # "legacy" (V1, default) | "simple" | "interactive"
+    cfg.setdefault("mode", "interactive")  # "interactive" (default) | "simple"; "legacy" is a retired alias of interactive
 
     # Convert friendly list fields into subex overrides (raw subex wins on conflict)
     list_overrides = {}
@@ -1275,10 +1287,13 @@ def main() -> None:
 
     cfg = load_job(job_path)
 
-    mode = cfg["mode"]
-    if mode not in ("legacy", "simple", "interactive"):
-        print(f"ERROR: unknown mode '{mode}' -- expected 'legacy', 'simple', or 'interactive'")
+    mode, _mode_note = normalise_mode(cfg["mode"])
+    if mode is None:
+        print(f"ERROR: unknown mode '{cfg['mode']}' -- expected 'interactive' or 'simple'")
         sys.exit(1)
+    if _mode_note:
+        print(f"NOTE: {_mode_note}")
+    cfg["mode"] = mode
 
     pod_path = cfg.get("_pod_path")
     if not pod_path or not pod_path.exists():
@@ -1376,7 +1391,7 @@ def main() -> None:
     if mode in ("simple", "interactive"):
         write_mode_guidance(cfg, mode)
 
-    if mode == "interactive":
+    if mode == "interactive" and not cfg.get("secondary_plots"):
         first_csv = next(iter(csv_map.values()), "<path/to/data.csv>")
         print(f"\nMode: interactive -- build the V2 view suite with:")
         print(f"  py padb_v2.py <your_v2_job.json> --csv {first_csv}")

@@ -31,6 +31,8 @@ from __future__ import annotations
 import json
 import subprocess as _subprocess
 import sys
+import os
+import shutil
 import tempfile
 import time
 import types
@@ -566,6 +568,181 @@ def test_upload_validation():
           client.post("/api/upload-pod", data={}).status_code == 400)
 
 
+def test_padbloader_picker():
+    """/api/padbloader-files -- the "Browse PadbLoader files" picker. A fake PadbLoader tree (PADBLOADER_DATA_DIR) holds a
+    manual export, a scheduled run, scratch folders PadbLoader writes parts into, a half-written file, a just-written
+    file and a non-parquet; the route must list only real candidates, newest first, say which are finished, honour the
+    limit, never list outside PadbLoader's folder, and the page must wire the button to it."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    root = Path(tempfile.mkdtemp(prefix="qa_pbpick_"))
+    data = root / "Exports" / "PadbLoader Data"
+    (data / "Scheduled" / "Spurs - damurray").mkdir(parents=True)
+    (data / ".staging-abc").mkdir()
+    (data / "Run.parquet.parts").mkdir()
+    tbl = pa.table({"algorithm": ["A"] * 5, "value": [1.0] * 5})
+    now = time.time()
+
+    def mk(path, age_s, rows=5):
+        pq.write_table(pa.table({"algorithm": ["A"] * rows, "value": [1.0] * rows}), str(path))
+        os.utime(path, (now - age_s, now - age_s))
+    mk(data / "padbloader_20261120_090000.parquet", 7200)
+    mk(data / "Scheduled" / "Spurs - damurray" / "Spurs_20261124-115925.parquet", 3600, rows=7)
+    mk(data / "padbloader_20261124_150000.parquet", 60)
+    mk(data / ".staging-abc" / "hidden.parquet", 3600)
+    mk(data / "Run.parquet.parts" / "part-0.parquet", 3600)
+    (data / "trunc.parquet").write_bytes(b"PAR1" + b"\0" * 200)
+    os.utime(data / "trunc.parquet", (now - 3600, now - 3600))
+    mk(data / "justnow.parquet", 0)
+    (data / "export.csv").write_text("a,b\n1,2\n")
+    elsewhere = Path(tempfile.mkdtemp(prefix="qa_pbpick_other_"))
+    mk(elsewhere / "outside.parquet", 3600)
+    old = os.environ.get("PADBLOADER_DATA_DIR")
+    os.environ["PADBLOADER_DATA_DIR"] = str(root)
+    try:
+        r = client.get("/api/padbloader-files").get_json()
+        names = [f["name"] for f in r["files"]]
+        check("picker lists the real candidates only: manual + scheduled + truncated + just-written; not scratch folders, "
+              "not a csv, not another folder", sorted(names) == sorted(["padbloader_20261120_090000.parquet",
+                                                                        "Spurs_20261124-115925.parquet", "padbloader_20261124_150000.parquet",
+                                                                        "trunc.parquet", "justnow.parquet"]), names)
+        check("picker is newest first", names[0] == "justnow.parquet" and names.index("padbloader_20261124_150000.parquet")
+              < names.index("Spurs_20261124-115925.parquet") < names.index("padbloader_20261120_090000.parquet"), names)
+        by = {f["name"]: f for f in r["files"]}
+        check("picker marks finished files complete, with their row count (read from the footer)",
+              by["Spurs_20261124-115925.parquet"]["complete"] and by["Spurs_20261124-115925.parquet"]["rows"] == 7
+              and by["padbloader_20261120_090000.parquet"]["rows"] == 5, by["Spurs_20261124-115925.parquet"])
+        check("picker flags a truncated file and a just-written one as NOT finished, with a reason, and no row count",
+              not by["trunc.parquet"]["complete"] and not by["justnow.parquet"]["complete"]
+              and by["trunc.parquet"]["note"] and by["justnow.parquet"]["note"] and by["trunc.parquet"]["rows"] is None,
+              (by["trunc.parquet"], by["justnow.parquet"]))
+        check("picker names the schedule folder for a scheduled run, '(manual export)' otherwise",
+              by["Spurs_20261124-115925.parquet"]["stream"] == "Spurs - damurray" and by["Spurs_20261124-115925.parquet"]["scheduled"]
+              and by["padbloader_20261120_090000.parquet"]["stream"] == "(manual export)", by["Spurs_20261124-115925.parquet"]["stream"])
+        r2 = client.get("/api/padbloader-files?limit=2").get_json()
+        check("picker honours ?limit and reports the total", len(r2["files"]) == 2 and r2["total"] == 5, (len(r2["files"]), r2["total"]))
+        r3 = client.get("/api/padbloader-files?dir=" + str(elsewhere)).get_json()
+        check("picker cannot be pointed at another folder (a ?dir= parameter is ignored)",
+              "outside.parquet" not in [f["name"] for f in r3["files"]] and r3["data_dir"] == str(data), r3["data_dir"])
+        chosen = client.post("/api/upload-parquet", json={"path": by["padbloader_20261120_090000.parquet"]["path"]})
+        check("a listed path is accepted by the existing 'use in place' route, which still does its own validation "
+              "(this fixture is not a padbloader file, so a clear error, not a crash)", chosen.status_code in (200, 400, 422),
+              chosen.status_code)
+        shutil.rmtree(root / "Exports")
+        r4 = client.get("/api/padbloader-files").get_json()
+        check("picker with no PadbLoader folder yet: exists false, empty list, no error", r4["exists"] is False and r4["files"] == [], r4)
+    finally:
+        if old is None:
+            os.environ.pop("PADBLOADER_DATA_DIR", None)
+        else:
+            os.environ["PADBLOADER_DATA_DIR"] = old
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(elsewhere, ignore_errors=True)
+    html = (HERE / "webapp" / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (HERE / "webapp" / "static" / "app.js").read_text(encoding="utf-8")
+    check("page wires the Browse button to /api/padbloader-files, escapes file names and uses the existing in-place route",
+          'id="padbloaderBrowseBtn"' in html and 'id="padbloaderPickerBody"' in html and "/api/padbloader-files" in js
+          and "_esc(f.name)" in js and "_esc(f.stream)" in js and "usePathParquet(f.path)" in js
+          and "f.complete" in js)
+
+
+def test_watcher_panel():
+    """/api/watcher + /api/watcher/run-once -- the 'PadbLoader watcher' panel: status from a REAL watcher ledger (written by
+    padb_watch.Watcher with a stub runner), a link per result that the app really serves, a viewer hint for a giant result,
+    the live-lock check, and the one-pass launcher's validation."""
+    import padb_watch as W
+    root = Path(tempfile.mkdtemp(prefix="qa_wpanel_"))
+    src = root / "in"
+    out = root / "out"
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    def mk(stream, name, age):
+        d = src / stream
+        d.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.table({"a": [1, 2, 3]}), str(d / name))
+        os.utime(d / name, (time.time() - age, time.time() - age))
+
+    mk("Spurs - damurray", "Spurs_20261124-100000.parquet", 7200)
+    mk("Spurs - damurray", "Spurs_20261124-110000.parquet", 7100)
+    mk("Phase - damurray", "Phase_20261124-120000.parquet", 7000)
+    mk("Phase - damurray", "Phase_20261124-130000.parquet", 6900)
+
+    def runner(snapshot, out_dir, opts, timeout_s):
+        stem = Path(out_dir).name
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
+        if stem.startswith("Phase_20261124-130000"):
+            return {"ok": True, "error": None, "analyses": [{"name": "PN", "status": "giant", "views": [], "index": None,
+                                                           "viewer": 'py padb_viewer.py "X"'}]}
+        if stem.startswith("Phase_20261124-120000"):
+            return {"ok": False, "error": "boom", "analyses": []}
+        (Path(out_dir) / "index.html").write_text("<html><body>RESULT-PAGE-" + stem + "</body></html>")
+        return {"ok": True, "error": None, "analyses": [{"name": stem, "status": "ok", "views": ["scatter"],
+                                                       "index": str(Path(out_dir) / "index.html")}]}
+    w = W.Watcher([src], out, settle_s=0, recheck_s=0, runner=runner, log=lambda m: None, max_attempts=1,
+                  opts={"views": ["scatter"]})
+    w.run_pass()
+    led_p = out / W.LEDGER
+    led_d = json.loads(led_p.read_text())
+    for e_ in led_d["entries"].values():                     # distinct finish times (a real run spans hours; this one a second)
+        e_["finished"] = "2026-11-24 %02d:00:00" % {"Spurs_20261124-100000": 10, "Spurs_20261124-110000": 11,
+                                                    "Phase_20261124-120000": 12, "Phase_20261124-130000": 13}[e_["stem"]]
+    led_p.write_text(json.dumps(led_d))
+    gone = out / "Spurs - damurray" / "Spurs_20261124-110000" / "index.html"
+    gone.unlink()                                            # a result page that has been deleted by hand
+    r = client.get("/api/watcher?out=" + str(out)).get_json()
+    by = {x["stem"]: x for x in r["runs"]}
+    check("watcher panel lists every run with its status, NEWEST first (13:00, 12:00, 11:00, 10:00), and counts them",
+          r["total"] == 4 and r["counts"] == {"done": 3, "gave_up": 1} and r["exists"]
+          and [x["stem"] for x in r["runs"]] == ["Phase_20261124-130000", "Phase_20261124-120000", "Spurs_20261124-110000", "Spurs_20261124-100000"],
+          ([x["stem"] for x in r["runs"]], r["counts"]))
+    check("a result whose page no longer exists gets no link (not a dead one)", by["Spurs_20261124-110000"]["results"][0]["url"] is None,
+          by["Spurs_20261124-110000"]["results"])
+    ok_run = by["Spurs_20261124-100000"]
+    page = client.get(ok_run["results"][0]["url"])
+    check("each finished result has a link the app really serves (the watcher's own index page)",
+          ok_run["results"][0]["url"] and page.status_code == 200 and b"RESULT-PAGE-Spurs_20261124-100000" in page.data, ok_run["results"])
+    check("a giant result has no page link but carries the viewer command; a failed run shows its error",
+          by["Phase_20261124-130000"]["results"][0]["url"] is None and "padb_viewer.py" in by["Phase_20261124-130000"]["results"][0]["viewer"]
+          and by["Phase_20261124-120000"]["status"] == "gave_up" and by["Phase_20261124-120000"]["error"] == "boom", by["Phase_20261124-130000"])
+    check("the options each run used are shown", ok_run["opts"].get("views") == ["scatter"], ok_run["opts"])
+    check("the watcher is reported not running when nothing holds its lock", r["running"] is None and "padb_watch.py --padbloader" in r["command"], r["running"])
+    (out / W.LOCK).write_text(json.dumps({"pid": os.getpid(), "started": "now"}))
+    r2 = client.get("/api/watcher?out=" + str(out)).get_json()
+    check("a live lock holder is reported as running", r2["running"] and r2["running"]["pid"] == os.getpid(), r2["running"])
+    before = len(_popen_calls)
+    rr = client.post("/api/watcher/run-once", json={"out": str(out)})
+    check("'Check now' is refused (409) while a watcher already holds the folder, and starts nothing",
+          rr.status_code == 409 and "already running" in rr.get_json()["error"] and len(_popen_calls) == before, rr.get_json())
+    (out / W.LOCK).unlink()
+    (out / W.LOCK).write_text(json.dumps({"pid": 99999999, "started": "long ago"}))          # a dead holder does not block
+    sf = root / "streams.json"
+    sf.write_text("{}")
+    rr = client.post("/api/watcher/run-once", json={"out": str(out), "streams_file": str(sf), "include_manual": True})
+    cmd = _popen_calls[-1] if len(_popen_calls) > before else []
+    check("'Check now' launches one `padb_watch --padbloader --once --out <dir>` pass, with the streams file and manual exports when asked",
+          rr.status_code == 200 and "--padbloader" in cmd and "--once" in cmd and cmd[cmd.index("--out") + 1] == str(out)
+          and cmd[cmd.index("--streams-file") + 1] == str(sf) and "--padbloader-manual" in cmd, (rr.status_code, cmd))
+    n0 = len(_popen_calls)
+    r_rel = client.post("/api/watcher/run-once", json={"out": "relative\\folder"})
+    r_sf = client.post("/api/watcher/run-once", json={"out": str(out), "streams_file": str(root / "nope.json")})
+    check("'Check now' rejects a relative output folder and a missing streams file (400) and launches nothing",
+          r_rel.status_code == 400 and r_sf.status_code == 400 and len(_popen_calls) == n0, (r_rel.status_code, r_sf.status_code))
+    nolog = client.get("/api/watcher?out=" + str(root / "empty")).get_json()
+    check("a folder with no ledger yet: exists false, no runs, no error", nolog["exists"] is False and nolog["runs"] == [] and "error" not in nolog, nolog)
+    (out / W.LEDGER).write_text("{broken")
+    bad = client.get("/api/watcher?out=" + str(out))
+    check("a damaged ledger gives a message, not a server error", bad.status_code == 200 and bad.get_json().get("error"), bad.status_code)
+    dflt = client.get("/api/watcher").get_json()
+    check("with no folder given the default is <Data folder>/padbloader_watch", dflt["out"] == str(_TMP / "padbloader_watch"), dflt["out"])
+    html = (HERE / "webapp" / "templates" / "index.html").read_text(encoding="utf-8")
+    js = (HERE / "webapp" / "static" / "app.js").read_text(encoding="utf-8")
+    check("page wires the watcher panel (status + check-now) and escapes what the ledger holds",
+          'id="watcherPanel"' in html and 'id="watcherRunOnce"' in html and "/api/watcher/run-once" in js and "/api/watcher?out=" in js
+          and "_esc(x.stream" in js and "_esc(x.stem" in js and "_esc(x.error" in js)
+    shutil.rmtree(root, ignore_errors=True)
+
+
 def test_generate_reduce():
     """PROTOTYPE test-point reduce action: /api/generate-reduce resolves the job's
     extracted CSV, queues a 'reduce' action, and the worker dispatches
@@ -745,7 +922,7 @@ def main() -> None:
     for fn in (test_index, test_sites, test_config, test_jobs_listing_and_kind,
                test_edit_job_file, test_job_history_and_restore, test_job_lists, test_results_token_roundtrip, test_schedule, test_unschedule,
                test_delete_shared_results_dir, test_execute_and_status,
-               test_generate_reduce, test_compare_reduce_on_merged,
+               test_padbloader_picker, test_watcher_panel, test_generate_reduce, test_compare_reduce_on_merged,
                test_link_reduce_report_in_index, test_open_viewer,
                test_single_instance_guard,
                test_generate_job_cmd_build, test_convert_validation,

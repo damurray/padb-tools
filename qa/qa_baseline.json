@@ -53,11 +53,11 @@
       "failed": 0
     },
     "qa_webapp": {
-      "passed": 113,
+      "passed": 137,
       "failed": 0
     },
     "qa_regressions": {
-      "passed": 762,
+      "passed": 769,
       "failed": 0
     },
     "qa_subpop": {
@@ -105,7 +105,7 @@
       "failed": 0
     },
     "qa_watch": {
-      "passed": 75,
+      "passed": 89,
       "failed": 0
     },
     "qa_bigdata": {

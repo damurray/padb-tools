@@ -86,7 +86,8 @@ def main() -> None:
     parser.add_argument("pods", nargs="+", help="One or more .pod file paths")
     parser.add_argument("--module", help="Subfolder name under --publish-root (e.g. 'MiniMoab'). "
                                           "Required unless --no-publish is given.")
-    parser.add_argument("--mode", default="simple", choices=["legacy", "simple", "interactive"])
+    parser.add_argument("--mode", default="simple", choices=["simple", "interactive", "legacy"],
+                        help="simple (PADB native plots) or interactive (HTML views); 'legacy' is retired and means interactive")
     parser.add_argument("--min-date", help='Device_MinDate override, e.g. "8 weeks ago" or "2026-05-21". '
                                             "Omit to use whatever is baked into the pod.")
     parser.add_argument("--max-date", help='Device_MaxDate override, e.g. "today". '
@@ -120,7 +121,7 @@ def main() -> None:
             print(f"SKIP (exists, use --force to overwrite): {job_path.name}")
             continue
 
-        cfg = make_job_cfg(pod_path, args.mode, args.module, args.min_date, args.max_date,
+        cfg = make_job_cfg(pod_path, "interactive" if args.mode == "legacy" else args.mode, args.module, args.min_date, args.max_date,
                             args.padb_exe, args.output_dir, args.logs_dir, publish_root,
                             publish_to=publish_to)
 

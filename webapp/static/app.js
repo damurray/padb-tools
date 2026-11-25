@@ -47,7 +47,91 @@ document.getElementById("parquetPathBtn").addEventListener("click", () => {
   usePathParquet(v);
 });
 
-const POD_THEAD = "<tr><th>#</th><th>Type</th><th>Name</th><th>Output File</th></tr>";
+// "Browse PadbLoader files" -- the parquet files in PadbLoader's export folder, newest first; a click uses one in place.
+function _esc(s) { return String(s).replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c])); }
+document.getElementById("padbloaderPickerClose").addEventListener("click", () => {
+  document.getElementById("padbloaderPicker").classList.add("hidden");
+});
+document.getElementById("padbloaderBrowseBtn").addEventListener("click", async () => {
+  const box = document.getElementById("padbloaderPicker");
+  const body = document.getElementById("padbloaderPickerBody");
+  box.classList.remove("hidden");
+  body.textContent = "Looking...";
+  let r;
+  try { r = await (await fetch("/api/padbloader-files")).json(); }
+  catch (e) { body.textContent = "Could not list PadbLoader files: " + e + "  (restart Start_web.bat if the app was updated)"; return; }
+  document.getElementById("padbloaderPickerTitle").textContent = "PadbLoader files in " + r.data_dir;
+  if (!r.exists) {
+    body.innerHTML = "<p>That folder does not exist yet (" + _esc(r.source) + "). Run PadbLoader once, or type the path above.</p>";
+    return;
+  }
+  if (!r.files.length) { body.innerHTML = "<p>No parquet files there yet.</p>"; return; }
+  let h = (r.notes || []).map(n => "<p><em>" + _esc(n) + "</em></p>").join("");
+  h += "<p>" + r.total + " file(s); newest first" + (r.total > r.files.length ? " (showing " + r.files.length + ")" : "")
+     + ". Click Use to take a file in place.</p>";
+  h += "<table><tr><th>Modified</th><th>File</th><th>Run / schedule</th><th>Rows</th><th>MB</th><th></th></tr>";
+  r.files.forEach((f, i) => {
+    h += "<tr><td>" + _esc(f.modified) + "</td><td>" + _esc(f.name) + "</td><td>" + _esc(f.stream) + "</td><td>"
+       + (f.rows == null ? "" : f.rows.toLocaleString()) + "</td><td>" + f.size_mb + "</td><td>"
+       + (f.complete ? '<button type="button" class="pbPick" data-i="' + i + '">Use</button>'
+                     : '<span title="' + _esc(f.note) + '">not finished</span>') + "</td></tr>";
+  });
+  body.innerHTML = h + "</table>";
+  body.querySelectorAll(".pbPick").forEach(b => b.addEventListener("click", () => {
+    const f = r.files[+b.dataset.i];
+    document.getElementById("parquetPathInput").value = f.path;
+    box.classList.add("hidden");
+    usePathParquet(f.path);
+  }));
+});
+
+// PadbLoader watcher panel: status read from the watcher's output folder; "Check PadbLoader now" runs one pass.
+function _wLoad(k, d) { try { return localStorage.getItem(k) || d; } catch (e) { return d; } }
+function _wSave(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* storage unavailable: fine */ } }
+document.getElementById("watcherOut").value = _wLoad("padb_watcher_out", "");
+document.getElementById("watcherStreams").value = _wLoad("padb_watcher_streams", "");
+async function watcherRefresh() {
+  const out = document.getElementById("watcherOut").value.trim();
+  _wSave("padb_watcher_out", out);
+  const body = document.getElementById("watcherBody");
+  let r;
+  try { r = await (await fetch("/api/watcher?out=" + encodeURIComponent(out))).json(); }
+  catch (e) { body.textContent = "Could not read the watcher status: " + e + " (restart Start_web.bat if the app was updated)"; return; }
+  document.getElementById("watcherSummary").textContent = r.running ? "-- running (pid " + r.running.pid + ")" : "-- not running";
+  let h = "<p>Output folder: <code>" + _esc(r.out) + "</code>" + (r.exists ? "" : " (does not exist yet)") + "<br>Watching PadbLoader's scheduled output: <code>"
+        + _esc(r.scheduled_dir) + "</code>" + (r.scheduled_exists ? "" : " (not there yet)") + "</p>";
+  if (!r.running) h += "<p>To watch continuously, run in a terminal: <code>" + _esc(r.command) + "</code> (add <code>--once</code> in Task Scheduler).</p>";
+  if (r.error) h += "<p><strong>" + _esc(r.error) + "</strong></p>";
+  const c = r.counts || {};
+  h += "<p>" + (r.total || 0) + " file(s) seen: " + Object.keys(c).map(k => c[k] + " " + _esc(k)).join(", ") + (r.updated ? " -- updated " + _esc(r.updated) : "") + "</p>";
+  if ((r.runs || []).length) {
+    h += "<table><tr><th>Schedule</th><th>File</th><th>Status</th><th>Finished</th><th>Results</th><th>Used</th></tr>";
+    r.runs.forEach(x => {
+      const links = (x.results || []).map(a => a.url ? '<a href="' + _esc(a.url) + '" target="_blank">' + _esc(a.name || "open") + "</a>"
+        : (a.viewer ? '<span title="' + _esc(a.viewer) + '">too big for pages -- use the viewer</span>' : "")).filter(Boolean).slice(0, 6).join(", ");
+      const used = Object.keys(x.opts || {}).map(k => k + "=" + (Array.isArray(x.opts[k]) ? x.opts[k].join("+") : x.opts[k])).join(" ");
+      h += "<tr><td>" + _esc(x.stream || "") + "</td><td>" + _esc(x.stem || "") + "</td><td title=\"" + _esc(x.error || "") + "\">" + _esc(x.status || "")
+        + (x.attempts > 1 ? " (" + x.attempts + " tries)" : "") + "</td><td>" + _esc(x.finished || "") + "</td><td>" + (x.pruned ? "(results pruned)" : links)
+        + "</td><td>" + _esc(used) + "</td></tr>";
+    });
+    h += "</table>";
+  }
+  body.innerHTML = h;
+}
+document.getElementById("watcherRefresh").addEventListener("click", watcherRefresh);
+document.getElementById("watcherPanel").addEventListener("toggle", e => { if (e.target.open) watcherRefresh(); });
+document.getElementById("watcherRunOnce").addEventListener("click", async () => {
+  const out = document.getElementById("watcherOut").value.trim(), sf = document.getElementById("watcherStreams").value.trim();
+  _wSave("padb_watcher_streams", sf);
+  const msg = document.getElementById("watcherMsg");
+  msg.textContent = "Starting...";
+  const r = await fetch("/api/watcher/run-once", { method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ out, streams_file: sf, include_manual: document.getElementById("watcherManual").checked }) });
+  const j = await r.json().catch(() => ({}));
+  msg.textContent = j.msg || j.error || ("failed (" + r.status + ")");
+});
+
+ "<tr><th>#</th><th>Type</th><th>Name</th><th>Output File</th></tr>";
 
 // Switch the shared "dropped file" panel + Generate form between pod mode and
 // padbloader-parquet mode: pod-only controls (convert-site, mode, dates) hide for

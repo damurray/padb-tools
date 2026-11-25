@@ -187,6 +187,34 @@ def test_filename_stem_variants():
 # OutputFile contained ':' which PADB writes as '_' -- and find_csvs handed that
 # analytic ANOTHER analytic's CSV via its fuzzy fallback (listed twice).
 # ---------------------------------------------------------------------------
+def test_mode_legacy_retired():
+    """The V1 'legacy' job mode is retired (David 2026-11-24): the default is 'interactive', an explicit 'legacy' still runs
+    but as 'interactive' with a NOTE, and nothing else is accepted silently."""
+    import json
+    import tempfile
+    import padb_jobschema as S
+    check("normalise_mode: interactive and simple pass through without a note",
+          pr.normalise_mode("interactive") == ("interactive", None) and pr.normalise_mode("simple") == ("simple", None))
+    m, note = pr.normalise_mode("legacy")
+    check("normalise_mode: 'legacy' -> 'interactive' with a note that says it is retired", m == "interactive" and note and "retired" in note, (m, note))
+    check("normalise_mode: an unknown mode is rejected, not guessed", pr.normalise_mode("fancy") == (None, None) and pr.normalise_mode(None) == (None, None))
+    d = Path(tempfile.mkdtemp(prefix="qa_mode_"))
+    (d / "x.pod").write_text("[Pod]\n")
+    jp = d / "m_job.json"
+    jp.write_text(json.dumps({"pod": "x.pod", "results_dir": "r"}))
+    cfg = pr.load_job(jp)
+    check("a job with NO mode key now loads as 'interactive' (was 'legacy')", cfg["mode"] == "interactive", cfg.get("mode"))
+    iss = S.validate({"pod": "x.pod", "mode": "legacy"})
+    check("the job check WARNS about 'legacy' (not an error, not silence)",
+          any(i["level"] == "warn" and i["key"] == "mode" and "retired" in i["message"] for i in iss) and not S.errors(iss), iss)
+    check("the job check is quiet for interactive / simple",
+          not [i for i in S.validate({"pod": "x.pod", "mode": "interactive"}) if i["key"] == "mode"]
+          and not [i for i in S.validate({"pod": "x.pod", "mode": "simple"}) if i["key"] == "mode"])
+    src = (HERE / "padb_run.py").read_text(encoding="utf-8")
+    check("padb_run applies the normalisation and the interactive 'build the V2 views' hint is skipped for a job that has secondary_plots",
+          "normalise_mode(cfg[\"mode\"])" in src and "not cfg.get(\"secondary_plots\")" in src)
+
+
 def test_run_output_warnings():
     import contextlib
     import io
@@ -3984,7 +4012,7 @@ def main() -> None:
     for fn in (test_freq_floor_ceil, test_freq_label_map, test_snap_pc_opt,
                test_short_x_label, test_parse_group_kv, test_extract_group_field,
                test_has_segmentable_spec, test_resolve_date_sentinel,
-               test_filename_stem_variants, test_run_output_warnings, test_x_axis_detection,
+               test_filename_stem_variants, test_mode_legacy_retired, test_run_output_warnings, test_x_axis_detection,
                test_csv_to_parquet_newlines, test_scatter_decimate_toggle,
                test_filter_state_scoping, test_spec_mask_interpolation,
                test_scatter_mask_is_dataset_level,

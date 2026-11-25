@@ -366,6 +366,111 @@ def snapshot_input(src, dest_dir):
     return dest, how
 
 
+# ------------------------------------------------------------------------------------------ per-stream settings
+# One settings file lets each PadbLoader schedule (a "stream") have its own analysis options:
+#   {"default": {"views": ["scatter", "boxplot"], "publish_to": "\\\\srsnas01\\...\\{stream}"},
+#    "streams": {"Spurs*": {"views": ["scatter", "stat_summary"]},
+#                "Phase Noise*": {"bands": "auto", "limits_file": "pn_limits.json"}}}
+# A stream matches the FIRST pattern (case-insensitive, `*` and `?`) that fits its schedule folder name or the part before
+# " - <owner>"; its keys override "default", which overrides the command line. `{stream}` in publish_to is replaced by a
+# folder-safe form of the stream name. Relative file names are relative to the settings file.
+STREAM_KEYS = {"views": "list", "limits_file": "path", "filters_file": "path", "publish_to": "text", "pdf_report": "bool",
+               "bands": "text", "stream": "text", "algorithms": "list"}
+
+
+def _check_stream_opts(where: str, o, base_dir: Path, problems: list) -> dict:
+    out = {}
+    if not isinstance(o, dict):
+        problems.append("%s: expected an object of settings" % where)
+        return out
+    for k, v in o.items():
+        if k.startswith("_"):
+            continue
+        kind = STREAM_KEYS.get(k)
+        if kind is None:
+            problems.append("%s: unknown setting %r (known: %s)" % (where, k, ", ".join(sorted(STREAM_KEYS))))
+            continue
+        if kind == "list":
+            if isinstance(v, str):
+                v = [x.strip() for x in v.split(",") if x.strip()]
+            if not (isinstance(v, list) and v and all(isinstance(x, str) and x for x in v)):
+                problems.append("%s: %r must be a non-empty list of names" % (where, k))
+                continue
+        elif kind == "bool":
+            if not isinstance(v, bool):
+                problems.append("%s: %r must be true or false" % (where, k))
+                continue
+        else:
+            if not (isinstance(v, str) and v.strip()):
+                problems.append("%s: %r must be a non-empty text value" % (where, k))
+                continue
+            if kind == "path" and not os.path.isabs(v):
+                v = str(base_dir / v)
+        if k == "bands" and v != "auto" and not str(v).isdigit():
+            problems.append("%s: 'bands' must be \"auto\" or a number of rows" % where)
+            continue
+        if k == "stream" and v not in ("auto", "always", "off"):
+            problems.append("%s: 'stream' must be auto, always or off" % where)
+            continue
+        out[k] = v
+    return out
+
+
+def load_stream_settings(path):
+    """-> (settings, problems). settings = {"default": {...}, "streams": [(pattern, {...}), ...]} in file order.
+    Raises ValueError when the file cannot be read as JSON (the watcher must not start on a settings file it cannot trust);
+    unknown keys / bad values are `problems` (they are skipped and reported)."""
+    p = Path(path)
+    try:
+        data = json.loads(p.read_text(encoding="utf-8-sig"))
+    except OSError as exc:
+        raise ValueError("cannot read the streams file %s: %s" % (p, exc))
+    except ValueError as exc:
+        raise ValueError("the streams file %s is not valid JSON: %s" % (p, exc))
+    if not isinstance(data, dict):
+        raise ValueError("the streams file %s must hold a JSON object" % p)
+    problems = []
+    for k in data:
+        if k not in ("default", "streams") and not k.startswith("_"):
+            problems.append("unknown top-level key %r (expected 'default' and 'streams')" % k)
+    base = p.parent
+    default = _check_stream_opts("default", data.get("default") or {}, base, problems)
+    streams = []
+    sd = data.get("streams") or {}
+    if not isinstance(sd, dict):
+        problems.append("'streams' must be an object of pattern -> settings")
+        sd = {}
+    for pat, o in sd.items():
+        if pat.startswith("_"):
+            continue
+        streams.append((pat, _check_stream_opts("streams[%s]" % pat, o, base, problems)))
+    return {"default": default, "streams": streams}, problems
+
+
+def stream_name(stream: str) -> str:
+    """The schedule folder name of a watched file's stream ('Scheduled/Spurs - damurray' -> 'Spurs - damurray')."""
+    s = (stream or "").replace("\\", "/")
+    return s.split("/", 1)[1] if s.lower().startswith("scheduled/") else s
+
+
+def opts_for_stream(base_opts: dict, settings, stream: str) -> dict:
+    """The analysis options for one stream: command-line opts < settings 'default' < the first matching stream pattern."""
+    import fnmatch
+    o = dict(base_opts or {})
+    if not settings:
+        return o
+    name = stream_name(stream)
+    o.update(settings["default"])
+    cands = {name.lower(), name.split(" - ")[0].strip().lower()}
+    for pat, so in settings["streams"]:
+        if any(fnmatch.fnmatchcase(c, pat.lower()) for c in cands):
+            o.update(so)
+            break
+    if isinstance(o.get("publish_to"), str) and "{stream}" in o["publish_to"]:
+        o["publish_to"] = o["publish_to"].replace("{stream}", re.sub(r'[<>:"|?*\\/]', "_", name).strip() or "stream")
+    return o
+
+
 def run_analysis(snapshot, out_dir, opts, timeout_s, argv_prefix=None):
     """Run `padb_analyze` on one input in its own process (a crash or runaway cannot take the watcher down; the whole
     process tree is killed on timeout). -> {ok, error, analyses: [{name,status,views,index,tier,issues}]}."""
@@ -374,9 +479,14 @@ def run_analysis(snapshot, out_dir, opts, timeout_s, argv_prefix=None):
     for flag, val in (("--views", opts.get("views")), ("--limits-file", opts.get("limits_file")),
                       ("--filters-file", opts.get("filters_file")), ("--publish-to", opts.get("publish_to"))):
         if val:
-            argv += [flag, str(val)]
+            argv += [flag, ",".join(str(x) for x in val) if isinstance(val, (list, tuple)) else str(val)]
     if opts.get("pdf_report"):
         argv.append("--pdf-report")
+    for flag, val in (("--bands", opts.get("bands")), ("--stream", opts.get("stream"))):
+        if val:
+            argv += [flag, str(val)]
+    for algo in opts.get("algorithms") or []:
+        argv += ["--algorithm", str(algo)]
     flags = 0x00000200 if os.name == "nt" else 0           # CREATE_NEW_PROCESS_GROUP
     proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             encoding="utf-8", errors="replace", creationflags=flags)
@@ -410,7 +520,8 @@ def run_analysis(snapshot, out_dir, opts, timeout_s, argv_prefix=None):
 class Watcher:
     def __init__(self, roots, out_dir, depth=1, settle_s=30.0, recheck_s=1.0, max_attempts=3, retry_delay_s=300.0,
                  timeout_s=7200, retry_failed=False, snapshot=True, opts=None, runner=None, log=None,
-                 keep_inputs=14, keep_results=0):
+                 keep_inputs=14, keep_results=0, stream_settings=None):
+        self.stream_settings = stream_settings
         self.roots = [Path(r) for r in roots]
         self.out = Path(out_dir)
         self.keep_inputs, self.keep_results = keep_inputs, keep_results
@@ -549,7 +660,9 @@ class Watcher:
                 entry["input_snapshot"] = str(src)
                 entry["snapshot_how"] = how
             res_dir = self.out / stream / stem
-            res = self.runner(src, res_dir, self.opts, self.timeout_s)
+            eff = opts_for_stream(self.opts, self.stream_settings, c["stream"])
+            entry["opts"] = {k: v for k, v in eff.items() if v not in (None, False, "")}
+            res = self.runner(src, res_dir, eff, self.timeout_s)
             entry["result_dir"] = str(res_dir)
             entry["analyses"] = res.get("analyses", [])
             ok, err = bool(res.get("ok")), res.get("error")
@@ -650,6 +763,8 @@ def main(argv=None) -> int:
     ap.add_argument("--list", action="store_true", help="print the ledger and exit")
     ap.add_argument("--views"), ap.add_argument("--limits-file"), ap.add_argument("--filters-file"), ap.add_argument("--publish-to")
     ap.add_argument("--pdf-report", action="store_true")
+    ap.add_argument("--streams-file", metavar="FILE", help="per-stream analysis settings (JSON): each PadbLoader schedule can have its "
+                    "own views / limits / publish folder / bands -- see load_stream_settings")
     a = ap.parse_args(argv)
 
     if a.discover:
@@ -686,9 +801,19 @@ def main(argv=None) -> int:
         return 2
     opts = {"views": a.views, "limits_file": a.limits_file, "filters_file": a.filters_file,
             "publish_to": a.publish_to, "pdf_report": a.pdf_report}
+    stream_settings = None
+    if a.streams_file:
+        try:
+            stream_settings, problems = load_stream_settings(a.streams_file)
+        except ValueError as exc:
+            print("ERROR: %s" % exc, file=sys.stderr)
+            release_lock(out)
+            return 2
+        for pr in problems:
+            print("WARNING (streams file): %s" % pr, file=sys.stderr)
     w = Watcher(roots, out, depth=a.depth, settle_s=a.settle, max_attempts=a.max_attempts, retry_delay_s=a.retry_delay,
                 timeout_s=a.timeout, retry_failed=a.retry_failed, snapshot=not a.no_snapshot, opts=opts,
-                keep_inputs=max(0, a.keep_inputs), keep_results=max(0, a.keep_results))
+                keep_inputs=max(0, a.keep_inputs), keep_results=max(0, a.keep_results), stream_settings=stream_settings)
     if a.prune_now:
         try:
             r = w.apply_retention(dry_run=a.dry_run)

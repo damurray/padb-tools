@@ -580,6 +580,93 @@ def main() -> int:
               (target2 / "sentinel.txt").is_file() and r10["skipped"] >= 1 and any(target2.glob("*.parquet")), r10)
     else:
         print("  SKIP  W-RETAIN inside-junction test: could not create a junction / symlink here")
+    # ------------------------------------------------------------------ W-STREAMS (per-stream settings)
+    sdir = tmp / "streams"
+    sdir.mkdir()
+    sfile = sdir / "streams.json"
+    sfile.write_text(json.dumps({
+        "default": {"views": ["scatter"], "publish_to": "X:/share/{stream}", "pdf_report": False},
+        "streams": {"Spurs*": {"views": "scatter, stat_summary", "limits_file": "spur_limits.json"},
+                    "phase noise*": {"bands": "auto", "algorithms": ["PN Closed Loop"]},
+                    "Spurs_special*": {"views": ["boxplot"]},          # never reached: Spurs* is first
+                    "oops": {"nonsense": 1, "views": 5}}}), encoding="utf-8")
+    st, probs = W.load_stream_settings(sfile)
+    check("W-STREAMS: the file loads; a string list becomes a list; a relative path is relative to the settings file; "
+          "patterns keep file order", st["streams"][0][0] == "Spurs*" and st["streams"][0][1]["views"] == ["scatter", "stat_summary"]
+          and st["streams"][0][1]["limits_file"] == str(sdir / "spur_limits.json") and [p_ for p_, _ in st["streams"]][:2] == ["Spurs*", "phase noise*"], st["streams"][0])
+    check("W-STREAMS: an unknown setting and a wrong-typed one are REPORTED and skipped, not applied",
+          any("nonsense" in x for x in probs) and any("'views'" in x for x in probs) and st["streams"][-1][1] == {}, probs)
+    for bad_name, bad_text in (("junk", "{not json"), ("array", "[1,2]")):
+        (sdir / (bad_name + ".json")).write_text(bad_text)
+        try:
+            W.load_stream_settings(sdir / (bad_name + ".json"))
+            raised = None
+        except ValueError as exc:
+            raised = str(exc)
+        check("W-STREAMS: a settings file that is %s is refused with a message (the watcher must not run on a file it cannot trust)" % bad_name,
+              bool(raised), raised)
+    base = {"views": ["scatter", "boxplot"], "pdf_report": True, "publish_to": "CLI"}
+    o1 = W.opts_for_stream(base, st, "Spurs_and_Harmonics - damurray")
+    check("W-STREAMS: a stream gets ITS settings over 'default' over the command line (views from the stream, pdf_report from the CLI, "
+          "publish_to from default)", o1["views"] == ["scatter", "stat_summary"] and o1["pdf_report"] is False
+          and o1["publish_to"].endswith("Spurs_and_Harmonics - damurray") and o1["limits_file"].endswith("spur_limits.json"), o1)
+    o5 = W.opts_for_stream(base, st, "Spurs_special run - damurray")           # matches BOTH 'Spurs*' and 'Spurs_special*'
+    check("W-STREAMS: the FIRST matching pattern wins, even though a later one also matches (a stream that fits two patterns)",
+          o5["views"] == ["scatter", "stat_summary"], o5["views"])
+    o2 = W.opts_for_stream(base, st, "Scheduled/Phase Noise EP6 - damurray")
+    check("W-STREAMS: matching is case-insensitive and ignores a leading 'Scheduled/'; another stream's keys do not leak in",
+          o2.get("bands") == "auto" and o2["algorithms"] == ["PN Closed Loop"] and "limits_file" not in o2 and o2["views"] == ["scatter"], o2)
+    o3 = W.opts_for_stream(base, st, "Unlisted - someone")
+    check("W-STREAMS: a stream no pattern matches gets the defaults only; no settings file at all leaves the command line untouched",
+          o3["views"] == ["scatter"] and "bands" not in o3 and W.opts_for_stream(base, None, "x") == base, o3)
+    o4 = W.opts_for_stream({}, {"default": {"publish_to": "S:/{stream}"}, "streams": []}, 'Bad<>:"|?*name - u')
+    check("W-STREAMS: {stream} in publish_to is made folder-safe", "<" not in o4["publish_to"] and "|" not in o4["publish_to"]
+          and o4["publish_to"].startswith("S:/Bad"), o4["publish_to"])
+    # through a real pass: each stream's run is handed its own options, and the ledger records them
+    seen = []
+
+    def rec_runner(src, out_dir, opts, timeout_s):
+        seen.append((Path(out_dir).parent.name, dict(opts)))
+        return stub(src, out_dir, opts, timeout_s)
+    wroot = tmp / "w_streams"
+    put(wroot / "Spurs_and_Harmonics - damurray" / "S_20261124-100000.parquet")
+    put(wroot / "Phase Noise EP6 - damurray" / "P_20261124-100000.parquet")
+    put(wroot / "Other - x" / "O_20261124-100000.parquet")
+    out_s = tmp / "out_streams"
+    ws = W.Watcher([wroot], out_s, settle_s=0, recheck_s=0, runner=rec_runner, log=quiet, stream_settings=st, opts={"views": None})
+    ws.run_pass()
+    by_stream = {s_: o_ for s_, o_ in seen}
+    check("W-STREAMS: in a real pass each stream is analysed with its own options (Spurs: stat_summary view; Phase Noise: bands auto; "
+          "Other: defaults)", by_stream["Spurs_and_Harmonics - damurray"]["views"] == ["scatter", "stat_summary"]
+          and by_stream["Phase Noise EP6 - damurray"].get("bands") == "auto" and by_stream["Other - x"]["views"] == ["scatter"], by_stream)
+    led = json.loads((out_s / "watch_ledger.json").read_text())
+    ent = [e for e in (led.get("entries") or led).values() if isinstance(e, dict) and e.get("stem") == "P_20261124-100000"]
+    check("W-STREAMS: the ledger records the options each run used (so a result can be traced to its settings)",
+          ent and ent[0].get("opts", {}).get("bands") == "auto", ent[:1])
+    # the real runner turns the options into padb_analyze flags
+    fake = tmp / "fake_analyze.py"
+    fake.write_text("import sys, json, pathlib\n"
+                    "a = sys.argv[1:]\n"
+                    "out = pathlib.Path(a[a.index('--out') + 1]); out.mkdir(parents=True, exist_ok=True)\n"
+                    "(out / 'argv.json').write_text(json.dumps(a))\n"
+                    "print(json.dumps({'ok': True, 'analyses': [{'name': 'n', 'status': 'ok', 'views': [], 'index': None}]}))\n")
+    out_a = tmp / "argv_out"
+    W.run_analysis(good, out_a, {"views": ["scatter", "boxplot"], "bands": "auto", "stream": "always", "algorithms": ["A One", "B Two"],
+                                 "limits_file": "L.json", "publish_to": "P", "pdf_report": True}, 60, [sys.executable, str(fake)])
+    av = json.loads((out_a / "argv.json").read_text())
+    check("W-STREAMS: the real runner passes --views, --bands, --stream, one --algorithm per name, --limits-file, --publish-to, --pdf-report to padb_analyze",
+          "--bands" in av and av[av.index("--bands") + 1] == "auto" and av[av.index("--stream") + 1] == "always"
+          and [av[i_ + 1] for i_, x_ in enumerate(av) if x_ == "--algorithm"] == ["A One", "B Two"] and "--pdf-report" in av
+          and "--limits-file" in av and "--publish-to" in av and av[av.index("--views") + 1] == "scatter,boxplot", av)
+    # CLI: a bad file stops the watcher (exit 2); a file with an unknown key warns and still runs
+    r_bad = subprocess.run([sys.executable, str(HERE / "padb_watch.py"), "--watch", str(wroot), "--out", str(tmp / "out_cli_bad"), "--once",
+                            "--dry-run", "--streams-file", str(sdir / "junk.json")], capture_output=True, text=True, timeout=120)
+    check("W-STREAMS: --streams-file with invalid JSON exits 2 with the reason and does not run", r_bad.returncode == 2 and "not valid JSON" in r_bad.stderr,
+          (r_bad.returncode, r_bad.stderr[-200:]))
+    r_ok = subprocess.run([sys.executable, str(HERE / "padb_watch.py"), "--watch", str(wroot), "--out", str(tmp / "out_cli_ok"), "--once",
+                           "--dry-run", "--streams-file", str(sfile)], capture_output=True, text=True, timeout=120)
+    check("W-STREAMS: --streams-file with a bad entry warns on stderr and still runs (dry run lists the files)",
+          r_ok.returncode == 0 and "WARNING (streams file)" in r_ok.stderr and "would analyse" in r_ok.stdout, (r_ok.returncode, r_ok.stderr[-200:]))
     print("\nqa_watch: PASS=%d FAIL=%d" % (PASS, FAIL))
     return 1 if FAIL else 0
 

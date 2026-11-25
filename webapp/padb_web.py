@@ -1011,6 +1011,130 @@ def _padbloader_analytics(parquet_path: Path, kind: str = "padbloader") -> list[
              "wide": a["wide"], "n_steps": a["n_steps"]} for a in algos]
 
 
+WATCH_OUT_DIRNAME = "padbloader_watch"      # default watcher output folder: <Data folder>/padbloader_watch
+
+
+def _watch_out_dir(raw) -> Path:
+    raw = (raw or "").strip().strip('"')
+    return Path(raw) if raw else DATA_DIR / WATCH_OUT_DIRNAME
+
+
+def _watcher_lock_holder(out: Path):
+    """{pid, started} of a live watcher holding this output folder, else None."""
+    import padb_watch
+    try:
+        held = json.loads((out / padb_watch.LOCK).read_text(encoding="utf-8"))
+        if padb_watch._pid_alive(int(held.get("pid", 0))):
+            return {"pid": int(held["pid"]), "started": held.get("started")}
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return None
+
+
+@app.route("/api/watcher")
+def api_watcher():
+    """Status of a PadbLoader watcher (padb_watch) from its output folder: is one running, what has it analysed, and a
+    link to each result. Read-only -- it reads the watcher's ledger and never starts or changes anything."""
+    import padb_watch
+    out = _watch_out_dir(request.args.get("out"))
+    info = padb_watch.discover_padbloader()
+    res = dict(out=str(out), exists=out.is_dir(), scheduled_dir=info["scheduled_dir"],
+               scheduled_exists=Path(info["scheduled_dir"]).is_dir(), running=_watcher_lock_holder(out) if out.is_dir() else None,
+               counts={}, runs=[], updated=None, command=None)
+    res["command"] = 'py padb_watch.py --padbloader --out "%s"' % out
+    led = out / padb_watch.LEDGER
+    if not led.is_file():
+        return jsonify(res)
+    try:
+        data = json.loads(led.read_text(encoding="utf-8"))
+        entries = data.get("entries", data) if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        res["error"] = "the watcher's ledger could not be read"
+        return jsonify(res)
+    try:
+        res["updated"] = json.loads((out / padb_watch.STATUS).read_text(encoding="utf-8")).get("updated")
+    except (OSError, ValueError):
+        pass
+    runs = []
+    for e in entries.values():
+        if not isinstance(e, dict):
+            continue
+        results = []
+        for a in e.get("analyses") or []:
+            idx = a.get("index")
+            results.append({"name": a.get("name"), "status": a.get("status"),
+                            "url": _result_url(idx) if (idx and Path(idx).is_file() and not e.get("results_pruned")) else None,
+                            "viewer": a.get("viewer"), "error": a.get("error")})
+        runs.append({"stream": e.get("stream"), "stem": e.get("stem"), "status": e.get("status"), "attempts": e.get("attempts"),
+                     "finished": e.get("finished"), "seconds": e.get("seconds"), "error": e.get("error"),
+                     "pruned": bool(e.get("results_pruned")), "opts": e.get("opts") or {}, "results": results})
+    runs.sort(key=lambda r: r["finished"] or "", reverse=True)
+    for r in runs:
+        res["counts"][r["status"]] = res["counts"].get(r["status"], 0) + 1
+    res["runs"] = runs[:100]
+    res["total"] = len(runs)
+    return jsonify(res)
+
+
+@app.route("/api/watcher/run-once", methods=["POST"])
+def api_watcher_run_once():
+    """Check PadbLoader's scheduled output once, now (padb_watch --once), in its own window-less process. A second
+    watcher on the same output folder is refused by the watcher's own lock; this also says so up front."""
+    body = request.get_json(silent=True) or {}
+    out = _watch_out_dir(body.get("out"))
+    if not out.is_absolute():
+        return jsonify(error="the output folder must be a full path"), 400
+    held = _watcher_lock_holder(out)
+    if held:
+        return jsonify(error="a watcher (pid %s, started %s) is already running on that folder -- it will pick up new files by itself"
+                       % (held["pid"], held["started"])), 409
+    cmd = [sys.executable, str(TOOLS_DIR / "padb_watch.py"), "--padbloader", "--once", "--out", str(out)]
+    if body.get("include_manual"):
+        cmd.append("--padbloader-manual")
+    sf = (body.get("streams_file") or "").strip().strip('"')
+    if sf:
+        if not Path(sf).is_file():
+            return jsonify(error="streams file not found: %s" % sf), 400
+        cmd += ["--streams-file", sf]
+    _launch_detached(cmd, str(TOOLS_DIR))
+    return jsonify(ok=True, msg="Checking PadbLoader's output once -- new finished files are analysed into %s. Refresh in a minute." % out)
+
+
+@app.route("/api/padbloader-files")
+def api_padbloader_files():
+    """The parquet files in PadbLoader's export folder, newest first -- the picker behind "Browse PadbLoader files".
+    The folder is found the way PadbLoader finds it (padb_watch.discover_padbloader); nothing outside it is listed, and
+    nothing is read beyond each file's footer (rows) and magic bytes (finished or still being written)."""
+    import padb_watch
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 60))))
+    except ValueError:
+        limit = 60
+    info = padb_watch.discover_padbloader()
+    data_dir = Path(info["data_dir"])
+    out = dict(data_dir=str(data_dir), source=info["source"], notes=info["notes"], exists=data_dir.is_dir(), files=[], total=0)
+    if not out["exists"]:
+        return jsonify(out)
+    found = padb_watch.scan(data_dir, depth=2)          # files in the data folder and in Scheduled/<name> - <owner>/
+    out["total"] = len(found)
+    for c in list(reversed(found))[:limit]:             # newest first
+        ok, why = padb_watch.is_complete(c["path"], settle_s=10.0, recheck_s=0)
+        rows = None
+        if ok:
+            try:
+                import pyarrow.parquet as pq
+                rows = int(pq.ParquetFile(c["path"]).metadata.num_rows)
+            except Exception:  # noqa: BLE001 -- the row count is a convenience
+                rows = None
+        out["files"].append({"path": c["path"], "name": os.path.basename(c["path"]),
+                             "stream": (c["stream"].split("/", 1)[1] if c["stream"].lower().startswith("scheduled/") else c["stream"])
+                             or "(manual export)", "scheduled": bool(c["stream"]),
+                             "size_mb": round(c["size"] / 1e6, 1), "rows": rows, "complete": ok,
+                             "note": "" if ok else why,
+                             "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(c["mtime_ns"] / 1e9))})
+    return jsonify(out)
+
+
 @app.route("/api/upload-parquet", methods=["POST"])
 def upload_parquet():
     """Stage a padbloader parquet and list its algorithms.  Either a multipart
@@ -1193,7 +1317,9 @@ def generate_job():
 
     if not pod_path or not Path(pod_path).exists():
         return jsonify(error="pod_path missing or does not exist"), 400
-    if mode not in ("legacy", "simple", "interactive"):
+    if mode == "legacy":
+        mode = "interactive"                       # retired: the same pipeline
+    if mode not in ("simple", "interactive"):
         return jsonify(error=f"invalid mode: {mode}"), 400
 
     script = "padb_make_v2_job.py" if mode == "interactive" else "padb_make_job.py"
@@ -1643,7 +1769,7 @@ def list_jobs():
             "path": str(p),
             "name": p.name,
             "description": cfg.get("description", ""),
-            "mode": cfg.get("mode", "legacy" if kind == "run" else "interactive"),
+            "mode": "interactive" if cfg.get("mode", "interactive") == "legacy" else cfg.get("mode", "interactive"),
             "pod": cfg.get("pod", ""),
             "kind": kind,
             "is_compare": bool(cfg.get("compare_csv")),

@@ -23,7 +23,29 @@
       <label title="Use a padbloader parquet that is already on disk IN PLACE (no upload / copy -- these files can be hundreds of MB). Same result as dropping it above: its algorithms are listed and Generate Plot Jobs writes one PADB-style parquet + one *_v2_job.json per ticked algorithm.">Or use a padbloader parquet already on disk
         <input type="text" id="parquetPathInput" size="62" placeholder="C:\path	o\padbloader_YYYYMMDD_HHMMSS.parquet"></label>
       <button type="button" id="parquetPathBtn" title="List this parquet's algorithms (nothing is copied or written yet).">Use this path</button>
+      <button type="button" id="padbloaderBrowseBtn" title="List the parquet files in PadbLoader's export folder (found the way PadbLoader finds it), newest first -- pick one to use it in place.">Browse PadbLoader files</button>
     </div>
+    <div id="padbloaderPicker" class="panel hidden">
+      <div class="toolbar"><strong id="padbloaderPickerTitle">PadbLoader files</strong>
+        <button type="button" id="padbloaderPickerClose">Close</button></div>
+      <div id="padbloaderPickerBody"></div>
+    </div>
+    <details id="watcherPanel" class="panel">
+      <summary title="Analyse PadbLoader's scheduled parquet files automatically (padb_watch): what has been done, with links to the results."><strong>PadbLoader watcher</strong> <span id="watcherSummary"></span></summary>
+      <div class="toolbar">
+        <label title="The watcher's output folder: its results, snapshots of the input files and its ledger. The status below is read from here.">Output folder
+          <input type="text" id="watcherOut" size="58" placeholder="(default: a padbloader_watch folder in your data folder)"></label>
+        <label title="Optional per-schedule settings (JSON): views, limits file, publish folder, bands for each PadbLoader schedule. See the guide, 'Watching PadbLoader'.">Streams file
+          <input type="text" id="watcherStreams" size="40" placeholder="(optional) streams.json"></label>
+        <label title="Also look at manual exports in PadbLoader's data folder, not only scheduled runs."><input type="checkbox" id="watcherManual"> include manual exports</label>
+      </div>
+      <div class="toolbar">
+        <button type="button" id="watcherRefresh" title="Reload the status from the output folder.">Refresh</button>
+        <button type="button" id="watcherRunOnce" title="Look at PadbLoader's scheduled output now and analyse every finished file that has not been analysed yet (one pass).">Check PadbLoader now</button>
+        <span id="watcherMsg"></span>
+      </div>
+      <div id="watcherBody"></div>
+    </details>
     <div id="uploadResult" class="panel hidden">
       <h3 id="uploadPodName"></h3>
       <table id="analyticsTable" title="Every Type=80/60/90 analytic found in the pod -- only Type=80 (Scatter) and Type=60 (Environmental) have usable CSV loaders in this tool.">

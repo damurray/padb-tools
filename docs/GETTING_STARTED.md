@@ -57,12 +57,12 @@ Job configs and results live outside this repo, in a `Data\` folder next to your
 
 ## Three tiers — which one do you want?
 
-There are three ways to run this tool, selected via job.json's `"mode"` key (`legacy`/`simple`/`interactive` — `legacy` if the key is omitted, so every pre-existing job.json is unaffected):
+There are two modes, selected via job.json's `"mode"` key: `interactive` (the default when the key is omitted) and `simple`. The old `legacy` value is retired -- it still runs, as `interactive`, and says so. The first column below is the V1 plot pipeline (`secondary_plots`), which runs under the default `interactive` mode:
 
 | | Legacy/V1 (`padb_run.py` + `padb_plots.py`) | Simple (`padb_run.py` + `padb_simple.py`) | Interactive/V2 (`padb_run.py` extract + `padb_v2.py` plot) |
 |---|---|---|---|
 | **Use when** | You want the older per-analytic plot types (`accuracy_vs_freq`, `distribution`, `de_summary`, etc.), one job.json drives everything | You want a direct, static `PADB::Simple` replacement: PADB-R's own native PNG/PDF renders wrapped in a bare gallery, no custom plotting or statistics | You want the full modern interactive suite (`scatter`, `stat_summary`, `boxplot`, `distribution`, `env_coverage`, `summary`) from one Type=80 Scatter CSV |
-| **job.json key** | `"mode"` omitted, or `"mode": "legacy"` | `"mode": "simple"` | `"mode": "interactive"` (label only — see below) |
+| **job.json key** | `"mode"` omitted (or `"interactive"`) with `secondary_plots` | `"mode": "simple"` | `"mode": "interactive"` (the default) |
 | **Job files** | One `job.json` per analysis | One `job.json` per analysis (same shape as Legacy/V1) | Two files: `*_run_job.json` (extract) + `*_v2_job.json` (plot) |
 | **Re-plot without re-extracting** | `padb_run.py job.json --plots-only` | `padb_run.py job.json --plots-only` | `py padb_v2.py the_v2_job.json` alone (Step 2 only) |
 | **Examples in this repo** | `examples/jobs/amplitude_job.json`, `examples/jobs/harmonics_job.json` | (new — none yet; `maxpower3_run_job.json` + `"mode": "simple"` is the verified-safe first target, see `CLAUDE.md`) | `closein_env_v2_job.json`, `MaxPower3_Leveled_Log_v2_job.json` |

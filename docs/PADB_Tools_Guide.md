@@ -47,13 +47,13 @@ job.json  →  padb_run.py  →  PADB-R.exe  →  results\padb\  (CSVs, PDFs)
 
 **PADB-R.exe is a WinForms application** (GUI subsystem). It runs headlessly but requires a Windows desktop session — do not run from a service or SSH session without a virtual desktop.
 
-**Three tiers.** Everything above describes the default (**legacy**) pipeline. A `"mode"` key in job.json selects one of three tiers — see **PADB Simple Mode** below for the third:
+**Two modes.** Everything above describes the V1 plot pipeline (`secondary_plots`), which runs under the default `interactive` mode. A `"mode"` key in job.json selects `interactive` (the default) or `simple` -- see **PADB Simple Mode** below. The old `"legacy"` value is retired: it still runs, as `interactive`, with a note.
 
 | `mode` | What runs |
 |---|---|
-| *(omitted)* or `"legacy"` | This pipeline — `padb_plots.py` custom plots via `secondary_plots`, as described in this section. Default; every job.json without a `mode` key is unaffected by anything below. |
+| *(omitted)*, `"interactive"` (or the retired `"legacy"`) | This pipeline — `padb_plots.py` custom plots via `secondary_plots`, as described in this section, plus the V2 hand-off (`HOW_TO_USE.txt`; a job with no `secondary_plots` prints the `padb_v2.py` command). The default. |
 | `"simple"` | No custom plotting at all — PADB-R.exe's own native PNG/PDF renders, wrapped in a bare gallery. See **PADB Simple Mode**. |
-| `"interactive"` | Label only, documenting that this job feeds the V2 two-command flow (`padb_run.py` extract, then `padb_v2.py` plot — see **V2 Pipeline** below). Does not change what this step does. |
+| `"interactive"` | The default. Documents that this job feeds the V2 two-command flow (`padb_run.py` extract, then `padb_v2.py` plot — see **V2 Pipeline** below). |
 
 ---
 
@@ -188,7 +188,7 @@ All configuration for a run lives in `job.json`.
 | `run_labels` | List of run label strings. Overrides `TestRun_RunLabel` in the pod. |
 | `subex` | Raw key=value overrides for any `[Extract]` field. Use for fields not covered by the list keys above. |
 | `run_analytics` | `true` to run PADB analytics. Default: `true`. |
-| `mode` | `"legacy"` (default), `"simple"`, or `"interactive"` — see **Three tiers** above and **PADB Simple Mode** below. |
+| `mode` | `"interactive"` (default) or `"simple"` (`"legacy"` is retired and runs as `interactive`) — see **Two modes** above and **PADB Simple Mode** below. |
 | `secondary_plots` | List of plot configurations (see below). Ignored when `mode` is `"simple"`. |
 | `publish.destination` | UNC or local path to copy `results\` to. Omit to skip publish. |
 
@@ -617,6 +617,18 @@ py padb_watch.py --watch D:\exports --out D:\padb\watch --once  # one pass: for 
 
 **What it does with a file.** It waits until the file is really finished -- PadbLoader writes the final file in place, so a half-written parquet is visible at its real name: not modified for `--settle` seconds (default 30), size unchanged on a re-check, and a valid parquet footer. It then keeps its own copy of the input (a hard link on one volume, else a copy, in `<out>\_inputs`) because **PadbLoader deletes older runs (default: keeps the last 14) and deletes empty or failed ones**, and runs `padb_analyze` on it into `<out>\<schedule folder>\<file>\`. `<out>\index.html` lists every run, newest first.
 
+**Per-schedule settings (`--streams-file`).** One JSON file gives each PadbLoader schedule its own analysis options, so Spurs and Phase Noise need not share views or a publish folder:
+
+```json
+{"default": {"views": ["scatter", "boxplot"], "publish_to": "\\\\srsnas01\\...\\{stream}"},
+ "streams": {"Spurs*":       {"views": ["scatter", "stat_summary"], "limits_file": "spur_limits.json"},
+             "Phase Noise*": {"bands": "auto"}}}
+```
+
+A schedule uses the FIRST pattern that fits its folder name (or the part before ` - <owner>`; case-insensitive, `*` and `?`); its settings override `default`, which overrides the command line. Settings: `views`, `limits_file`, `filters_file`, `publish_to` (`{stream}` is replaced by the schedule name), `pdf_report`, `bands` (`auto` or a row count, for very large files), `stream` (`auto|always|off`), `algorithms` (exact names). Relative file names are relative to the settings file. A file that is not valid JSON stops the watcher (exit 2); an unknown or wrong-typed setting is reported on stderr and skipped. The options each run used are recorded in the ledger and shown in the web app panel. A change applies to files analysed from then on; finished files are not re-run.
+
+**In the web app.** The **PadbLoader watcher** panel (collapsed, below the drop zone) reads the watcher's output folder: whether a watcher is running, every file it has seen with its status, a link to each result (or the viewer hint for a result too big for pages) and the options used. **Check PadbLoader now** runs one pass (`--once`); it is refused while a watcher is already running on that folder. Starting a continuous watcher stays a terminal / Task Scheduler job (the panel shows the command). Beside the parquet path box, **Browse PadbLoader files** lists the files in PadbLoader's export folder, newest first, to use one in place.
+
 **Disk use (retention).** Every input is snapshot, so the snapshots would grow by one file per run. `--keep-inputs N` (default 14) keeps the snapshots of the newest N runs per schedule and deletes older ones; `--keep-results N` (default 0 = keep everything) does the same for result folders. "Newest" is by the run stamp in the file name. Only finished runs are touched, and the ledger remembers them, so a pruned run is not analysed again. It only ever deletes folders the watcher itself created in its own output folder. `py padb_watch.py --watch DIR --out D:\padb\watch --prune-now --dry-run` shows what it would remove; drop `--dry-run` to do it.
 
 **Never twice, never lost.** A ledger (`watch_ledger.json`) records every file by path, size and modified time: a restart does not repeat finished work, a file that PadbLoader re-writes is analysed again, and a run that was in progress when the watcher died is retried. A failed analysis is retried after `--retry-delay` (300 s) up to `--max-attempts` (3), then given up on and logged (`--retry-failed` tries again); a hung analysis is killed (with everything it started) after `--timeout` (7200 s). Only one watcher can use an output folder at a time. `--once` exits 0 when nothing failed, 1 when an analysis failed, 2 if another watcher holds the folder; `--list` prints the ledger; `--dry-run` reports what it would do. The job-level options pass straight through: `--views`, `--limits-file`, `--filters-file`, `--publish-to`, `--pdf-report`.
@@ -786,7 +798,7 @@ Accepts one or more `.pod` paths and writes a `<pod_stem>_job.json` next to each
 | Flag | Effect |
 |---|---|
 | `--module NAME` | Subfolder under `--publish-root` for `publish.destination`. **Required unless `--no-publish` is given** — not auto-derived from the pod filename, so a new pod family never silently lands in the wrong network folder. |
-| `--mode` | `legacy` / `simple` / `interactive`. Default `simple`. |
+| `--mode` | `simple` / `interactive` (`legacy` is retired and means `interactive`). Default `simple`. |
 | `--min-date`, `--max-date` | Written into `subex` verbatim, including relative-date sentinels (`"today"`, `"8 weeks ago"`) — see **subex → Relative-date values** above. Omit both and no `subex` key is written at all, leaving the pod's own baked-in `[Extract]` date range exactly as-is. |
 | `--no-publish` | Omit the `publish` key entirely — local results only. |
 | `--force` | Overwrite an existing job.json (default: skip if the target already exists, so a manually-tuned job.json is never clobbered). |
