@@ -1597,6 +1597,37 @@ def _apply_size_tier(cfg: dict, df, views: list, explicit: bool, output_dir: Pat
         return views
 
 
+def _viewer_only(csv_path: Path, cfg: dict, output_dir: Path, message: str, prefix: str) -> list:
+    """A dataset too big to build self-contained HTML pages from: build NO pages, only what the parquet viewer needs --
+    the parquet itself beside an index.html that says so and opens the viewer (hard-linked, else copied), and a
+    viewer_only.json record.  The Running Jobs panel reads the "[VIEWER ONLY]" line.  Job key `too_big_viewer`: false
+    restores the old behaviour (refuse, exit 3)."""
+    import shutil
+    dest = output_dir / csv_path.name
+    how = "already there"
+    try:
+        if not dest.exists():
+            try:
+                os.link(csv_path, dest)
+                how = "linked"
+            except OSError:
+                shutil.copy2(csv_path, dest)
+                how = "copied"
+    except OSError as exc:
+        how = "NOT placed (%s)" % exc
+    cfg["_viewer_only_note"] = message
+    print(f"  [VIEWER ONLY] too big for HTML pages -- no pages built; the parquet viewer is ready ({dest.name}: {how}). "
+          f"Open {output_dir / 'index.html'} or run: py padb_viewer.py \"{output_dir}\"", flush=True)
+    try:
+        (output_dir / "viewer_only.json").write_text(json.dumps(
+            {"message": message, "data": str(csv_path), "folder": str(output_dir),
+             "viewer": 'py padb_viewer.py "%s"' % output_dir}, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+    _write_index(output_dir, prefix, [], cfg)
+    return []
+
+
 def generate_report(
     csv_path: Path,
     cfg: dict,
@@ -1629,6 +1660,8 @@ def generate_report(
                 print(f"  [SIZE] {_g['message']}", flush=True)
         except padb_sizeguard.TooBig as _exc:
             print(f"\n  [TOO BIG] {_exc}\n", flush=True)
+            if cfg.get("too_big_viewer", True):
+                return _viewer_only(csv_path, cfg, output_dir, str(_exc), prefix)
             raise SystemExit(3)
         except Exception as _exc:  # noqa: BLE001 -- the guard is advice: never let it be the reason a build fails
             print(f"  [WARN] size check skipped: {_exc}", flush=True)
@@ -2068,7 +2101,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
         # surfacing up front. Otherwise it stays a one-line collapsible entry.
         _view_htmls = [p for p in output_dir.glob("*.html") if p.name != "index.html"]
         _max_html_mb = max((p.stat().st_size / 1e6 for p in _view_htmls), default=0.0)
-        _auto_open = _max_html_mb >= VIEW_SIZE_WARN_MB
+        _auto_open = _max_html_mb >= VIEW_SIZE_WARN_MB or bool(cfg.get("_viewer_only_note"))
         _open_attr = " open" if _auto_open else ""
         _big_note = (f' &mdash; <span style="color:#b02a37;font-weight:600">large pages '
                      f'detected (~{_max_html_mb:.0f} MB); use the viewer</span>'
@@ -2101,6 +2134,10 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
     title = cfg.get("index_title", prefix)
     # Suppress per-job description when multiple jobs share the same output dir
     desc = cfg.get("description", "") if not existing else ""
+    _vo = cfg.get("_viewer_only_note")
+    viewer_only_html = ("<p style='background:#fde8e8;border:2px solid #c0392b;padding:8px 12px;border-radius:4px'>"
+                        "<b>Too big for HTML pages on this machine &mdash; no pages were built.</b> The data is ready in the "
+                        "parquet viewer below. " + _html.escape(str(_vo)) + "</p>") if _vo else ""
     _ln = cfg.get("_limits_note")
     lim_note_html = ("<p style='background:#fff3cd;border:1px solid #e0b84a;padding:6px 10px;border-radius:4px'>"
                      "<b>Limit overrides active.</b> " + _html.escape(_ln) + "</p>") if _ln else ""
@@ -2129,7 +2166,7 @@ def _write_index(output_dir: Path, prefix: str, html_files: list[Path], cfg: dic
 <div class="brand">{padb_brand.logo_img(30)}</div>
 <h1>{title}</h1>
 {"<p>"+desc+"</p>" if desc else ""}
-{lim_note_html}
+{viewer_only_html}{lim_note_html}
 {items_html}
 {parquet_html}
 </body></html>"""

@@ -862,6 +862,9 @@ def _worker() -> None:
             job["status"] = "cancelled" if job.get("cancel_requested") else ("done" if ok else "failed")
             job["elapsed_s"] = round(time.monotonic() - job["started"], 1)
             job["result_index"] = result_index
+            tb = [l for l in job["log"] if "[VIEWER ONLY]" in l]
+            if tb and ok:
+                job["too_big"] = tb[-1].strip()
         _persist_console_log(job_id, job_path, cfg)
         _worker_current_id = None
         _job_queue.task_done()
@@ -1170,13 +1173,66 @@ def upload_parquet():
     return jsonify(parquet_path=str(dest), parquet_name=dest.name, kind=kind, analytics=analytics)
 
 
+_gen_tasks: dict[str, dict] = {}
+_gen_lock = threading.Lock()
+
+
 @app.route("/api/generate-parquet-jobs", methods=["POST"])
 def generate_parquet_jobs():
     """Run the padbloader adapter for the chosen algorithms: writes one PADB-style
     parquet + one *_v2_job.json per algorithm into DATA_DIR (the jobs table picks
     them up).  Publish rules mirror Generate Job: explicit Share path wins, else
-    <Interactive root>/<Folder name>/<name>, else a local-only job."""
+    <Interactive root>/<Folder name>/<name>, else a local-only job.
+
+    With {"async": true} the work runs in a background thread and this returns {task: id} at once; the page polls
+    /api/generate-task/<id> (a multi-million-row file converts for minutes -- a request that long left the page silent)."""
     body = request.get_json(force=True) or {}
+    if body.get("async"):
+        pq = Path((body.get("parquet_path") or "").strip())
+        if not pq.is_file() or pq.suffix.lower() != ".parquet":
+            return jsonify(error="parquet_path missing or not an existing .parquet"), 400
+        tid = _new_job_id()
+        task = {"id": tid, "state": "running", "started": time.time(), "finished": None, "log": [],
+                "result": None, "http_status": None, "file": pq.name, "algorithms": len(body.get("algorithms") or [])}
+        with _gen_lock:
+            _gen_tasks[tid] = task
+            for k in sorted(_gen_tasks, key=lambda k: _gen_tasks[k]["started"])[:-20]:   # keep the newest 20
+                _gen_tasks.pop(k, None)
+
+        def _run():
+            with app.app_context():
+                try:
+                    resp = _generate_parquet_jobs_impl(body, lambda line: task["log"].append(str(line)))
+                    code = 200
+                    if isinstance(resp, tuple):
+                        resp, code = resp[0], resp[1]
+                    task["result"], task["http_status"] = resp.get_json(), code
+                    task["state"] = "done" if code < 400 else "error"
+                except BaseException as exc:   # noqa: BLE001 -- includes SystemExit and MemoryError: the page must hear about it
+                    import traceback
+                    traceback.print_exc()
+                    task["result"] = {"error": "%s: %s" % (type(exc).__name__, exc)}
+                    task["http_status"], task["state"] = 500, "error"
+                finally:
+                    task["finished"] = time.time()
+
+        threading.Thread(target=_run, daemon=True, name="generate-" + tid).start()
+        return jsonify(task=tid)
+    return _generate_parquet_jobs_impl(body)
+
+
+@app.route("/api/generate-task/<tid>")
+def generate_task(tid):
+    with _gen_lock:
+        t = _gen_tasks.get(tid)
+    if not t:
+        return jsonify(error="unknown task (the server was restarted, or it is more than 20 tasks old)"), 404
+    end = t["finished"] or time.time()
+    return jsonify(state=t["state"], elapsed_s=round(end - t["started"], 1), file=t["file"], algorithms=t["algorithms"],
+                   log=t["log"][-40:], log_lines=len(t["log"]), result=t["result"], http_status=t["http_status"])
+
+
+def _generate_parquet_jobs_impl(body, progress=None):
     pq_path = Path((body.get("parquet_path") or "").strip())
     if not pq_path.is_file() or pq_path.suffix.lower() != ".parquet":
         return jsonify(error="parquet_path missing or not an existing .parquet"), 400
@@ -1203,6 +1259,12 @@ def generate_parquet_jobs():
         publish_to = ""      # local-only
     out_dir = DATA_DIR / f"{stem}_results"
     buf = io.StringIO()
+
+    def _log(*a, **k):
+        line = " ".join(str(x) for x in a)
+        print(line)
+        if progress:
+            progress(line)
     try:
         with contextlib.redirect_stdout(buf):
             if padb_loader_adapter.sniff_parquet(str(pq_path)) == "padb":
@@ -1212,9 +1274,9 @@ def generate_parquet_jobs():
             else:
                 made = padb_loader_adapter.convert(
                     str(pq_path), str(out_dir), str(DATA_DIR), algorithms=algos,
-                    publish_to=publish_to, force=force, combine_results=combine, views=views)
-    except Exception as exc:
-        return jsonify(error=f"Adapter failed: {exc}", stdout=buf.getvalue()), 500
+                    publish_to=publish_to, force=force, combine_results=combine, views=views, log=_log)
+    except (Exception, SystemExit) as exc:
+        return jsonify(error=f"Adapter failed: {type(exc).__name__}: {exc}", stdout=buf.getvalue()), 500
     lines = []
     jobs = []
     for r in made:
@@ -2553,6 +2615,7 @@ def job_status(job_id):
             result_index_url=_result_url(result_index),
             log_url=_result_url(log_file) if log_file else None,
             queue_position=queue_position,
+            too_big=job.get("too_big"),
         )
 
 

@@ -91,6 +91,7 @@
       </fieldset>
       <label title="Allow overwriting an already-generated job.json of the same name -- off by default so a hand-tuned job.json is never silently clobbered."><input type="checkbox" id="forceCheckbox"> Overwrite existing job file(s)</label>
       <button type="submit" title="Runs padb_make_job.py (simple) or padb_make_v2_job.py (interactive) against the dropped pod and writes the resulting job.json file(s) into your data directory.">Generate Job</button>
+      <div id="generateStatus" class="gen-status" role="status" aria-live="polite"></div>
     </form>
     <div id="generateResult" class="panel hidden">
       <h3>Output</h3>

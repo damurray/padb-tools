@@ -334,7 +334,9 @@ def convert_stream(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None, pub
         groups = sorted({str(r[0]) for r in src.one("SELECT DISTINCT %s FROM src WHERE %s AND %s" % (keyexpr, where, valid), params)})
         plans = []                                   # [(name, F, writer-state)] for the groups we will actually write
         xr = (sl or {}).get("x_range")
-        for algo in groups:
+        log("  streaming %s: %s rows, %d algorithm(s) to convert" % (os.path.basename(parquet), format(pf.metadata.num_rows, ","), len(groups)))
+        for gi, algo in enumerate(groups, 1):
+            log("  [%d/%d] reading the facts of %s ..." % (gi, len(groups), algo))
             slug = ad._slug(algo) + (ad._range_tag(xr) if xr else "")
             jp = os.path.join(jobs_dir, "%s_%s_v2_job.json" % (stem, slug))
             gsql, gparams = "%s = ?" % keyexpr, [algo]
@@ -370,7 +372,12 @@ def convert_stream(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None, pub
                 need |= {c for c, _ in F["keys"]} | {F["xc"]} | {s for s, _ in F["limit_cols"]}
             cols = [c for c in src.names if c in need]
             by_key = {pl["algo"]: pl for pl in plans}
+            total_rows, seen, nb = max(1, pf.metadata.num_rows), 0, 0
             for batch in pf.iter_batches(batch_size=batch_rows, columns=cols):
+                seen += batch.num_rows
+                nb += 1
+                if nb == 1 or nb % 5 == 0:
+                    log("  converting: %s of %s rows read (%d%%)" % (format(seen, ","), format(total_rows, ","), 100 * seen // total_rows))
                 df = ad._with_datum(batch.to_pandas())
                 if algorithms:
                     df = df[ad._datum_mask(df, algorithms)]

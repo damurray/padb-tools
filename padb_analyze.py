@@ -209,10 +209,8 @@ def analyze(request, log=None) -> dict:
         code = 0
         giant = _giant_check(job, r)
         if giant:
-            entry["status"], entry["giant"] = "giant", giant
-            log("  [GIANT] %s: %s" % (name, giant["message"]))
-            result["analyses"].append(entry)
-            continue
+            entry["giant"] = giant
+            log("  [GIANT] %s: %s -- building the parquet-viewer objects only" % (name, giant["message"]))
         try:
             with contextlib.redirect_stdout(sys.stderr):
                 padb_v2.main([str(jp)] + ([] if r["publish_to"] else ["--no-publish"]))
@@ -222,7 +220,8 @@ def analyze(request, log=None) -> dict:
                 entry["error"] = str(e.code)
         except Exception as e:  # noqa: BLE001 -- one analysis failing must not hide the others
             code, entry["error"] = 1, "%s: %s" % (type(e).__name__, e)
-        files = sorted(p for p in rd.glob("*") if p.suffix.lower() in (".html", ".pdf")) if rd.is_dir() else []
+        files = sorted(p for p in rd.glob("*") if p.suffix.lower() in (".html", ".pdf")
+                       and not (giant and p.name == "index.html")) if rd.is_dir() else []
         entry["files"] = [str(p) for p in files]
         entry["views"] = sorted({v for v in _VIEWS for p in files
                                  if p.suffix == ".html" and p.stem.endswith("_" + v)
@@ -235,6 +234,10 @@ def analyze(request, log=None) -> dict:
                 entry["tier"] = json.loads(tj.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 entry["tier"] = None
+        if giant and entry["index"] and not code:
+            entry["status"] = "giant"
+            result["analyses"].append(entry)
+            continue
         if code or not entry["index"]:
             entry["status"] = "failed"
             entry["error"] = entry["error"] or "no index.html was produced"

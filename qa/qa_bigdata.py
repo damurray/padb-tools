@@ -210,8 +210,21 @@ def main() -> int:
     jp.write_text(json.dumps(job))
     env = dict(os.environ, PADB_MAX_LOAD_GB="0.2")
     r = subprocess.run([sys.executable, str(HERE / "padb_v2.py"), str(jp), "--no-publish"], capture_output=True, text=True, env=env, timeout=300)
-    check("BD-GUARD: padb_v2 on a parquet that will not fit exits 3 with '[TOO BIG]' and builds NOTHING",
-          r.returncode == 3 and "[TOO BIG]" in r.stdout and not list((tmp / "v2out_refused").glob("*.html")), (r.returncode, r.stdout[-300:]))
+    vo = tmp / "v2out_refused"
+    pages = [q for q in vo.glob("*.html") if q.name != "index.html"]
+    idx_t = (vo / "index.html").read_text(encoding="utf-8") if (vo / "index.html").is_file() else ""
+    check("BD-GUARD: padb_v2 on a parquet that will not fit says '[TOO BIG]' and '[VIEWER ONLY]', exits 0 and builds NO HTML pages",
+          r.returncode == 0 and "[TOO BIG]" in r.stdout and "[VIEWER ONLY]" in r.stdout and not pages, (r.returncode, r.stdout[-300:], pages))
+    check("BD-GUARD: ... it builds the viewer objects instead: the parquet beside an index that says no pages were built and offers the viewer",
+          list(vo.glob("*.parquet")) and (vo / "viewer_only.json").is_file() and "no pages were built" in idx_t and "Open in viewer" in idx_t
+          and list(vo.glob("*.parquet"))[0].name in idx_t, (list(vo.iterdir()), idx_t[:200]))
+    job["too_big_viewer"] = False
+    job["results_dir"] = str(tmp / "v2out_refused2")
+    jp.write_text(json.dumps(job))
+    r0 = subprocess.run([sys.executable, str(HERE / "padb_v2.py"), str(jp), "--no-publish"], capture_output=True, text=True, env=env, timeout=300)
+    check("BD-GUARD: with too_big_viewer=false the old behaviour stays: exit 3, nothing built",
+          r0.returncode == 3 and "[TOO BIG]" in r0.stdout and "[VIEWER ONLY]" not in r0.stdout and not list((tmp / "v2out_refused2").glob("*.html")), (r0.returncode, r0.stdout[-200:]))
+    job.pop("too_big_viewer")
     job["results_dir"] = str(tmp / "v2out_ok")
     jp.write_text(json.dumps(job))
     r2 = subprocess.run([sys.executable, str(HERE / "padb_v2.py"), str(jp), "--no-publish"], capture_output=True, text=True, timeout=300)
@@ -364,10 +377,13 @@ def main() -> int:
     r = cli(["--input", str(src), "--out", str(out_g), "--algorithm", "PN Closed Loop"], env={"PADB_MAX_LOAD_GB": "0.2"})
     res = json.loads(r.stdout) if r.stdout.strip().startswith("{") else {}
     an = (res.get("analyses") or [{}])[0]
-    check("BD-ROUTE: a dataset too big for pages is reported as 'giant' -- converted, a viewer command, a band command, NO pages built, "
-          "ok=true, exit 0", r.returncode == 0 and res.get("ok") and an.get("status") == "giant" and "padb_viewer.py" in (an.get("giant") or {}).get("viewer", "")
-          and "--bands auto" in an["giant"]["bands"] and not list(out_g.rglob("*.html")) and list((out_g / "padb").glob("*.parquet")),
-          (r.returncode, r.stderr[-300:], an.get("status")))
+    pages_g = [q for q in out_g.rglob("*.html") if q.name != "index.html"]
+    check("BD-ROUTE: a dataset too big for pages is reported as 'giant' -- converted, a viewer command, a band command, NO pages built "
+          "(only the viewer's index), ok=true, exit 0", r.returncode == 0 and res.get("ok") and an.get("status") == "giant" and "padb_viewer.py" in (an.get("giant") or {}).get("viewer", "")
+          and "--bands auto" in an["giant"]["bands"] and not pages_g and list((out_g / "padb").glob("*.parquet")) and an.get("files") == [],
+          (r.returncode, r.stderr[-300:], an.get("status"), pages_g))
+    check("BD-ROUTE: ... and the giant result carries the viewer index (so the page can link it) with the parquet beside it",
+          an.get("index") and Path(an["index"]).is_file() and list(Path(an["index"]).parent.glob("*.parquet")), an.get("index"))
     r = cli(["--input", str(src), "--out", str(tmp / "route_normal"), "--algorithm", "PN Closed Loop", "--views", "scatter", "--stream", "always"])
     res = json.loads(r.stdout)
     check("BD-ROUTE: forced streaming through padb_analyze builds the normal pages on a dataset that fits",
@@ -421,10 +437,66 @@ def main() -> int:
         os.environ.pop("PADB_MAX_LOAD_GB", None)
     js = (HERE / "webapp" / "static" / "app.js").read_text(encoding="utf-8")
     check("BD-ROUTE: the web app marks a giant job (message + viewer command) in its reply and says so in the output text; the page "
-          "skips queueing it", resp and any(j.get("giant") for j in resp.get("jobs", [])) and "TOO BIG FOR HTML PAGES" in resp.get("stdout", "")
-          and "!j.giant" in js and "NOT queued" in js.replace("NOT** queued", "NOT queued") or ("were NOT queued" in js), resp.get("stdout", "")[-300:] if resp else resp)
+          "no longer skips it -- it queues it as viewer-only", bool(resp and any(j.get("giant") for j in resp.get("jobs", []))) and "TOO BIG FOR HTML PAGES" in resp.get("stdout", "")
+          and "!j.giant" not in js and "viewer-only" in js, resp.get("stdout", "")[-300:] if resp else resp)
+    # ... and a queued too-big job runs to 'done', flagged for the Running Jobs card, with the viewer index as its result
+    gj = [j for j in resp["jobs"] if j.get("giant")][0]["path"]
+    os.environ["PADB_MAX_LOAD_GB"] = "0.2"
+    try:
+        q = cl.post("/api/execute-job", json={"paths": [gj], "dry_run": False, "publish": False}).get_json()
+        stt = {}
+        for _ in range(120):
+            stt = cl.get("/api/job-status/" + q["job_ids"][0]).get_json()
+            if stt["status"] not in ("queued", "running"):
+                break
+            time.sleep(1)
+    finally:
+        os.environ.pop("PADB_MAX_LOAD_GB", None)
+    check("BD-ROUTE: a queued too-big job ends 'done' (not failed), flagged too_big with the [VIEWER ONLY] line, result = the viewer index",
+          stt.get("status") == "done" and stt.get("too_big") and "[VIEWER ONLY]" in stt["too_big"] and stt.get("result_index"), stt)
+    check("BD-ROUTE: the Running Jobs card shows the flag (badge text + note) from that field",
+          "data.too_big" in js and "TOO BIG, viewer only" in js and ".toobig-note" in js)
     resp2 = cl.post("/api/generate-parquet-jobs", json={"parquet_path": str(src), "algorithms": ["PN Closed Loop"], "force": True}).get_json()
     check("BD-ROUTE: ... and on this machine, with room to spare, the same request is NOT flagged", resp2 and not any(j.get("giant") for j in resp2.get("jobs", [])), resp2)
+
+    # ---- the conversion runs in the background and reports progress (a big file used to leave the page silent for minutes)
+    def run_async(body, tries=120):
+        a = cl.post("/api/generate-parquet-jobs", json=dict(body, **{"async": True}))
+        if a.status_code != 200:
+            return a.status_code, a.get_json(), None
+        tid = a.get_json()["task"]
+        tk = {}
+        for _ in range(tries):
+            tk = cl.get("/api/generate-task/" + tid).get_json()
+            if tk["state"] != "running":
+                break
+            time.sleep(0.5)
+        return 200, tk, tid
+    code, tk, tid = run_async({"parquet_path": str(src), "algorithms": ["PN Closed Loop"], "force": True})
+    check("BD-ASYNC: an async request returns a task at once and finishes 'done' with the SAME jobs as the synchronous route",
+          code == 200 and tk.get("state") == "done" and tk.get("http_status") == 200
+          and [j["name"] for j in tk["result"]["jobs"]] == [j["name"] for j in resp2["jobs"]], (code, tk.get("state"), str(tk)[:300]))
+    check("BD-ASYNC: ... and the task carries progress lines (reading / building / streaming) and an elapsed time",
+          tk.get("log_lines", 0) > 0 and any(("building" in l or "streaming" in l or "reading" in l) for l in tk.get("log", [])) and tk.get("elapsed_s") is not None, tk.get("log"))
+    check("BD-ASYNC: a missing parquet is refused at once (400), not after a wait",
+          cl.post("/api/generate-parquet-jobs", json={"parquet_path": str(tmp / "nope.parquet"), "algorithms": ["x"], "async": True}).status_code == 400)
+    check("BD-ASYNC: an unknown task id is a clear 404", cl.get("/api/generate-task/zzzz").status_code == 404)
+    real_convert = padb_web.padb_loader_adapter.convert
+
+    def _boom(*a, **k):
+        raise SystemExit("boom: the adapter gave up")
+    padb_web.padb_loader_adapter.convert = _boom
+    try:
+        code, tk, _ = run_async({"parquet_path": str(src), "algorithms": ["PN Closed Loop"], "force": True}, tries=40)
+        sync_r = cl.post("/api/generate-parquet-jobs", json={"parquet_path": str(src), "algorithms": ["PN Closed Loop"], "force": True})
+    finally:
+        padb_web.padb_loader_adapter.convert = real_convert
+    check("BD-ASYNC: an adapter that exits (SystemExit) ends the task 'error' with its message -- never a silent hang",
+          tk.get("state") == "error" and "boom" in (tk.get("result") or {}).get("error", "") and tk.get("http_status") == 500, str(tk)[:300])
+    check("BD-ASYNC: ... and the synchronous route answers that as JSON 500 too (it used to escape as a server error page)",
+          sync_r.status_code == 500 and "boom" in (sync_r.get_json() or {}).get("error", ""), sync_r.status_code)
+    check("BD-ASYNC: the page polls the task, shows a live status line with a timer and the result, and keeps working if the page waits",
+          "generate-task" in js and 'getElementById("generateStatus")' in js and "async: true" in js and "fmtT(st.elapsed_s)" in js)
 
     # =============================================================================================== BD-MEM
     os.environ["PADB_STREAM_MEM_GB"] = "0.02"

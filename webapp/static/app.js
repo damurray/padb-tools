@@ -1,3 +1,67 @@
+// ---------------------------------------------------------------------------
+// Busy indicator: any request that takes longer than BUSY_DELAY_MS shows a thin bar across the top of the page, a
+// spinner on the button that was just clicked (it ignores further clicks while it spins) and, for the job list, a dimmed
+// table.  Wraps fetch once, so every present and future call is covered; background polling is exempt.
+// ---------------------------------------------------------------------------
+const BUSY_DELAY_MS = 300;
+const BUSY_IGNORE = /\/api\/(job-status|active-jobs|generate-task)\b/;
+let _busyClickBtn = null, _busyClickAt = 0, _busyInflight = 0, _busyBarTimer = null;
+document.addEventListener("click", (e) => {
+  const b = e.target && e.target.closest ? e.target.closest("button") : null;
+  if (b) { _busyClickBtn = b; _busyClickAt = performance.now(); }
+}, true);
+function _busyBar() {
+  let bar = document.getElementById("busyBar");
+  if (!bar) {
+    bar = document.createElement("div");
+    bar.id = "busyBar";
+    bar.title = "Working...";
+    bar.innerHTML = "<span></span>";
+    document.body.appendChild(bar);
+  }
+  return bar;
+}
+function _busyOn() {
+  _busyInflight++;
+  if (_busyInflight === 1) {
+    _busyBarTimer = setTimeout(() => { _busyBar().classList.add("on"); document.body.classList.add("busy-wait"); }, BUSY_DELAY_MS);
+  }
+}
+function _busyOff() {
+  _busyInflight = Math.max(0, _busyInflight - 1);
+  if (_busyInflight === 0) {
+    clearTimeout(_busyBarTimer);
+    const bar = document.getElementById("busyBar");
+    if (bar) bar.classList.remove("on");
+    document.body.classList.remove("busy-wait");
+  }
+}
+const _origFetch = window.fetch.bind(window);
+window.fetch = function (input, init) {
+  const url = typeof input === "string" ? input : ((input && input.url) || "");
+  if (BUSY_IGNORE.test(url)) return _origFetch(input, init);
+  const btn = (_busyClickBtn && performance.now() - _busyClickAt < 1500 && _busyClickBtn.isConnected) ? _busyClickBtn : null;
+  const wrap = /\/api\/jobs(\?|$)/.test(url) ? document.getElementById("jobsTableWrap") : null;
+  let timer = null;
+  _busyOn();
+  if (btn || wrap) {
+    timer = setTimeout(() => {
+      if (btn) { btn.classList.add("busy"); btn.setAttribute("aria-busy", "true"); btn._busyN = (btn._busyN || 0) + 1; }
+      if (wrap) wrap.classList.add("loading");
+    }, BUSY_DELAY_MS);
+  }
+  const done = () => {
+    clearTimeout(timer);
+    _busyOff();
+    if (btn && btn._busyN) { btn._busyN--; }
+    if (btn && !btn._busyN) { btn.classList.remove("busy"); btn.removeAttribute("aria-busy"); }
+    if (wrap) wrap.classList.remove("loading");
+  };
+  // a fetch that started its spinner must be able to finish it, whether it resolves, rejects or never parses
+  if (btn) btn._busyN = (btn._busyN || 0);
+  return _origFetch(input, init).then((r) => { done(); return r; }, (err) => { done(); throw err; });
+};
+
 "use strict";
 
 let currentPodPath = null;
@@ -335,46 +399,85 @@ document.getElementById("generateForm").addEventListener("submit", async e => {
       alert("Tick at least one plot to generate");
       return;
     }
-    const pr = await fetchJson("/api/generate-parquet-jobs", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        parquet_path: currentPodPath,
-        algorithms,
-        combine_results: document.getElementById("combineResultsChk").checked,
-        views,
-        module: document.getElementById("moduleInput").value,
-        publish_to: document.getElementById("sharePathInput").value,
-        force: document.getElementById("forceCheckbox").checked,
-      }),
-    });
-    if (!pr) return;
-    if (!pr.res.ok) {
-      alert("Generate failed: " + pr.data.error);
-      return;
-    }
-    renderGenerated(pr.data);
-    // Queue the freshly written jobs so they show in Running Jobs (live log / cancel)
-    const runAfter = document.getElementById("runAfterChk");
-    const fresh = pr.data.jobs.filter(j => j.status === "ok" && !j.giant).map(j => j.path);
-    const giant = pr.data.jobs.filter(j => j.giant);
-    if (giant.length) {
-      alert(giant.length + " of the generated job(s) hold more data than can be built into HTML pages on this machine right now, "
-        + "so they were NOT queued:\n\n" + giant.map(j => j.name).join("\n")
-        + "\n\nThe data is converted -- open it in the parquet viewer (the command is in the output below), "
-        + "or generate a slice (padb_analyze --x-range / --bands auto).");
-    }
-    if (runAfter && runAfter.checked && fresh.length) {
-      const rr = await fetchJson("/api/execute-job", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ paths: fresh, dry_run: false, publish: false }),
+    const statusEl = document.getElementById("generateStatus");
+    const submitBtn = document.querySelector("#generateForm button[type=submit]");
+    const setStatus = (msg, cls) => { statusEl.textContent = msg; statusEl.className = "gen-status" + (cls ? " " + cls : ""); };
+    const fmtT = s => (s >= 60 ? Math.floor(s / 60) + "m " + String(Math.floor(s % 60)).padStart(2, "0") + "s" : Math.floor(s) + "s");
+    submitBtn.disabled = true;
+    setStatus("Starting...", "run");
+    try {
+      const t0 = Date.now();
+      const start = await fetchJson("/api/generate-parquet-jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          parquet_path: currentPodPath,
+          algorithms,
+          combine_results: document.getElementById("combineResultsChk").checked,
+          views,
+          module: document.getElementById("moduleInput").value,
+          publish_to: document.getElementById("sharePathInput").value,
+          force: document.getElementById("forceCheckbox").checked,
+          async: true,
+        }),
       });
-      if (rr && rr.res.ok) {
-        for (const jobId of rr.data.job_ids) startPolling(jobId);
-        if (rr.data.job_ids.length) scrollJobStatusIntoView(rr.data.job_ids[0]);
-      } else if (rr) {
-        alert("Jobs were written but could not be queued: " + rr.data.error);
+      if (!start) { setStatus("Could not reach the server.", "err"); return; }
+      if (!start.res.ok) {
+        setStatus("Generate failed: " + start.data.error, "err");
+        alert("Generate failed: " + start.data.error);
+        return;
       }
+      // The conversion runs on the server (minutes for a very large parquet): show what it is doing until it is done.
+      let st = null;
+      for (;;) {
+        await new Promise(r => setTimeout(r, 1500));
+        let poll = null;
+        try { poll = await (await fetch("/api/generate-task/" + start.data.task)).json(); } catch (err) { poll = null; }
+        if (!poll || poll.error) {
+          setStatus("Lost contact with the server (" + ((poll && poll.error) || "no answer") + "). If it was restarted the conversion was stopped.", "err");
+          return;
+        }
+        st = poll;
+        const last = (st.log && st.log.length) ? st.log[st.log.length - 1].trim() : "";
+        setStatus("Working - " + fmtT(st.elapsed_s) + "  " + (last || "converting " + st.file + " ...") +
+                  "   (a very large file takes several minutes; this page can stay open)", "run");
+        if (st.state !== "running") break;
+      }
+      const result = st.result || {};
+      if (st.state !== "done") {
+        setStatus("Failed after " + fmtT(st.elapsed_s) + ": " + (result.error || "unknown error"), "err");
+        if (result.stdout) { document.getElementById("generateStdout").textContent = result.stdout; document.getElementById("generateResult").classList.remove("hidden"); }
+        alert("Generate failed: " + (result.error || "unknown error"));
+        return;
+      }
+      renderGenerated(result);
+      const written = result.jobs.filter(j => j.status === "ok");
+      const skipped = result.jobs.filter(j => j.status !== "ok").length;
+      const giant = result.jobs.filter(j => j.giant);
+      let msg = "Done in " + fmtT(st.elapsed_s) + ": " + written.length + " job(s) written" + (skipped ? ", " + skipped + " already existed (tick Overwrite to redo)" : "") + ".";
+      if (giant.length) {
+        msg += " " + giant.length + " too big for HTML pages on this machine - they are queued as viewer-only: no pages are built, the parquet viewer is prepared, and Running Jobs flags them.";
+      }
+      setStatus(msg, giant.length ? "warn" : "ok");
+      // Queue the freshly written jobs so they show in Running Jobs (live log / cancel). A too-big job is queued too: it builds
+      // only the parquet-viewer objects and the Running Jobs card says so.
+      const runAfter = document.getElementById("runAfterChk");
+      const fresh = written.map(j => j.path);
+      if (runAfter && runAfter.checked && fresh.length) {
+        const rr = await fetchJson("/api/execute-job", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ paths: fresh, dry_run: false, publish: false }),
+        });
+        if (rr && rr.res.ok) {
+          for (const jobId of rr.data.job_ids) startPolling(jobId);
+          if (rr.data.job_ids.length) scrollJobStatusIntoView(rr.data.job_ids[0]);
+        } else if (rr) {
+          setStatus(msg + " BUT the jobs could not be queued: " + rr.data.error, "err");
+          alert("Jobs were written but could not be queued: " + rr.data.error);
+        }
+      }
+    } finally {
+      submitBtn.disabled = false;
     }
     return;
   }
@@ -1326,6 +1429,20 @@ async function poll(jobId) {
   badge.textContent = (data.status === "queued" && data.queue_position)
     ? `queued (${data.queue_position} ahead)` : data.status;
   badge.className = "badge " + data.status;
+  let tbNote = card.querySelector(".toobig-note");
+  if (data.too_big && data.status === "done") {
+    badge.textContent = "done - TOO BIG, viewer only";
+    badge.classList.add("toobig");
+    if (!tbNote) {
+      tbNote = document.createElement("div");
+      tbNote.className = "toobig-note";
+      card.querySelector("h4").after(tbNote);
+    }
+    tbNote.innerHTML = "<b>Too big for HTML pages on this machine - no pages were built.</b> The parquet viewer is ready: " +
+      (data.result_index_url ? '<a href="' + data.result_index_url + '" target="_blank">open the results page</a> and press <i>Open in viewer</i>' : "open the results folder") +
+      ". <span class=\"tb-detail\"></span>";
+    tbNote.querySelector(".tb-detail").textContent = data.too_big.replace(/^\s*\[VIEWER ONLY\]\s*/, "");
+  } else if (tbNote) { tbNote.remove(); }
   card.querySelector(".elapsed").textContent = `  ${data.elapsed_s}s`;
   const resultsLink = card.querySelector(".results-link");
   resultsLink.innerHTML = data.result_index_url

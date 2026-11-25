@@ -37,6 +37,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent.parent   # the repository root (this file lives in qa/)
 sys.path.insert(0, str(HERE))
 PASS = FAIL = 0
+# The fixtures are tiny: these tests are about the watcher, not the memory guard. On a starved machine the guard would turn
+# every analysis into a viewer-only result, so it is off for this process and its children.
+os.environ["PADB_SIZE_GUARD"] = "off"
 
 
 def check(desc, cond, detail=""):

@@ -128,6 +128,7 @@ SCHEMA = {
                         enum_str=("auto",)),
     "parallel_views_auto_rows": F("int", "plot", "size", "Row count at which parallel rendering switches on.", lo=0),
     "parallel_workers": F("int", "plot", "size", "Number of worker processes.", lo=1),
+    "too_big_viewer": F("bool", "plot", "size", "A dataset too big for HTML pages: build only the parquet-viewer objects (default true); false = refuse (exit 3)."),
     "tiering": F(("bool", "str"), "plot", "size", "Predict build cost and skip over-budget automatic views.",
                  enum_str=("auto", "off", "false")),
     "tier_budget_s": F(NUM, "plot", "size", "Per-view predicted build time above which an automatic view is skipped.",

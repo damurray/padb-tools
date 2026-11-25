@@ -109,7 +109,7 @@
       "failed": 0
     },
     "qa_bigdata": {
-      "passed": 62,
+      "passed": 74,
       "failed": 0
     },
     "qa_truth": {
@@ -117,7 +117,7 @@
       "failed": 0
     },
     "qa_jobs_table": {
-      "passed": 41,
+      "passed": 52,
       "failed": 0
     }
   }

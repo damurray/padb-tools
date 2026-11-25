@@ -475,6 +475,7 @@ def convert(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None,
         padb_sizeguard.require(parquet, "convert")        # the user forced the in-memory path: still refuse if it cannot fit
     pf = pq.ParquetFile(parquet)
     lab, unit = _labels(pf.schema_arrow)
+    log("  reading %s (%s rows) into memory ..." % (os.path.basename(parquet), format(pf.metadata.num_rows, ",")))
     df = _with_datum(pf.read().to_pandas())
     if algorithms:
         df = df[_datum_mask(df, algorithms)]
@@ -491,10 +492,12 @@ def convert(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None,
     os.makedirs(data_dir, exist_ok=True)
     os.makedirs(jobs_dir, exist_ok=True)
     made = []
-    for algo, g in df.groupby("algorithm" if combine_results else "_datum", sort=True):
+    _groups = list(df.groupby("algorithm" if combine_results else "_datum", sort=True))
+    for _gi, (algo, g) in enumerate(_groups, 1):
         g = g.dropna(subset=["value"]).copy()
         if g.empty:
             continue
+        log("  [%d/%d] building %s (%s rows) ..." % (_gi, len(_groups), algo, format(len(g), ",")))
         slug = _slug(algo) + (_range_tag(xr) if xr else "")
         jp = os.path.join(jobs_dir, "%s_%s_v2_job.json" % (stem, slug))
         if os.path.exists(jp) and not force:

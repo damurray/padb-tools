@@ -318,3 +318,24 @@ button.chip.on { background: #0066cc; color: #fff; border-color: #0066cc; }
 #jobsTable tr.job-group-row td { background: #eef2f7; font-weight: 600; cursor: pointer; border-top: 2px solid #c8cdd4; }
 #jobsTable tr.job-group-row .g-meta { font-weight: 400; color: #555; margin-left: 8px; }
 #jobsTable tr.job-group-row button { font-size: 11px; padding: 1px 6px; margin-left: 8px; }
+
+/* Busy indicator (see app.js "Busy indicator") */
+#busyBar { position: fixed; top: 0; left: 0; right: 0; height: 3px; z-index: 9999; overflow: hidden; opacity: 0; pointer-events: none; transition: opacity .15s; }
+#busyBar.on { opacity: 1; }
+#busyBar span { display: block; height: 100%; width: 35%; background: #0066cc; animation: busyslide 1.1s ease-in-out infinite; }
+@keyframes busyslide { 0% { margin-left: -35%; } 100% { margin-left: 100%; } }
+body.busy-wait { cursor: progress; }
+button.busy { position: relative; pointer-events: none; opacity: .75; padding-right: 1.9em; }
+button.busy::after { content: ""; position: absolute; right: .55em; top: 50%; width: .8em; height: .8em; margin-top: -.45em;
+  border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: busyspin .7s linear infinite; }
+@keyframes busyspin { to { transform: rotate(360deg); } }
+#jobsTableWrap.loading { opacity: .5; transition: opacity .15s; }
+
+/* Generate plot jobs: live status line; too-big (viewer-only) jobs in Running Jobs */
+.gen-status { margin-top: 8px; font-size: 13px; min-height: 1.2em; }
+.gen-status.run { color: #8a5a00; }
+.gen-status.ok { color: #16784a; font-weight: 600; }
+.gen-status.warn { color: #9a4d00; font-weight: 600; }
+.gen-status.err { color: #b02a37; font-weight: 600; }
+.badge.toobig { background: #c2410c; }
+.toobig-note { background: #fde8e8; border: 1px solid #c0392b; border-radius: 4px; padding: 6px 10px; margin: 6px 0; font-size: 13px; }

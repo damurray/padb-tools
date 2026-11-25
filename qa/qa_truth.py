@@ -24,6 +24,7 @@ the bands is exercised).
     py qa/qa_truth.py          -> exit 1 on a failure, 3 if no browser could run (environment)
 """
 import json
+import os
 import math
 import subprocess
 import sys
@@ -38,6 +39,9 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE / "qa"))
 PASS = FAIL = 0
 SKIPPED = False
+# The fixture is 960 rows: this suite checks numbers, not the memory guard. On a starved machine the guard would turn the
+# build into a viewer-only result (no pages) and every page check would crash; switch it off for this process and its children.
+os.environ["PADB_SIZE_GUARD"] = "off"
 
 
 def check(desc, cond, detail=""):

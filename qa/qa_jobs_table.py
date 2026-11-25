@@ -50,6 +50,15 @@ padb_batch._orphaned_host_pids = lambda: []
 import padb_web  # noqa: E402
 
 padb_web.DATA_DIR = _TMP
+SLOW_MS = {}      # path -> milliseconds the server waits before answering (so the page's own timing can be observed)
+
+
+@padb_web.app.before_request
+def _slow_hook():
+    from flask import request as _rq
+    ms = SLOW_MS.get(_rq.path)
+    if ms:
+        time.sleep(ms / 1000.0)
 padb_web.query_task = lambda name: {}
 padb_web.format_schedule_summary = lambda info: "weekly"
 
@@ -242,6 +251,115 @@ def main() -> int:
     page.reload()
     page.wait_for_function("() => document.querySelectorAll('#jobsTable tbody tr').length >= 2")
     check("JT-GROUP: an active chip survives a reload", page.evaluate("() => document.querySelectorAll('#jobChips button.on').length") == 1 and len(rows()) == 2, rows())
+    # ---- busy indicator: anything slower than ~300 ms shows a bar, a spinner on the clicked button and a dimmed table
+    def state():
+        return page.evaluate("""() => ({bar: (document.getElementById('busyBar') || {classList: {contains: () => false}}).classList.contains('on'),
+            btn: document.getElementById('refreshJobsBtn').classList.contains('busy'),
+            wrap: document.getElementById('jobsTableWrap').classList.contains('loading'),
+            cursor: document.body.classList.contains('busy-wait')})""")
+
+    page.evaluate("() => { localStorage.clear(); }")
+    page.reload()
+    page.wait_for_function("() => document.querySelectorAll('#jobsTable tbody tr').length >= %d" % len(FIX))
+    SLOW_MS["/api/jobs"] = 900
+    page.click("#refreshJobsBtn")
+    page.wait_for_timeout(600)
+    s_mid = state()
+    page.wait_for_timeout(1200)
+    s_end = state()
+    check("JT-BUSY: a slow Refresh shows the top bar, a spinner on the Refresh button and a dimmed jobs table while it waits",
+          s_mid == {"bar": True, "btn": True, "wrap": True, "cursor": True}, s_mid)
+    check("JT-BUSY: ... and everything is cleared the moment it answers", s_end == {"bar": False, "btn": False, "wrap": False, "cursor": False}, s_end)
+    SLOW_MS["/api/jobs"] = 60
+    page.evaluate("""() => { window.__flash = false;
+        new MutationObserver(() => { const b = document.getElementById('busyBar');
+          if ((b && b.classList.contains('on')) || document.getElementById('refreshJobsBtn').classList.contains('busy')
+              || document.getElementById('jobsTableWrap').classList.contains('loading')) window.__flash = true; })
+          .observe(document.body, {attributes: true, subtree: true, attributeFilter: ['class']}); }""")
+    page.click("#refreshJobsBtn")
+    page.wait_for_timeout(700)
+    s_fast = state()
+    flashed = page.evaluate("() => window.__flash")
+    check("JT-BUSY: a fast answer (60 ms) never flashes the indicator -- not even for an instant", not flashed and s_fast == {"bar": False, "btn": False, "wrap": False, "cursor": False}, (flashed, s_fast))
+    SLOW_MS.clear()
+    SLOW_MS["/api/job-status/zz"] = 900
+    page.evaluate("() => { fetch('/api/job-status/zz').catch(() => {}); }")
+    page.wait_for_timeout(600)
+    s_poll = state()
+    page.wait_for_timeout(1000)
+    SLOW_MS.clear()
+    check("JT-BUSY: background polling (job-status) never shows the indicator", not s_poll["bar"] and not s_poll["btn"], s_poll)
+    # a request that REJECTS (connection refused) must not leak the in-flight count: the next slow request still ends clean
+    page.evaluate("() => fetch('http://127.0.0.1:1/x').catch(() => {})")
+    page.wait_for_timeout(500)
+    SLOW_MS["/api/jobs"] = 700
+    page.click("#refreshJobsBtn")
+    page.wait_for_timeout(500)
+    s_a = state()
+    page.wait_for_timeout(1000)
+    s_b = state()
+    SLOW_MS.clear()
+    check("JT-BUSY: after a request that failed outright, the indicator still turns on for a slow one and off again (nothing stuck)",
+          s_a["bar"] and not s_b["bar"] and not s_b["btn"] and not s_b["wrap"], (s_a, s_b))
+    errs.clear()
+
+    # ---- Generate Plot Jobs from a parquet: a live status line, a result line, and a too-big job flagged in Running Jobs
+    dialogs = []
+    page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+    page.evaluate("""() => showParquetAnalytics({kind: 'padbloader', parquet_path: 'C:/x/big.parquet', parquet_name: 'big.parquet',
+        analytics: [{algorithm: 'Algo A', rows: 100, units: 'dB', has_limits: true, x_col: 'f', n_x: 5, wide: false, steps: 1, multi_step: false}]})""")
+    posted = {}
+    ticks = {"n": 0}
+
+    def gen(route):
+        posted["body"] = json.loads(route.request.post_data)
+        route.fulfill(status=200, content_type="application/json", body='{"task": "t1"}')
+
+    def task(route):
+        ticks["n"] += 1
+        if ticks["n"] < 3:
+            body = {"state": "running", "elapsed_s": 3.0 * ticks["n"], "file": "big.parquet", "log": ["  [1/2] building Algo A (100 rows) ..."], "log_lines": 1}
+        else:
+            body = {"state": "done", "elapsed_s": 75.0, "file": "big.parquet", "log": [], "log_lines": 3, "http_status": 200,
+                    "result": {"stdout": "ok", "stderr": "", "returncode": 0, "jobs": [
+                        {"path": "C:/x/a_v2_job.json", "name": "a_v2_job.json", "status": "ok", "content": "{}", "giant": {"message": "too big"}},
+                        {"path": "C:/x/b_v2_job.json", "name": "b_v2_job.json", "status": "ok", "content": "{}"},
+                        {"path": "C:/x/c_v2_job.json", "name": "c_v2_job.json", "status": "exists", "content": "{}"}]}}
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(body))
+    page.route("**/api/generate-parquet-jobs", gen)
+    page.route("**/api/generate-task/**", task)
+    page.route("**/api/execute-job", lambda r: r.fulfill(status=200, content_type="application/json", body='{"job_ids": ["j1"]}'))
+    page.route("**/api/job-status/j1", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps({
+        "status": "done", "name": "a_v2_job.json", "elapsed_s": 2.0, "log_tail": "  [VIEWER ONLY] too big for HTML pages", "result_index": "C:/x/index.html",
+        "result_index_url": "/results/tok/index.html", "log_url": None, "too_big": "[VIEWER ONLY] too big for HTML pages -- no pages built"})))
+    page.click("#generateForm button[type=submit]")
+    page.wait_for_timeout(2200)
+    mid = page.evaluate("() => ({t: document.getElementById('generateStatus').textContent, c: document.getElementById('generateStatus').className, dis: document.querySelector('#generateForm button[type=submit]').disabled})")
+    check("JT-GEN: while it converts the status line shows the elapsed time and the stage, the button is disabled, and no dialog pops up",
+          mid["t"].startswith("Working - ") and "[1/2] building Algo A" in mid["t"] and "run" in mid["c"] and mid["dis"] and not dialogs, (mid, dialogs))
+    check("JT-GEN: the request asks for the background mode (async) with the ticked algorithms and views", posted["body"].get("async") is True and posted["body"]["algorithms"] == ["Algo A"] and posted["body"]["views"], posted.get("body"))
+    page.wait_for_function("() => document.getElementById('generateStatus').textContent.startsWith('Done in')", timeout=20000)
+    page.wait_for_function("() => !document.querySelector('#generateForm button[type=submit]').disabled", timeout=20000)   # re-enabled once the jobs are queued
+    fin = page.evaluate("() => ({t: document.getElementById('generateStatus').textContent, c: document.getElementById('generateStatus').className, dis: document.querySelector('#generateForm button[type=submit]').disabled})")
+    check("JT-GEN: the result line says how long it took, how many jobs were written, how many existed, and that 1 is too big (viewer only)",
+          "Done in 1m 15s" in fin["t"] and "2 job(s) written" in fin["t"] and "1 already existed" in fin["t"] and "1 too big" in fin["t"] and "viewer-only" in fin["t"]
+          and "warn" in fin["c"] and not fin["dis"], fin)
+    page.wait_for_selector("#status-j1 .toobig-note", timeout=20000)
+    card = page.evaluate("() => ({badge: document.querySelector('#status-j1 .badge').textContent, note: document.querySelector('#status-j1 .toobig-note').textContent})")
+    check("JT-GEN: the queued too-big job's Running Jobs card is flagged (badge + note naming the viewer), and no dialog was needed",
+          "TOO BIG" in card["badge"] and "no pages were built" in card["note"].lower() and "viewer" in card["note"].lower() and not dialogs, (card, dialogs))
+    # a failed conversion: the status line says why, and one dialog does too
+    ticks["n"] = 0
+    page.unroute("**/api/generate-task/**")
+    page.route("**/api/generate-task/**", lambda r: r.fulfill(status=200, content_type="application/json", body=json.dumps(
+        {"state": "error", "elapsed_s": 4.0, "file": "big.parquet", "log": [], "log_lines": 0, "http_status": 500, "result": {"error": "Adapter failed: MemoryError: out of memory"}})))
+    page.click("#generateForm button[type=submit]")
+    page.wait_for_function("() => document.getElementById('generateStatus').textContent.startsWith('Failed')", timeout=20000)
+    page.wait_for_function("() => !document.querySelector('#generateForm button[type=submit]').disabled", timeout=20000)
+    fl = page.evaluate("() => ({t: document.getElementById('generateStatus').textContent, c: document.getElementById('generateStatus').className, dis: document.querySelector('#generateForm button[type=submit]').disabled})")
+    check("JT-GEN: a failed conversion shows the reason in the status line (red), re-enables the button, and raises one dialog",
+          "out of memory" in fl["t"] and "err" in fl["c"] and not fl["dis"] and any("out of memory" in d for d in dialogs), (fl, dialogs))
+    check("JT-GEN: no page errors", not errs, errs[:2])
     check("JT-API: no page errors", not errs, errs[:2])
     br.close()
     pw.stop()
