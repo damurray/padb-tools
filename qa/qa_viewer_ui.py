@@ -220,6 +220,69 @@ def main() -> int:
         page.check('.grpchk[value="site"]')
         page.wait_for_timeout(800)
 
+        # INV-GRPUI: the Group by panel shows each key's size, the button says what is grouped and how many groups result,
+        # and the legend is a short vertical list that hides itself when there are too many groups
+        page.evaluate("document.getElementById('grppanel').style.display = 'block'")   # (the INV-GROUP block above left it open; a click would close it)
+        ptxt = page.inner_text("#grppanel")
+        check("INV-GRPUI: every condition is offered with its number of values (AlcState (2), Port (2), Serial Number (3))",
+              "AlcState (2" in ptxt and "Port (2" in ptxt and "Serial Number (3" in ptxt, ptxt[:200])
+        page.check('.grpchk[value="d%d"]' % dims["AlcState"]["id"])
+        page.check('.grpchk[value="d%d"]' % dims["Port"]["id"])
+        page.uncheck('.grpchk[value="site"]')
+        page.wait_for_timeout(1500)
+        btn = page.inner_text("#grpbtn")
+        check("INV-GRPUI: two conditions -> 4 groups, and the button names them with the count",
+              "AlcState + Port" in btn and "(4 groups)" in btn and len(page.evaluate("document.getElementById('plot').data.filter(t=>!/limit/i.test(t.name)).map(t=>t.name)")) == 4, btn)
+        check("INV-GRPUI: the panel states the group count too", "4 groups now" in page.inner_text("#grppanel"), page.inner_text("#grppanel")[-200:])
+        lay = page.evaluate("(() => { const l = document.getElementById('plot').layout; return {show: l.showlegend, ori: l.legend && l.legend.orientation, r: l.margin && l.margin.r}; })()")
+        check("INV-GRPUI: with few groups the legend is shown, vertical, in a reserved right margin", lay["show"] is True and lay["ori"] == "v" and lay["r"] >= 200, lay)
+        page.select_option("#legsel", "off")
+        page.wait_for_timeout(1200)
+        lay = page.evaluate("(() => { const l = document.getElementById('plot').layout; return {show: l.showlegend, r: l.margin && l.margin.r}; })()")
+        check("INV-GRPUI: Legend: off hides it and gives the plot the width back", lay["show"] is False and lay["r"] <= 20, lay)
+        page.select_option("#legsel", "auto")
+        page.evaluate("LEG_AUTO_MAX = 3")
+        page.click("text=Update")
+        page.wait_for_timeout(1200)
+        lay = page.evaluate("(() => { const l = document.getElementById('plot').layout; return {show: l.showlegend, r: l.margin && l.margin.r}; })()")
+        check("INV-GRPUI: Legend: auto hides the legend when there are more groups than the limit (4 > 3) and says so in the status line",
+              lay["show"] is False and "legend hidden" in page.inner_text("#status"), (lay, page.inner_text("#status")))
+        page.select_option("#legsel", "on")
+        page.wait_for_timeout(1200)
+        lay = page.evaluate("(() => { const l = document.getElementById('plot').layout; return {show: l.showlegend, r: l.margin && l.margin.r}; })()")
+        check("INV-GRPUI: Legend: on forces it back even with many groups", lay["show"] is True and lay["r"] >= 200, lay)
+        def _long(route):
+            resp = route.fetch()
+            body = resp.json()
+            if body.get("traces"):
+                body["traces"][0]["site"] = "L" * 80          # a very long group label
+            route.fulfill(response=resp, json=body)
+        page.route("**/api/scatter*", _long)
+        page.click("text=Update")
+        page.wait_for_timeout(1500)
+        page.unroute("**/api/scatter*")
+        names = page.evaluate("document.getElementById('plot').data.map(t=>t.name)")
+        hov = page.evaluate("document.getElementById('plot').data[0].hovertemplate")
+        check("INV-GRPUI: a very long group label (80 chars) is cut to 34 with an ellipsis in the legend, but the hover keeps all of it",
+              len(names[0].split(" (n=")[0]) <= 34 and names[0].split(" (n=")[0].endswith("…") and "L" * 80 in hov, (names[0], hov[-120:]))
+        page.click("text=Update")
+        page.wait_for_timeout(1000)
+        page.reload()
+        page.wait_for_timeout(1500)
+        check("INV-GRPUI: the legend choice survives a reload", page.input_value("#legsel") == "on", page.input_value("#legsel"))
+        page.evaluate("() => { META.engine = 'pandas'; META.dims = []; buildGrp(); }")
+        check("INV-GRPUI: the pandas fallback says why conditions are missing, instead of silently offering fewer keys",
+              "pandas fallback" in page.inner_text("#grppanel") and "DuckDB" in page.inner_text("#grppanel"), page.inner_text("#grppanel")[:200])
+        page.reload()
+        page.wait_for_timeout(1500)
+        page.select_option("#legsel", "auto")
+        page.click("#grpbtn")
+        for c in page.query_selector_all(".grpchk"):
+            if c.get_attribute("value") != "site":
+                c.set_checked(False)
+        page.check('.grpchk[value="site"]')
+        page.wait_for_timeout(1000)
+
         # INV-HOVER
         txt = page.evaluate("document.getElementById('plot').data[0].text[0]")
         check("INV-HOVER: hover shows Serial and conditions",

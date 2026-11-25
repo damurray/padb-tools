@@ -509,6 +509,7 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span id="limflag" style="display:none;color:#b26a00;font-weight:600" title="The limits shown and used for pass/fail come from your override file, not (only) from the data."></span>
   <button id="grpbtn" onclick="toggleGrp()"
     title="Colour/split the overview points by Site, Serial Number, Temperature or any condition. Display only -- does not filter.">Group by &#9662;</button>
+  <label title="The legend lists one entry per group. Auto hides it when there are more than 12 groups (it would cover the plot); hover a point to see its group. 'on' always shows it -- a scrollable list at the right of the plot."><select id="legsel" onchange="update()"><option value="auto">Legend: auto</option><option value="on">Legend: on</option><option value="off">Legend: off</option></select></label>
   <button id="fltbtn" onclick="toggleFltEdit()" style="display:none" title="Choose which conditions are offered as filters, in what order and under what names -- including ones the automatic rules hide (single-valued, serial-like, many values). A condition that is not offered puts no restriction on the data.">Edit filters</button>
   <button id="condbtn" onclick="toggleConds()" style="display:none"
     title="Filter by condition (every Key: value in the Group text). Unticking a value hides those points in the plot AND in the band views.">Conditions &#9662;</button>
@@ -632,7 +633,7 @@ function saveState(){
     var o={flo:document.getElementById('flo').value, fhi:document.getElementById('fhi').value,
       maxpts:document.getElementById('maxpts').value,
       sites_off:unc('.sitechk'), temps_off:unc('.tempchk'), conds_off:conds,
-      by:selectedBy(), lim:document.getElementById('showlim').checked,
+      by:selectedBy(), leg:document.getElementById('legsel').value, lim:document.getElementById('showlim').checked,
       pf:(document.querySelector('input[name="pf"]:checked')||{}).value||'all',
       segbasis:document.getElementById('segbasis').value, segIdx:_segIdx,
       full:document.getElementById('fullrender').checked};
@@ -652,6 +653,7 @@ async function loadState(){
       c.checked=!has((o.conds_off||{})[c.getAttribute('data-dim')], c.value); });
     syncCondRow();
     if(o.by){ document.querySelectorAll('.grpchk').forEach(function(c){ c.checked=has(o.by,c.value); }); }
+    if(o.leg){ var _ls=document.getElementById('legsel'); if(_ls.querySelector('option[value="'+o.leg+'"]')) _ls.value=o.leg; }
     if(META.has_limits){ document.getElementById('showlim').checked=!!o.lim;
       var r=document.querySelector('input[name="pf"][value="'+o.pf+'"]'); if(r&&!r.disabled) r.checked=true; }
     document.getElementById('fullrender').checked=!!o.full;
@@ -862,14 +864,49 @@ function buildConds(){
   document.getElementById('condbtn').style.display='';
   buildCondRow();
 }
+var GRP_MAX=60, GRP_WARN=25, LEG_AUTO_MAX=12, _grpCount=null;
+function _grpCard(key){
+  // how many distinct values a key has (so the size of a grouping is visible BEFORE it is chosen)
+  if(key==='site') return ((META&&META.sites)||[]).length;
+  if(key==='serial') return (META&&META.n_serials)||0;
+  if(key==='temp') return ((META&&META.temps)||[]).length;
+  var d=((META&&META.dims)||[]).filter(function(x){ return 'd'+x.id===key; })[0];
+  return d?d.values.length:0;
+}
 function buildGrp(){
   var h='<b>Group by:</b> ', opts=[['site','Site'],['serial','Serial Number'],['temp','Temperature']];
   ((META&&META.dims)||[]).forEach(function(d){ opts.push(['d'+d.id,d.label||d.name]); });
   opts.forEach(function(o){
-    h+='<label style="margin-right:10px"><input type="checkbox" class="grpchk" value="'+o[0]+'"'+(o[0]==='site'?' checked':'')+
-       ' onchange="update()"> '+o[1]+'</label>'; });
-  h+=' <span style="color:#888">(none checked = one colour; more than '+60+' groups is refused -- pick fewer keys)</span>';
+    var n=_grpCard(o[0]), warn=n>GRP_WARN;
+    h+='<label style="margin-right:12px;white-space:nowrap" title="'+n+' value'+(n===1?'':'s')+(warn?' -- many: grouping by this alone gives that many legend entries/colours':'')+'">'+
+       '<input type="checkbox" class="grpchk" value="'+o[0]+'"'+(o[0]==='site'?' checked':'')+' onchange="update()"> '+o[1]+
+       ' <span style="color:'+(warn?'#b02a37':'#888')+'">('+n+(warn?' &#9888;':'')+')</span></label>'; });
+  if(META&&META.engine==='pandas'&&!((META.dims||[]).length))
+    h+='<div style="margin-top:4px;color:#b26a00">Only Site, Serial Number and Temperature are offered: grouping and filtering by condition need the DuckDB engine, '+
+       'and this viewer is running the pandas fallback (DuckDB is missing or not bundled in this build). Install <code>duckdb</code> or rebuild PADB_Viewer.exe.</div>';
+  h+='<div style="margin-top:4px"><a href="#" onclick="grpNone();return false">none (one colour)</a> &middot; '+
+     '<a href="#" onclick="grpDefault();return false">default (Site)</a> &middot; '+
+     '<span id="grpcount" style="color:#555"></span> '+
+     '<span style="color:#888">The number in brackets is how many values a key has; the groups multiply when keys are combined '+
+     '(more than '+GRP_MAX+' groups is refused). Display only -- grouping never filters.</span></div>';
   document.getElementById('grppanel').innerHTML=h;
+  grpSummary();
+}
+function grpNone(){ document.querySelectorAll('.grpchk').forEach(function(c){c.checked=false;}); update(); }
+function grpDefault(){ document.querySelectorAll('.grpchk').forEach(function(c){c.checked=(c.value==='site');}); update(); }
+function _grpNames(){
+  var m={site:'Site',serial:'Serial Number',temp:'Temperature'};
+  ((META&&META.dims)||[]).forEach(function(d){ m['d'+d.id]=d.label||d.name; });
+  return selectedBy().map(function(k){ return m[k]||k; });
+}
+function grpSummary(){
+  // the button says what is grouped and how many groups that gives (once known)
+  var b=document.getElementById('grpbtn'); if(!b) return;
+  var nm=_grpNames();
+  b.innerHTML='Group by: '+(nm.length?nm.join(' + ').replace(/</g,'&lt;'):'none')+
+     (_grpCount!=null?' <span style="color:#555">('+_grpCount+' group'+(_grpCount===1?'':'s')+')</span>':'')+' &#9662;';
+  var c=document.getElementById('grpcount'); if(c) c.textContent=(_grpCount!=null?_grpCount+' group'+(_grpCount===1?'':'s')+' now. ':'');
+  b.classList.toggle('narrowed', nm.length!==1||nm[0]!=='Site');
 }
 // --- Condition filters as a ROW of dropdowns (same look/behaviour as the HTML views' filter
 //     buttons: a button per dimension, a tick panel with "Select all", a n/total badge when
@@ -1126,8 +1163,10 @@ async function update(){
     return;
   }
   const G=r.groups||{};
+  _grpCount=r.traces.length; grpSummary();
+  const _short=function(s){ s=String(s==null?'':s); return s.length>34?s.slice(0,33)+'\u2026':s; };
   const traces=r.traces.map(t=>({x:t.x,y:t.y,mode:'markers',type:'scattergl',
-      name:t.site+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55},
+      name:_short(t.site)+' (n='+t.n.toLocaleString()+')',marker:{size:4,opacity:0.55},
       text:t.x.map(function(_,i){
         var gtxt=(t.gi&&t.gi[i]!=null&&G[t.gi[i]])?G[t.gi[i]]:'';
         return (t.sn&&t.sn[i]&&t.sn[i]!=='?'?('Serial: '+t.sn[i]+'<br>'):'')+
@@ -1148,16 +1187,23 @@ async function update(){
   // Pin x to the queried band so react() doesn't autorange-fire a spurious relayout
   // that _onRelayout would read as a Reset. Modebar Autoscale/Reset still emit
   // xaxis.autorange and are handled above.
-  await Plotly.react('plot',traces,{margin:{t:10,r:10},
+  // Legend: one entry per group. A horizontal legend wraps over many rows and ate most of the plot; this one is a vertical list
+  // at the right (Plotly scrolls it when it is taller than the plot), with short names, and is hidden by default when there
+  // are more than LEG_AUTO_MAX groups -- the group is in every point's hover text.
+  const _lm=document.getElementById('legsel').value, _ng=r.traces.length;
+  const _showLeg=_lm==='on'||(_lm==='auto'&&_ng<=LEG_AUTO_MAX);
+  await Plotly.react('plot',traces,{margin:{t:10,r:_showLeg?250:10},showlegend:_showLeg,
       xaxis:{title:{text:META.x_label},range:[flo,fhi]},
-      yaxis:{title:{text:META.value_label}},legend:{orientation:'h'}},{responsive:true});
+      yaxis:{title:{text:META.value_label}},
+      legend:{orientation:'v',x:1.01,xanchor:'left',y:1,yanchor:'top',font:{size:11},tracegroupgap:2,itemsizing:'constant'}},{responsive:true});
   if(!_relayoutHooked){ document.getElementById('plot').on('plotly_relayout',_onRelayout); _relayoutHooked=true; }
   // Keep the guard up until Plotly has settled: a late react-induced relayout (slow WebGL on
   // big pages) must not be read as a user Reset/zoom and overwrite the stepped window.
   setTimeout(()=>{ if(seq===_updSeq) _syncing=false; },150);
   document.getElementById('status').textContent =
      r.n_total.toLocaleString()+' pts in view -> '+r.n_returned.toLocaleString()+
-     ' drawn ('+Math.round(performance.now()-t0)+' ms)'+(r.n_total===0?'  -- NO POINTS in this window with the current filters':'');
+     ' drawn ('+Math.round(performance.now()-t0)+' ms)'+(r.n_total===0?'  -- NO POINTS in this window with the current filters':'')+
+     (_ng>LEG_AUTO_MAX&&_lm==='auto'?'  -- '+_ng+' groups: legend hidden (hover a point for its group; Legend: on to list them)':'');
   // If a band view is open, refresh it for the NEW band (debounced, so a drag-zoom that
   // fires many updates only re-renders once it settles) -- otherwise the open view would
   // stay stale/showing the old band's guard message after you zoom (David 2026-09-24).
