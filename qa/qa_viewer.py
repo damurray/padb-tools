@@ -349,7 +349,7 @@ def main() -> None:
         pm.pop("engine")
         dims = dm.pop("dims", [])      # condition filters are a DuckDB-engine feature
         pm.pop("dims", None)
-        for _k in ("all_dims", "unavailable", "filters"):   # filter customisation is a DuckDB-engine feature too
+        for _k in ("all_dims", "unavailable", "filters", "serials"):   # filter customisation and the Serial Number filter are DuckDB-engine features too
             dm.pop(_k, None)
             pm.pop(_k, None)
         check("engine parity: meta identical", dm == pm, str([k for k in dm if dm[k] != pm[k]]))

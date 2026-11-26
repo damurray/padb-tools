@@ -278,6 +278,7 @@ class PandasDataSet:
             "sites": self.sites,
             "temps": self.temps,
             "n_serials": int(self.n_serials),
+            "serials": (self.serial_list() if hasattr(self, "serial_list") else []),   # the Serial Number filter is a DuckDB-engine feature (as are the conditions)
             "x_unit": self.x_unit,
             "bands": self.bands,
             "band_counts": self.band_counts,
@@ -504,6 +505,9 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <span>max points <input type="number" id="maxpts" value="4000" step="500"></span>
   <span class="sitebox" id="sites"></span>
   <span class="sitebox" id="temps"></span>
+  <span class="dd-wrap" id="serwrap" style="display:none"><button class="dd-btn" id="serbtn" onclick="toggleSer(event)"
+    title="Show only some serial numbers (units) -- in the plot AND in every band view you open. A dropdown: click outside it to close.">Serial Number &#9662;</button>
+  <div class="dd-panel" id="serpanel" onclick="event.stopPropagation()" style="min-width:300px;max-width:520px;max-height:60vh"></div></span>
   <label id="limbox" style="display:none" title="Draw the spec/limit line(s) from the data's Upper/Lower Limit columns (a step where the limit changes along x). Display only -- the limit shown is the first one in file order at each x."><input type="checkbox" id="showlim" onchange="update()"> Show limits</label>
   <button id="limbtn" onclick="toggleLimEdit()" title="Override the data's Upper/Lower Limit over x-ranges. Changes the limit line, Passing/Failing and every band view; never the parquet. Saved to a limits file beside the data.">Edit limits</button>
   <span id="limflag" style="display:none;color:#b26a00;font-weight:600" title="The limits shown and used for pass/fail come from your override file, not (only) from the data."></span>
@@ -601,7 +605,7 @@ async function boot(){
         '<label><input type="checkbox" checked value="'+tp+'" class="tempchk" onchange="update()"> '+tp+'</label>');
     });
   }
-  buildConds(); buildGrp();
+  buildConds(); buildGrp(); buildSerials();
   if((META.all_dims||[]).length){ document.getElementById('fltbtn').style.display=''; }
   if(META.has_limits){ document.getElementById('limbox').style.display=''; }
   await loadState();   // restore the last filters/window/group-by for THIS dataset (Reset all clears it)
@@ -632,7 +636,7 @@ function saveState(){
       if(!c.checked){ var k=c.getAttribute('data-dim'); (conds[k]=conds[k]||[]).push(c.value); } });
     var o={flo:document.getElementById('flo').value, fhi:document.getElementById('fhi').value,
       maxpts:document.getElementById('maxpts').value,
-      sites_off:unc('.sitechk'), temps_off:unc('.tempchk'), conds_off:conds,
+      sites_off:unc('.sitechk'), temps_off:unc('.tempchk'), serials_off:unc('.serchk'), conds_off:conds,
       by:selectedBy(), leg:document.getElementById('legsel').value, lim:document.getElementById('showlim').checked,
       pf:(document.querySelector('input[name="pf"]:checked')||{}).value||'all',
       segbasis:document.getElementById('segbasis').value, segIdx:_segIdx,
@@ -649,6 +653,7 @@ async function loadState(){
     if(o.maxpts) document.getElementById('maxpts').value=o.maxpts;
     document.querySelectorAll('.sitechk').forEach(function(c){ c.checked=!has(o.sites_off,c.value); });
     document.querySelectorAll('.tempchk').forEach(function(c){ c.checked=!has(o.temps_off,c.value); });
+    if(o.serials_off){ document.querySelectorAll('.serchk').forEach(function(c){ c.checked=!has(o.serials_off,c.value); }); syncSer(); }
     document.querySelectorAll('.condchk').forEach(function(c){
       c.checked=!has((o.conds_off||{})[c.getAttribute('data-dim')], c.value); });
     syncCondRow();
@@ -1093,7 +1098,51 @@ function toggleGrp(ev){
 function selectedBy(){ return [...document.querySelectorAll('.grpchk:checked')].map(function(c){return c.value;}); }
 function toggleConds(){ var p=document.getElementById('condpanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
 function condAll(id,on){ document.querySelectorAll('.condchk[data-dim="'+id+'"]').forEach(function(c){c.checked=on;}); syncCondRow(); update(); }
-function condReset(){ document.querySelectorAll('.condchk').forEach(function(c){c.checked=true;}); syncCondRow(); update(); }
+function condReset(){ document.querySelectorAll('.condchk').forEach(function(c){c.checked=true;}); document.querySelectorAll('.serchk').forEach(function(c){c.checked=true;}); syncCondRow(); syncSer(); update(); }
+// ---- Serial Number filter: a dropdown like the Conditions ones; ticked = included; all ticked = no restriction ----
+var SER_NONE='__PADB_NO_SERIAL__';      // sent when every serial is unticked: no serial has this value, so no rows (as for conditions)
+function _escA(s){ return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;'); }
+function buildSerials(){
+  var w=document.getElementById('serwrap'), p=document.getElementById('serpanel'); if(!w||!p) return;
+  var S=(META&&META.serials)||[];
+  if(S.length<2){ w.style.display='none'; p.innerHTML=''; return; }
+  var h=(S.length>12?'<input type="search" class="dd-search" placeholder="search '+S.length+' serials..." oninput="serSearch(this.value)" style="width:100%;box-sizing:border-box;margin-bottom:4px">':'')+
+    '<label class="dd-item"><input type="checkbox" class="serall" checked onchange="serAll(this.checked)"><b>Select&nbsp;all</b></label><hr class="dd-div">';
+  S.forEach(function(s){
+    h+='<label class="dd-item"><input type="checkbox" class="serchk" value="'+_escA(s[0])+'" checked onchange="serChanged()">'+_escA(s[0])+
+       ' <span style="color:#888">('+s[1].toLocaleString()+')</span></label>'; });
+  p.innerHTML=h; w.style.display='';
+  ddBindClose(); syncSer();
+}
+function syncSer(){
+  var all=[...document.querySelectorAll('.serchk')], on=all.filter(function(c){return c.checked;}).length;
+  var b=document.getElementById('serbtn'); if(!b) return;
+  b.innerHTML='Serial Number ('+(on<all.length?on+' of ':'')+all.length+') &#9662;';
+  b.classList.toggle('narrowed', on<all.length);
+  var a=document.querySelector('.serall'); if(a){ a.checked=(on===all.length); a.indeterminate=(on>0&&on<all.length); }
+}
+function serChanged(){ syncSer(); update(); }
+function serAll(on){ document.querySelectorAll('.serchk').forEach(function(c){ if(c.closest('label').style.display!=='none') c.checked=on; }); syncSer(); update(); }
+function serSearch(q){
+  q=String(q||'').toLowerCase();
+  document.querySelectorAll('#serpanel .dd-item').forEach(function(l){
+    if(l.querySelector('.serall')) return;
+    l.style.display=(!q||l.textContent.toLowerCase().indexOf(q)>=0)?'':'none'; });
+}
+function toggleSer(ev){
+  if(ev) ev.stopPropagation();
+  ddBindClose();
+  var p=document.getElementById('serpanel'), was=p.classList.contains('open');
+  document.querySelectorAll('.dd-panel.open').forEach(function(q){q.classList.remove('open');});
+  if(!was) p.classList.add('open');
+}
+function selectedSerials(){
+  var all=[...document.querySelectorAll('.serchk')]; if(!all.length) return [];
+  var on=all.filter(function(c){return c.checked;}).map(function(c){return c.value;});
+  if(on.length===all.length) return [];
+  if(!on.length) return [SER_NONE];
+  return on;
+}
 function selectedConds(){
   var by={}, tot={};
   document.querySelectorAll('.condchk').forEach(function(c){
@@ -1108,6 +1157,7 @@ function currentSpec(flo,fhi){
   if(tp.length) o.temps=tp;
   var pf=(document.querySelector('input[name="pf"]:checked')||{}).value||'all'; if(pf!=='all') o.pf=pf;
   var c=selectedConds(); if(Object.keys(c).length) o.conds=c;
+  var sr=selectedSerials(); if(sr.length) o.serials=sr;
   return o;
 }
 function specQS(flo,fhi){ return '&spec='+encodeURIComponent(JSON.stringify(currentSpec(+flo,+fhi))); }
@@ -1290,7 +1340,7 @@ def _filt_of(spec: FilterSpec):
     constrains nothing."""
     import dataclasses
     f = dataclasses.replace(spec, lo=-float("inf"), hi=float("inf"))
-    return f if (f.sites or f.temps or f.conds or f.pf != "all") else None
+    return f if (f.sites or f.temps or f.serials or f.conds or f.pf != "all") else None
 
 
 @app.errorhandler(_BadSpec)

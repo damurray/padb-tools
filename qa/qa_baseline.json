@@ -13,7 +13,7 @@
       "failed": 0
     },
     "qa_viewer_ui": {
-      "passed": 146,
+      "passed": 155,
       "failed": 0
     },
     "qa_limits_views": {
@@ -33,7 +33,7 @@
       "failed": 0
     },
     "qa_core": {
-      "passed": 88,
+      "passed": 93,
       "failed": 0
     },
     "qa_limits": {

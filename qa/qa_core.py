@@ -306,6 +306,22 @@ def main() -> int:
           core.counts(FilterSpec(lo=0, hi=1e9, conds={core.dims[0]["id"]: []})) == 0)
     check("CORE-SPEC: an unknown dimension id is ignored (not an error)",
           core.counts(FilterSpec(lo=0, hi=1e9, conds={999: ["x"]})) == core.n_rows)
+    # ---- serials (the viewer's Serial Number filter): same value semantics as sites / temps
+    sl = core.serial_list()
+    sr = FilterSpec(lo=1, hi=9, serials=["b", "a"], pf="fail")
+    check("CORE-SPEC: serials survive the JSON round trip and the canonical key ignores their order",
+          FilterSpec.from_json(sr.to_json()).to_dict() == sr.to_dict() and sr.key() == FilterSpec(lo=1, hi=9, serials=["a", "b"], pf="fail").key()
+          and sr.key() != FilterSpec(lo=1, hi=9, pf="fail").key())
+    check("CORE-SPEC: serial_list() covers every row exactly once (counts add up to the row count) and lists each serial once",
+          sl and sum(n for _s, n in sl) == core.n_rows and len({s for s, _n in sl}) == len(sl), sl[:3])
+    check("CORE-SPEC: a serials filter keeps exactly that serial's rows, for every serial (count == serial_list)",
+          all(core.counts(FilterSpec(lo=0, hi=1e9, serials=[s])) == n for s, n in sl))
+    two = sl[:2]
+    check("CORE-SPEC: two serials -> the sum of their rows",
+          len(two) < 2 or core.counts(FilterSpec(lo=0, hi=1e9, serials=[two[0][0], two[1][0]])) == two[0][1] + two[1][1])
+    check("CORE-SPEC: an empty serials list restricts nothing; a serial that does not exist gives no rows; the SQL names the column",
+          core.counts(FilterSpec(lo=0, hi=1e9, serials=[])) == core.n_rows and core.counts(FilterSpec(lo=0, hi=1e9, serials=["no-such-serial"])) == 0
+          and "serial IN (?" in FilterSpec(lo=0, hi=1, serials=["a"]).to_sql([])[0])
 
     # ---------------- CORE-ADOPT: the viewer really runs on the core (no second copy) ----------------
     vsrc = (HERE / "padb_viewer.py").read_text(encoding="utf-8")

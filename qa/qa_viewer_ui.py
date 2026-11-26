@@ -8,6 +8,9 @@ checked against an independent pandas oracle over the same parquet:
   INV-COND   unticking a condition value -> plotted n_total == oracle row count
   INV-SITE   Site/Temp checkboxes apply on change (no Update click)
   INV-GROUP  group-by traces partition the same points (one trace per distinct value)
+  INV-SERIAL a Serial Number FILTER (dropdown beside Site / Temperature): lists every serial with its points, narrowing == the
+             oracle row count, none ticked -> no rows, survives a fresh load, "reset" re-ticks it, hidden without DuckDB, and
+             the band view opened afterwards holds ONLY the ticked serials (the filter reaches every custom plot)
   INV-SEG    each Next step -> window == the band AND every plotted x lies inside it
   INV-RAPID  3 back-to-back Next clicks end on the LAST window (no stale response wins)
   INV-HOVER  hover text carries Serial + the condition text
@@ -219,6 +222,45 @@ def main() -> int:
         page.uncheck('.grpchk[value="d%d"]' % dims["Port"]["id"])
         page.check('.grpchk[value="site"]')
         page.wait_for_timeout(800)
+
+        # INV-SERIAL: a Serial Number filter on the main page
+        sers = sorted(set(df["Group"].str.extract(r"Serial Number: (\S+)")[0]))
+        ser_n = {s: int(df["Group"].str.contains("Serial Number: %s" % s).sum()) for s in sers}
+        sb = page.evaluate("""() => ({shown: document.getElementById('serwrap').style.display !== 'none', btn: document.getElementById('serbtn').textContent,
+            items: [...document.querySelectorAll('.serchk')].map(c => c.value), text: document.getElementById('serpanel').textContent})""")
+        check("INV-SERIAL: the control is offered, lists every serial with its number of points, and the button says how many (3)",
+              sb["shown"] and sb["items"] == sers and all(("(%d)" % ser_n[s]) in sb["text"] for s in sers) and "(3)" in sb["btn"], sb)
+        full_n = total()
+        page.click("#serbtn")
+        page.uncheck('.serchk[value="%s"]' % sers[1])
+        page.wait_for_timeout(900)
+        two = total()
+        sb2 = page.evaluate("() => ({btn: document.getElementById('serbtn').textContent, narrowed: document.getElementById('serbtn').classList.contains('narrowed'), open: document.getElementById('serpanel').classList.contains('open')})")
+        check("INV-SERIAL: unticking one serial -> the points == the oracle (the other two), the button says '2 of 3' and is marked narrowed, the dropdown stays open",
+              two == ser_n[sers[0]] + ser_n[sers[2]] and two < full_n and "2 of 3" in sb2["btn"] and sb2["narrowed"] and sb2["open"], (two, full_n, sb2))
+        for s in sers:
+            page.uncheck('.serchk[value="%s"]' % s)
+        page.wait_for_timeout(900)
+        check("INV-SERIAL: every serial unticked -> NO points (not 'everything')", total() == 0, total())
+        page.check('.serchk[value="%s"]' % sers[2])
+        page.wait_for_timeout(900)
+        check("INV-SERIAL: only the third serial ticked -> exactly its points (== oracle)", total() == ser_n[sers[2]], (total(), ser_n[sers[2]]))
+        page.evaluate("() => serSearch('%s')" % sers[0][-3:])
+        vis = page.evaluate("() => [...document.querySelectorAll('#serpanel .dd-item')].filter(l => !l.querySelector('.serall') && l.style.display !== 'none').map(l => l.textContent.trim().split(' ')[0])")
+        check("INV-SERIAL: the search box narrows the list (only the matching serial is shown)", vis == [sers[0]], vis)
+        page.evaluate("() => serSearch('')")
+        page.click(".apptitle")
+        url = page.url
+        page.goto("about:blank")
+        page.goto(url)
+        page.wait_for_timeout(2000)
+        kept = page.evaluate("() => ({btn: document.getElementById('serbtn').textContent, on: [...document.querySelectorAll('.serchk:checked')].map(c => c.value)})")
+        check("INV-SERIAL: the choice survives a fresh load of the page (1 of 3, the third serial)", kept["on"] == [sers[2]] and "1 of 3" in kept["btn"], kept)
+        page.evaluate("() => condReset()")
+        page.wait_for_timeout(900)
+        check("INV-SERIAL: 'reset' (the conditions' reset) re-ticks every serial", total() == full_n and "(3)" in page.inner_text("#serbtn"), (total(), full_n))
+        page.evaluate("() => { var keep = META.serials; META.serials = []; buildSerials(); window.__serHidden = document.getElementById('serwrap').style.display === 'none'; META.serials = keep; buildSerials(); }")
+        check("INV-SERIAL: with no serial list (the pandas fallback / one serial) the control is hidden", page.evaluate("() => window.__serHidden"))
 
         # INV-BANDEMPTY: a band with no points in this data is greyed out (disabled, '(0)', a title that says why), not offered as a click
         # into an empty window; the bands that do have points stay clickable
@@ -623,6 +665,25 @@ def main() -> int:
         r = bp.evaluate("() => { try { return {n:applyFilters(DATA).length}; } catch(e){ return {error:String(e)}; } }")
         check("INV-BAND-COND: scatter band view honours the condition filter (n == oracle)",
               r.get("n") == want_n(150, 320, "TRUE"), r)
+        # (c) the Serial Number filter reaches the band views: a scatter opened under it has exactly that serial's points, and the box plot
+        # (which embeds the serial of every point) holds ONLY that serial
+        sp = json.dumps({"lo": 0, "hi": 400, "serials": [sers[0]]})
+        bp.goto(base + "/view?view=scatter&full=0&spec=" + urllib.parse.quote(sp), timeout=600000)
+        bp.wait_for_selector("#plot .main-svg", timeout=180000)
+        bp.wait_for_timeout(600)
+        n_sc = bp.evaluate("() => DATA.length")
+        sp2 = json.dumps({"lo": 0, "hi": 400, "serials": [sers[0], sers[1]]})
+        bp.goto(base + "/view?view=scatter&full=0&spec=" + urllib.parse.quote(sp2), timeout=600000)
+        bp.wait_for_selector("#plot .main-svg", timeout=180000)
+        bp.wait_for_timeout(600)
+        n_sc2 = bp.evaluate("() => DATA.length")
+        bp.goto(base + "/view?view=boxplot&full=1&spec=" + urllib.parse.quote(sp), timeout=600000)
+        bp.wait_for_selector("#plot .main-svg", timeout=180000)
+        bp.wait_for_timeout(600)
+        bs = bp.evaluate("() => [...new Set(BOX_DATA.flatMap(c => c.freq_stats.flatMap(f => (f.vals_detail || []).map(v => String(v.s).replace(/_RF\d+$/, '')))))]")
+        check("INV-BAND-SERIAL: band views opened under a Serial Number filter hold only the ticked serial(s): scatter n == oracle for one (%d) and for two (%d), and the box plot's points all belong to that one serial"
+              % (ser_n[sers[0]], ser_n[sers[0]] + ser_n[sers[1]]),
+              n_sc == ser_n[sers[0]] and n_sc2 == ser_n[sers[0]] + ser_n[sers[1]] and bs == [sers[0]], (n_sc, n_sc2, bs))
 
         # the same band through the ONE-spec form (what the UI now sends)
         bp.goto(base + "/view?view=scatter&full=0&spec=" + urllib.parse.quote(json.dumps(

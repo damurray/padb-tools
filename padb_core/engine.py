@@ -23,6 +23,7 @@ from .filterspec import FilterSpec
 from .limits import LimitTable
 
 MAX_GROUPS = 60
+SERIAL_LIST_MAX = 5000      # more serials than this: the viewer's Serial Number filter is not offered (a list that long is not a dropdown)
 
 
 def _stairs(rows, x_max):
@@ -182,11 +183,19 @@ class Dataset:
     def distinct_x(self):
         return [r[0] for r in self._all("SELECT DISTINCT x FROM pts0 ORDER BY x")]
 
+    def serial_list(self):
+        """[[serial, points], ...] sorted by serial, for the viewer's Serial Number filter (cached; the rows never change,
+        only the limits do). Capped: a file with more than SERIAL_LIST_MAX serials gets no list (the control is hidden)."""
+        if getattr(self, "_serial_list", None) is None:
+            rows = self._all("SELECT serial, count(*) FROM pts0 GROUP BY serial ORDER BY serial LIMIT %d" % (SERIAL_LIST_MAX + 1))
+            self._serial_list = [] if len(rows) > SERIAL_LIST_MAX else [[str(a), int(b)] for a, b in rows]
+        return self._serial_list
+
     def meta(self):
         return {"parquet": self.path.name, "rows": self.n_rows, "engine": self.engine,
                 "x_label": self.x_label, "value_label": self.value_label, "x_min": self.x_min,
                 "x_max": self.x_max, "sites": self.sites, "temps": self.temps, "n_serials": self.n_serials,
-                "x_unit": self.x_unit, "is_room_only": self.is_room_only, "has_limits": self.has_limits,
+                "serials": self.serial_list(), "x_unit": self.x_unit, "is_room_only": self.is_room_only, "has_limits": self.has_limits,
                 "limits": self.limits.to_list(), "dims": self.dims,
                 "all_dims": self.all_dims(), "unavailable": self.index.unavailable if self.index else [],
                 "filters": self.index.config.to_dict() if self.index else {}}

@@ -8,6 +8,8 @@ Semantics (identical to the v2 viewer's `_where`, proven by qa_core):
   * window: lo <= x <= hi, both edges inclusive
   * sites / temps: a non-empty list restricts to those values; empty = no restriction
   * pf: 'all' | 'pass' | 'fail'   (fail = a present limit is crossed; pass = everything else)
+  * serials: a non-empty list restricts to those serial numbers (units); empty = no restriction. (The viewer sends
+    one value that no serial has to mean "every serial unticked" -> no rows, as for conditions.)
   * conds: {dim_id: [allowed values]} -- ONLY narrowed dimensions are listed. An empty list means every
     value is unticked -> nothing. A row whose value for the dimension is blank/absent is "not
     applicable" and is never excluded.
@@ -25,6 +27,7 @@ class FilterSpec:
     hi: float = math.inf
     sites: list = field(default_factory=list)
     temps: list = field(default_factory=list)
+    serials: list = field(default_factory=list)
     pf: str = "all"
     conds: dict = field(default_factory=dict)
 
@@ -40,6 +43,7 @@ class FilterSpec:
             hi=float(d["hi"]) if d.get("hi") is not None else math.inf,
             sites=[str(x) for x in (d.get("sites") or [])],
             temps=[str(x) for x in (d.get("temps") or [])],
+            serials=[str(x) for x in (d.get("serials") or [])],
             pf=str(d.get("pf") or "all"),
             conds=conds)
         spec.validate()
@@ -68,6 +72,8 @@ class FilterSpec:
             d["sites"] = list(self.sites)
         if self.temps:
             d["temps"] = list(self.temps)
+        if self.serials:
+            d["serials"] = list(self.serials)
         if self.pf != "all":
             d["pf"] = self.pf
         if self.conds:
@@ -81,7 +87,7 @@ class FilterSpec:
         """Canonical string -- equal specs give equal keys (use as a cache key). Order of the
         lists is irrelevant to the meaning, so it is normalised away."""
         d = self.to_dict()
-        for k in ("sites", "temps"):
+        for k in ("sites", "temps", "serials"):
             if k in d:
                 d[k] = sorted(d[k])
         if "conds" in d:
@@ -101,6 +107,9 @@ class FilterSpec:
         if self.temps:
             where.append("temp IN (" + ",".join("?" * len(self.temps)) + ")")
             args += list(self.temps)
+        if self.serials:
+            where.append("serial IN (" + ",".join("?" * len(self.serials)) + ")")
+            args += list(self.serials)
         if self.pf == "fail":
             where.append("fail")
         elif self.pf == "pass":
