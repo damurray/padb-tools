@@ -99,6 +99,12 @@ def make_fixture(path, n_serials=6, reps=2, big=False):
     parts += [a1, a2, d1, d2, s1]
     df = pd.concat(parts, ignore_index=True)
     df["limit_lower"] = np.nan                                   # all-NaN limit column: no lower limit exists
+    # the datasheet spec and the rolled-up uncertainty (spec = limit + uncertainty) where there is a limit -- so the streaming and the
+    # in-memory conversions are compared on these columns too
+    df["uncert_upper"] = np.where(df["limit_upper"].notna(), 0.5, np.nan)
+    df["uncert_lower"] = df["uncert_upper"]
+    df["cuspec_upper"] = df["limit_upper"] + df["uncert_upper"]
+    df["cuspec_lower"] = np.nan
     df.loc[df.index[::97], "value"] = np.nan                     # stored NaN values (dropped like nulls)
     value = pa.array(df["value"].to_numpy(), type=pa.float64(), from_pandas=False)      # NaN stays NaN
     tbl = pa.Table.from_pandas(df.drop(columns=["value"]), preserve_index=False)

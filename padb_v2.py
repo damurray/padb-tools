@@ -1129,6 +1129,10 @@ def _df_to_scatter_csv(df: pd.DataFrame, out_path: Path) -> None:
         out["Upper Limit (<=)"] = df["Upper_Limit"]
     if "Lower_Limit" in df.columns:
         out["Lower Limit (>=)"] = df["Lower_Limit"]
+    # Spec / Uncertainty as columns too: the round trip would otherwise drop them (they were never in the Group text)
+    for src, dst in (("Spec_Hi", "Upper Spec"), ("Spec_Lo", "Lower Spec"), ("Unc_Hi", "Upper Uncertainty"), ("Unc_Lo", "Lower Uncertainty")):
+        if src in df.columns and df[src].notna().any():
+            out[dst] = df[src]
     if "_val_col_name" in df.columns:
         name = df["_val_col_name"].iloc[0]
         out.rename(columns={"Value": name}, inplace=True)

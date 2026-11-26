@@ -2353,7 +2353,11 @@ def test_coverage_gap_excludes_identifier_dims() -> None:
     f = pp._is_coverage_identifier_dim
     for k in ("Test Run Datetime", "Run", "Test Run", "Run Number", "Acquisition Timestamp"):
         check(f"coverage-gap excludes identifier dim: {k!r}", f(k) is True)
-    for k in ("Temperature", "Mode", "Port", "Depth (%)", "SpurType", "Run Rate", "Runout"):
+    # dimensions that name where the data CAME FROM can never match between sites extracted from different databases
+    # (David 2026-11-25: "AMC has no Process Center data for: SR" made no sense)
+    for k in ("Process Center", "Process Centre", "process_center", "Site", "Test Site", "Server", "Database"):
+        check(f"coverage-gap excludes an origin dim: {k!r}", f(k) is True)
+    for k in ("Temperature", "Mode", "Port", "Depth (%)", "SpurType", "Run Rate", "Runout", "Opposite Port", "Sitename Offset", "Observer"):
         check(f"coverage-gap keeps real/controlled dim: {k!r}", f(k) is False)
     src = (HERE / "padb_plots.py").read_text(encoding="utf-8")
     v2 = (HERE / "padb_v2.py").read_text(encoding="utf-8")

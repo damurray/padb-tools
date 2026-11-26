@@ -13,7 +13,7 @@
       "failed": 0
     },
     "qa_viewer_ui": {
-      "passed": 138,
+      "passed": 146,
       "failed": 0
     },
     "qa_limits_views": {
@@ -57,7 +57,7 @@
       "failed": 0
     },
     "qa_regressions": {
-      "passed": 769,
+      "passed": 779,
       "failed": 0
     },
     "qa_subpop": {
@@ -113,7 +113,7 @@
       "failed": 0
     },
     "qa_truth": {
-      "passed": 102,
+      "passed": 164,
       "failed": 0
     },
     "qa_jobs_table": {

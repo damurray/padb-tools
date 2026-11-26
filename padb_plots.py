@@ -466,6 +466,7 @@ function saveCSV(withExcluded){
   var bnd=(typeof _scatterBounds==='function')?_scatterBounds():{spec:false,limit:false};
   if(bnd.spec) hdrs.push('Spec Hi','Spec Lo');
   if(bnd.limit) hdrs.push('Limit Hi','Limit Lo');
+  if(bnd.unc) hdrs.push('Uncertainty Hi (M.U.+DEnv+GB as stored)','Uncertainty Lo (M.U.+DEnv+GB as stored)');
   if(bnd.spec||bnd.limit) hdrs.push('Status');
   if(withExcluded) hdrs.push('Excluded');
   var rows=[hdrs.join(',')];
@@ -474,6 +475,7 @@ function saveCSV(withExcluded){
     var vals=cols.map(function(c){return esc(r[c]);});
     if(bnd.spec) vals.push(_scatFmt(r.Spec_Hi),_scatFmt(r.Spec_Lo));
     if(bnd.limit) vals.push(_scatFmt(r.Upper_Limit),_scatFmt(r.Lower_Limit));
+    if(bnd.unc) vals.push(_scatFmt(r.Unc_Hi),_scatFmt(r.Unc_Lo));
     if(bnd.spec||bnd.limit) vals.push(_scatterStatus(r).t);
     if(withExcluded) vals.push(gfSet&&_isInGfFull(r)?'global':'');
     rows.push(vals.join(','));
@@ -1237,12 +1239,13 @@ function _scatterBounds(){
   /* {spec:bool, limit:bool} -- which column pairs the dataset actually populates,
      so an all-empty Spec (or Limit) pair isn't shown as dead columns. */
   if(_scatBoundsCache!==null) return _scatBoundsCache;
-  var spec=false,limit=false;
+  var spec=false,limit=false,unc=false;
   for(var i=0;i<DATA.length;i++){var r=DATA[i];
     if(!spec&&(_scatNum(r.Spec_Hi)!==null||_scatNum(r.Spec_Lo)!==null)) spec=true;
     if(!limit&&(_scatNum(r.Upper_Limit)!==null||_scatNum(r.Lower_Limit)!==null)) limit=true;
-    if(spec&&limit) break;}
-  _scatBoundsCache={spec:spec,limit:limit};
+    if(!unc&&(_scatNum(r.Unc_Hi)!==null||_scatNum(r.Unc_Lo)!==null)) unc=true;
+    if(spec&&limit&&unc) break;}
+  _scatBoundsCache={spec:spec,limit:limit,unc:unc};
   return _scatBoundsCache;
 }
 function _scatterHasBounds(){var b=_scatterBounds();return b.spec||b.limit;}
@@ -1281,6 +1284,7 @@ function updateScatterTable(filtered){
   var extraH=[];
   if(bnd.spec) extraH.push('Spec Hi','Spec Lo');
   if(bnd.limit) extraH.push('Limit Hi','Limit Lo');
+  if(bnd.unc) extraH.push('Uncertainty Hi (M.U.+DEnv+GB as stored)','Uncertainty Lo (M.U.+DEnv+GB as stored)');
   if(withBounds) extraH.push('Status');
   out+='<table class="scatter-tbl"><thead><tr>'+keepH.concat(extraH).map(function(h){return '<th>'+esc(h)+'</th>';}).join('')+'</tr></thead><tbody>';
   var body=[];
@@ -1292,6 +1296,7 @@ function updateScatterTable(filtered){
     });
     if(bnd.spec) cells.push('<td>'+_scatFmt(r.Spec_Hi)+'</td>','<td>'+_scatFmt(r.Spec_Lo)+'</td>');
     if(bnd.limit) cells.push('<td>'+_scatFmt(r.Upper_Limit)+'</td>','<td>'+_scatFmt(r.Lower_Limit)+'</td>');
+    if(bnd.unc) cells.push('<td>'+_scatFmt(r.Unc_Hi)+'</td>','<td>'+_scatFmt(r.Unc_Lo)+'</td>');
     if(withBounds){var st=_scatterStatus(r);cells.push('<td style="color:'+st.c+';font-weight:bold">'+st.t+'</td>');}
     body.push('<tr>'+cells.join('')+'</tr>');
   });
@@ -1682,6 +1687,19 @@ def _sfloat(v):
         return np.nan
 
 
+def _fill_spec_unc_columns(df_raw, col_lower, out) -> None:
+    """Spec / Uncertainty given as COLUMNS ("Upper Spec", "Lower Spec", "Upper Uncertainty", "Lower Uncertainty" -- what the
+    padbloader adapter writes) fill Spec_Hi/Lo and Unc_Hi/Lo wherever the Group text did not already give a value (a native
+    PADB extract carries them as grouping items in the Group text instead)."""
+    for key, dst in (("upper spec", "Spec_Hi"), ("lower spec", "Spec_Lo"),
+                     ("upper uncertainty", "Unc_Hi"), ("lower uncertainty", "Unc_Lo")):
+        c = next((col_lower[k] for k in col_lower if k.startswith(key)), None)
+        if c is None:
+            continue
+        vals = df_raw[c].map(_sfloat)
+        out[dst] = out[dst].where(out[dst].notna(), vals)
+
+
 def _extract_group_field(group_series: pd.Series, field_label: str) -> tuple[pd.Series, pd.Series]:
     """
     Pull 'Upper <field_label> (<=): value' / 'Lower <field_label> (>=): value' out of a
@@ -1764,6 +1782,7 @@ def _load_scatter_csv(csv_path: Path) -> pd.DataFrame:
 
     skip = {c.lower() for c in [freq_col, serial_col, station_col, lo_col, hi_col, group_col] if c}
     skip |= {"analysis type", "model(s)", "algorithm -> result", "units"}
+    skip |= {c for c in col_lower if c.startswith(("upper spec", "lower spec", "upper uncertainty", "lower uncertainty"))}
     val_col = None
     if freq_col:
         cols = list(df.columns)
@@ -1787,6 +1806,7 @@ def _load_scatter_csv(csv_path: Path) -> pd.DataFrame:
     else:
         out["Spec_Hi"] = out["Spec_Lo"] = np.nan
         out["Unc_Hi"] = out["Unc_Lo"] = np.nan
+    _fill_spec_unc_columns(df, col_lower, out)
     test_step_col = next((col_lower[k] for k in col_lower if k == "test step"), None)
     out["Test_Step"]     = df[test_step_col].str.strip() if test_step_col else ""
     out["_val_col_name"] = val_col or "Value"
@@ -2895,6 +2915,11 @@ def _build_av_freq_html(df: pd.DataFrame, cfg: dict, title: str) -> str:
             hover_col_list.append(("Upper_Limit", "Spec Hi"))
         if "Lower_Limit" in df.columns and df["Lower_Limit"].notna().any():
             hover_col_list.append(("Lower_Limit", "Spec Lo"))
+    # the stored uncertainty, honestly named: ONE rolled-up number (M.U. + DEnv + GB), its split is not known
+    if "Unc_Hi" in df.columns and df["Unc_Hi"].notna().any():
+        hover_col_list.append(("Unc_Hi", "Uncertainty Hi (M.U.+DEnv+GB as stored)"))
+    if "Unc_Lo" in df.columns and df["Unc_Lo"].notna().any():
+        hover_col_list.append(("Unc_Lo", "Uncertainty Lo (M.U.+DEnv+GB as stored)"))
 
     # Columns to embed as JSON
     json_cols = ["Frequency_MHz", "Value", "Upper_Limit", "Lower_Limit", "Spec_Hi", "Spec_Lo", "Unc_Hi", "Unc_Lo"] + [c for c, _ in group_cols] + [c for c, _ in _exposed_cols]
@@ -4465,9 +4490,15 @@ function PADB_bandSegs(){
   if(!PADB_hasNamedBands()) return out;
   var xmin=(typeof FREQ_MIN!=='undefined')?FREQ_MIN:((typeof BOX_FREQ_MIN!=='undefined')?BOX_FREQ_MIN:-Infinity);
   var xmax=(typeof FREQ_MAX!=='undefined')?FREQ_MAX:((typeof BOX_FREQ_MAX!=='undefined')?BOX_FREQ_MAX:Infinity);
+  /* A band is a step only if it holds at least one data point: bands are inclusive at BOTH edges, so a point sitting exactly on an
+     edge (e.g. the single point at 8.0 of a band that ends at 8) counts and keeps its band (clamped to that one x), while a band with
+     no point at all -- outside the data, or in a gap inside it -- is not offered (the viewer greys the same bands out). */
+  var xs=(typeof FREQ_VALS!=='undefined'&&FREQ_VALS&&FREQ_VALS.length)?FREQ_VALS:((typeof BOX_FREQ_VALS!=='undefined'&&BOX_FREQ_VALS&&BOX_FREQ_VALS.length)?BOX_FREQ_VALS:null);
   NAMED_BANDS.forEach(function(b){
     var lo=Math.max(Number(b.lo),xmin), hi=Math.min(Number(b.hi),xmax);
-    if(isFinite(lo)&&isFinite(hi)&&hi>lo) out.push({lo:lo,hi:hi,name:String(b.name||''),hiValue:null,loValue:null});
+    if(!(isFinite(lo)&&isFinite(hi)&&hi>=lo)) return;
+    if(xs&&!xs.some(function(x){return x>=Number(b.lo)&&x<=Number(b.hi);})) return;
+    out.push({lo:lo,hi:hi,name:String(b.name||''),hiValue:null,loValue:null});
   });
   out.sort(function(a,b){return a.lo-b.lo;});
   return out;
@@ -7718,6 +7749,7 @@ def _load_scatter_for_stats(csv_path: Path, x_col: str | None = None) -> pd.Data
 
     skip = {c.lower() for c in [freq_col, serial_col, station_col, lo_col, hi_col, group_col] if c}
     skip |= {"analysis type", "model(s)", "algorithm -> result", "units"}
+    skip |= {c for c in col_lower if c.startswith(("upper spec", "lower spec", "upper uncertainty", "lower uncertainty"))}
     val_col = None
     if freq_col:
         cols = list(df_raw.columns)
@@ -7754,6 +7786,7 @@ def _load_scatter_for_stats(csv_path: Path, x_col: str | None = None) -> pd.Data
     else:
         out["Spec_Hi"] = out["Spec_Lo"] = np.nan
         out["Unc_Hi"] = out["Unc_Lo"] = np.nan
+    _fill_spec_unc_columns(df_raw, col_lower, out)
     out["_val_col_name"] = val_col or "Value"
     out["_freq_col_name"] = freq_col or "Frequency"
 
@@ -8276,7 +8309,24 @@ function kLookup(n,P,C){
 }
 
 /* ---- read controls ---- */
+function inclApply(){
+  /* The M.U. / DEnv / guard-band boxes that the limit already includes are not applied: grey them out and say why. */
+  var s=document.getElementById('stat_incl'); if(!s) return;
+  var v=s.value, muIn=(v==='unknown'||v==='mu_denv'||v==='mu'), dvIn=(v==='unknown'||v==='mu_denv');
+  [['stat_mu',muIn],['stat_gb',dvIn],['stat_denv_up',dvIn],['stat_denv_lo',dvIn]].forEach(function(p){
+    var el=document.getElementById(p[0]); if(!el) return;
+    if(el.getAttribute('data-t0')===null) el.setAttribute('data-t0',el.title||'');
+    el.disabled=p[1];
+    el.title=p[1]?'Not applied: the limit already includes this (see "Limit already includes").':el.getAttribute('data-t0');
+  });
+  var n=document.getElementById('stat_incl_note'); if(!n) return;
+  n.textContent=(v==='unknown')?'The limit in this data already has the stored uncertainty (M.U. + DEnv + GB, kept as ONE number) taken off, and how it splits is not known -- so none is subtracted again. TLL = the limit. Measured DEnv is shown for information only.'
+    :(v==='mu_denv')?'M.U. and DEnv are already in the limit: only the drift you type is subtracted. Measured DEnv is shown for information only.'
+    :(v==='mu')?'M.U. is already in the limit: DEnv (measured, or the value you enter) and guard band are subtracted on top.'
+    :'The limit is the datasheet spec: M.U., DEnv and guard band are subtracted to get the TLL.';
+}
 function getParams(){
+  inclApply();
   function numOrNull(id){
     var el=document.getElementById(id);
     if(!el||el.value==='') return null;
@@ -8292,6 +8342,7 @@ function getParams(){
     denv_lo_override: parseFloat(document.getElementById('stat_denv_lo').value)||0,
     gb:  parseFloat(document.getElementById('stat_gb').value)||0,
     drift: parseFloat(document.getElementById('stat_drift').value)||0,
+    incl: (document.getElementById('stat_incl')||{}).value||LIMIT_INCLUDES,
     spec_lo_override: numOrNull('stat_spec_lo'),
     spec_hi_override: numOrNull('stat_spec_hi'),
     tll_hi_override: numOrNull('stat_tll_hi'),
@@ -8450,8 +8501,17 @@ function computeFreqResult(fs,params){
      since spec_lo_override is also how the Data-filter's Lower-limit radio
      feeds a value in (see getFilteredCondsAndParams()). */
   var spec_lo_raw=(params.spec_lo_override!==null)?params.spec_lo_override:((fs.spec_lo!=null)?fs.spec_lo:null);
-  var g_up=params.mu+dev_up+params.gb+params.drift;
-  var g_lo=params.mu+dev_lo+params.gb+params.drift;
+  /* "Limit already includes": the data's limit may already have M.U. / DEnv / guard band taken off (padbloader data stores ONE
+     rolled-up uncertainty and the limit is spec - uncertainty), so those must not be subtracted a second time.
+       nothing  the limit IS the datasheet spec: subtract M.U. + DEnv + GB (+ drift)       (native PADB extracts, and the old behaviour)
+       mu       M.U. is already in the limit: subtract DEnv + GB (+ drift)
+       mu_denv  M.U. and DEnv (and GB) are in the limit: subtract only the drift you typed
+       unknown  as mu_denv -- the stored uncertainty is one number whose M.U./DEnv split is not known, so none is subtracted again
+     The measured DEnv (dev_up/dev_lo) is still reported, for information. */
+  var incl=params.incl||'nothing';
+  var _muIn=(incl==='unknown'||incl==='mu_denv'||incl==='mu'), _dvIn=(incl==='unknown'||incl==='mu_denv'), _gbIn=_dvIn;
+  var g_up=(_muIn?0:params.mu)+(_dvIn?0:dev_up)+(_gbIn?0:params.gb)+params.drift;
+  var g_lo=(_muIn?0:params.mu)+(_dvIn?0:dev_lo)+(_gbIn?0:params.gb)+params.drift;
   var tll_up=(params.tll_hi_override!==null)?params.tll_hi_override:((spec_up!=null)?spec_up-g_up:null);
   var tll_lo=(params.tll_lo_override!==null)?params.tll_lo_override:((spec_lo_raw!=null)?spec_lo_raw+g_lo:null);
   var ssu_up=ti_up+g_up;   // spec supportable from data (upper): TI_up + full budget
@@ -8462,7 +8522,7 @@ function computeFreqResult(fs,params){
           tll_up:tll_up,tll_lo:tll_lo,
           ssu_up:ssu_up,ssu_lo:ssu_lo,
           margin_up:margin_up,margin_lo:margin_lo,
-          denv_up:dev_up,denv_lo:dev_lo,
+          denv_up:dev_up,denv_lo:dev_lo,incl:incl,g_up:g_up,g_lo:g_lo,
           spec_lo:spec_lo_raw,spec_up:spec_up,
           pass_up:tll_up===null||ti_up<=tll_up,
           pass_lo:tll_lo===null||ti_lo>=tll_lo,
@@ -8681,8 +8741,9 @@ function buildTraces(conds,params){
     var ssuHi_x=[],ssuHi_y=[],ssuHi_cols=[],ssuHi_hover=[],any_ssuHi_fail=false;
     sorted.forEach(function(fs){
       var r=computeFreqResult(fs,params);
-      var budLo='MU='+params.mu.toFixed(2)+' ΔEnv='+r.denv_lo.toFixed(2)+' GB='+params.gb.toFixed(2);
-      var budHi='MU='+params.mu.toFixed(2)+' ΔEnv='+r.denv_up.toFixed(2)+' GB='+params.gb.toFixed(2);
+      var _mi=(r.incl==='unknown'||r.incl==='mu_denv'||r.incl==='mu'), _di=(r.incl==='unknown'||r.incl==='mu_denv');
+      var budLo=(_mi?'MU=in limit':'MU='+params.mu.toFixed(2))+(_di?' ΔEnv=in limit (measured '+r.denv_lo.toFixed(2)+')':' ΔEnv='+r.denv_lo.toFixed(2))+(_di?' GB=in limit':' GB='+params.gb.toFixed(2));
+      var budHi=(_mi?'MU=in limit':'MU='+params.mu.toFixed(2))+(_di?' ΔEnv=in limit (measured '+r.denv_up.toFixed(2)+')':' ΔEnv='+r.denv_up.toFixed(2))+(_di?' GB=in limit':' GB='+params.gb.toFixed(2));
       if(_showSsuLo){
         ssuLo_x.push(fs.freq);ssuLo_y.push(r.ssu_lo);
         var clo=r.spec_lo!==null?(r.ssu_pass_lo?'#2ca02c':'#d62728'):'#9467bd';
@@ -10247,6 +10308,7 @@ function resetFilters(){
   var cEl=document.getElementById('stat_C');if(cEl)cEl.value=DEFAULT_C;
   var nEl2=document.getElementById('stat_n');if(nEl2)nEl2.value=0;
   var muEl=document.getElementById('stat_mu');if(muEl)muEl.value=DEFAULT_MU;
+  var inclEl=document.getElementById('stat_incl');if(inclEl)inclEl.value=LIMIT_INCLUDES;
   var duEl=document.getElementById('stat_denv_up');if(duEl)duEl.value=0;
   var dlEl=document.getElementById('stat_denv_lo');if(dlEl)dlEl.value=0;
   var gbEl2=document.getElementById('stat_gb');if(gbEl2)gbEl2.value=DEFAULT_GB;
@@ -10563,7 +10625,9 @@ def _is_coverage_identifier_dim(key: str) -> bool:
     can NEVER match between sites; Run NN are unique run tags, not settings. Datasheet-
     meaningful dims (Temperature/Mode/Port/Depth/SpurType/...) are kept. Name-based on
     purpose (predictable -- never suppresses a real gap); add a name here if another
-    identifier dim surfaces."""
+    identifier dim surfaces. Also excluded: dimensions that name the data's ORIGIN (process
+    center, site, server, database) -- each site's data is extracted from its own database, so
+    the value can never match across sites (2026-11-25)."""
     import re as _re
     k = (key or "").strip().lower()
     if any(t in k for t in ("datetime", "timestamp")):
@@ -10571,6 +10635,10 @@ def _is_coverage_identifier_dim(key: str) -> bool:
     if "date" in k and "time" in k:                # "Test Run Date/Time", "... Date Time"
         return True
     if _re.match(r"^(test\s+)?run(\s*(number|no\.?|index|idx|id|#|tag))?$", k):
+        return True
+    # a dimension that NAMES WHERE THE DATA CAME FROM (process center, site, server, database): sites are extracted from different
+    # databases, so each site has its own value by construction and "AMC has no Process Center data for: SR" is meaningless
+    if _re.search(r"\b(process[\s_]*cent(?:er|re)|site|server|database)\b", k):
         return True
     return False
 
@@ -10604,6 +10672,11 @@ def _build_stat_summary_html(
     default_C  = float(cfg.get("confidence", 0.90))
     default_mu = float(cfg.get("meas_unc", 0.0))
     default_gb = float(cfg.get("guard_band", 0.0))
+    _li = str(cfg.get("uncertainty_includes", "nothing"))
+    limit_includes = _li if _li in ("unknown", "mu_denv", "mu", "nothing") else "nothing"
+    _incl_opts = "".join('<option value="%s"%s>%s</option>' % (v, " selected" if v == limit_includes else "", lab) for v, lab in (
+        ("unknown", "stored uncertainty (split unknown)"), ("mu_denv", "M.U. + DEnv (+ GB)"), ("mu", "M.U. only"),
+        ("nothing", "nothing (limit = datasheet spec)")))
     # Spec inputs are intentionally left empty so each condition's per-frequency
     # spec_up/spec_lo drives the display. A global first-row spec would be wrong
     # for datasets with different specs per condition (e.g. harmonics vs sub-harmonics).
@@ -10812,6 +10885,7 @@ def _build_stat_summary_html(
         f"var DEFAULT_C={_snap_pc_opt(default_C, _PC_C_OPTS)!r};",
         f"var DEFAULT_MU={default_mu!r};",
         f"var DEFAULT_GB={default_gb!r};",
+        f"var LIMIT_INCLUDES={limit_includes!r};",
         f"var COND_DIMS={json.dumps(cond_dims)};",
         f"var TEMPS_PRESENT={json.dumps(['Room'] + non_room_temps)};",
         f"var FREQ_VALS={json.dumps(sorted(float(f) for f in df['Frequency_MHz'].dropna().unique()))};",
@@ -11012,6 +11086,10 @@ def _build_stat_summary_html(
         f'  <label>Guard&nbsp;Band:<input type="number" id="stat_gb"'
         f' value="{default_gb}" step="0.001" oninput="update()"></label>\n'
         f'  <label>Drift:<input type="number" id="stat_drift" value="0" step="0.001" oninput="update()"></label>\n'
+        f'  {sep}\n'
+        f'  <label title="What the data\'s limit has ALREADY had taken off. padbloader data stores ONE rolled-up uncertainty (M.U. + DEnv + GB) and its limit is spec minus that, so M.U. / DEnv / guard band must not be subtracted again; their boxes are greyed out when the limit includes them. nothing = the limit is the datasheet spec (native PADB extracts)."><b>Limit already includes:</b> '
+        f'<select id="stat_incl" onchange="update()">{_incl_opts}</select></label>\n'
+        f'  <span id="stat_incl_note" style="font-size:12px;color:#8a5a00;max-width:46em"></span>\n'
         f'  {sep}\n'
         f'  <label title="Lower spec limit as signed value, e.g. 14 for a ≥14 dBm spec or −0.15 for a ≤−0.15 dBc spec">'
         f'Spec&#8595;:<input type="number" id="stat_spec_lo" value="{spec_lo_val}" step="0.001"'

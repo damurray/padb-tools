@@ -507,8 +507,9 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <label id="limbox" style="display:none" title="Draw the spec/limit line(s) from the data's Upper/Lower Limit columns (a step where the limit changes along x). Display only -- the limit shown is the first one in file order at each x."><input type="checkbox" id="showlim" onchange="update()"> Show limits</label>
   <button id="limbtn" onclick="toggleLimEdit()" title="Override the data's Upper/Lower Limit over x-ranges. Changes the limit line, Passing/Failing and every band view; never the parquet. Saved to a limits file beside the data.">Edit limits</button>
   <span id="limflag" style="display:none;color:#b26a00;font-weight:600" title="The limits shown and used for pass/fail come from your override file, not (only) from the data."></span>
-  <button id="grpbtn" onclick="toggleGrp()"
-    title="Colour/split the overview points by Site, Serial Number, Temperature or any condition. Display only -- does not filter.">Group by &#9662;</button>
+  <span class="dd-wrap" id="grpwrap"><button id="grpbtn" class="dd-btn" onclick="toggleGrp(event)"
+    title="Colour/split the overview points by Site, Serial Number, Temperature or any condition. Display only -- does not filter. A dropdown: click outside it to close.">Group by &#9662;</button>
+  <div class="dd-panel" id="grppanel" onclick="event.stopPropagation()" style="min-width:430px;max-width:640px;max-height:70vh;font-size:12px"></div></span>
   <label title="The legend lists one entry per group. Auto hides it when there are more than 12 groups (it would cover the plot); hover a point to see its group. 'on' always shows it -- a scrollable list at the right of the plot."><select id="legsel" onchange="update()"><option value="auto">Legend: auto</option><option value="on">Legend: on</option><option value="off">Legend: off</option></select></label>
   <button id="fltbtn" onclick="toggleFltEdit()" style="display:none" title="Choose which conditions are offered as filters, in what order and under what names -- including ones the automatic rules hide (single-valued, serial-like, many values). A condition that is not offered puts no restriction on the data.">Edit filters</button>
   <button id="condbtn" onclick="toggleConds()" style="display:none"
@@ -526,7 +527,6 @@ _PAGE = r"""<!DOCTYPE html><html><head><meta charset="utf-8">
   <button onclick="resetAll()" title="Clear every saved filter/window/group-by choice for this dataset and reload the defaults">Reset all</button>
   <span id="status"></span>
 </div>
-<div id="grppanel" style="display:none;padding:6px 14px;background:#f2fff2;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="limedit" style="display:none;padding:6px 14px;background:#fff6f0;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="fltedit" style="display:none;padding:6px 14px;background:#f4f8ff;border-bottom:1px solid #ddd;font-size:12px"></div>
 <div id="condrow"></div>
@@ -677,12 +677,14 @@ function buildBands(){
     const btn=document.createElement('button');
     const n=(META.band_counts&&META.band_counts[i])||b.count||0;
     const heavy=n>slow;
-    btn.textContent=b.name+(n?(' ('+n.toLocaleString()+(heavy?' ⚠':'')+')'):'');
-    btn.title='Set range to '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'')+
-      (n?('  ('+n.toLocaleString()+' points'+(heavy?' -- band views may load slowly':'')+')'):'');
+    btn.textContent=b.name+(n?(' ('+n.toLocaleString()+(heavy?' ⚠':'')+')'):' (0)');
+    btn.title=n?('Set range to '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'')+
+      '  ('+n.toLocaleString()+' points'+(heavy?' -- band views may load slowly':'')+')')
+      :('No points of this data lie in '+b.lo.toPrecision(5)+' .. '+b.hi.toPrecision(5)+' '+(META.x_unit||'')+' -- nothing to show, so this band is greyed out');
     if(heavy) btn.style.color='#b26a00';
     btn.style.marginRight='6px';
-    btn.onclick=()=>setBand(b.lo,b.hi);
+    if(!n){ btn.disabled=true; btn.classList.add('band-empty'); btn.style.opacity='0.45'; btn.style.cursor='not-allowed'; }
+    else btn.onclick=()=>setBand(b.lo,b.hi);
     bb.appendChild(btn);
   });
   if(META.slow_band_warn){
@@ -864,7 +866,7 @@ function buildConds(){
   document.getElementById('condbtn').style.display='';
   buildCondRow();
 }
-var GRP_MAX=60, GRP_WARN=25, LEG_AUTO_MAX=12, _grpCount=null;
+var GRP_MAX=60, GRP_WARN=25, LEG_AUTO_MAX=12, LEG_TOP_PX=44, _grpCount=null;
 function _grpCard(key){
   // how many distinct values a key has (so the size of a grouping is visible BEFORE it is chosen)
   if(key==='site') return ((META&&META.sites)||[]).length;
@@ -929,8 +931,7 @@ function buildCondRow(){
   });
   h+=' <a href="#" onclick="condReset();return false" title="Tick every value of every condition">reset</a>';
   row.innerHTML=h; row.style.display='flex';
-  if(!window.__ddClickBound){ window.__ddClickBound=true;
-    document.addEventListener('click',function(){ document.querySelectorAll('.dd-panel.open').forEach(function(p){p.classList.remove('open');}); }); }
+  ddBindClose();
   syncCondRow();
 }
 function ddSearch(id,q){
@@ -1077,7 +1078,18 @@ async function _fltPost(cfg){
 }
 function fltApply(){ return _fltPost(fltRead()); }
 function fltReset(){ return _fltPost({}); }
-function toggleGrp(){ var p=document.getElementById('grppanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
+function ddBindClose(){
+  // a click anywhere outside an open dropdown closes it (bound once; shared by the Group by and the Conditions dropdowns)
+  if(window.__ddClickBound) return; window.__ddClickBound=true;
+  document.addEventListener('click',function(){ document.querySelectorAll('.dd-panel.open').forEach(function(p){p.classList.remove('open');}); });
+}
+function toggleGrp(ev){
+  if(ev) ev.stopPropagation();
+  ddBindClose();
+  var p=document.getElementById('grppanel'), was=p.classList.contains('open');
+  document.querySelectorAll('.dd-panel.open').forEach(function(q){q.classList.remove('open');});
+  if(!was) p.classList.add('open');
+}
 function selectedBy(){ return [...document.querySelectorAll('.grpchk:checked')].map(function(c){return c.value;}); }
 function toggleConds(){ var p=document.getElementById('condpanel'); p.style.display=(p.style.display==='none')?'block':'none'; }
 function condAll(id,on){ document.querySelectorAll('.condchk[data-dim="'+id+'"]').forEach(function(c){c.checked=on;}); syncCondRow(); update(); }
@@ -1195,7 +1207,8 @@ async function update(){
   await Plotly.react('plot',traces,{margin:{t:10,r:_showLeg?250:10},showlegend:_showLeg,
       xaxis:{title:{text:META.x_label},range:[flo,fhi]},
       yaxis:{title:{text:META.value_label}},
-      legend:{orientation:'v',x:1.01,xanchor:'left',y:1,yanchor:'top',font:{size:11},tracegroupgap:2,itemsizing:'constant'}},{responsive:true});
+      // y is lowered by the height of Plotly's tool strip (top right, ~34 px) so the first legend entry is not covered by it
+      legend:{orientation:'v',x:1.01,xanchor:'left',y:Math.max(0.5,1-LEG_TOP_PX/Math.max(200,document.getElementById('plot').clientHeight||500)),yanchor:'top',font:{size:11},tracegroupgap:2,itemsizing:'constant'}},{responsive:true});
   if(!_relayoutHooked){ document.getElementById('plot').on('plotly_relayout',_onRelayout); _relayoutHooked=true; }
   // Keep the guard up until Plotly has settled: a late react-induced relayout (slow WebGL on
   // big pages) must not be read as a user Reset/zoom and overwrite the stepped window.

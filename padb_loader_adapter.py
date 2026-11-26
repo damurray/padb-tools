@@ -60,6 +60,14 @@ WIDE_VIEWS = ["scatter", "summary"]
 
 _X_CANDIDATES = ("c_frequency_offset", "c_frequency")
 
+# The data's own limit (the test limit, TLL), the datasheet spec ("cuspec") and ONE rolled-up uncertainty (M.U. + DEnv + GB as the
+# database stores it; spec = limit + uncertainty, checked exactly on real files).  All six are carried into the PADB-style table
+# as columns the loader reads (Spec_Hi/Lo, Unc_Hi/Lo), so the views have Spec, Limit and Uncertainty side by side.
+LIMIT_SRC = ("limit_upper", "limit_lower")
+CARRY_COLS = (("limit_upper", "Upper Limit"), ("limit_lower", "Lower Limit"),
+              ("cuspec_upper", "Upper Spec"), ("cuspec_lower", "Lower Spec"),
+              ("uncert_upper", "Upper Uncertainty"), ("uncert_lower", "Lower Uncertainty"))
+
 # Views a job can ask for.  The two ENVIRONMENTAL views need data at more than one test
 # step (padbloader `step`: Room / Hot / Cold ...); padb_v2 itself never builds them for
 # Room-only data, so convert() drops them when the data has a single step.
@@ -173,7 +181,7 @@ def _primitives_from_df(g, df_all, x_col):
     P["x_distinct"] = {c: int(g[c].nunique()) for c in set(list(P["c_stats"]) + ([extra] if extra else []))
                        if c in ("c_frequency", "c_frequency_offset") or c == extra}
     P["steps"] = (list(g["step"].drop_duplicates()) if "step" in cols and g["step"].notna().any() else None)
-    P["limit_nonnull"] = {c: int(g[c].notna().sum()) for c in ("limit_upper", "limit_lower") if c in cols}
+    P["limit_nonnull"] = {c: int(g[c].notna().sum()) for c, _d in CARRY_COLS if c in cols}
     return P
 
 
@@ -220,9 +228,9 @@ def _facts_from_primitives(P, algo, combine_results, x_col, lab, unit, log):
         F["has_step"] = True
     else:
         F["n_steps"], F["bad_steps"], F["has_step"] = 1, [], False
-    F["limit_cols"] = [(src, dst) for src, dst in (("limit_upper", "Upper Limit"), ("limit_lower", "Lower Limit"))
-                       if P["limit_nonnull"].get(src, 0) > 0]
-    F["has_lim"] = bool(F["limit_cols"])
+    F["limit_cols"] = [(src, dst) for src, dst in CARRY_COLS if P["limit_nonnull"].get(src, 0) > 0]
+    F["has_lim"] = any(s in LIMIT_SRC for s, _d in F["limit_cols"])           # "has limits" means the TEST limit, not spec / uncertainty
+    F["has_unc"] = any(s.startswith("uncert") for s, _d in F["limit_cols"])
     F["n_x"] = int(P["x_distinct"].get(xc, 0))
     F["wide"] = F["n_x"] > WIDE_X
     return F
@@ -287,7 +295,7 @@ def _facts_apply_range(F, g, xr):
     F["n_serials"] = int(g["serial"].nunique())
     F["n_x"] = int(g[F["xc"]].nunique())
     F["wide"] = F["n_x"] > WIDE_X
-    F["has_lim"] = any(bool(g[s].notna().any()) for s, _d in F["limit_cols"])
+    F["has_lim"] = any(bool(g[s].notna().any()) for s, _d in F["limit_cols"] if s in LIMIT_SRC)
     F["x_range"] = [float(xr[0]), float(xr[1])]
     return F
 
@@ -389,6 +397,10 @@ def _write_job(F, algo, slug, jp, stem, lab, publish_to, views, fmt, data_path, 
         "x_label": F["x_header"],
         "x_unit": F["xu"],
     }
+    if F.get("has_unc"):
+        # the stored limit already has the (rolled-up, M.U.+DEnv+GB) uncertainty taken off: the Statistical Summary must not
+        # subtract M.U. / DEnv again.  "unknown" = apply none of its own; the live "Limit already includes" control can change it.
+        job["uncertainty_includes"] = "unknown"
     note_extra = ""
     if bad_steps:
         note_extra += ("  [WARNING: test step(s) %s name no temperature; the loader reads them "

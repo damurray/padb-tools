@@ -220,9 +220,56 @@ def main() -> int:
         page.check('.grpchk[value="site"]')
         page.wait_for_timeout(800)
 
+        # INV-BANDEMPTY: a band with no points in this data is greyed out (disabled, '(0)', a title that says why), not offered as a click
+        # into an empty window; the bands that do have points stay clickable
+        page.evaluate("() => { META.bands.push({name: 'EmptyBand', lo: 1e6, hi: 2e6, count: 0}); META.band_counts = (META.band_counts || []); META.band_counts.push(0); buildBands(); }")
+        eb = page.evaluate("""() => { const b = [...document.querySelectorAll('#bands button')].find(x => x.textContent.indexOf('EmptyBand') === 0);
+            const ok = [...document.querySelectorAll('#bands button')].filter(x => x.textContent.indexOf('EmptyBand') !== 0);
+            return {found: !!b, disabled: b && b.disabled, cls: b && b.classList.contains('band-empty'), text: b && b.textContent, title: b && b.title,
+                    others_enabled: ok.length > 0 && ok.every(x => !x.disabled)}; }""")
+        check("INV-BANDEMPTY: a band with no points is greyed out ('(0)', disabled, title says why) and the bands with points stay clickable",
+              eb["found"] and eb["disabled"] and eb["cls"] and "(0)" in eb["text"] and "No points" in eb["title"] and eb["others_enabled"], eb)
+        page.reload()
+        page.wait_for_timeout(1500)
+
+        # INV-GRPDD: Group by is a real DROPDOWN: it overlays (does not push the plot), stays open while you tick things inside it,
+        # closes when you click anywhere else, opens again with ONE click (the old full-width band stayed open until the button was
+        # clicked a second time, so the next click on the button closed it and it looked as if it would not drop down), and opens
+        # exclusively with the Conditions dropdowns
+        page.evaluate("document.getElementById('grppanel').classList.remove('open')")
+        top0 = page.evaluate("document.getElementById('plot').getBoundingClientRect().top")
+        page.click("#grpbtn")
+        top1 = page.evaluate("document.getElementById('plot').getBoundingClientRect().top")
+        is_open = page.evaluate("document.getElementById('grppanel').classList.contains('open')")
+        check("INV-GRPDD: one click opens the dropdown, and it overlays the page instead of pushing the plot down",
+              is_open and page.is_visible("#grppanel") and abs(top1 - top0) < 1, (is_open, top0, top1))
+        page.check('.grpchk[value="serial"]')
+        page.wait_for_timeout(600)
+        check("INV-GRPDD: ticking a key inside it keeps it open (so several keys can be chosen)", page.evaluate("document.getElementById('grppanel').classList.contains('open')"))
+        page.click(".apptitle")
+        check("INV-GRPDD: a click anywhere else closes it", not page.evaluate("document.getElementById('grppanel').classList.contains('open')") and not page.is_visible("#grppanel"))
+        page.select_option("#legsel", "on")          # the user's sequence: set Serial, turn the legend on ...
+        page.wait_for_timeout(800)
+        page.click("#grpbtn")                        # ... then open Group by again: ONE click must open it
+        check("INV-GRPDD: after changing the legend, ONE click on Group by opens it again", page.evaluate("document.getElementById('grppanel').classList.contains('open')") and page.is_visible("#grppanel"))
+        page.click("#grpbtn")
+        check("INV-GRPDD: clicking the button again closes it", not page.evaluate("document.getElementById('grppanel').classList.contains('open')"))
+        if dims:
+            page.click("#ddbtn_%d" % dims["Port"]["id"])
+            page.click("#grpbtn")
+            both = page.evaluate("[document.getElementById('grppanel').classList.contains('open'), document.querySelectorAll('.dd-panel.open').length]")
+            check("INV-GRPDD: only one dropdown is open at a time (opening Group by closes the Conditions one)", both == [True, 1], both)
+        page.click(".apptitle")
+        page.click("#grpbtn")                                   # put the grouping back (the panel is closed again after the click above)
+        page.uncheck('.grpchk[value="serial"]')
+        page.check('.grpchk[value="site"]')
+        page.click(".apptitle")
+        page.select_option("#legsel", "auto")
+        page.wait_for_timeout(800)
+
         # INV-GRPUI: the Group by panel shows each key's size, the button says what is grouped and how many groups result,
         # and the legend is a short vertical list that hides itself when there are too many groups
-        page.evaluate("document.getElementById('grppanel').style.display = 'block'")   # (the INV-GROUP block above left it open; a click would close it)
+        page.evaluate("document.getElementById('grppanel').classList.add('open')")   # (the INV-GROUP block above left it open; a click would close it)
         ptxt = page.inner_text("#grppanel")
         check("INV-GRPUI: every condition is offered with its number of values (AlcState (2), Port (2), Serial Number (3))",
               "AlcState (2" in ptxt and "Port (2" in ptxt and "Serial Number (3" in ptxt, ptxt[:200])
@@ -233,9 +280,14 @@ def main() -> int:
         btn = page.inner_text("#grpbtn")
         check("INV-GRPUI: two conditions -> 4 groups, and the button names them with the count",
               "AlcState + Port" in btn and "(4 groups)" in btn and len(page.evaluate("document.getElementById('plot').data.filter(t=>!/limit/i.test(t.name)).map(t=>t.name)")) == 4, btn)
-        check("INV-GRPUI: the panel states the group count too", "4 groups now" in page.inner_text("#grppanel"), page.inner_text("#grppanel")[-200:])
+        check("INV-GRPUI: the panel states the group count too", "4 groups now" in page.text_content("#grppanel"), page.text_content("#grppanel")[-200:])
         lay = page.evaluate("(() => { const l = document.getElementById('plot').layout; return {show: l.showlegend, ori: l.legend && l.legend.orientation, r: l.margin && l.margin.r}; })()")
         check("INV-GRPUI: with few groups the legend is shown, vertical, in a reserved right margin", lay["show"] is True and lay["ori"] == "v" and lay["r"] >= 200, lay)
+        geo = page.evaluate("""() => { const mb = document.querySelector('#plot .modebar'), lg = document.querySelector('#plot .legend');
+            if (!mb || !lg) return null; const a = mb.getBoundingClientRect(), b = lg.getBoundingClientRect();
+            return {modebar_bottom: a.bottom, legend_top: b.top, modebar_left: a.left, legend_right: b.right, legend_left: b.left}; }""")
+        check("INV-GRPUI: the legend starts BELOW the plot tools (modebar), so the first entry is not covered by them",
+              geo is not None and geo["modebar_bottom"] > geo["modebar_left"] * 0 + 0 and geo["legend_top"] >= geo["modebar_bottom"] - 1, geo)
         page.select_option("#legsel", "off")
         page.wait_for_timeout(1200)
         lay = page.evaluate("(() => { const l = document.getElementById('plot').layout; return {show: l.showlegend, r: l.margin && l.margin.r}; })()")
@@ -272,7 +324,7 @@ def main() -> int:
         check("INV-GRPUI: the legend choice survives a reload", page.input_value("#legsel") == "on", page.input_value("#legsel"))
         page.evaluate("() => { META.engine = 'pandas'; META.dims = []; buildGrp(); }")
         check("INV-GRPUI: the pandas fallback says why conditions are missing, instead of silently offering fewer keys",
-              "pandas fallback" in page.inner_text("#grppanel") and "DuckDB" in page.inner_text("#grppanel"), page.inner_text("#grppanel")[:200])
+              "pandas fallback" in page.text_content("#grppanel") and "DuckDB" in page.text_content("#grppanel"), page.text_content("#grppanel")[:200])
         page.reload()
         page.wait_for_timeout(1500)
         page.select_option("#legsel", "auto")

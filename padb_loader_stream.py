@@ -192,7 +192,7 @@ def _primitives(src: _Src, group_sql, gparams, where, params, x_col, all_where, 
         xs.append(extra)
     extra_sel = [_distinct_present(src, c, where) for c in xs if c not in c_cols]
     sel += extra_sel
-    lim_cols = [c for c in ("limit_upper", "limit_lower") if c in cols]
+    lim_cols = [c for c, _d in ad.CARRY_COLS if c in cols]
     for c in lim_cols:
         sel.append("count(CASE WHEN %s THEN 1 END)" % src.present(c))
     row = _agg(src, sel, where, valid, group_sql, params + gparams)
@@ -351,7 +351,7 @@ def convert_stream(parquet, out_dir, jobs_dir, x_col=None, algo_filter=None, pub
             F = ad._facts_from_primitives(P, algo, combine_results, x_col, lab, unit, log)
             if xr:
                 xc = F["xc"]
-                lim = [s for s, _d in F["limit_cols"]]
+                lim = [s for s, _d in F["limit_cols"] if s in ad.LIMIT_SRC]
                 sel = ["count(*)", "count(DISTINCT serial)", _distinct_present(src, xc, "TRUE")]
                 sel += ["count(CASE WHEN %s THEN 1 END)" % src.present(s) for s in lim]
                 band = src.one("SELECT %s FROM src WHERE %s AND %s AND %s AND %s AND %s BETWEEN ? AND ?"

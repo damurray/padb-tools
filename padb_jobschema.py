@@ -98,6 +98,8 @@ SCHEMA = {
     "confidence": F(NUM, "plot", "analysis", "Tolerance-interval confidence C.", lo=0, hi=1, exclusive=True),
     "proportion_env": F(NUM, "plot", "analysis", "Proportion for the environmental views.", lo=0, hi=1, exclusive=True),
     "confidence_env": F(NUM, "plot", "analysis", "Confidence for the environmental views.", lo=0, hi=1, exclusive=True),
+    "uncertainty_includes": F("str", "plot", "analysis", "What the data's limit has ALREADY had taken off, so the Statistical Summary does not subtract it again: unknown (default for padbloader data: one rolled-up M.U.+DEnv+GB), mu_denv, mu, nothing (the limit is the datasheet spec; the default for other data).",
+                              enum=("unknown", "mu_denv", "mu", "nothing")),
     "meas_unc": F(NUM, "plot", "analysis", "Measurement uncertainty subtracted from the spec (stat_summary default).", lo=0),
     "guard_band": F(NUM, "plot", "analysis", "Guard band subtracted from the spec (stat_summary default).", lo=0),
     "hist_limit_hi": F(NUM, "plot", "analysis", "Upper spec for the histogram view when the CSV has none."),
